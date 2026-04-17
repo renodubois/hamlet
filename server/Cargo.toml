@@ -1,0 +1,27 @@
+[package]
+name = "hamlet"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+actix-cors = "0.7.1"
+actix-sse = "0.1.0"
+actix-web = "4.13.0"
+derive_more = "2.1.1"
+env_logger = "0.11.10"
+futures-util = "0.3.32"
+sea-orm = { version = "^2.0.0-rc.37", features = ["schema-sync", "entity-registry", "sqlx-sqlite", "runtime-tokio"] }
+serde = { version = "1.0.228", features = ["serde_derive"] }
+tokio = "1.50.0"
+tokio-stream = "0.1.18"
+rand = "0.9"
+serde_json = "1.0.149"
+argon2 = "0.5"
+hex = "0.4"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
