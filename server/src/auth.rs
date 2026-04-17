@@ -3,14 +3,9 @@ use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix_web::{FromRequest, HttpMessage, HttpRequest, cookie::Cookie, dev::Payload, web};
-use argon2::{
-    Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
-    password_hash::SaltString,
-};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
 use rand::RngCore;
-use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set,
-};
+use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 
 use crate::entity;
 use crate::{UserError, generate_id};
@@ -150,7 +145,10 @@ pub async fn authenticate_password(
         .map_err(|_| UserError::DbError)?
         .ok_or(UserError::InvalidCredentials)?;
 
-    let hash = credential.secret.as_deref().ok_or(UserError::InvalidCredentials)?;
+    let hash = credential
+        .secret
+        .as_deref()
+        .ok_or(UserError::InvalidCredentials)?;
     if !verify_password(password, hash) {
         return Err(UserError::InvalidCredentials);
     }

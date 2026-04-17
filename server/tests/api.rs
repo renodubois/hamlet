@@ -15,9 +15,9 @@ use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 #[actix_web::test]
 async fn test_register_creates_user_and_sets_cookie() {
     let (db, _) = common::setup_db().await;
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let req = test::TestRequest::post()
@@ -27,18 +27,23 @@ async fn test_register_creates_user_and_sets_cookie() {
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert!(resp.status().is_success());
-    let cookie = resp.headers().get("set-cookie").expect("set-cookie header missing");
+    let cookie = resp
+        .headers()
+        .get("set-cookie")
+        .expect("set-cookie header missing");
     assert!(cookie.to_str().unwrap().starts_with("session="));
 }
 
 #[actix_web::test]
 async fn test_register_rejects_duplicate_username() {
     let (db, _) = common::setup_db().await;
-    auth::register_user(&db, "alice", "hunter2", None).await.unwrap();
+    auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
 
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let req = test::TestRequest::post()
@@ -53,9 +58,9 @@ async fn test_register_rejects_duplicate_username() {
 #[actix_web::test]
 async fn test_register_rejects_empty_username() {
     let (db, _) = common::setup_db().await;
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let req = test::TestRequest::post()
@@ -70,9 +75,9 @@ async fn test_register_rejects_empty_username() {
 #[actix_web::test]
 async fn test_register_rejects_empty_password() {
     let (db, _) = common::setup_db().await;
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let req = test::TestRequest::post()
@@ -87,7 +92,9 @@ async fn test_register_rejects_empty_password() {
 #[actix_web::test]
 async fn test_register_stores_hashed_password() {
     let (db, _) = common::setup_db().await;
-    auth::register_user(&db, "alice", "hunter2", None).await.unwrap();
+    auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
 
     let credential = entity::credential::Entity::find()
         .filter(entity::credential::Column::Provider.eq(auth::PASSWORD_PROVIDER))
@@ -97,7 +104,9 @@ async fn test_register_stores_hashed_password() {
         .unwrap()
         .expect("credential should exist");
 
-    let secret = credential.secret.expect("password credential must have a secret");
+    let secret = credential
+        .secret
+        .expect("password credential must have a secret");
     assert_ne!(secret, "hunter2");
     assert!(secret.starts_with("$argon2"));
     assert!(auth::verify_password("hunter2", &secret));
@@ -108,11 +117,13 @@ async fn test_register_stores_hashed_password() {
 #[actix_web::test]
 async fn test_login_succeeds_with_correct_password() {
     let (db, _) = common::setup_db().await;
-    auth::register_user(&db, "alice", "hunter2", None).await.unwrap();
+    auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
 
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let req = test::TestRequest::post()
@@ -127,11 +138,13 @@ async fn test_login_succeeds_with_correct_password() {
 #[actix_web::test]
 async fn test_login_fails_with_wrong_password() {
     let (db, _) = common::setup_db().await;
-    auth::register_user(&db, "alice", "hunter2", None).await.unwrap();
+    auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
 
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let req = test::TestRequest::post()
@@ -146,9 +159,9 @@ async fn test_login_fails_with_wrong_password() {
 #[actix_web::test]
 async fn test_login_fails_with_nonexistent_username() {
     let (db, _) = common::setup_db().await;
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let req = test::TestRequest::post()
@@ -165,13 +178,19 @@ async fn test_login_fails_with_nonexistent_username() {
 #[actix_web::test]
 async fn test_logout_destroys_session() {
     let (db, _) = common::setup_db().await;
-    let user = auth::register_user(&db, "alice", "hunter2", None).await.unwrap();
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
     let session = auth::create_session(&db, user.id).await.unwrap();
     let token = session.token.clone();
 
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db.clone()), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(
+            cfg,
+            web::Data::new(db.clone()),
+            web::Data::from(Broadcaster::new()),
+        )
+    }))
     .await;
 
     let (name, value) = common::session_cookie_header(&token);
@@ -182,31 +201,37 @@ async fn test_logout_destroys_session() {
     let resp = test::call_service(&app, req).await;
     assert!(resp.status().is_success());
 
-    let remaining = entity::session::Entity::find_by_id(token).one(&db).await.unwrap();
+    let remaining = entity::session::Entity::find_by_id(token)
+        .one(&db)
+        .await
+        .unwrap();
     assert!(remaining.is_none());
 }
 
 #[actix_web::test]
 async fn test_logout_without_cookie_is_ok_and_clears() {
     let (db, _) = common::setup_db().await;
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let req = test::TestRequest::post().uri("/logout").to_request();
     let resp = test::call_service(&app, req).await;
     assert!(resp.status().is_success());
-    let cookie = resp.headers().get("set-cookie").expect("set-cookie header missing");
+    let cookie = resp
+        .headers()
+        .get("set-cookie")
+        .expect("set-cookie header missing");
     assert!(cookie.to_str().unwrap().starts_with("session="));
 }
 
 #[actix_web::test]
 async fn test_logout_with_bad_cookie_is_ok_and_clears() {
     let (db, _) = common::setup_db().await;
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let (name, value) = common::session_cookie_header("not-a-real-token");
@@ -223,12 +248,14 @@ async fn test_logout_with_bad_cookie_is_ok_and_clears() {
 #[actix_web::test]
 async fn test_me_returns_current_user() {
     let (db, _) = common::setup_db().await;
-    let user = auth::register_user(&db, "alice", "hunter2", None).await.unwrap();
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
     let session = auth::create_session(&db, user.id).await.unwrap();
 
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let (name, value) = common::session_cookie_header(&session.token);
@@ -246,9 +273,9 @@ async fn test_me_returns_current_user() {
 #[actix_web::test]
 async fn test_me_without_cookie_is_unauthorized() {
     let (db, _) = common::setup_db().await;
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let req = test::TestRequest::get().uri("/me").to_request();
@@ -259,13 +286,15 @@ async fn test_me_without_cookie_is_unauthorized() {
 #[actix_web::test]
 async fn test_me_after_logout_is_unauthorized() {
     let (db, _) = common::setup_db().await;
-    let user = auth::register_user(&db, "alice", "hunter2", None).await.unwrap();
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
     let session = auth::create_session(&db, user.id).await.unwrap();
     let token = session.token.clone();
 
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let (name, value) = common::session_cookie_header(&token);
@@ -273,13 +302,21 @@ async fn test_me_after_logout_is_unauthorized() {
         .uri("/logout")
         .insert_header((name.clone(), value.clone()))
         .to_request();
-    assert!(test::call_service(&app, logout_req).await.status().is_success());
+    assert!(
+        test::call_service(&app, logout_req)
+            .await
+            .status()
+            .is_success()
+    );
 
     let me_req = test::TestRequest::get()
         .uri("/me")
         .insert_header((name, value))
         .to_request();
-    assert_eq!(test::call_service(&app, me_req).await.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        test::call_service(&app, me_req).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 // --- session expiry ---
@@ -287,7 +324,9 @@ async fn test_me_after_logout_is_unauthorized() {
 #[actix_web::test]
 async fn test_expired_session_is_unauthorized() {
     let (db, _) = common::setup_db().await;
-    let user = auth::register_user(&db, "alice", "hunter2", None).await.unwrap();
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
 
     entity::session::ActiveModel {
         token: Set("expired-token".to_owned()),
@@ -299,9 +338,9 @@ async fn test_expired_session_is_unauthorized() {
     .await
     .unwrap();
 
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let (name, value) = common::session_cookie_header("expired-token");
@@ -309,7 +348,10 @@ async fn test_expired_session_is_unauthorized() {
         .uri("/me")
         .insert_header((name, value))
         .to_request();
-    assert_eq!(test::call_service(&app, req).await.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 // --- auth-gated routes ---
@@ -317,24 +359,29 @@ async fn test_expired_session_is_unauthorized() {
 #[actix_web::test]
 async fn test_get_channels_requires_auth() {
     let (db, _) = common::setup_db().await;
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let req = test::TestRequest::get().uri("/channels").to_request();
-    assert_eq!(test::call_service(&app, req).await.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 #[actix_web::test]
 async fn test_get_channels_with_auth() {
     let (db, _) = common::setup_db().await;
-    let user = auth::register_user(&db, "alice", "hunter2", None).await.unwrap();
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
     let session = auth::create_session(&db, user.id).await.unwrap();
 
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let (name, value) = common::session_cookie_header(&session.token);
@@ -348,27 +395,35 @@ async fn test_get_channels_with_auth() {
 #[actix_web::test]
 async fn test_get_messages_requires_auth() {
     let (db, chan_id) = common::setup_db().await;
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let req = test::TestRequest::get()
         .uri(&format!("/messages/{}", chan_id))
         .to_request();
-    assert_eq!(test::call_service(&app, req).await.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 #[actix_web::test]
 async fn test_subscribe_requires_auth() {
     let (db, _) = common::setup_db().await;
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
-    let req = test::TestRequest::get().uri("/messages/subscribe").to_request();
-    assert_eq!(test::call_service(&app, req).await.status(), StatusCode::UNAUTHORIZED);
+    let req = test::TestRequest::get()
+        .uri("/messages/subscribe")
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 // --- message creation ---
@@ -376,9 +431,9 @@ async fn test_subscribe_requires_auth() {
 #[actix_web::test]
 async fn test_message_create_requires_auth() {
     let (db, chan_id) = common::setup_db().await;
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let req = test::TestRequest::post()
@@ -386,18 +441,23 @@ async fn test_message_create_requires_auth() {
         .insert_header(ContentType::json())
         .set_payload(serde_json::json!({"text": "hi"}).to_string())
         .to_request();
-    assert_eq!(test::call_service(&app, req).await.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 #[actix_web::test]
 async fn test_message_create() {
     let (db, chan_id) = common::setup_db().await;
-    let user = auth::register_user(&db, "alice", "hunter2", None).await.unwrap();
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
     let session = auth::create_session(&db, user.id).await.unwrap();
 
-    let app = test::init_service(
-        App::new().configure(|cfg| configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))),
-    )
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
     .await;
 
     let (name, value) = common::session_cookie_header(&session.token);
@@ -408,4 +468,126 @@ async fn test_message_create() {
         .set_payload(serde_json::json!({"text": "test message!"}).to_string())
         .to_request();
     assert!(test::call_service(&app, req).await.status().is_success());
+}
+
+// --- channel creation ---
+
+#[actix_web::test]
+async fn test_create_channel_requires_auth() {
+    let (db, _) = common::setup_db().await;
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let req = test::TestRequest::post()
+        .uri("/channel")
+        .insert_header(ContentType::json())
+        .set_payload(serde_json::json!({"name": "random"}).to_string())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[actix_web::test]
+async fn test_create_channel_happy_path() {
+    let (db, _) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::post()
+        .uri("/channel")
+        .insert_header(ContentType::json())
+        .insert_header((name.clone(), value.clone()))
+        .set_payload(serde_json::json!({"name": "random"}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert!(resp.status().is_success());
+    let body = test::read_body(resp).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["name"], "random");
+    assert!(json["id"].is_number());
+
+    // Verify it shows up in GET /channels
+    let list_req = test::TestRequest::get()
+        .uri("/channels")
+        .insert_header((name, value))
+        .to_request();
+    let list_resp = test::call_service(&app, list_req).await;
+    assert!(list_resp.status().is_success());
+    let list_body = test::read_body(list_resp).await;
+    let list_json: serde_json::Value = serde_json::from_slice(&list_body).unwrap();
+    let names: Vec<&str> = list_json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"random"));
+}
+
+#[actix_web::test]
+async fn test_create_channel_trims_and_rejects_empty_name() {
+    let (db, _) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    for payload in ["", "   ", "\t\n"] {
+        let req = test::TestRequest::post()
+            .uri("/channel")
+            .insert_header(ContentType::json())
+            .insert_header((name.clone(), value.clone()))
+            .set_payload(serde_json::json!({"name": payload}).to_string())
+            .to_request();
+        assert_eq!(
+            test::call_service(&app, req).await.status(),
+            StatusCode::BAD_REQUEST,
+            "name {payload:?} should be rejected",
+        );
+    }
+}
+
+#[actix_web::test]
+async fn test_create_channel_rejects_too_long_name() {
+    let (db, _) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let long_name: String = "a".repeat(129);
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::post()
+        .uri("/channel")
+        .insert_header(ContentType::json())
+        .insert_header((name, value))
+        .set_payload(serde_json::json!({"name": long_name}).to_string())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::BAD_REQUEST
+    );
 }

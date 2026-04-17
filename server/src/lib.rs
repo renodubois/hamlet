@@ -68,6 +68,33 @@ struct MessageResponse {
     username: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct CreateChannelRequest {
+    name: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ChannelResponse {
+    id: i64,
+    name: String,
+}
+
+impl From<entity::channel::Model> for ChannelResponse {
+    fn from(c: entity::channel::Model) -> Self {
+        Self {
+            id: c.id,
+            name: c.name,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+enum BroadcastEvent {
+    Message(MessageResponse),
+    ChannelCreated(ChannelResponse),
+}
+
 // TODO(reno): return errors as JSON
 #[derive(Debug, Display, Error)]
 pub enum UserError {
@@ -101,6 +128,7 @@ impl error::ResponseError for UserError {
 }
 
 const ID_LENGTH: u32 = 16;
+const CHANNEL_NAME_MAX_LEN: usize = 128;
 
 pub fn generate_id() -> i64 {
     let min = 10_i64.pow(ID_LENGTH - 1);
@@ -193,7 +221,38 @@ async fn create_message(
         text: inserted.text,
         username: user.username.clone(),
     };
-    let payload = serde_json::to_string(&resp).map_err(|_| UserError::InternalError)?;
+    let payload = serde_json::to_string(&BroadcastEvent::Message(resp.clone()))
+        .map_err(|_| UserError::InternalError)?;
+    broadcaster.broadcast(&payload).await;
+
+    Ok(web::Json(resp))
+}
+
+#[post("/channel")]
+async fn create_channel(
+    db: web::Data<DatabaseConnection>,
+    broadcaster: web::Data<Broadcaster>,
+    body: web::Json<CreateChannelRequest>,
+    _user: AuthUser,
+) -> Result<impl Responder, UserError> {
+    let name = body.name.trim();
+    if name.is_empty() || name.chars().count() > CHANNEL_NAME_MAX_LEN {
+        return Err(UserError::InvalidRequest);
+    }
+
+    let new_channel = entity::channel::ActiveModel {
+        id: Set(generate_id()),
+        name: Set(name.to_owned()),
+    };
+
+    let inserted = new_channel
+        .insert(db.get_ref())
+        .await
+        .map_err(|_| UserError::DbError)?;
+
+    let resp = ChannelResponse::from(inserted);
+    let payload = serde_json::to_string(&BroadcastEvent::ChannelCreated(resp.clone()))
+        .map_err(|_| UserError::InternalError)?;
     broadcaster.broadcast(&payload).await;
 
     Ok(web::Json(resp))
@@ -212,9 +271,13 @@ async fn register(
     if body.username.is_empty() || body.password.is_empty() {
         return Err(UserError::InvalidRequest);
     }
-    let user =
-        auth::register_user(db.get_ref(), &body.username, &body.password, body.email.clone())
-            .await?;
+    let user = auth::register_user(
+        db.get_ref(),
+        &body.username,
+        &body.password,
+        body.email.clone(),
+    )
+    .await?;
     let session = auth::create_session(db.get_ref(), user.id).await?;
     Ok(HttpResponse::Ok()
         .cookie(auth::session_cookie(session.token))
@@ -317,11 +380,15 @@ pub fn configure_app(
                 .service(get_channels)
                 .service(get_messages)
                 .service(create_message)
+                .service(create_channel)
                 .service(me),
         );
 }
 
-pub async fn start_server(db: DatabaseConnection, broadcaster: Arc<Broadcaster>) -> std::io::Result<()> {
+pub async fn start_server(
+    db: DatabaseConnection,
+    broadcaster: Arc<Broadcaster>,
+) -> std::io::Result<()> {
     let broadcaster_data = web::Data::from(broadcaster);
     let db_data = web::Data::new(db);
 
@@ -436,6 +503,55 @@ mod tests {
         assert!(
             event_str.contains("alice"),
             "broadcast event should contain the author username; got {event_str}"
+        );
+        assert!(
+            event_str.contains("kind\\\":\\\"message\\\""),
+            "broadcast event should be tagged as kind=message; got {event_str}"
+        );
+    }
+
+    #[actix_web::test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    async fn test_create_channel_broadcasts_to_clients() {
+        let (db, _) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let broadcaster_data = web::Data::from(broadcaster);
+
+        let db_data = web::Data::new(db);
+        let app = test::init_service(
+            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
+        )
+        .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::post()
+            .uri("/channel")
+            .insert_header(ContentType::json())
+            .insert_header((name, value))
+            .set_payload(serde_json::json!({"name": "random"}).to_string())
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out — broadcast was never sent")
+            .expect("channel closed");
+
+        let event_str = format!("{:?}", event);
+        assert!(
+            event_str.contains("kind\\\":\\\"channel_created\\\""),
+            "broadcast event should be tagged as kind=channel_created; got {event_str}"
+        );
+        assert!(
+            event_str.contains("random"),
+            "broadcast event should contain the channel name; got {event_str}"
         );
     }
 }

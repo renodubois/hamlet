@@ -1,31 +1,24 @@
 import { useParams } from "@solidjs/router";
 import { createResource, createSignal, onCleanup, onMount } from "solid-js";
 import ChannelMessages from "../components/channel_messages";
-import { listMessages, messagesEventSource, sendMessage, type Message } from "../api";
+import { listMessages, sendMessage } from "../api";
 import { useChannels } from "../channels_context";
+import { useEvents } from "../events_context";
 
 export default function ChannelView() {
   const params = useParams<{ id: string }>();
-  const channels = useChannels();
+  const { channels } = useChannels();
+  const events = useEvents();
   const channel = () => channels()?.find((c) => String(c.id) === params.id);
   const [message, setMessage] = createSignal("");
-  const [eventSource, setEventSource] = createSignal<EventSource | null>(null);
   const [messages, { mutate }] = createResource(() => params.id, listMessages);
+
   onMount(() => {
-    const es = messagesEventSource();
-    es.onmessage = (m) => {
-      if (m.data === "connected") return;
-      try {
-        const msg = JSON.parse(m.data) as Message;
-        mutate((prev) => [...(prev ?? []), msg]);
-      } catch (e) {
-        console.warn("bad SSE payload", e, m.data);
-      }
-    };
-    setEventSource(es);
-  });
-  onCleanup(() => {
-    eventSource()?.close();
+    const unsub = events.onMessage((m) => {
+      if (String(m.channel_id) !== params.id) return;
+      mutate((prev) => [...(prev ?? []), m]);
+    });
+    onCleanup(unsub);
   });
 
   // TODO(reno): Can the router ensure this parameter exists?

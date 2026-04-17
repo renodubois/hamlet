@@ -18,7 +18,9 @@ pub async fn require_auth<B: MessageBody>(
         return Ok(req.into_response(res).map_into_right_body());
     };
 
-    let token = req.cookie(auth::SESSION_COOKIE).map(|c| c.value().to_owned());
+    let token = req
+        .cookie(auth::SESSION_COOKIE)
+        .map(|c| c.value().to_owned());
 
     let Some(token) = token else {
         let res = actix_web::HttpResponse::Unauthorized().finish();

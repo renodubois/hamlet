@@ -1,5 +1,7 @@
 const DEFAULT_SERVER = "http://localhost:3030";
 
+export const CHANNEL_NAME_MAX_LEN = 128;
+
 export interface User {
   id: number;
   username: string;
@@ -83,6 +85,18 @@ export async function sendMessage(channelId: string, text: string): Promise<Resp
     body: JSON.stringify({ text }),
   });
 }
+
+export async function createChannel(name: string): Promise<Response> {
+  return apiFetch("/channel", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export type SSEEvent =
+  | { kind: "message"; data: Message }
+  | { kind: "channel_created"; data: Channel };
 
 export function messagesEventSource(): EventSource {
   return new EventSource(`${getServerUrl()}/messages/subscribe`, {

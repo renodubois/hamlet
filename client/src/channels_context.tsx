@@ -1,11 +1,40 @@
-import { createContext, useContext, type JSX, type Resource } from "solid-js";
-import { type Channel } from "./api";
+import {
+  createContext,
+  createResource,
+  onCleanup,
+  onMount,
+  useContext,
+  type JSX,
+  type Resource,
+} from "solid-js";
+import { listChannels, type Channel } from "./api";
+import { useAuth } from "./auth_context";
+import { useEvents } from "./events_context";
 
-const ChannelsContext = createContext<Resource<Channel[]>>();
+interface ChannelsContextValue {
+  channels: Resource<Channel[]>;
+  refetch: () => void;
+}
 
-export function ChannelsProvider(props: { channels: Resource<Channel[]>; children: JSX.Element }) {
+const ChannelsContext = createContext<ChannelsContextValue>();
+
+export function ChannelsProvider(props: { children: JSX.Element }) {
+  const auth = useAuth();
+  const events = useEvents();
+  const [channels, { refetch }] = createResource(
+    () => auth.user() || null,
+    () => listChannels(),
+  );
+
+  onMount(() => {
+    const unsub = events.onChannelCreated(() => {
+      void refetch();
+    });
+    onCleanup(unsub);
+  });
+
   return (
-    <ChannelsContext.Provider value={props.channels}>
+    <ChannelsContext.Provider value={{ channels, refetch: () => void refetch() }}>
       {props.children}
     </ChannelsContext.Provider>
   );
