@@ -4,10 +4,7 @@ import { type User } from "../api";
 import { useChannels } from "../channels_context";
 import AddChannelModal from "./add_channel_modal";
 
-export default function ChannelSidebar(props: {
-  user: User;
-  onLogout: () => Promise<void>;
-}) {
+export default function ChannelSidebar(props: { user: User; onLogout: () => Promise<void> }) {
   const { channels } = useChannels();
   const [addChannelOpen, setAddChannelOpen] = createSignal(false);
 

@@ -1,16 +1,5 @@
-import {
-  createContext,
-  onCleanup,
-  onMount,
-  useContext,
-  type JSX,
-} from "solid-js";
-import {
-  messagesEventSource,
-  type Channel,
-  type Message,
-  type SSEEvent,
-} from "./api";
+import { createContext, onCleanup, onMount, useContext, type JSX } from "solid-js";
+import { messagesEventSource, type Channel, type Message, type SSEEvent } from "./api";
 
 type Listener<T> = (value: T) => void;
 
