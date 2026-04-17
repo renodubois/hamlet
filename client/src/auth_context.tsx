@@ -34,7 +34,7 @@ export function AuthProvider(props: { children: JSX.Element }) {
     try {
       const res = await apiLogin(username, password);
       if (res.ok) {
-        refetch();
+        void refetch();
         return null;
       }
       if (res.status === 401) return "Invalid username or password";
@@ -54,7 +54,7 @@ export function AuthProvider(props: { children: JSX.Element }) {
     try {
       const res = await apiRegister(username, password, email);
       if (res.ok) {
-        refetch();
+        void refetch();
         return null;
       }
       if (res.status === 409) return "Username already taken";
@@ -68,7 +68,7 @@ export function AuthProvider(props: { children: JSX.Element }) {
     try {
       await apiLogout();
     } finally {
-      refetch();
+      void refetch();
     }
   };
 

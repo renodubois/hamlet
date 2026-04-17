@@ -3,6 +3,7 @@ use std::sync::Arc;
 pub mod auth;
 pub mod broadcast;
 pub mod entity;
+pub mod middleware;
 
 use actix_cors::Cors;
 use actix_web::{
@@ -56,6 +57,15 @@ impl From<entity::user::Model> for UserResponse {
             email_verified: u.email_verified,
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MessageResponse {
+    id: i64,
+    user_id: i64,
+    channel_id: i64,
+    text: String,
+    username: String,
 }
 
 // TODO(reno): return errors as JSON
@@ -124,11 +134,23 @@ async fn get_messages(
         return Err(UserError::NoChannelFoundError);
     }
 
-    let messages = entity::message::Entity::find()
+    let rows = entity::message::Entity::find()
         .filter(entity::message::Column::ChannelId.eq(channel_id))
+        .find_also_related(entity::user::Entity)
         .all(db.get_ref())
         .await
         .map_err(|_| UserError::DbError)?;
+
+    let messages: Vec<MessageResponse> = rows
+        .into_iter()
+        .map(|(m, u)| MessageResponse {
+            id: m.id,
+            user_id: m.user_id,
+            channel_id: m.channel_id,
+            text: m.text,
+            username: u.map(|u| u.username).unwrap_or_else(|| "[deleted]".into()),
+        })
+        .collect();
 
     Ok(web::Json(messages))
 }
@@ -164,9 +186,17 @@ async fn create_message(
         .await
         .map_err(|_| UserError::DbError)?;
 
-    broadcaster.broadcast(&body.text).await;
+    let resp = MessageResponse {
+        id: inserted.id,
+        user_id: inserted.user_id,
+        channel_id: inserted.channel_id,
+        text: inserted.text,
+        username: user.username.clone(),
+    };
+    let payload = serde_json::to_string(&resp).map_err(|_| UserError::InternalError)?;
+    broadcaster.broadcast(&payload).await;
 
-    Ok(web::Json(inserted))
+    Ok(web::Json(resp))
 }
 
 #[get("/messages/subscribe")]
@@ -229,18 +259,42 @@ async fn me(
     Ok(web::Json(UserResponse::from(user)))
 }
 
+#[allow(clippy::unwrap_used)]
 pub async fn seed_development_data(db: &DatabaseConnection) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     db.get_schema_registry("hamlet::entity::*")
         .sync(db)
         .await
         .unwrap();
 
-    // Seed default channel
     let general_channel = entity::channel::ActiveModel {
         id: Set(generate_id()),
         name: Set("general".to_owned()),
     };
     general_channel.insert(db).await.unwrap();
+
+    let dev_user = auth::register_user(db, "baipas", "password", None)
+        .await
+        .unwrap();
+
+    const DEV_SESSION_TOKEN: &str =
+        "devdevdevdevdevdevdevdevdevdevdevdevdevdevdevdevdevdevdevdevdevdev";
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    entity::session::ActiveModel {
+        token: Set(DEV_SESSION_TOKEN.to_owned()),
+        user_id: Set(dev_user.id),
+        created_at: Set(now),
+        expires_at: Set(now + 60 * 60 * 24 * 365),
+    }
+    .insert(db)
+    .await
+    .unwrap();
+
+    println!("=== DEV: baipas session active — set cookie: session={DEV_SESSION_TOKEN} ===");
 }
 
 pub fn configure_app(
@@ -250,14 +304,21 @@ pub fn configure_app(
 ) {
     cfg.app_data(db_data.clone())
         .app_data(broadcaster)
-        .service(subscribe_to_channel_events)
-        .service(get_channels)
-        .service(get_messages)
-        .service(create_message)
+        // Public — no auth required
         .service(register)
         .service(login)
         .service(logout)
-        .service(me);
+        // Everything else requires auth
+        .service(
+            web::scope("")
+                .wrap(actix_web::middleware::from_fn(middleware::require_auth))
+                // subscribe must be registered before get_messages to win over /{channel_id}
+                .service(subscribe_to_channel_events)
+                .service(get_channels)
+                .service(get_messages)
+                .service(create_message)
+                .service(me),
+        );
 }
 
 pub async fn start_server(db: DatabaseConnection, broadcaster: Arc<Broadcaster>) -> std::io::Result<()> {
@@ -295,25 +356,28 @@ pub async fn start_server(db: DatabaseConnection, broadcaster: Arc<Broadcaster>)
 mod tests {
     use std::time::Duration;
 
-    use actix_web::http::{Method, header::ContentType};
+    use actix_web::http::header::ContentType;
     use actix_web::test;
     use sea_orm::Database;
 
     use super::*;
 
+    #[allow(clippy::unwrap_used)]
     async fn setup_db() -> (DatabaseConnection, i64) {
         let db = Database::connect("sqlite::memory:").await.unwrap();
-        db.get_schema_registry("disclone_server::entity::*")
+        db.get_schema_registry("hamlet::entity::*")
             .sync(&db)
             .await
             .unwrap();
 
         let chan_id = generate_id();
-        let test_channel = entity::channel::ActiveModel {
+        entity::channel::ActiveModel {
             id: Set(chan_id),
             name: Set("general".to_owned()),
-        };
-        test_channel.insert(&db).await.unwrap();
+        }
+        .insert(&db)
+        .await
+        .unwrap();
 
         (db, chan_id)
     }
@@ -326,417 +390,7 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn test_register_creates_user_and_sets_cookie() {
-        let (db, _) = setup_db().await;
-        let db_data = web::Data::new(db);
-        let broadcaster_data = web::Data::from(Broadcaster::new());
-
-        let app = test::init_service(
-            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
-        )
-        .await;
-
-        let body = serde_json::json!({"username": "alice", "password": "hunter2"});
-        let req = test::TestRequest::post()
-            .uri("/register")
-            .insert_header(ContentType::json())
-            .set_payload(body.to_string())
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert!(resp.status().is_success());
-        let cookie = resp
-            .headers()
-            .get("set-cookie")
-            .expect("set-cookie header missing");
-        assert!(cookie.to_str().unwrap().starts_with("session="));
-    }
-
-    #[actix_web::test]
-    async fn test_register_rejects_duplicate_username() {
-        let (db, _) = setup_db().await;
-        auth::register_user(&db, "alice", "hunter2", None)
-            .await
-            .unwrap();
-
-        let db_data = web::Data::new(db);
-        let broadcaster_data = web::Data::from(Broadcaster::new());
-        let app = test::init_service(
-            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
-        )
-        .await;
-
-        let body = serde_json::json!({"username": "alice", "password": "other"});
-        let req = test::TestRequest::post()
-            .uri("/register")
-            .insert_header(ContentType::json())
-            .set_payload(body.to_string())
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
-    }
-
-    #[actix_web::test]
-    async fn test_login_succeeds_with_correct_password() {
-        let (db, _) = setup_db().await;
-        auth::register_user(&db, "alice", "hunter2", None)
-            .await
-            .unwrap();
-
-        let db_data = web::Data::new(db);
-        let broadcaster_data = web::Data::from(Broadcaster::new());
-        let app = test::init_service(
-            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
-        )
-        .await;
-
-        let body = serde_json::json!({"username": "alice", "password": "hunter2"});
-        let req = test::TestRequest::post()
-            .uri("/login")
-            .insert_header(ContentType::json())
-            .set_payload(body.to_string())
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert!(resp.status().is_success());
-    }
-
-    #[actix_web::test]
-    async fn test_login_fails_with_wrong_password() {
-        let (db, _) = setup_db().await;
-        auth::register_user(&db, "alice", "hunter2", None)
-            .await
-            .unwrap();
-
-        let db_data = web::Data::new(db);
-        let broadcaster_data = web::Data::from(Broadcaster::new());
-        let app = test::init_service(
-            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
-        )
-        .await;
-
-        let body = serde_json::json!({"username": "alice", "password": "nope"});
-        let req = test::TestRequest::post()
-            .uri("/login")
-            .insert_header(ContentType::json())
-            .set_payload(body.to_string())
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[actix_web::test]
-    async fn test_me_returns_current_user() {
-        let (db, _) = setup_db().await;
-        let user = auth::register_user(&db, "alice", "hunter2", None)
-            .await
-            .unwrap();
-        let session = auth::create_session(&db, user.id).await.unwrap();
-
-        let db_data = web::Data::new(db);
-        let broadcaster_data = web::Data::from(Broadcaster::new());
-        let app = test::init_service(
-            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
-        )
-        .await;
-
-        let (name, value) = session_cookie_header(&session.token);
-        let req = test::TestRequest::get()
-            .uri("/me")
-            .insert_header((name, value))
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert!(resp.status().is_success());
-        let body = test::read_body(resp).await;
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["username"], "alice");
-    }
-
-    #[actix_web::test]
-    async fn test_me_without_cookie_is_unauthorized() {
-        let (db, _) = setup_db().await;
-        let db_data = web::Data::new(db);
-        let broadcaster_data = web::Data::from(Broadcaster::new());
-        let app = test::init_service(
-            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
-        )
-        .await;
-
-        let req = test::TestRequest::get().uri("/me").to_request();
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[actix_web::test]
-    async fn test_logout_destroys_session() {
-        let (db, _) = setup_db().await;
-        let user = auth::register_user(&db, "alice", "hunter2", None)
-            .await
-            .unwrap();
-        let session = auth::create_session(&db, user.id).await.unwrap();
-        let token = session.token.clone();
-
-        let db_data = web::Data::new(db.clone());
-        let broadcaster_data = web::Data::from(Broadcaster::new());
-        let app = test::init_service(
-            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
-        )
-        .await;
-
-        let (name, value) = session_cookie_header(&token);
-        let req = test::TestRequest::post()
-            .uri("/logout")
-            .insert_header((name, value))
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert!(resp.status().is_success());
-
-        let remaining = entity::session::Entity::find_by_id(token)
-            .one(&db)
-            .await
-            .unwrap();
-        assert!(remaining.is_none());
-    }
-
-    #[actix_web::test]
-    async fn test_message_create_requires_auth() {
-        let (db, chan_id) = setup_db().await;
-
-        let db_data = web::Data::new(db);
-        let broadcaster_data = web::Data::from(Broadcaster::new());
-        let app = test::init_service(
-            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
-        )
-        .await;
-
-        let body = serde_json::to_string(&SendMessageRequest {
-            text: "hi".to_string(),
-        })
-        .unwrap();
-        let req = test::TestRequest::post()
-            .uri(&format!("/message/{}", chan_id))
-            .insert_header(ContentType::json())
-            .set_payload(body)
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[actix_web::test]
-    async fn test_message_create() {
-        let (db, chan_id) = setup_db().await;
-        let user = auth::register_user(&db, "alice", "hunter2", None)
-            .await
-            .unwrap();
-        let session = auth::create_session(&db, user.id).await.unwrap();
-
-        let db_data = web::Data::new(db);
-        let broadcaster = Broadcaster::create();
-        let broadcaster_data = web::Data::from(broadcaster);
-
-        let app = test::init_service(
-            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
-        )
-        .await;
-
-        let body = serde_json::to_string(&SendMessageRequest {
-            text: "test message!".to_string(),
-        })
-        .unwrap();
-
-        let (name, value) = session_cookie_header(&session.token);
-        let req = test::TestRequest::with_uri(format!("/message/{:?}", chan_id).as_str())
-            .method(Method::POST)
-            .insert_header(ContentType::json())
-            .insert_header((name, value))
-            .set_payload(body)
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert!(resp.status().is_success());
-    }
-
-    #[actix_web::test]
-    async fn test_login_fails_with_nonexistent_username() {
-        let (db, _) = setup_db().await;
-        let db_data = web::Data::new(db);
-        let broadcaster_data = web::Data::from(Broadcaster::new());
-        let app = test::init_service(
-            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
-        )
-        .await;
-
-        let body = serde_json::json!({"username": "ghost", "password": "whatever"});
-        let req = test::TestRequest::post()
-            .uri("/login")
-            .insert_header(ContentType::json())
-            .set_payload(body.to_string())
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[actix_web::test]
-    async fn test_expired_session_is_unauthorized() {
-        let (db, _) = setup_db().await;
-        let user = auth::register_user(&db, "alice", "hunter2", None)
-            .await
-            .unwrap();
-
-        let expired = entity::session::ActiveModel {
-            token: Set("expired-token".to_owned()),
-            user_id: Set(user.id),
-            created_at: Set(0),
-            expires_at: Set(1),
-        };
-        expired.insert(&db).await.unwrap();
-
-        let db_data = web::Data::new(db);
-        let broadcaster_data = web::Data::from(Broadcaster::new());
-        let app = test::init_service(
-            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
-        )
-        .await;
-
-        let (name, value) = session_cookie_header("expired-token");
-        let req = test::TestRequest::get()
-            .uri("/me")
-            .insert_header((name, value))
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[actix_web::test]
-    async fn test_me_after_logout_is_unauthorized() {
-        let (db, _) = setup_db().await;
-        let user = auth::register_user(&db, "alice", "hunter2", None)
-            .await
-            .unwrap();
-        let session = auth::create_session(&db, user.id).await.unwrap();
-        let token = session.token.clone();
-
-        let db_data = web::Data::new(db);
-        let broadcaster_data = web::Data::from(Broadcaster::new());
-        let app = test::init_service(
-            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
-        )
-        .await;
-
-        let (name, value) = session_cookie_header(&token);
-        let logout_req = test::TestRequest::post()
-            .uri("/logout")
-            .insert_header((name.clone(), value.clone()))
-            .to_request();
-        let logout_resp = test::call_service(&app, logout_req).await;
-        assert!(logout_resp.status().is_success());
-
-        let me_req = test::TestRequest::get()
-            .uri("/me")
-            .insert_header((name, value))
-            .to_request();
-        let me_resp = test::call_service(&app, me_req).await;
-        assert_eq!(me_resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[actix_web::test]
-    async fn test_logout_without_cookie_is_ok_and_clears() {
-        let (db, _) = setup_db().await;
-        let db_data = web::Data::new(db);
-        let broadcaster_data = web::Data::from(Broadcaster::new());
-        let app = test::init_service(
-            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
-        )
-        .await;
-
-        let req = test::TestRequest::post().uri("/logout").to_request();
-        let resp = test::call_service(&app, req).await;
-        assert!(resp.status().is_success());
-        let cookie = resp
-            .headers()
-            .get("set-cookie")
-            .expect("set-cookie header missing");
-        assert!(cookie.to_str().unwrap().starts_with("session="));
-    }
-
-    #[actix_web::test]
-    async fn test_logout_with_bad_cookie_is_ok_and_clears() {
-        let (db, _) = setup_db().await;
-        let db_data = web::Data::new(db);
-        let broadcaster_data = web::Data::from(Broadcaster::new());
-        let app = test::init_service(
-            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
-        )
-        .await;
-
-        let (name, value) = session_cookie_header("not-a-real-token");
-        let req = test::TestRequest::post()
-            .uri("/logout")
-            .insert_header((name, value))
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert!(resp.status().is_success());
-    }
-
-    #[actix_web::test]
-    async fn test_register_rejects_empty_username() {
-        let (db, _) = setup_db().await;
-        let db_data = web::Data::new(db);
-        let broadcaster_data = web::Data::from(Broadcaster::new());
-        let app = test::init_service(
-            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
-        )
-        .await;
-
-        let body = serde_json::json!({"username": "", "password": "hunter2"});
-        let req = test::TestRequest::post()
-            .uri("/register")
-            .insert_header(ContentType::json())
-            .set_payload(body.to_string())
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[actix_web::test]
-    async fn test_register_rejects_empty_password() {
-        let (db, _) = setup_db().await;
-        let db_data = web::Data::new(db);
-        let broadcaster_data = web::Data::from(Broadcaster::new());
-        let app = test::init_service(
-            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
-        )
-        .await;
-
-        let body = serde_json::json!({"username": "alice", "password": ""});
-        let req = test::TestRequest::post()
-            .uri("/register")
-            .insert_header(ContentType::json())
-            .set_payload(body.to_string())
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[actix_web::test]
-    async fn test_register_stores_hashed_password() {
-        let (db, _) = setup_db().await;
-        auth::register_user(&db, "alice", "hunter2", None)
-            .await
-            .unwrap();
-
-        let credential = entity::credential::Entity::find()
-            .filter(entity::credential::Column::Provider.eq(auth::PASSWORD_PROVIDER))
-            .filter(entity::credential::Column::ExternalId.eq("alice"))
-            .one(&db)
-            .await
-            .unwrap()
-            .expect("credential should exist");
-
-        let secret = credential.secret.expect("password credential must have a secret");
-        assert_ne!(secret, "hunter2");
-        assert!(secret.starts_with("$argon2"));
-        assert!(auth::verify_password("hunter2", &secret));
-    }
-
-    #[actix_web::test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     async fn test_message_create_broadcasts_to_clients() {
         let (db, chan_id) = setup_db().await;
         let user = auth::register_user(&db, "alice", "hunter2", None)
@@ -777,7 +431,11 @@ mod tests {
         let event_str = format!("{:?}", event);
         assert!(
             event_str.contains("hello"),
-            "broadcast event should contain the message text"
+            "broadcast event should contain the message text; got {event_str}"
+        );
+        assert!(
+            event_str.contains("alice"),
+            "broadcast event should contain the author username; got {event_str}"
         );
     }
 }

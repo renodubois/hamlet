@@ -33,8 +33,8 @@ Real-time messaging uses SSE: the server exposes `GET /messages/subscribe`, and 
 
 ## Data model
 
-SeaORM entities in `server/src/entity/`: `user`, `channel`, `message`, `credential`, `session`. IDs are random 16-digit integers (not autoincrement). The database is in-memory and resets on every server restart; dev data (a `general` channel and `anonymous` user id=1) is seeded on startup.
+SeaORM entities in `server/src/entity/`: `user`, `channel`, `message`, `credential`, `session`. IDs are random 16-digit integers (not autoincrement). The database is in-memory and resets on every server restart; dev data (a `general` channel and a `baipas`/`password` dev user) is seeded on startup along with a fixed session token printed to stdout.
 
 ## Auth
 
-The server has register/login/logout/me endpoints using Argon2 password hashing and session cookies. The frontend has a login page and auth context provider. However, `user_id` on new messages is currently hardcoded to `1` — auth is wired up but not yet threaded through message creation.
+The server has register/login/logout/me endpoints using Argon2 password hashing and session cookies. All routes except register/login/logout require authentication via the `require_auth` middleware (`server/src/middleware.rs`). The `AuthUser` extractor is used by handlers that need the caller's identity (e.g. message creation). The frontend has a login page and auth context provider.

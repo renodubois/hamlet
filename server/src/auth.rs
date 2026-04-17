@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use actix_web::{FromRequest, HttpRequest, cookie::Cookie, dev::Payload, web};
+use actix_web::{FromRequest, HttpMessage, HttpRequest, cookie::Cookie, dev::Payload, web};
 use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
     password_hash::SaltString,
@@ -71,6 +71,29 @@ pub async fn destroy_session(db: &DatabaseConnection, token: &str) -> Result<(),
         .await
         .map_err(|_| UserError::DbError)?;
     Ok(())
+}
+
+pub async fn validate_session(db: &DatabaseConnection, token: &str) -> Result<AuthUser, UserError> {
+    let session = entity::session::Entity::find_by_id(token.to_owned())
+        .one(db)
+        .await
+        .map_err(|_| UserError::DbError)?
+        .ok_or(UserError::Unauthorized)?;
+
+    if session.expires_at <= now_secs() {
+        return Err(UserError::Unauthorized);
+    }
+
+    let user = entity::user::Entity::find_by_id(session.user_id)
+        .one(db)
+        .await
+        .map_err(|_| UserError::DbError)?
+        .ok_or(UserError::Unauthorized)?;
+
+    Ok(AuthUser {
+        id: user.id,
+        username: user.username,
+    })
 }
 
 pub async fn register_user(
@@ -168,37 +191,18 @@ impl FromRequest for AuthUser {
     type Future = Pin<Box<dyn Future<Output = Result<Self, UserError>>>>;
 
     fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
-        let db = req
-            .app_data::<web::Data<DatabaseConnection>>()
-            .cloned();
-        let token = req
-            .cookie(SESSION_COOKIE)
-            .map(|c| c.value().to_owned());
+        // Fast path: already validated by require_auth middleware
+        if let Some(user) = req.extensions().get::<AuthUser>().cloned() {
+            return Box::pin(async move { Ok(user) });
+        }
+
+        let db = req.app_data::<web::Data<DatabaseConnection>>().cloned();
+        let token = req.cookie(SESSION_COOKIE).map(|c| c.value().to_owned());
 
         Box::pin(async move {
             let db = db.ok_or(UserError::InternalError)?;
             let token = token.ok_or(UserError::Unauthorized)?;
-
-            let session = entity::session::Entity::find_by_id(token)
-                .one(db.get_ref())
-                .await
-                .map_err(|_| UserError::DbError)?
-                .ok_or(UserError::Unauthorized)?;
-
-            if session.expires_at <= now_secs() {
-                return Err(UserError::Unauthorized);
-            }
-
-            let user = entity::user::Entity::find_by_id(session.user_id)
-                .one(db.get_ref())
-                .await
-                .map_err(|_| UserError::DbError)?
-                .ok_or(UserError::Unauthorized)?;
-
-            Ok(AuthUser {
-                id: user.id,
-                username: user.username,
-            })
+            validate_session(db.get_ref(), &token).await
         })
     }
 }

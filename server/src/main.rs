@@ -2,6 +2,7 @@ use hamlet::{broadcast, seed_development_data, start_server};
 use sea_orm::{Database, DatabaseConnection};
 
 #[actix_web::main]
+#[allow(clippy::unwrap_used)]
 async fn main() -> std::io::Result<()> {
     // TODO(reno): Using in-memory for now, will swap to real DB later
     let db: DatabaseConnection = Database::connect("sqlite::memory:").await.unwrap();

@@ -46,6 +46,7 @@ impl Broadcaster {
         });
     }
 
+    #[allow(clippy::unwrap_used)]
     async fn remove_stale_clients(&self) {
         let clients = self.inner.lock().unwrap().clients.clone();
 
@@ -60,6 +61,7 @@ impl Broadcaster {
         self.inner.lock().unwrap().clients = ok_clients;
     }
 
+    #[allow(clippy::unwrap_used)]
     pub async fn new_client(&self) -> impl Responder + use<> {
         let (tx, rx) = mpsc::channel(10);
 
@@ -71,6 +73,7 @@ impl Broadcaster {
         Sse::from_infallible_stream(event_stream)
     }
 
+    #[allow(clippy::unwrap_used)]
     pub async fn broadcast(&self, msg: &str) {
         println!("broadcasting!");
         let clients = self.inner.lock().unwrap().clients.clone();

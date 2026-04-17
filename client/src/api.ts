@@ -13,7 +13,11 @@ export interface Channel {
 }
 
 export interface Message {
+  id: number;
+  user_id: number;
+  channel_id: number;
   text: string;
+  username: string;
 }
 
 export function getServerUrl(): string {
