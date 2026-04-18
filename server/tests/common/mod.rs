@@ -15,6 +15,7 @@ pub async fn setup_db() -> (DatabaseConnection, i64) {
     entity::channel::ActiveModel {
         id: Set(chan_id),
         name: Set("general".to_owned()),
+        position: Set(0),
     }
     .insert(&db)
     .await

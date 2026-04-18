@@ -11,6 +11,7 @@ pub struct Model {
     pub id: i64,
     #[sea_orm(column_type = "Text")]
     pub name: String,
+    pub position: i64,
     #[serde(skip)]
     #[sea_orm(has_many)]
     pub messages: HasMany<super::message::Entity>,

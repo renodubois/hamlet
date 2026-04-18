@@ -13,6 +13,7 @@ export interface User {
 export interface Channel {
   id: number;
   name: string;
+  position: number;
 }
 
 export interface Message {
@@ -96,6 +97,16 @@ export async function createChannel(name: string): Promise<Response> {
   });
 }
 
+export async function reorderChannels(ids: number[]): Promise<Channel[]> {
+  const res = await apiFetch("/channels/order", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  if (!res.ok) throw new Error(`Channel reorder failed (${res.status})`);
+  return res.json() as Promise<Channel[]>;
+}
+
 export async function uploadAvatar(blob: Blob): Promise<User> {
   const form = new FormData();
   form.append("file", blob, "avatar.webp");
@@ -112,7 +123,8 @@ export async function deleteAvatar(): Promise<User> {
 
 export type SSEEvent =
   | { kind: "message"; data: Message }
-  | { kind: "channel_created"; data: Channel };
+  | { kind: "channel_created"; data: Channel }
+  | { kind: "channels_reordered"; data: Channel[] };
 
 export function messagesEventSource(): EventSource {
   return new EventSource(`${getServerUrl()}/messages/subscribe`, {
