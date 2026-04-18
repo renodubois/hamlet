@@ -6,7 +6,7 @@ import { LogOutIcon } from "./icons";
 import Modal from "./modal";
 import VoiceSettings from "./voice_settings";
 
-type SectionId = "profile" | "voice" | "test";
+type SectionId = "profile" | "voice";
 
 interface Section {
   id: SectionId;
@@ -28,7 +28,6 @@ const SECTIONS: Section[] = [
     tabId: "settings-tab-voice",
     panelId: "settings-panel-voice",
   },
-  { id: "test", label: "Test Section", tabId: "settings-tab-test", panelId: "settings-panel-test" },
 ];
 
 export default function SettingsModal(props: {
@@ -192,9 +191,6 @@ export default function SettingsModal(props: {
               </Match>
               <Match when={section() === "voice"}>
                 <VoiceSettings />
-              </Match>
-              <Match when={section() === "test"}>
-                <p>Test section content.</p>
               </Match>
             </Switch>
           </div>
