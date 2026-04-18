@@ -589,6 +589,116 @@ async fn test_message_edit_rejects_other_users_messages() {
     assert_eq!(stored.text, "original");
 }
 
+// --- message delete ---
+
+#[actix_web::test]
+async fn test_message_delete_requires_auth() {
+    let (db, _) = common::setup_db().await;
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let req = test::TestRequest::delete()
+        .uri("/message/12345")
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[actix_web::test]
+async fn test_message_delete_removes_own_message() {
+    let (db, chan_id) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+    let msg_id = insert_message(&db, user.id, chan_id, "hi").await;
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(
+            cfg,
+            web::Data::new(db.clone()),
+            web::Data::from(Broadcaster::new()),
+        )
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::delete()
+        .uri(&format!("/message/{}", msg_id))
+        .insert_header((name, value))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let stored = entity::message::Entity::find_by_id(msg_id)
+        .one(&db)
+        .await
+        .unwrap();
+    assert!(stored.is_none());
+}
+
+#[actix_web::test]
+async fn test_message_delete_rejects_other_users_messages() {
+    let (db, chan_id) = common::setup_db().await;
+    let author = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let intruder = auth::register_user(&db, "mallory", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, intruder.id).await.unwrap();
+    let msg_id = insert_message(&db, author.id, chan_id, "untouchable").await;
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(
+            cfg,
+            web::Data::new(db.clone()),
+            web::Data::from(Broadcaster::new()),
+        )
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::delete()
+        .uri(&format!("/message/{}", msg_id))
+        .insert_header((name, value))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    let stored = entity::message::Entity::find_by_id(msg_id)
+        .one(&db)
+        .await
+        .unwrap();
+    assert!(stored.is_some());
+}
+
+#[actix_web::test]
+async fn test_message_delete_returns_404_for_unknown_message() {
+    let (db, _) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::delete()
+        .uri("/message/1234567890123456")
+        .insert_header((name, value))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
 #[actix_web::test]
 async fn test_message_edit_returns_404_for_unknown_message() {
     let (db, _) = common::setup_db().await;

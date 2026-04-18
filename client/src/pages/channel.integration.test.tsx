@@ -174,6 +174,120 @@ describe("Channel view integration", () => {
     expect(screen.queryByRole("menuitem", { name: /edit message/i })).toBeNull();
   });
 
+  test("right-clicking own message and confirming delete sends DELETE /message/:id", async () => {
+    const state = resetMswState();
+    state.me = DEV_USER;
+    state.messages["100"] = [
+      {
+        id: 7,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        text: "delete me",
+        username: "baipas",
+        avatar_url: null,
+      },
+    ];
+    mountAt("/channel/100");
+
+    const original = await screen.findByText("delete me");
+    fireEvent.contextMenu(original);
+
+    const deleteItem = await screen.findByRole("menuitem", { name: /delete message/i });
+    fireEvent.click(deleteItem);
+
+    const confirmBtn = await screen.findByRole("button", { name: /^delete$/i });
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() => {
+      expect(mswState().deletedMessageIds).toContain(7);
+    });
+  });
+
+  test("canceling the delete confirmation does not call the server", async () => {
+    const state = resetMswState();
+    state.me = DEV_USER;
+    state.messages["100"] = [
+      {
+        id: 9,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        text: "keep me",
+        username: "baipas",
+        avatar_url: null,
+      },
+    ];
+    mountAt("/channel/100");
+
+    const original = await screen.findByText("keep me");
+    fireEvent.contextMenu(original);
+
+    const deleteItem = await screen.findByRole("menuitem", { name: /delete message/i });
+    fireEvent.click(deleteItem);
+
+    // The confirmation modal should be open.
+    await screen.findByRole("dialog", { name: /delete message/i });
+
+    const cancelBtn = screen.getAllByRole("button", { name: /cancel/i })[0];
+    fireEvent.click(cancelBtn);
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(mswState().deletedMessageIds).not.toContain(9);
+  });
+
+  test("submitting an empty edit prompts delete confirmation and deletes on confirm", async () => {
+    const state = resetMswState();
+    state.me = DEV_USER;
+    state.messages["100"] = [
+      {
+        id: 11,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        text: "blank me",
+        username: "baipas",
+        avatar_url: null,
+      },
+    ];
+    mountAt("/channel/100");
+
+    const original = await screen.findByText("blank me");
+    fireEvent.contextMenu(original);
+
+    const editItem = await screen.findByRole("menuitem", { name: /edit message/i });
+    fireEvent.click(editItem);
+
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "" } });
+    const form = assertExists(input.closest("form"), "form");
+    fireEvent.submit(form);
+
+    await screen.findByRole("dialog", { name: /delete message/i });
+    // No edit should have been sent for the blank text.
+    expect(mswState().editedMessages).not.toContainEqual({ id: 11, text: "" });
+
+    const confirmBtn = await screen.findByRole("button", { name: /^delete$/i });
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() => {
+      expect(mswState().deletedMessageIds).toContain(11);
+    });
+  });
+
+  test("removes message from UI when a message_deleted SSE event arrives", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessageDeleted({ id: 1, channel_id: 100 });
+
+    await waitFor(() => {
+      expect(screen.queryByText("hello")).toBeNull();
+      expect(screen.getByText("world")).toBeInTheDocument();
+    });
+  });
+
   test("updates displayed text when a message_updated SSE event arrives", async () => {
     seedAuthed();
     mountAt("/channel/100");

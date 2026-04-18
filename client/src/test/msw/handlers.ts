@@ -20,6 +20,7 @@ export interface HandlerState {
   validCredentials: { username: string; password: string };
   sentMessages: { channel: string; text: string }[];
   editedMessages: { id: number; text: string }[];
+  deletedMessageIds: number[];
   createdChannels: { name: string }[];
   reorderedIds: number[] | null;
   uploadedAvatars: { size: number; type: string }[];
@@ -34,6 +35,7 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     validCredentials: { username: "baipas", password: "password" },
     sentMessages: [],
     editedMessages: [],
+    deletedMessageIds: [],
     createdChannels: [],
     reorderedIds: null,
     uploadedAvatars: [],
@@ -101,6 +103,20 @@ export function createHandlers(state: HandlerState) {
       }
       if (!updated) return new HttpResponse(null, { status: 404 });
       return HttpResponse.json(updated);
+    }),
+
+    http.delete(`${BASE}/message/:id`, ({ params }) => {
+      const id = Number(params.id);
+      state.deletedMessageIds.push(id);
+      for (const channel of Object.keys(state.messages)) {
+        const list = state.messages[channel];
+        const idx = list.findIndex((m) => m.id === id);
+        if (idx >= 0) {
+          list.splice(idx, 1);
+          return new HttpResponse(null, { status: 204 });
+        }
+      }
+      return new HttpResponse(null, { status: 404 });
     }),
 
     http.post(`${BASE}/channel`, async ({ request }) => {

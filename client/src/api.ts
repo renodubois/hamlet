@@ -99,6 +99,11 @@ export async function editMessage(messageId: number, text: string): Promise<Mess
   return res.json() as Promise<Message>;
 }
 
+export async function deleteMessage(messageId: number): Promise<void> {
+  const res = await apiFetch(`/message/${messageId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Message delete failed (${res.status})`);
+}
+
 export async function createChannel(name: string): Promise<Response> {
   return apiFetch("/channel", {
     method: "POST",
@@ -131,9 +136,15 @@ export async function deleteAvatar(): Promise<User> {
   return res.json() as Promise<User>;
 }
 
+export interface MessageDeleted {
+  id: number;
+  channel_id: number;
+}
+
 export type SSEEvent =
   | { kind: "message"; data: Message }
   | { kind: "message_updated"; data: Message }
+  | { kind: "message_deleted"; data: MessageDeleted }
   | { kind: "channel_created"; data: Channel }
   | { kind: "channels_reordered"; data: Channel[] };
 
