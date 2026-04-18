@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { fireEvent, screen } from "@solidjs/testing-library";
-import { createResource } from "solid-js";
+import { createResource, Show } from "solid-js";
 import type { Channel, User } from "../api";
 import { renderWithRouter } from "../test/render";
 
@@ -16,6 +16,14 @@ vi.mock("../channels_context", () => ({
 // this test tight on the sidebar itself.
 vi.mock("./add_channel_modal", () => ({
   default: () => null,
+}));
+
+vi.mock("./settings_modal", () => ({
+  default: (props: { open: boolean }) => (
+    <Show when={props.open}>
+      <div data-testid="settings-modal-stub">settings-open</div>
+    </Show>
+  ),
 }));
 
 import ChannelSidebar from "./channel_sidebar";
@@ -61,14 +69,23 @@ describe("<ChannelSidebar>", () => {
     expect(screen.getByText("alice")).toBeInTheDocument();
   });
 
-  test("calls onLogout when the log out button is clicked", () => {
+  test("opens the settings modal when the Settings button is clicked", () => {
     channelsResource.mockReturnValue({
       channels: fakeChannels([]),
       refetch: () => {},
     });
-    const onLogout = vi.fn(async () => {});
-    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={onLogout} />);
-    fireEvent.click(screen.getByText("Log out"));
-    expect(onLogout).toHaveBeenCalledTimes(1);
+    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
+    expect(screen.queryByTestId("settings-modal-stub")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(screen.getByTestId("settings-modal-stub")).toBeInTheDocument();
+  });
+
+  test("does not render a Log out button (logout lives inside settings)", () => {
+    channelsResource.mockReturnValue({
+      channels: fakeChannels([]),
+      refetch: () => {},
+    });
+    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
+    expect(screen.queryByRole("button", { name: /^log out$/i })).toBeNull();
   });
 });

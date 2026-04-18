@@ -3,10 +3,13 @@ import { createSignal, For, Match, Show, Switch } from "solid-js";
 import { type User } from "../api";
 import { useChannels } from "../channels_context";
 import AddChannelModal from "./add_channel_modal";
+import { SettingsIcon } from "./icons";
+import SettingsModal from "./settings_modal";
 
 export default function ChannelSidebar(props: { user: User; onLogout: () => Promise<void> }) {
   const { channels } = useChannels();
   const [addChannelOpen, setAddChannelOpen] = createSignal(false);
+  const [settingsOpen, setSettingsOpen] = createSignal(false);
 
   return (
     <div class="flex flex-col h-full">
@@ -46,17 +49,24 @@ export default function ChannelSidebar(props: { user: User; onLogout: () => Prom
         </button>
       </div>
 
-      <div class="p-3 border-t border-gray-700 flex items-center justify-between">
-        <span class="text-gray-300 text-sm truncate">{props.user.username}</span>
+      <div class="p-3 border-t border-gray-700 flex items-center gap-2">
+        <span class="text-gray-300 text-sm truncate flex-1 min-w-0">{props.user.username}</span>
         <button
-          class="text-gray-400 hover:text-gray-100 text-sm ml-2 flex-shrink-0"
-          onClick={props.onLogout}
+          type="button"
+          aria-label="Settings"
+          class="text-gray-400 hover:text-gray-100 flex-shrink-0 p-1 rounded hover:bg-gray-700"
+          onClick={() => setSettingsOpen(true)}
         >
-          Log out
+          <SettingsIcon size={18} aria-hidden="true" />
         </button>
       </div>
 
       <AddChannelModal open={addChannelOpen()} onClose={() => setAddChannelOpen(false)} />
+      <SettingsModal
+        open={settingsOpen()}
+        onClose={() => setSettingsOpen(false)}
+        onLogout={props.onLogout}
+      />
     </div>
   );
 }
