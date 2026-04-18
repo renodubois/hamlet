@@ -20,7 +20,41 @@ pub fn run() {
                 builder = builder.data_directory(std::path::PathBuf::from(dir));
             }
 
-            builder.build()?;
+            let window = builder.build()?;
+
+            // WebKitGTK leaves media capture disabled and denies permission requests by default,
+            // so `navigator.mediaDevices` is undefined and `getUserMedia` never resolves. Turn
+            // the setting on and auto-grant user-media requests so the in-app voice settings
+            // (mic level meter, test tone) behave the same as on Windows/macOS.
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "dragonfly",
+                target_os = "freebsd",
+                target_os = "netbsd",
+                target_os = "openbsd"
+            ))]
+            {
+                use webkit2gtk::glib::Cast;
+                use webkit2gtk::{
+                    PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, WebViewExt,
+                };
+                window.with_webview(|webview| {
+                    let wv = webview.inner();
+                    if let Some(settings) = WebViewExt::settings(&wv) {
+                        settings.set_enable_media_stream(true);
+                        settings.set_enable_mediasource(true);
+                    }
+                    wv.connect_permission_request(|_, req| {
+                        if req.dynamic_cast_ref::<UserMediaPermissionRequest>().is_some() {
+                            req.allow();
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                })?;
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())

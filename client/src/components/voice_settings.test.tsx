@@ -29,6 +29,12 @@ function fakeStream(): MediaStream {
   } as unknown as MediaStream;
 }
 
+type AudioContextSpies = {
+  createMediaStreamDestination: ReturnType<typeof vi.fn>;
+};
+
+let audioSpies: AudioContextSpies;
+
 function installFakeAudioContext() {
   class FakeAnalyser {
     fftSize = 1024;
@@ -36,8 +42,12 @@ function installFakeAudioContext() {
       buf.fill(128);
     }
   }
+  audioSpies = {
+    createMediaStreamDestination: vi.fn().mockReturnValue({ stream: {} as MediaStream }),
+  };
   class FakeAudioContext {
     currentTime = 0;
+    destination = {};
     createMediaStreamSource() {
       return { connect: () => {} };
     }
@@ -45,7 +55,7 @@ function installFakeAudioContext() {
       return new FakeAnalyser();
     }
     createMediaStreamDestination() {
-      return { stream: {} as MediaStream };
+      return (audioSpies.createMediaStreamDestination as () => { stream: MediaStream })();
     }
     createOscillator() {
       return {
@@ -200,6 +210,32 @@ describe("<VoiceSettings>", () => {
     render(() => <VoiceSettings />);
     expect(screen.getByRole("alert")).toHaveTextContent(/does not expose media device apis/i);
     expect(screen.getByLabelText("Input device")).toBeDisabled();
+  });
+
+  test("routes test tone directly to destination when setSinkId is unsupported", async () => {
+    // WebKitGTK (Tauri's Linux webview) does not expose setSinkId, so the tone
+    // should skip the MediaStreamDestination → Audio element indirection and
+    // play straight through the AudioContext destination.
+    const originalSetSinkId = Object.getOwnPropertyDescriptor(
+      HTMLAudioElement.prototype,
+      "setSinkId",
+    );
+    delete (HTMLAudioElement.prototype as unknown as { setSinkId?: unknown }).setSinkId;
+    try {
+      render(() => <VoiceSettings />);
+      fireEvent.click(screen.getByRole("button", { name: /play test sound/i }));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: /play test sound/i })).not.toBeDisabled(),
+      );
+      // On WebKitGTK setSinkId is absent, so the tone must skip the
+      // MediaStreamDestination → Audio element path (which does not play
+      // reliably there) and connect straight to the AudioContext destination.
+      expect(audioSpies.createMediaStreamDestination).not.toHaveBeenCalled();
+    } finally {
+      if (originalSetSinkId) {
+        Object.defineProperty(HTMLAudioElement.prototype, "setSinkId", originalSetSinkId);
+      }
+    }
   });
 
   test("persists output device selection to localStorage", async () => {

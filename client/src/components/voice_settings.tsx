@@ -129,7 +129,6 @@ export default function VoiceSettings() {
     setPlayingTestSound(true);
     const ctx = new AudioContext();
     try {
-      const dest = ctx.createMediaStreamDestination();
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = "sine";
@@ -138,12 +137,18 @@ export default function VoiceSettings() {
       gain.gain.setValueAtTime(0, now);
       gain.gain.linearRampToValueAtTime(0.2, now + 0.05);
       gain.gain.linearRampToValueAtTime(0, now + 0.75);
-      osc.connect(gain).connect(dest);
 
-      const audio = new Audio();
-      audio.srcObject = dest.stream;
       const id = outputId();
+      // The MediaStreamDestination → Audio element hop only buys us the ability
+      // to steer the tone at a chosen output via setSinkId. When we can't or
+      // don't need to steer, route straight to the AudioContext destination —
+      // that path works in plain WebAudio (incl. WebKitGTK) without the extra
+      // MediaStream plumbing which isn't reliable everywhere.
       if (id && canPickOutput) {
+        const dest = ctx.createMediaStreamDestination();
+        osc.connect(gain).connect(dest);
+        const audio = new Audio();
+        audio.srcObject = dest.stream;
         try {
           await (
             audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }
@@ -153,12 +158,17 @@ export default function VoiceSettings() {
             e instanceof Error ? e.message : "Could not route audio to selected device",
           );
         }
+        osc.start(now);
+        osc.stop(now + 0.8);
+        await audio.play();
+        await new Promise((r) => setTimeout(r, 850));
+        audio.pause();
+      } else {
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.8);
+        await new Promise((r) => setTimeout(r, 850));
       }
-      osc.start(now);
-      osc.stop(now + 0.8);
-      await audio.play();
-      await new Promise((r) => setTimeout(r, 850));
-      audio.pause();
     } catch (e) {
       setOutputError(e instanceof Error ? e.message : "Could not play test sound");
     } finally {
