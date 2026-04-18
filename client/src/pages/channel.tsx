@@ -4,21 +4,30 @@ import ChannelMessages from "../components/channel_messages";
 import { listMessages, sendMessage } from "../api";
 import { useChannels } from "../channels_context";
 import { useEvents } from "../events_context";
+import { useAuth } from "../auth_context";
 
 export default function ChannelView() {
   const params = useParams<{ id: string }>();
   const { channels } = useChannels();
   const events = useEvents();
+  const { user } = useAuth();
   const channel = () => channels()?.find((c) => String(c.id) === params.id);
   const [message, setMessage] = createSignal("");
   const [messages, { mutate }] = createResource(() => params.id, listMessages);
 
   onMount(() => {
-    const unsub = events.onMessage((m) => {
+    const unsubCreated = events.onMessage((m) => {
       if (String(m.channel_id) !== params.id) return;
       mutate((prev) => [...(prev ?? []), m]);
     });
-    onCleanup(unsub);
+    const unsubUpdated = events.onMessageUpdated((m) => {
+      if (String(m.channel_id) !== params.id) return;
+      mutate((prev) => prev?.map((existing) => (existing.id === m.id ? m : existing)));
+    });
+    onCleanup(() => {
+      unsubCreated();
+      unsubUpdated();
+    });
   });
 
   // TODO(reno): Can the router ensure this parameter exists?
@@ -33,7 +42,7 @@ export default function ChannelView() {
       </section>
 
       <div class="flex-1 overflow-y-auto">
-        <ChannelMessages messages={messages} />
+        <ChannelMessages messages={messages} currentUserId={user()?.id ?? null} />
       </div>
 
       <section class="flex-shrink-0 p-4 border-t border-gray-200">

@@ -89,6 +89,16 @@ export async function sendMessage(channelId: string, text: string): Promise<Resp
   });
 }
 
+export async function editMessage(messageId: number, text: string): Promise<Message> {
+  const res = await apiFetch(`/message/${messageId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw new Error(`Message edit failed (${res.status})`);
+  return res.json() as Promise<Message>;
+}
+
 export async function createChannel(name: string): Promise<Response> {
   return apiFetch("/channel", {
     method: "POST",
@@ -123,6 +133,7 @@ export async function deleteAvatar(): Promise<User> {
 
 export type SSEEvent =
   | { kind: "message"; data: Message }
+  | { kind: "message_updated"; data: Message }
   | { kind: "channel_created"; data: Channel }
   | { kind: "channels_reordered"; data: Channel[] };
 
