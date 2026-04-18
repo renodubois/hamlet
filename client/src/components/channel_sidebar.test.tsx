@@ -120,7 +120,7 @@ describe("<ChannelSidebar>", () => {
     expect(screen.queryByRole("button", { name: /^log out$/i })).toBeNull();
   });
 
-  test("channel links are marked draggable", () => {
+  test("channel rows are marked draggable", () => {
     channelsResource.mockReturnValue({
       channels: fakeChannels([
         { id: 10, name: "general", position: 0 },
@@ -130,8 +130,12 @@ describe("<ChannelSidebar>", () => {
       reorder: async () => {},
     });
     renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
-    const general = screen.getByText(/general/).closest("a");
-    expect(general).toHaveAttribute("draggable", "true");
+    const row = screen.getByText(/general/).closest("[data-channel-id]");
+    expect(row).toHaveAttribute("draggable", "true");
+    // The inner anchor should opt out of the native URL-drag behavior so it
+    // doesn't hijack the wrapping div's drag handlers.
+    const link = screen.getByText(/general/).closest("a");
+    expect(link).toHaveAttribute("draggable", "false");
   });
 
   test("dragging a channel onto another calls reorder with the new order", async () => {
@@ -148,14 +152,14 @@ describe("<ChannelSidebar>", () => {
 
     renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
 
-    const dev = screen.getByText(/dev/).closest("a") as HTMLElement;
-    const general = screen.getByText(/general/).closest("a") as HTMLElement;
+    const devRow = screen.getByText(/dev/).closest("[data-channel-id]") as HTMLElement;
+    const generalRow = screen.getByText(/general/).closest("[data-channel-id]") as HTMLElement;
     const dt = makeDataTransfer();
 
     // Drag "dev" onto "general" — expect dev to move to index 0.
-    fireEvent.dragStart(dev, { dataTransfer: dt });
-    fireEvent.dragOver(general, { dataTransfer: dt });
-    fireEvent.drop(general, { dataTransfer: dt });
+    fireEvent.dragStart(devRow, { dataTransfer: dt });
+    fireEvent.dragOver(generalRow, { dataTransfer: dt });
+    fireEvent.drop(generalRow, { dataTransfer: dt });
 
     expect(reorder).toHaveBeenCalledTimes(1);
     expect(reorder).toHaveBeenCalledWith([30, 10, 20]);
@@ -172,11 +176,11 @@ describe("<ChannelSidebar>", () => {
       reorder,
     });
     renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
-    const general = screen.getByText(/general/).closest("a") as HTMLElement;
+    const row = screen.getByText(/general/).closest("[data-channel-id]") as HTMLElement;
     const dt = makeDataTransfer();
-    fireEvent.dragStart(general, { dataTransfer: dt });
-    fireEvent.dragOver(general, { dataTransfer: dt });
-    fireEvent.drop(general, { dataTransfer: dt });
+    fireEvent.dragStart(row, { dataTransfer: dt });
+    fireEvent.dragOver(row, { dataTransfer: dt });
+    fireEvent.drop(row, { dataTransfer: dt });
     expect(reorder).not.toHaveBeenCalled();
   });
 });
