@@ -1,0 +1,11 @@
+target/
+uploads/
+.git/
+.gitignore
+Dockerfile
+Dockerfile.dev
+.dockerignore
+docker-compose.yml
+docker-compose.override.yml
+livekit.yaml
+CLAUDE.md

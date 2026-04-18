@@ -34,6 +34,31 @@ cd client && npm run tauri dev
 
 The frontend defaults to `http://localhost:3030`; this is configurable at login and stored in localStorage.
 
+### Docker Compose (server + LiveKit)
+
+The server side also runs under Docker Compose, which brings up `server` and a self-hosted `livekit` container together. Compose is for the backend only — the Tauri client still runs on the host with `npm run tauri dev`. Compose files live in `server/`, so run these from there:
+
+```bash
+cd server
+docker compose up          # dev mode (default): cargo-watch, hot reload on src changes
+docker compose up --build  # force rebuild after Cargo.toml / Dockerfile edits
+docker compose down        # stop
+docker compose down -v     # stop + wipe cargo cache and uploads volumes
+```
+
+`docker-compose.override.yml` is picked up automatically and swaps the server image for `Dockerfile.dev`, bind-mounts `server/` into the container, and runs `cargo watch -x run`. Cargo's registry, git cache, and `target/` live in named volumes so rebuilds are incremental (first build is slow, subsequent edits recompile in seconds).
+
+To run the production image instead (fresh multi-stage build, no hot reload):
+
+```bash
+cd server
+docker compose -f docker-compose.yml up --build
+```
+
+LiveKit listens on `ws://localhost:7880` with dev credentials `devkey` / `devsecretdevsecretdevsecretdevsecret` (see `livekit.yaml`). The server container reaches it at `ws://livekit:7880` via the Compose network. UDP media ports `50000-50100` are published for WebRTC; widen the range in both `livekit.yaml` and `docker-compose.yml` if you hit port exhaustion.
+
+The server binds to whatever `HAMLET_BIND_ADDR` is set to (default `127.0.0.1:3030` for `cargo run`; Compose sets it to `0.0.0.0:3030` so the port is reachable from the host).
+
 ## How the two parts connect
 
 All application logic goes over HTTP — the Tauri Rust shell is scaffolding only. The frontend calls the server via `src/api.ts`; there is no Tauri IPC involved.

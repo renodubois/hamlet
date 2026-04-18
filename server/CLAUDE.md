@@ -15,7 +15,17 @@ cargo test                                        # run all tests
 cargo test test_message_create                    # run a single test by name
 cargo test -- --nocapture                         # show println!/dbg! output during tests
 RUST_LOG=debug cargo run                          # raise log verbosity (default is `info`)
+HAMLET_BIND_ADDR=0.0.0.0:3030 cargo run           # override bind address (used by docker-compose)
 ```
+
+### Docker
+
+The server also runs under Docker Compose alongside a self-hosted LiveKit container. `docker-compose.yml`, `docker-compose.override.yml`, and `livekit.yaml` live in this directory, so run `docker compose up` from `server/`. See `../CLAUDE.md` for the full workflow. There are two Dockerfiles:
+
+- `Dockerfile` — multi-stage production build using `cargo-chef` for dependency caching.
+- `Dockerfile.dev` — dev image with `cargo-watch`; the override bind-mounts `server/` into the container so code changes trigger incremental rebuilds.
+
+The bind address is controlled by `HAMLET_BIND_ADDR` (defaults to `127.0.0.1:3030` to preserve the local `cargo run` behavior; containers set it to `0.0.0.0:3030`).
 
 ### Code quality (run before committing)
 

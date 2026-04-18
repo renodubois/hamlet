@@ -607,6 +607,9 @@ pub async fn start_server(
     // logger config - should review
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
+    let bind_addr =
+        std::env::var("HAMLET_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3030".to_string());
+
     HttpServer::new(move || {
         let cors = Cors::default()
             .allowed_origin_fn(|origin, _| {
@@ -628,7 +631,7 @@ pub async fn start_server(
             .service(actix_files::Files::new("/uploads", uploads_dir.clone()))
             .configure(|cfg| configure_app(cfg, db_data.clone(), broadcaster_data.clone()))
     })
-    .bind(("127.0.0.1", 3030))?
+    .bind(&bind_addr)?
     .run()
     .await
 }
