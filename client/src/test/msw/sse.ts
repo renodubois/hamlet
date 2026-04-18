@@ -23,6 +23,10 @@ export class FakeEventSource {
     this.push({ kind: "message", data: msg });
   }
 
+  pushMessageUpdated(msg: Message) {
+    this.push({ kind: "message_updated", data: msg });
+  }
+
   pushChannelCreated(channel: Channel) {
     this.push({ kind: "channel_created", data: channel });
   }

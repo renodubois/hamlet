@@ -121,6 +121,82 @@ describe("Channel view integration", () => {
     });
   });
 
+  test("right-clicking own message and submitting edit PUTs to /message/:id", async () => {
+    const state = resetMswState();
+    state.me = DEV_USER;
+    state.messages["100"] = [
+      {
+        id: 7,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        text: "original",
+        username: "baipas",
+        avatar_url: null,
+      },
+    ];
+    mountAt("/channel/100");
+
+    const original = await screen.findByText("original");
+    fireEvent.contextMenu(original);
+
+    const editItem = await screen.findByRole("menuitem", { name: /edit message/i });
+    fireEvent.click(editItem);
+
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+    expect(input.value).toBe("original");
+    fireEvent.input(input, { target: { value: "edited!" } });
+    const form = assertExists(input.closest("form"), "form");
+    fireEvent.submit(form);
+
+    await waitFor(() => {
+      expect(mswState().editedMessages).toContainEqual({ id: 7, text: "edited!" });
+    });
+  });
+
+  test("does not open edit menu for other users' messages", async () => {
+    const state = resetMswState();
+    state.me = DEV_USER;
+    state.messages["100"] = [
+      {
+        id: 8,
+        user_id: 999,
+        channel_id: 100,
+        text: "someone else",
+        username: "bob",
+        avatar_url: null,
+      },
+    ];
+    mountAt("/channel/100");
+
+    const other = await screen.findByText("someone else");
+    fireEvent.contextMenu(other);
+
+    expect(screen.queryByRole("menuitem", { name: /edit message/i })).toBeNull();
+  });
+
+  test("updates displayed text when a message_updated SSE event arrives", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessageUpdated({
+      id: 1,
+      user_id: 1,
+      channel_id: 100,
+      text: "hello (edited)",
+      username: "alice",
+      avatar_url: null,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("hello (edited)")).toBeInTheDocument();
+      expect(screen.queryByText("hello")).toBeNull();
+    });
+  });
+
   test("renders avatars next to each message", async () => {
     const state = resetMswState();
     state.me = DEV_USER;

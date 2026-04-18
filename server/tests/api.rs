@@ -470,6 +470,149 @@ async fn test_message_create() {
     assert!(test::call_service(&app, req).await.status().is_success());
 }
 
+// --- message edit ---
+
+async fn insert_message(
+    db: &sea_orm::DatabaseConnection,
+    user_id: i64,
+    channel_id: i64,
+    text: &str,
+) -> i64 {
+    let id = hamlet::generate_id();
+    entity::message::ActiveModel {
+        id: Set(id),
+        user_id: Set(user_id),
+        channel_id: Set(channel_id),
+        text: Set(text.to_owned()),
+    }
+    .insert(db)
+    .await
+    .unwrap();
+    id
+}
+
+#[actix_web::test]
+async fn test_message_edit_requires_auth() {
+    let (db, _) = common::setup_db().await;
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let req = test::TestRequest::put()
+        .uri("/message/12345")
+        .insert_header(ContentType::json())
+        .set_payload(serde_json::json!({"text": "new"}).to_string())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[actix_web::test]
+async fn test_message_edit_updates_text_and_returns_updated() {
+    let (db, chan_id) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+    let msg_id = insert_message(&db, user.id, chan_id, "original").await;
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(
+            cfg,
+            web::Data::new(db.clone()),
+            web::Data::from(Broadcaster::new()),
+        )
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::put()
+        .uri(&format!("/message/{}", msg_id))
+        .insert_header(ContentType::json())
+        .insert_header((name, value))
+        .set_payload(serde_json::json!({"text": "edited"}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert!(resp.status().is_success());
+    let body = test::read_body(resp).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["text"], "edited");
+    assert_eq!(json["id"], msg_id);
+
+    let stored = entity::message::Entity::find_by_id(msg_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.text, "edited");
+}
+
+#[actix_web::test]
+async fn test_message_edit_rejects_other_users_messages() {
+    let (db, chan_id) = common::setup_db().await;
+    let author = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let intruder = auth::register_user(&db, "mallory", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, intruder.id).await.unwrap();
+    let msg_id = insert_message(&db, author.id, chan_id, "original").await;
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(
+            cfg,
+            web::Data::new(db.clone()),
+            web::Data::from(Broadcaster::new()),
+        )
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::put()
+        .uri(&format!("/message/{}", msg_id))
+        .insert_header(ContentType::json())
+        .insert_header((name, value))
+        .set_payload(serde_json::json!({"text": "hijacked"}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    let stored = entity::message::Entity::find_by_id(msg_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.text, "original");
+}
+
+#[actix_web::test]
+async fn test_message_edit_returns_404_for_unknown_message() {
+    let (db, _) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::put()
+        .uri("/message/1234567890123456")
+        .insert_header(ContentType::json())
+        .insert_header((name, value))
+        .set_payload(serde_json::json!({"text": "oops"}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
 // --- channel creation ---
 
 #[actix_web::test]

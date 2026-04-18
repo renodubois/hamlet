@@ -19,6 +19,7 @@ export interface HandlerState {
   messages: Record<string, Message[]>;
   validCredentials: { username: string; password: string };
   sentMessages: { channel: string; text: string }[];
+  editedMessages: { id: number; text: string }[];
   createdChannels: { name: string }[];
   reorderedIds: number[] | null;
   uploadedAvatars: { size: number; type: string }[];
@@ -32,6 +33,7 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     messages: { "100": [] },
     validCredentials: { username: "baipas", password: "password" },
     sentMessages: [],
+    editedMessages: [],
     createdChannels: [],
     reorderedIds: null,
     uploadedAvatars: [],
@@ -81,6 +83,24 @@ export function createHandlers(state: HandlerState) {
       const body = (await request.json()) as { text: string };
       state.sentMessages.push({ channel: String(params.id), text: body.text });
       return new HttpResponse(null, { status: 200 });
+    }),
+
+    http.put(`${BASE}/message/:id`, async ({ request, params }) => {
+      const body = (await request.json()) as { text: string };
+      const id = Number(params.id);
+      state.editedMessages.push({ id, text: body.text });
+      let updated: Message | null = null;
+      for (const channel of Object.keys(state.messages)) {
+        const list = state.messages[channel];
+        const idx = list.findIndex((m) => m.id === id);
+        if (idx >= 0) {
+          updated = { ...list[idx], text: body.text };
+          list[idx] = updated;
+          break;
+        }
+      }
+      if (!updated) return new HttpResponse(null, { status: 404 });
+      return HttpResponse.json(updated);
     }),
 
     http.post(`${BASE}/channel`, async ({ request }) => {

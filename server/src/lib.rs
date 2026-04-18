@@ -117,6 +117,7 @@ impl From<entity::channel::Model> for ChannelResponse {
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 enum BroadcastEvent {
     Message(MessageResponse),
+    MessageUpdated(MessageResponse),
     ChannelCreated(ChannelResponse),
     ChannelsReordered(Vec<ChannelResponse>),
 }
@@ -140,6 +141,10 @@ pub enum UserError {
     InvalidRequest,
     #[display("Payload too large")]
     PayloadTooLarge,
+    #[display("Not found")]
+    NotFound,
+    #[display("Forbidden")]
+    Forbidden,
 }
 impl error::ResponseError for UserError {
     fn status_code(&self) -> StatusCode {
@@ -152,6 +157,8 @@ impl error::ResponseError for UserError {
             UserError::UsernameTaken => StatusCode::CONFLICT,
             UserError::InvalidRequest => StatusCode::BAD_REQUEST,
             UserError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            UserError::NotFound => StatusCode::NOT_FOUND,
+            UserError::Forbidden => StatusCode::FORBIDDEN,
         }
     }
 }
@@ -277,6 +284,49 @@ async fn create_message(
         avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
     };
     let payload = serde_json::to_string(&BroadcastEvent::Message(resp.clone()))
+        .map_err(|_| UserError::InternalError)?;
+    broadcaster.broadcast(&payload).await;
+
+    Ok(web::Json(resp))
+}
+
+#[put("/message/{message_id}")]
+async fn update_message(
+    db: web::Data<DatabaseConnection>,
+    broadcaster: web::Data<Broadcaster>,
+    path: web::Path<i64>,
+    body: web::Json<SendMessageRequest>,
+    user: AuthUser,
+) -> Result<impl Responder, UserError> {
+    let message_id = path.into_inner();
+
+    let existing = entity::message::Entity::find_by_id(message_id)
+        .one(db.get_ref())
+        .await
+        .map_err(|_| UserError::DbError)?
+        .ok_or(UserError::NotFound)?;
+
+    if existing.user_id != user.id {
+        return Err(UserError::Forbidden);
+    }
+
+    let channel_id = existing.channel_id;
+    let mut active: entity::message::ActiveModel = existing.into();
+    active.text = Set(body.text.clone());
+    let updated = active
+        .update(db.get_ref())
+        .await
+        .map_err(|_| UserError::DbError)?;
+
+    let resp = MessageResponse {
+        id: updated.id,
+        user_id: updated.user_id,
+        channel_id,
+        text: updated.text,
+        username: user.username.clone(),
+        avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
+    };
+    let payload = serde_json::to_string(&BroadcastEvent::MessageUpdated(resp.clone()))
         .map_err(|_| UserError::InternalError)?;
     broadcaster.broadcast(&payload).await;
 
@@ -652,6 +702,7 @@ pub fn configure_app(
                 .service(get_channels)
                 .service(get_messages)
                 .service(create_message)
+                .service(update_message)
                 .service(create_channel)
                 .service(reorder_channels)
                 .service(me)

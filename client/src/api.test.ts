@@ -6,6 +6,7 @@ import {
   listChannels,
   reorderChannels,
   sendMessage,
+  editMessage,
   type Channel,
 } from "./api";
 
@@ -97,6 +98,35 @@ describe("apiFetch behavior", () => {
     expect(url).toBe(`${DEFAULT_SERVER}/message/42`);
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body)).toEqual({ text: "hi" });
+  });
+
+  test("editMessage sends PUT with text body and parses message response", async () => {
+    const updated = {
+      id: 7,
+      user_id: 1,
+      channel_id: 100,
+      text: "fixed typo",
+      username: "alice",
+      avatar_url: null,
+    };
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(updated), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(editMessage(7, "fixed typo")).resolves.toEqual(updated);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/message/7`);
+    expect(init.method).toBe("PUT");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(JSON.parse(init.body)).toEqual({ text: "fixed typo" });
+  });
+
+  test("editMessage throws on non-2xx", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 403 }));
+    await expect(editMessage(7, "nope")).rejects.toThrow(/403/);
   });
 
   test("uses the stored server URL for subsequent calls", async () => {
