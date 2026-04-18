@@ -55,6 +55,48 @@ pub fn run() {
                 })?;
             }
 
+            // WKWebView hides `navigator.mediaDevices` in processes that don't have
+            // `NSMicrophoneUsageDescription` in their bundle Info.plist. `tauri dev` runs
+            // the raw binary outside a `.app`, so the Info.plist entry never applies and
+            // the API is unreachable. Flip the private WKPreferences flag at runtime so
+            // the voice settings work in dev. Release builds skip this (debug_assertions
+            // is off) and rely on the merged Info.plist entries in the signed bundle —
+            // that keeps the release binary free of private-selector references.
+            #[cfg(all(target_os = "macos", debug_assertions))]
+            {
+                use objc2::runtime::AnyObject;
+                use objc2::{msg_send, sel};
+                use objc2_web_kit::WKWebView;
+
+                window.with_webview(|webview| {
+                    let wk_ptr = webview.inner().cast::<WKWebView>();
+                    #[allow(unsafe_code)]
+                    // SAFETY: Tauri guarantees `inner()` returns a valid, retained
+                    // WKWebView pointer owned by the window. The closure runs on the
+                    // main thread per Tauri's docs, which is where WKWebView APIs
+                    // must be called. We only read through the pointer.
+                    unsafe {
+                        let wk: &WKWebView = &*wk_ptr;
+                        let config = wk.configuration();
+                        let prefs = config.preferences();
+                        let prefs_obj: &AnyObject = prefs.as_ref();
+
+                        if msg_send![prefs_obj, respondsToSelector: sel!(_setMediaDevicesEnabled:)]
+                        {
+                            let _: () = msg_send![prefs_obj, _setMediaDevicesEnabled: true];
+                        }
+                        if msg_send![prefs_obj, respondsToSelector: sel!(_setPeerConnectionEnabled:)]
+                        {
+                            let _: () = msg_send![prefs_obj, _setPeerConnectionEnabled: true];
+                        }
+                        if msg_send![prefs_obj, respondsToSelector: sel!(_setMediaStreamEnabled:)]
+                        {
+                            let _: () = msg_send![prefs_obj, _setMediaStreamEnabled: true];
+                        }
+                    }
+                })?;
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())

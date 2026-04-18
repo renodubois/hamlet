@@ -177,9 +177,25 @@ export default function VoiceSettings() {
     }
   };
 
+  // Trigger the OS permission prompt as soon as the pane opens so the user
+  // isn't ambushed by it mid-click, and so device labels populate up front
+  // (browsers hide labels until `getUserMedia` has been granted at least once).
+  // Swallows errors silently — denial surfaces with a proper message when the
+  // user clicks "Test microphone".
+  const warmUpPermission = async () => {
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+      s.getTracks().forEach((t) => t.stop());
+      await refreshDevices();
+    } catch {
+      /* user can retry via the explicit test button */
+    }
+  };
+
   onMount(() => {
     if (!supported) return;
     void refreshDevices();
+    void warmUpPermission();
     navigator.mediaDevices.addEventListener("devicechange", refreshDevices);
   });
 

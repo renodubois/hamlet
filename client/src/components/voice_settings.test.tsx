@@ -163,7 +163,9 @@ describe("<VoiceSettings>", () => {
     fireEvent.click(btn);
 
     await waitFor(() => {
-      expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+      // Two calls: one on-mount warm-up to trigger the OS permission prompt
+      // early, and one for the explicit "Test microphone" click.
+      expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledTimes(2);
     });
     expect(screen.getByRole("button", { name: /stop test/i })).toBeInTheDocument();
     expect(screen.getByRole("meter", { name: /microphone input level/i })).toBeInTheDocument();
@@ -185,8 +187,29 @@ describe("<VoiceSettings>", () => {
     });
   });
 
+  test("requests microphone access on mount to surface the OS permission prompt early", async () => {
+    render(() => <VoiceSettings />);
+    // The warm-up fires in onMount; wait for it to land.
+    await waitFor(() => {
+      expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true });
+    });
+    // And no user-visible error when it succeeds — warm-up must stay silent.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  test("warm-up denial stays silent (no alert before the user interacts)", async () => {
+    fakeMediaDevices.getUserMedia.mockRejectedValue(new Error("Permission denied"));
+    render(() => <VoiceSettings />);
+    await waitFor(() => {
+      expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true });
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   test("shows an error when microphone permission is denied", async () => {
-    fakeMediaDevices.getUserMedia.mockRejectedValueOnce(new Error("Permission denied"));
+    // Reject every call: the silent on-mount warm-up AND the explicit click.
+    // Only the click's rejection should surface a user-visible error.
+    fakeMediaDevices.getUserMedia.mockRejectedValue(new Error("Permission denied"));
     render(() => <VoiceSettings />);
     fireEvent.click(screen.getByRole("button", { name: /test microphone/i }));
     await waitFor(() => {

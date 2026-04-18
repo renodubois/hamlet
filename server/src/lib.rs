@@ -648,7 +648,11 @@ mod tests {
 
     #[allow(clippy::unwrap_used)]
     async fn setup_db() -> (DatabaseConnection, i64) {
-        let db = Database::connect("sqlite::memory:").await.unwrap();
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let url = format!("sqlite:file:hamlet_inline_test_{n}?mode=memory&cache=shared");
+        let db = Database::connect(&url).await.unwrap();
         db.get_schema_registry("hamlet::entity::*")
             .sync(&db)
             .await
