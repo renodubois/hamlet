@@ -8,5 +8,12 @@ rtc:
   use_external_ip: false
 keys:
   devkey: devsecretdevsecretdevsecretdevsecret
+# Participant events drive the sidebar's "who's in this channel" UI. LiveKit
+# signs these with the API secret above, and the server's `/livekit/webhook`
+# handler verifies the signature before updating state.
+webhook:
+  api_key: devkey
+  urls:
+    - http://server:3030/livekit/webhook
 logging:
   level: info

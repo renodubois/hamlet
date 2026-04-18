@@ -2,9 +2,28 @@ import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid
 
 export const VOICE_INPUT_STORAGE_KEY = "hamlet:voice:input_device";
 export const VOICE_OUTPUT_STORAGE_KEY = "hamlet:voice:output_device";
+export const VOICE_NOISE_SUPPRESSION_STORAGE_KEY = "hamlet:voice:noise_suppression";
+export const VOICE_INPUT_GAIN_STORAGE_KEY = "hamlet:voice:input_gain";
 
 // "" means "let the browser pick the system default".
 const DEFAULT_DEVICE_ID = "";
+
+export function getNoiseSuppressionEnabled(): boolean {
+  // Default on — matches getUserMedia default and is what most users expect.
+  return localStorage.getItem(VOICE_NOISE_SUPPRESSION_STORAGE_KEY) !== "off";
+}
+
+/**
+ * Returns the saved input gain in the range [0, 2]. 1.0 = unity. Applied by
+ * the voice chat layer via a Web Audio GainNode inserted between the mic and
+ * the published track.
+ */
+export function getInputGain(): number {
+  const raw = localStorage.getItem(VOICE_INPUT_GAIN_STORAGE_KEY);
+  const n = raw == null ? 1 : Number.parseFloat(raw);
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(2, Math.max(0, n));
+}
 
 // `setSinkId` is only available on Chromium-based WebViews. We detect it once
 // so we can disable the output selector with a helpful note on other platforms.
@@ -37,6 +56,10 @@ export default function VoiceSettings() {
   const [outputId, setOutputId] = createSignal<string>(
     localStorage.getItem(VOICE_OUTPUT_STORAGE_KEY) ?? DEFAULT_DEVICE_ID,
   );
+  const [noiseSuppression, setNoiseSuppression] = createSignal<boolean>(
+    getNoiseSuppressionEnabled(),
+  );
+  const [inputGain, setInputGain] = createSignal<number>(getInputGain());
   const [micTesting, setMicTesting] = createSignal(false);
   const [micLevel, setMicLevel] = createSignal(0);
   const [micError, setMicError] = createSignal<string | null>(null);
@@ -207,6 +230,10 @@ export default function VoiceSettings() {
 
   createEffect(() => localStorage.setItem(VOICE_INPUT_STORAGE_KEY, inputId()));
   createEffect(() => localStorage.setItem(VOICE_OUTPUT_STORAGE_KEY, outputId()));
+  createEffect(() =>
+    localStorage.setItem(VOICE_NOISE_SUPPRESSION_STORAGE_KEY, noiseSuppression() ? "on" : "off"),
+  );
+  createEffect(() => localStorage.setItem(VOICE_INPUT_GAIN_STORAGE_KEY, String(inputGain())));
 
   // <select>'s `value` only applies if the matching <option> already exists. The
   // device list loads asynchronously, so we also reapply the value whenever the
@@ -354,6 +381,45 @@ export default function VoiceSettings() {
             </p>
           )}
         </Show>
+      </div>
+
+      <div class="flex flex-col gap-3 border-t border-gray-700 pt-4">
+        <label class="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            class="mt-0.5"
+            checked={noiseSuppression()}
+            disabled={!supported}
+            onChange={(e) => setNoiseSuppression(e.currentTarget.checked)}
+          />
+          <span class="flex flex-col gap-0.5">
+            <span class="font-medium text-gray-100">Noise suppression</span>
+            <span class="text-xs text-gray-400">
+              Filters steady background noise (fans, typing). Uses the browser's built-in processor.
+            </span>
+          </span>
+        </label>
+
+        <div class="flex flex-col gap-1">
+          <label for="voice-input-gain" class="flex items-center justify-between">
+            <span class="font-medium text-gray-100">Input volume</span>
+            <span class="text-xs text-gray-400" aria-hidden="true">
+              {Math.round(inputGain() * 100)}%
+            </span>
+          </label>
+          <input
+            id="voice-input-gain"
+            type="range"
+            min="0"
+            max="2"
+            step="0.05"
+            value={inputGain()}
+            disabled={!supported}
+            class="w-full"
+            onInput={(e) => setInputGain(Number.parseFloat(e.currentTarget.value))}
+          />
+          <p class="text-xs text-gray-400">Adjusts how loud your voice is to other participants.</p>
+        </div>
       </div>
     </div>
   );

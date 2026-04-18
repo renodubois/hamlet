@@ -4,4 +4,9 @@ export {
   Settings as SettingsIcon,
   LogOut as LogOutIcon,
   Volume2 as VoiceChannelIcon,
+  MicOff as MicOffIcon,
+  Mic as MicIcon,
+  HeadphoneOff as HeadphoneOffIcon,
+  Headphones as HeadphonesIcon,
+  PhoneOff as PhoneOffIcon,
 } from "lucide-solid";

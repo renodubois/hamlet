@@ -7,6 +7,7 @@ pub mod auth;
 pub mod broadcast;
 pub mod entity;
 pub mod middleware;
+pub mod voice;
 
 use actix_cors::Cors;
 use actix_multipart::Multipart;
@@ -27,6 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthUser;
 use crate::broadcast::Broadcaster;
+use crate::voice::{VoiceConfig, VoiceParticipant, VoiceState, parse_channel_id, room_name};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct SendMessageRequest {
@@ -128,6 +130,12 @@ struct MessageDeletedEvent {
 }
 
 #[derive(Clone, Debug, Serialize)]
+struct VoiceParticipantLeftEvent {
+    channel_id: i64,
+    user_id: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 enum BroadcastEvent {
     Message(MessageResponse),
@@ -135,6 +143,8 @@ enum BroadcastEvent {
     MessageDeleted(MessageDeletedEvent),
     ChannelCreated(ChannelResponse),
     ChannelsReordered(Vec<ChannelResponse>),
+    VoiceParticipantJoined(VoiceParticipant),
+    VoiceParticipantLeft(VoiceParticipantLeftEvent),
 }
 
 // TODO(reno): return errors as JSON
@@ -160,6 +170,8 @@ pub enum UserError {
     NotFound,
     #[display("Forbidden")]
     Forbidden,
+    #[display("Service unavailable")]
+    ServiceUnavailable,
 }
 impl error::ResponseError for UserError {
     fn status_code(&self) -> StatusCode {
@@ -174,6 +186,7 @@ impl error::ResponseError for UserError {
             UserError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             UserError::NotFound => StatusCode::NOT_FOUND,
             UserError::Forbidden => StatusCode::FORBIDDEN,
+            UserError::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
 }
@@ -477,6 +490,170 @@ async fn subscribe_to_channel_events(broadcaster: web::Data<Broadcaster>) -> imp
     broadcaster.new_client().await
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+struct VoiceTokenResponse {
+    url: String,
+    token: String,
+    room: String,
+}
+
+#[post("/voice/token/{channel_id}")]
+async fn mint_voice_token(
+    db: web::Data<DatabaseConnection>,
+    voice_cfg: web::Data<Option<VoiceConfig>>,
+    path: web::Path<i64>,
+    user: AuthUser,
+) -> Result<impl Responder, UserError> {
+    let channel_id = path.into_inner();
+    let cfg = voice_cfg
+        .as_ref()
+        .as_ref()
+        .ok_or(UserError::ServiceUnavailable)?;
+
+    let channel = entity::channel::Entity::find_by_id(channel_id)
+        .one(db.get_ref())
+        .await
+        .map_err(|_| UserError::DbError)?
+        .ok_or(UserError::NoChannelFoundError)?;
+    if channel.channel_type != CHANNEL_TYPE_VOICE {
+        return Err(UserError::InvalidRequest);
+    }
+
+    let room = room_name(channel_id);
+    let grants = livekit_api::access_token::VideoGrants {
+        room_join: true,
+        room: room.clone(),
+        can_publish: true,
+        can_subscribe: true,
+        can_publish_data: true,
+        ..Default::default()
+    };
+    let token = livekit_api::access_token::AccessToken::with_api_key(&cfg.api_key, &cfg.api_secret)
+        .with_identity(&user.id.to_string())
+        .with_name(&user.username)
+        .with_grants(grants)
+        .to_jwt()
+        .map_err(|_| UserError::InternalError)?;
+
+    Ok(web::Json(VoiceTokenResponse {
+        url: cfg.url.clone(),
+        token,
+        room,
+    }))
+}
+
+#[get("/voice/participants/{channel_id}")]
+async fn list_voice_participants(
+    voice_state: web::Data<VoiceState>,
+    path: web::Path<i64>,
+) -> Result<impl Responder, UserError> {
+    let channel_id = path.into_inner();
+    Ok(web::Json(voice_state.participants(channel_id)))
+}
+
+/// Apply a single parsed LiveKit webhook event to in-memory state and
+/// broadcast the resulting SSE payload. Split out of the HTTP handler so it
+/// can be exercised by unit tests without a signed-JWT round-trip.
+async fn apply_voice_webhook(
+    db: &DatabaseConnection,
+    voice_state: &VoiceState,
+    broadcaster: &Broadcaster,
+    event: &livekit_protocol::WebhookEvent,
+) -> Result<(), UserError> {
+    let Some(room) = event.room.as_ref() else {
+        return Ok(());
+    };
+    let Some(channel_id) = parse_channel_id(&room.name) else {
+        return Ok(());
+    };
+    let Some(participant) = event.participant.as_ref() else {
+        return Ok(());
+    };
+    let Ok(user_id) = participant.identity.parse::<i64>() else {
+        return Ok(());
+    };
+
+    match event.event.as_str() {
+        "participant_joined" => {
+            // Look up the authoritative username/avatar from the DB so the
+            // sidebar doesn't have to trust whatever the client published.
+            let Some(user) = entity::user::Entity::find_by_id(user_id)
+                .one(db)
+                .await
+                .map_err(|_| UserError::DbError)?
+            else {
+                return Ok(());
+            };
+            let p = VoiceParticipant {
+                user_id,
+                channel_id,
+                username: user.username,
+                avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
+            };
+            if voice_state.add_participant(p.clone()) {
+                let payload = serde_json::to_string(&BroadcastEvent::VoiceParticipantJoined(p))
+                    .map_err(|_| UserError::InternalError)?;
+                broadcaster.broadcast(&payload).await;
+            }
+        }
+        "participant_left" | "participant_connection_aborted" => {
+            if voice_state
+                .remove_participant(channel_id, user_id)
+                .is_some()
+            {
+                let payload = serde_json::to_string(&BroadcastEvent::VoiceParticipantLeft(
+                    VoiceParticipantLeftEvent {
+                        channel_id,
+                        user_id,
+                    },
+                ))
+                .map_err(|_| UserError::InternalError)?;
+                broadcaster.broadcast(&payload).await;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[post("/livekit/webhook")]
+async fn receive_voice_webhook(
+    db: web::Data<DatabaseConnection>,
+    voice_state: web::Data<VoiceState>,
+    broadcaster: web::Data<Broadcaster>,
+    voice_cfg: web::Data<Option<VoiceConfig>>,
+    req: HttpRequest,
+    body: web::Bytes,
+) -> Result<HttpResponse, UserError> {
+    let cfg = voice_cfg
+        .as_ref()
+        .as_ref()
+        .ok_or(UserError::ServiceUnavailable)?;
+    let auth = req
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(UserError::Unauthorized)?;
+    let body_str = std::str::from_utf8(&body).map_err(|_| UserError::InvalidRequest)?;
+
+    let verifier =
+        livekit_api::access_token::TokenVerifier::with_api_key(&cfg.api_key, &cfg.api_secret);
+    let receiver = livekit_api::webhooks::WebhookReceiver::new(verifier);
+    let event = receiver
+        .receive(body_str, auth)
+        .map_err(|_| UserError::Unauthorized)?;
+
+    apply_voice_webhook(
+        db.get_ref(),
+        voice_state.get_ref(),
+        broadcaster.get_ref(),
+        &event,
+    )
+    .await?;
+    Ok(HttpResponse::Ok().finish())
+}
+
 #[post("/register")]
 async fn register(
     db: web::Data<DatabaseConnection>,
@@ -740,17 +917,43 @@ pub async fn seed_development_data(db: &DatabaseConnection) {
     println!("=== DEV: baipas session active — set cookie: session={DEV_SESSION_TOKEN} ===");
 }
 
+/// Three-argument form for tests and any deployment that doesn't need voice.
+/// Calls `configure_app_with_voice` with an unconfigured `VoiceConfig` and a
+/// fresh `VoiceState`, so `/voice/*` endpoints reply with 503 but everything
+/// else works identically.
 pub fn configure_app(
     cfg: &mut web::ServiceConfig,
     db_data: Data<DatabaseConnection>,
     broadcaster: Data<Broadcaster>,
 ) {
+    configure_app_with_voice(
+        cfg,
+        db_data,
+        broadcaster,
+        Data::new(None::<VoiceConfig>),
+        Data::new(VoiceState::new()),
+    );
+}
+
+pub fn configure_app_with_voice(
+    cfg: &mut web::ServiceConfig,
+    db_data: Data<DatabaseConnection>,
+    broadcaster: Data<Broadcaster>,
+    voice_cfg: Data<Option<VoiceConfig>>,
+    voice_state: Data<VoiceState>,
+) {
     cfg.app_data(db_data.clone())
         .app_data(broadcaster)
+        .app_data(voice_cfg)
+        .app_data(voice_state)
         // Public — no auth required
         .service(register)
         .service(login)
         .service(logout)
+        // LiveKit webhooks are authenticated via a signed JWT in the body,
+        // not a session cookie, so they must live outside the `require_auth`
+        // scope.
+        .service(receive_voice_webhook)
         // Everything else requires auth
         .service(
             web::scope("")
@@ -764,6 +967,8 @@ pub fn configure_app(
                 .service(delete_message)
                 .service(create_channel)
                 .service(reorder_channels)
+                .service(mint_voice_token)
+                .service(list_voice_participants)
                 .service(me)
                 .service(upload_avatar)
                 .service(delete_avatar),
@@ -781,6 +986,14 @@ pub async fn start_server(
     let avatar_storage = web::Data::new(AvatarStorage {
         dir: uploads_dir.clone(),
     });
+    let voice_cfg = VoiceConfig::from_env();
+    if voice_cfg.is_none() {
+        eprintln!(
+            "LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET not set — voice endpoints will return 503"
+        );
+    }
+    let voice_cfg_data = web::Data::new(voice_cfg);
+    let voice_state_data = web::Data::new(VoiceState::new());
 
     // logger config - should review
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
@@ -807,7 +1020,15 @@ pub async fn start_server(
             .wrap(cors)
             .app_data(avatar_storage.clone())
             .service(actix_files::Files::new("/uploads", uploads_dir.clone()))
-            .configure(|cfg| configure_app(cfg, db_data.clone(), broadcaster_data.clone()))
+            .configure(|cfg| {
+                configure_app_with_voice(
+                    cfg,
+                    db_data.clone(),
+                    broadcaster_data.clone(),
+                    voice_cfg_data.clone(),
+                    voice_state_data.clone(),
+                )
+            })
     })
     .bind(&bind_addr)?
     .run()
@@ -1059,5 +1280,255 @@ mod tests {
             event_str.contains("random"),
             "broadcast event should contain the channel name; got {event_str}"
         );
+    }
+
+    fn make_webhook_event(
+        event: &str,
+        channel_id: i64,
+        user_id: i64,
+        username: &str,
+    ) -> livekit_protocol::WebhookEvent {
+        livekit_protocol::WebhookEvent {
+            event: event.to_string(),
+            room: Some(livekit_protocol::Room {
+                name: room_name(channel_id),
+                ..Default::default()
+            }),
+            participant: Some(livekit_protocol::ParticipantInfo {
+                identity: user_id.to_string(),
+                name: username.to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[actix_web::test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    async fn test_voice_webhook_join_updates_state_and_broadcasts() {
+        let (db, chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let voice_state = VoiceState::new();
+
+        let event = make_webhook_event("participant_joined", chan_id, user.id, &user.username);
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &event)
+            .await
+            .unwrap();
+
+        let participants = voice_state.participants(chan_id);
+        assert_eq!(participants.len(), 1);
+        assert_eq!(participants[0].user_id, user.id);
+        assert_eq!(participants[0].username, "alice");
+
+        let broadcast = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        let s = format!("{:?}", broadcast);
+        assert!(
+            s.contains("voice_participant_joined"),
+            "broadcast should be voice_participant_joined, got {s}"
+        );
+        assert!(s.contains("alice"), "should include username, got {s}");
+    }
+
+    #[actix_web::test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    async fn test_voice_webhook_leave_removes_state() {
+        let (db, chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let voice_state = VoiceState::new();
+        voice_state.add_participant(VoiceParticipant {
+            user_id: user.id,
+            channel_id: chan_id,
+            username: user.username.clone(),
+            avatar_url: None,
+        });
+
+        let event = make_webhook_event("participant_left", chan_id, user.id, &user.username);
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &event)
+            .await
+            .unwrap();
+
+        assert!(voice_state.participants(chan_id).is_empty());
+    }
+
+    #[actix_web::test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    async fn test_voice_webhook_ignores_unknown_room() {
+        let (db, _chan) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let voice_state = VoiceState::new();
+
+        // A room that doesn't match our `channel-{id}` scheme must be ignored.
+        let event = livekit_protocol::WebhookEvent {
+            event: "participant_joined".into(),
+            room: Some(livekit_protocol::Room {
+                name: "some-other-tenant".into(),
+                ..Default::default()
+            }),
+            participant: Some(livekit_protocol::ParticipantInfo {
+                identity: user.id.to_string(),
+                name: user.username.clone(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &event)
+            .await
+            .unwrap();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), rx.recv())
+                .await
+                .is_err(),
+            "no broadcast should be sent for an unrelated room"
+        );
+    }
+
+    #[actix_web::test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    async fn test_mint_voice_token_requires_voice_channel() {
+        // This channel is text-only; the token endpoint should reject it.
+        let (db, text_chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+
+        let voice_cfg = VoiceConfig {
+            url: "ws://livekit:7880".to_string(),
+            api_key: "devkey".to_string(),
+            api_secret: "devsecretdevsecretdevsecretdevsecret".to_string(),
+        };
+        let db_data = web::Data::new(db);
+        let app = test::init_service(App::new().configure(|cfg| {
+            configure_app_with_voice(
+                cfg,
+                db_data,
+                web::Data::from(Broadcaster::new()),
+                web::Data::new(Some(voice_cfg)),
+                web::Data::new(VoiceState::new()),
+            )
+        }))
+        .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::post()
+            .uri(&format!("/voice/token/{}", text_chan_id))
+            .insert_header((name, value))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 400, "text channel should be rejected");
+    }
+
+    #[actix_web::test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    async fn test_mint_voice_token_returns_jwt_for_voice_channel() {
+        let (db, _text) = setup_db().await;
+        let voice_chan_id = generate_id();
+        entity::channel::ActiveModel {
+            id: Set(voice_chan_id),
+            name: Set("lounge".into()),
+            position: Set(1),
+            channel_type: Set(CHANNEL_TYPE_VOICE.into()),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+
+        let voice_cfg = VoiceConfig {
+            url: "ws://livekit:7880".to_string(),
+            api_key: "devkey".to_string(),
+            api_secret: "devsecretdevsecretdevsecretdevsecret".to_string(),
+        };
+        let db_data = web::Data::new(db);
+        let app = test::init_service(App::new().configure(|cfg| {
+            configure_app_with_voice(
+                cfg,
+                db_data,
+                web::Data::from(Broadcaster::new()),
+                web::Data::new(Some(voice_cfg.clone())),
+                web::Data::new(VoiceState::new()),
+            )
+        }))
+        .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::post()
+            .uri(&format!("/voice/token/{}", voice_chan_id))
+            .insert_header((name, value))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+        let body: VoiceTokenResponse = test::read_body_json(resp).await;
+        assert_eq!(body.url, voice_cfg.url);
+        assert_eq!(body.room, room_name(voice_chan_id));
+
+        let verifier = livekit_api::access_token::TokenVerifier::with_api_key(
+            &voice_cfg.api_key,
+            &voice_cfg.api_secret,
+        );
+        let claims = verifier.verify(&body.token).expect("token must verify");
+        assert_eq!(claims.sub, user.id.to_string());
+        assert_eq!(claims.name, "alice");
+        assert_eq!(claims.video.room, room_name(voice_chan_id));
+        assert!(claims.video.room_join);
+    }
+
+    #[actix_web::test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    async fn test_mint_voice_token_returns_503_when_unconfigured() {
+        let (db, _) = setup_db().await;
+        let voice_chan_id = generate_id();
+        entity::channel::ActiveModel {
+            id: Set(voice_chan_id),
+            name: Set("lounge".into()),
+            position: Set(1),
+            channel_type: Set(CHANNEL_TYPE_VOICE.into()),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+        let db_data = web::Data::new(db);
+        // Three-argument configure_app wires in None voice config.
+        let app = test::init_service(
+            App::new()
+                .configure(|cfg| configure_app(cfg, db_data, web::Data::from(Broadcaster::new()))),
+        )
+        .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::post()
+            .uri(&format!("/voice/token/{}", voice_chan_id))
+            .insert_header((name, value))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 503);
     }
 }

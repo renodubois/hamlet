@@ -5,6 +5,8 @@ import {
   type Message,
   type MessageDeleted,
   type SSEEvent,
+  type VoiceParticipant,
+  type VoiceParticipantLeft,
 } from "./api";
 
 type Listener<T> = (value: T) => void;
@@ -15,6 +17,8 @@ interface EventsContextValue {
   onMessageDeleted: (cb: Listener<MessageDeleted>) => () => void;
   onChannelCreated: (cb: Listener<Channel>) => () => void;
   onChannelsReordered: (cb: Listener<Channel[]>) => () => void;
+  onVoiceParticipantJoined: (cb: Listener<VoiceParticipant>) => () => void;
+  onVoiceParticipantLeft: (cb: Listener<VoiceParticipantLeft>) => () => void;
 }
 
 const EventsContext = createContext<EventsContextValue>();
@@ -25,6 +29,8 @@ export function EventsProvider(props: { children: JSX.Element }) {
   const messageDeletedListeners = new Set<Listener<MessageDeleted>>();
   const channelCreatedListeners = new Set<Listener<Channel>>();
   const channelsReorderedListeners = new Set<Listener<Channel[]>>();
+  const voiceJoinedListeners = new Set<Listener<VoiceParticipant>>();
+  const voiceLeftListeners = new Set<Listener<VoiceParticipantLeft>>();
 
   let eventSource: EventSource | null = null;
 
@@ -49,6 +55,10 @@ export function EventsProvider(props: { children: JSX.Element }) {
         channelCreatedListeners.forEach((cb) => cb(parsed.data));
       } else if (parsed.kind === "channels_reordered") {
         channelsReorderedListeners.forEach((cb) => cb(parsed.data));
+      } else if (parsed.kind === "voice_participant_joined") {
+        voiceJoinedListeners.forEach((cb) => cb(parsed.data));
+      } else if (parsed.kind === "voice_participant_left") {
+        voiceLeftListeners.forEach((cb) => cb(parsed.data));
       }
     };
     eventSource = es;
@@ -62,6 +72,8 @@ export function EventsProvider(props: { children: JSX.Element }) {
     messageDeletedListeners.clear();
     channelCreatedListeners.clear();
     channelsReorderedListeners.clear();
+    voiceJoinedListeners.clear();
+    voiceLeftListeners.clear();
   });
 
   const value: EventsContextValue = {
@@ -84,6 +96,14 @@ export function EventsProvider(props: { children: JSX.Element }) {
     onChannelsReordered(cb) {
       channelsReorderedListeners.add(cb);
       return () => channelsReorderedListeners.delete(cb);
+    },
+    onVoiceParticipantJoined(cb) {
+      voiceJoinedListeners.add(cb);
+      return () => voiceJoinedListeners.delete(cb);
+    },
+    onVoiceParticipantLeft(cb) {
+      voiceLeftListeners.add(cb);
+      return () => voiceLeftListeners.delete(cb);
     },
   };
 

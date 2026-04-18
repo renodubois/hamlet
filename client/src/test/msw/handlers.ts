@@ -1,5 +1,5 @@
 import { http, HttpResponse } from "msw";
-import type { Channel, Message, User } from "../../api";
+import type { Channel, Message, User, VoiceParticipant } from "../../api";
 
 const BASE = "http://localhost:3030";
 
@@ -27,6 +27,8 @@ export interface HandlerState {
   reorderedIds: number[] | null;
   uploadedAvatars: { size: number; type: string }[];
   deletedAvatar: boolean;
+  voiceParticipants: Record<string, VoiceParticipant[]>;
+  voiceTokensMinted: number[];
 }
 
 export function createState(overrides: Partial<HandlerState> = {}): HandlerState {
@@ -42,6 +44,8 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     reorderedIds: null,
     uploadedAvatars: [],
     deletedAvatar: false,
+    voiceParticipants: {},
+    voiceTokensMinted: [],
     ...overrides,
   };
 }
@@ -170,6 +174,21 @@ export function createHandlers(state: HandlerState) {
       state.deletedAvatar = true;
       state.me = { ...state.me, avatar_url: null };
       return HttpResponse.json(state.me);
+    }),
+
+    http.get(`${BASE}/voice/participants/:id`, ({ params }) => {
+      const id = String(params.id);
+      return HttpResponse.json(state.voiceParticipants[id] ?? []);
+    }),
+
+    http.post(`${BASE}/voice/token/:id`, ({ params }) => {
+      const id = Number(params.id);
+      state.voiceTokensMinted.push(id);
+      return HttpResponse.json({
+        url: "ws://localhost:7880",
+        token: "fake-jwt",
+        room: `channel-${id}`,
+      });
     }),
   ];
 }

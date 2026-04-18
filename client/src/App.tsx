@@ -6,6 +6,7 @@ import { ChannelsProvider, useChannels } from "./channels_context";
 import { EventsProvider } from "./events_context";
 import LoginScreen from "./pages/login";
 import { type User } from "./api";
+import { VoiceChatProvider } from "./voice_chat_context";
 
 const AppShell: Component<{ children: JSX.Element; user: User }> = (props) => {
   const auth = useAuth();
@@ -42,7 +43,9 @@ const App: Component<{ children: JSX.Element }> = (props) => {
       <Show when={auth.user()} fallback={<LoginScreen />}>
         <EventsProvider>
           <ChannelsProvider>
-            <AppShell user={auth.user() as User}>{props.children}</AppShell>
+            <VoiceChatProvider>
+              <AppShell user={auth.user() as User}>{props.children}</AppShell>
+            </VoiceChatProvider>
           </ChannelsProvider>
         </EventsProvider>
       </Show>

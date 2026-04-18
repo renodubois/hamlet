@@ -144,12 +144,44 @@ export interface MessageDeleted {
   channel_id: number;
 }
 
+export interface VoiceParticipant {
+  user_id: number;
+  channel_id: number;
+  username: string;
+  avatar_url: string | null;
+}
+
+export interface VoiceParticipantLeft {
+  channel_id: number;
+  user_id: number;
+}
+
+export interface VoiceToken {
+  url: string;
+  token: string;
+  room: string;
+}
+
+export async function getVoiceToken(channelId: number): Promise<VoiceToken> {
+  const res = await apiFetch(`/voice/token/${channelId}`, { method: "POST" });
+  if (!res.ok) throw new Error(`Voice token fetch failed (${res.status})`);
+  return res.json() as Promise<VoiceToken>;
+}
+
+export async function listVoiceParticipants(channelId: number): Promise<VoiceParticipant[]> {
+  const res = await apiFetch(`/voice/participants/${channelId}`);
+  if (!res.ok) throw new Error(`Voice participants fetch failed (${res.status})`);
+  return res.json() as Promise<VoiceParticipant[]>;
+}
+
 export type SSEEvent =
   | { kind: "message"; data: Message }
   | { kind: "message_updated"; data: Message }
   | { kind: "message_deleted"; data: MessageDeleted }
   | { kind: "channel_created"; data: Channel }
-  | { kind: "channels_reordered"; data: Channel[] };
+  | { kind: "channels_reordered"; data: Channel[] }
+  | { kind: "voice_participant_joined"; data: VoiceParticipant }
+  | { kind: "voice_participant_left"; data: VoiceParticipantLeft };
 
 export function messagesEventSource(): EventSource {
   return new EventSource(`${getServerUrl()}/messages/subscribe`, {

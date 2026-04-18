@@ -4,14 +4,9 @@ import { type Channel, type User } from "../api";
 import { useChannels } from "../channels_context";
 import AddChannelModal from "./add_channel_modal";
 import Avatar from "./avatar";
-import { SettingsIcon, VoiceChannelIcon } from "./icons";
+import { SettingsIcon } from "./icons";
 import SettingsModal from "./settings_modal";
-
-function joinVoiceChannel(channel: Channel) {
-  // TODO(voice): actually connect to LiveKit. For now this is a stub so we
-  // can wire up the UI before implementing the call path.
-  console.info(`[voice] stub: join voice channel ${channel.id} (${channel.name})`);
-}
+import VoiceChannel from "./voice_channel";
 
 export default function ChannelSidebar(props: {
   user: User;
@@ -112,14 +107,7 @@ export default function ChannelSidebar(props: {
                       </A>
                     }
                   >
-                    <button
-                      type="button"
-                      class="w-full flex items-center gap-2 px-3 py-1.5 rounded text-sm cursor-pointer text-left text-gray-400 hover:bg-gray-700 hover:text-gray-200"
-                      onClick={() => joinVoiceChannel(channel)}
-                    >
-                      <VoiceChannelIcon size={14} aria-hidden="true" />
-                      <span>{channel.name}</span>
-                    </button>
+                    <VoiceChannel channel={channel} />
                   </Show>
                 </div>
               )}
