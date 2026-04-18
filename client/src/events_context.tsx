@@ -1,11 +1,18 @@
 import { createContext, onCleanup, onMount, useContext, type JSX } from "solid-js";
-import { messagesEventSource, type Channel, type Message, type SSEEvent } from "./api";
+import {
+  messagesEventSource,
+  type Channel,
+  type Message,
+  type MessageDeleted,
+  type SSEEvent,
+} from "./api";
 
 type Listener<T> = (value: T) => void;
 
 interface EventsContextValue {
   onMessage: (cb: Listener<Message>) => () => void;
   onMessageUpdated: (cb: Listener<Message>) => () => void;
+  onMessageDeleted: (cb: Listener<MessageDeleted>) => () => void;
   onChannelCreated: (cb: Listener<Channel>) => () => void;
   onChannelsReordered: (cb: Listener<Channel[]>) => () => void;
 }
@@ -15,6 +22,7 @@ const EventsContext = createContext<EventsContextValue>();
 export function EventsProvider(props: { children: JSX.Element }) {
   const messageListeners = new Set<Listener<Message>>();
   const messageUpdatedListeners = new Set<Listener<Message>>();
+  const messageDeletedListeners = new Set<Listener<MessageDeleted>>();
   const channelCreatedListeners = new Set<Listener<Channel>>();
   const channelsReorderedListeners = new Set<Listener<Channel[]>>();
 
@@ -35,6 +43,8 @@ export function EventsProvider(props: { children: JSX.Element }) {
         messageListeners.forEach((cb) => cb(parsed.data));
       } else if (parsed.kind === "message_updated") {
         messageUpdatedListeners.forEach((cb) => cb(parsed.data));
+      } else if (parsed.kind === "message_deleted") {
+        messageDeletedListeners.forEach((cb) => cb(parsed.data));
       } else if (parsed.kind === "channel_created") {
         channelCreatedListeners.forEach((cb) => cb(parsed.data));
       } else if (parsed.kind === "channels_reordered") {
@@ -49,6 +59,7 @@ export function EventsProvider(props: { children: JSX.Element }) {
     eventSource = null;
     messageListeners.clear();
     messageUpdatedListeners.clear();
+    messageDeletedListeners.clear();
     channelCreatedListeners.clear();
     channelsReorderedListeners.clear();
   });
@@ -61,6 +72,10 @@ export function EventsProvider(props: { children: JSX.Element }) {
     onMessageUpdated(cb) {
       messageUpdatedListeners.add(cb);
       return () => messageUpdatedListeners.delete(cb);
+    },
+    onMessageDeleted(cb) {
+      messageDeletedListeners.add(cb);
+      return () => messageDeletedListeners.delete(cb);
     },
     onChannelCreated(cb) {
       channelCreatedListeners.add(cb);

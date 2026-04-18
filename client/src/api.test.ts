@@ -7,6 +7,7 @@ import {
   reorderChannels,
   sendMessage,
   editMessage,
+  deleteMessage,
   type Channel,
 } from "./api";
 
@@ -127,6 +128,21 @@ describe("apiFetch behavior", () => {
   test("editMessage throws on non-2xx", async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 403 }));
     await expect(editMessage(7, "nope")).rejects.toThrow(/403/);
+  });
+
+  test("deleteMessage sends DELETE with credentials", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+    await expect(deleteMessage(42)).resolves.toBeUndefined();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/message/42`);
+    expect(init.method).toBe("DELETE");
+    expect(init.credentials).toBe("include");
+  });
+
+  test("deleteMessage throws on non-2xx", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 403 }));
+    await expect(deleteMessage(42)).rejects.toThrow(/403/);
   });
 
   test("uses the stored server URL for subsequent calls", async () => {

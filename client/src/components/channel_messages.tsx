@@ -9,8 +9,9 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
-import { editMessage, type Message } from "../api";
+import { deleteMessage, editMessage, type Message } from "../api";
 import Avatar from "./avatar";
+import Modal from "./modal";
 
 interface ContextMenuState {
   messageId: number;
@@ -26,6 +27,7 @@ const ChannelMessages: Component<{
   const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null);
   const [editingId, setEditingId] = createSignal<number | null>(null);
   const [draft, setDraft] = createSignal("");
+  const [pendingDeleteId, setPendingDeleteId] = createSignal<number | null>(null);
 
   const closeMenu = () => setContextMenu(null);
 
@@ -53,9 +55,34 @@ const ChannelMessages: Component<{
     setDraft("");
   };
 
+  const requestDelete = (id: number) => {
+    setPendingDeleteId(id);
+    closeMenu();
+  };
+
+  const cancelDelete = () => {
+    setPendingDeleteId(null);
+  };
+
+  const confirmDelete = async () => {
+    const id = pendingDeleteId();
+    if (id === null) return;
+    try {
+      await deleteMessage(id);
+    } catch (e) {
+      console.error("failed to delete message", e);
+    }
+    setPendingDeleteId(null);
+    if (editingId() === id) cancelEditing();
+  };
+
   const saveEdit = async (msg: Message) => {
     const next = draft();
-    if (next === msg.text || next.length === 0) {
+    if (next.length === 0) {
+      requestDelete(msg.id);
+      return;
+    }
+    if (next === msg.text) {
       cancelEditing();
       return;
     }
@@ -149,9 +176,40 @@ const ChannelMessages: Component<{
                 Edit message
               </button>
             </li>
+            <li>
+              <button
+                role="menuitem"
+                type="button"
+                class="w-full text-left px-4 py-1 text-red-600 hover:bg-red-50"
+                onClick={() => requestDelete(menu().messageId)}
+              >
+                Delete message
+              </button>
+            </li>
           </ul>
         )}
       </Show>
+      <Modal open={pendingDeleteId() !== null} onClose={cancelDelete} title="Delete message?">
+        <p class="text-sm text-gray-200 mb-4">
+          This will permanently delete the message. This cannot be undone.
+        </p>
+        <div class="flex gap-2 justify-end">
+          <button
+            type="button"
+            class="text-gray-300 hover:text-gray-100 text-sm px-3 py-2"
+            onClick={cancelDelete}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="bg-red-600 hover:bg-red-700 text-white rounded-md px-4 py-2 text-sm font-medium transition-colors"
+            onClick={() => void confirmDelete()}
+          >
+            Delete
+          </button>
+        </div>
+      </Modal>
     </section>
   );
 };

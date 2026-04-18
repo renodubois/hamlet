@@ -24,9 +24,14 @@ export default function ChannelView() {
       if (String(m.channel_id) !== params.id) return;
       mutate((prev) => prev?.map((existing) => (existing.id === m.id ? m : existing)));
     });
+    const unsubDeleted = events.onMessageDeleted((d) => {
+      if (String(d.channel_id) !== params.id) return;
+      mutate((prev) => prev?.filter((existing) => existing.id !== d.id));
+    });
     onCleanup(() => {
       unsubCreated();
       unsubUpdated();
+      unsubDeleted();
     });
   });
 

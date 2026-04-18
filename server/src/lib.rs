@@ -114,10 +114,17 @@ impl From<entity::channel::Model> for ChannelResponse {
 }
 
 #[derive(Clone, Debug, Serialize)]
+struct MessageDeletedEvent {
+    id: i64,
+    channel_id: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 enum BroadcastEvent {
     Message(MessageResponse),
     MessageUpdated(MessageResponse),
+    MessageDeleted(MessageDeletedEvent),
     ChannelCreated(ChannelResponse),
     ChannelsReordered(Vec<ChannelResponse>),
 }
@@ -331,6 +338,42 @@ async fn update_message(
     broadcaster.broadcast(&payload).await;
 
     Ok(web::Json(resp))
+}
+
+#[delete("/message/{message_id}")]
+async fn delete_message(
+    db: web::Data<DatabaseConnection>,
+    broadcaster: web::Data<Broadcaster>,
+    path: web::Path<i64>,
+    user: AuthUser,
+) -> Result<impl Responder, UserError> {
+    let message_id = path.into_inner();
+
+    let existing = entity::message::Entity::find_by_id(message_id)
+        .one(db.get_ref())
+        .await
+        .map_err(|_| UserError::DbError)?
+        .ok_or(UserError::NotFound)?;
+
+    if existing.user_id != user.id {
+        return Err(UserError::Forbidden);
+    }
+
+    let channel_id = existing.channel_id;
+    let active: entity::message::ActiveModel = existing.into();
+    active
+        .delete(db.get_ref())
+        .await
+        .map_err(|_| UserError::DbError)?;
+
+    let payload = serde_json::to_string(&BroadcastEvent::MessageDeleted(MessageDeletedEvent {
+        id: message_id,
+        channel_id,
+    }))
+    .map_err(|_| UserError::InternalError)?;
+    broadcaster.broadcast(&payload).await;
+
+    Ok(HttpResponse::NoContent().finish())
 }
 
 #[post("/channel")]
@@ -703,6 +746,7 @@ pub fn configure_app(
                 .service(get_messages)
                 .service(create_message)
                 .service(update_message)
+                .service(delete_message)
                 .service(create_channel)
                 .service(reorder_channels)
                 .service(me)
@@ -848,6 +892,60 @@ mod tests {
         assert!(
             event_str.contains("kind\\\":\\\"message\\\""),
             "broadcast event should be tagged as kind=message; got {event_str}"
+        );
+    }
+
+    #[actix_web::test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    async fn test_message_delete_broadcasts_to_clients() {
+        let (db, chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+
+        let msg_id = generate_id();
+        entity::message::ActiveModel {
+            id: Set(msg_id),
+            user_id: Set(user.id),
+            channel_id: Set(chan_id),
+            text: Set("bye".into()),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let broadcaster_data = web::Data::from(broadcaster);
+
+        let db_data = web::Data::new(db);
+        let app = test::init_service(
+            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
+        )
+        .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::delete()
+            .uri(&format!("/message/{}", msg_id))
+            .insert_header((name, value))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out — broadcast was never sent")
+            .expect("channel closed");
+
+        let event_str = format!("{:?}", event);
+        assert!(
+            event_str.contains("kind\\\":\\\"message_deleted\\\""),
+            "broadcast event should be tagged as kind=message_deleted; got {event_str}"
+        );
+        assert!(
+            event_str.contains(&msg_id.to_string()),
+            "broadcast event should contain the deleted message id; got {event_str}"
         );
     }
 
