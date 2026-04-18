@@ -17,7 +17,16 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: {
+        ...devices["Desktop Chrome"],
+        // Honor a pre-installed Chromium binary when one is available (e.g.
+        // Claude Code's web sandbox bakes Playwright browsers under /opt and
+        // blocks the normal download from cdn.playwright.dev). Unset → use
+        // Playwright's regular download-and-cache behavior.
+        launchOptions: {
+          executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+        },
+      },
     },
   ],
 

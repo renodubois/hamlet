@@ -48,6 +48,8 @@ When you add or change client functionality, **write tests for it**. Pick the la
 - **Accessibility** → add an `expectNoA11yViolations(container)` assertion alongside component tests (helper in `src/test/a11y.ts`; examples in `src/a11y.test.tsx`).
 - **Full stack smoke** → Playwright spec in `e2e/` — keep these to golden-path smoke tests only.
 
+> **Use Playwright, not happy-dom, for anything driven by real browser behavior.** happy-dom fires synthetic events and does not model HTML5 drag-and-drop defaults, pointer capture, focus order, `:focus-visible`, composition events, or the click/drag race. Component tests that `fireEvent.dragStart`/`drop` can pass while the feature is broken in Chrome. If your change touches drag-and-drop, pointer capture, native focus/tab order, keyboard shortcuts that rely on `keydown` defaults, or anything else where the browser's default action matters, add an `e2e/*.spec.ts` that exercises it with real input (`locator.dragTo`, `page.keyboard`, etc.). Keep these focused on the browser-behavior bit — unit-testable logic still belongs in Vitest.
+
 Before marking work as done, always run:
 
 ```bash

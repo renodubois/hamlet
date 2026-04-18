@@ -71,14 +71,11 @@ export default function ChannelSidebar(props: {
           <nav class="flex-1 overflow-y-auto py-2" aria-label="Channels">
             <For each={channels()}>
               {(channel) => (
-                <A
-                  href={`/channel/${channel.id}`}
-                  activeClass="bg-gray-700 text-white font-medium"
-                  inactiveClass="text-gray-400 hover:bg-gray-700 hover:text-gray-200"
-                  class="block px-3 py-1.5 mx-2 rounded text-sm cursor-pointer"
+                <div
+                  class="mx-2"
                   classList={{
                     "opacity-50": draggedId() === channel.id,
-                    "ring-2 ring-blue-400":
+                    "ring-2 ring-blue-400 rounded":
                       dropTargetId() === channel.id && draggedId() !== channel.id,
                   }}
                   draggable={true}
@@ -91,8 +88,19 @@ export default function ChannelSidebar(props: {
                   onDrop={(e) => handleDrop(e, channel.id, channels() ?? [])}
                   onDragEnd={clearDragState}
                 >
-                  # {channel.name}
-                </A>
+                  <A
+                    href={`/channel/${channel.id}`}
+                    activeClass="bg-gray-700 text-white font-medium"
+                    inactiveClass="text-gray-400 hover:bg-gray-700 hover:text-gray-200"
+                    class="block px-3 py-1.5 rounded text-sm cursor-pointer"
+                    // Anchors are draggable by default as URLs, which hijacks
+                    // our custom drag-and-drop — suppress that here and let
+                    // the wrapping div own the drag.
+                    draggable={false}
+                  >
+                    # {channel.name}
+                  </A>
+                </div>
               )}
             </For>
           </nav>
