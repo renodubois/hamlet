@@ -64,6 +64,21 @@ export default function VoiceSettings() {
     }
   };
 
+  // Browsers (especially WebKitGTK) hide real device labels and only expose a
+  // single default input until the page has been granted microphone access. Do
+  // a one-shot silent getUserMedia on mount so the dropdowns show real device
+  // names, then drop the stream immediately — startMicTest re-opens its own.
+  const primeDeviceLabels = async () => {
+    if (!supported) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+      await refreshDevices();
+    } catch {
+      // User/OS denied permission — keep the "System default" fallback.
+    }
+  };
+
   const stopMicTest = () => {
     if (micRaf != null) {
       cancelAnimationFrame(micRaf);
@@ -179,7 +194,7 @@ export default function VoiceSettings() {
 
   onMount(() => {
     if (!supported) return;
-    void refreshDevices();
+    void primeDeviceLabels();
     navigator.mediaDevices.addEventListener("devicechange", refreshDevices);
   });
 
