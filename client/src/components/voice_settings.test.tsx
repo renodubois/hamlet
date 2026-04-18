@@ -159,6 +159,10 @@ describe("<VoiceSettings>", () => {
 
   test("starts microphone test and shows a meter", async () => {
     render(() => <VoiceSettings />);
+    // Wait for the on-mount priming call so we can assert the test-click in isolation.
+    await waitFor(() => expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledTimes(1));
+    fakeMediaDevices.getUserMedia.mockClear();
+
     const btn = screen.getByRole("button", { name: /test microphone/i });
     fireEvent.click(btn);
 
@@ -171,11 +175,28 @@ describe("<VoiceSettings>", () => {
     expect(screen.getByRole("meter", { name: /microphone input level/i })).toBeInTheDocument();
   });
 
+  test("primes device labels on mount by briefly opening a mic stream", async () => {
+    // Without this, WebKitGTK (and other browsers) hide real labels and only
+    // expose a single default device until permission has been granted.
+    render(() => <VoiceSettings />);
+    await waitFor(() => {
+      expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true });
+    });
+    // Labels come from enumerateDevices, which is refreshed after the prime.
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: "Built-in Microphone" })).toBeInTheDocument(),
+    );
+    // UI should remain in the non-testing state — priming must not leave the meter running.
+    expect(screen.getByRole("button", { name: /test microphone/i })).toBeInTheDocument();
+  });
+
   test("passes selected input deviceId as constraint to getUserMedia", async () => {
     render(() => <VoiceSettings />);
     await waitFor(() =>
       expect(screen.getByRole("option", { name: "USB Headset" })).toBeInTheDocument(),
     );
+    // Clear the on-mount priming call so we can assert the constraint from the click alone.
+    fakeMediaDevices.getUserMedia.mockClear();
     const input = screen.getByLabelText("Input device") as HTMLSelectElement;
     fireEvent.change(input, { target: { value: "mic-b" } });
 
@@ -211,6 +232,10 @@ describe("<VoiceSettings>", () => {
     // Only the click's rejection should surface a user-visible error.
     fakeMediaDevices.getUserMedia.mockRejectedValue(new Error("Permission denied"));
     render(() => <VoiceSettings />);
+    // Wait for the silent on-mount prime to resolve, then arrange the denial
+    // for the explicit Test microphone click.
+    await waitFor(() => expect(fakeMediaDevices.getUserMedia).toHaveBeenCalled());
+    fakeMediaDevices.getUserMedia.mockRejectedValueOnce(new Error("Permission denied"));
     fireEvent.click(screen.getByRole("button", { name: /test microphone/i }));
     await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent(/permission denied/i);

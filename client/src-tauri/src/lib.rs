@@ -36,7 +36,8 @@ pub fn run() {
             {
                 use webkit2gtk::glib::Cast;
                 use webkit2gtk::{
-                    PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, WebViewExt,
+                    DeviceInfoPermissionRequest, PermissionRequestExt, SettingsExt,
+                    UserMediaPermissionRequest, WebViewExt,
                 };
                 window.with_webview(|webview| {
                     let wv = webview.inner();
@@ -45,7 +46,14 @@ pub fn run() {
                         settings.set_enable_mediasource(true);
                     }
                     wv.connect_permission_request(|_, req| {
-                        if req.dynamic_cast_ref::<UserMediaPermissionRequest>().is_some() {
+                        // UserMediaPermissionRequest covers getUserMedia; DeviceInfoPermissionRequest
+                        // covers enumerateDevices — without the latter allowed, WebKitGTK only
+                        // reveals a single default device per kind with a generic label.
+                        let is_media =
+                            req.dynamic_cast_ref::<UserMediaPermissionRequest>().is_some();
+                        let is_device_info =
+                            req.dynamic_cast_ref::<DeviceInfoPermissionRequest>().is_some();
+                        if is_media || is_device_info {
                             req.allow();
                             true
                         } else {
