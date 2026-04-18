@@ -16,7 +16,9 @@ const AppShell: Component<{ children: JSX.Element; user: User }> = (props) => {
   createEffect(() => {
     const ch = channels();
     if (location.pathname === "/" && ch && ch.length > 0) {
-      navigate(`/channel/${ch[0].id}`, { replace: true });
+      // Voice channels don't have a message view — pick the first text channel.
+      const first = ch.find((c) => c.type === "text");
+      if (first) navigate(`/channel/${first.id}`, { replace: true });
     }
   });
 

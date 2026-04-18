@@ -73,8 +73,8 @@ describe("<ChannelSidebar>", () => {
   test("renders each channel as a link", () => {
     channelsResource.mockReturnValue({
       channels: fakeChannels([
-        { id: 10, name: "general", position: 0 },
-        { id: 20, name: "random", position: 1 },
+        { id: 10, name: "general", position: 0, type: "text" },
+        { id: 20, name: "random", position: 1, type: "text" },
       ]),
       refetch: () => {},
       reorder: async () => {},
@@ -123,8 +123,8 @@ describe("<ChannelSidebar>", () => {
   test("channel rows are marked draggable", () => {
     channelsResource.mockReturnValue({
       channels: fakeChannels([
-        { id: 10, name: "general", position: 0 },
-        { id: 20, name: "random", position: 1 },
+        { id: 10, name: "general", position: 0, type: "text" },
+        { id: 20, name: "random", position: 1, type: "text" },
       ]),
       refetch: () => {},
       reorder: async () => {},
@@ -142,9 +142,9 @@ describe("<ChannelSidebar>", () => {
     const reorder = vi.fn<(ids: number[]) => Promise<void>>().mockResolvedValue();
     channelsResource.mockReturnValue({
       channels: fakeChannels([
-        { id: 10, name: "general", position: 0 },
-        { id: 20, name: "random", position: 1 },
-        { id: 30, name: "dev", position: 2 },
+        { id: 10, name: "general", position: 0, type: "text" },
+        { id: 20, name: "random", position: 1, type: "text" },
+        { id: 30, name: "dev", position: 2, type: "text" },
       ]),
       refetch: () => {},
       reorder,
@@ -165,12 +165,39 @@ describe("<ChannelSidebar>", () => {
     expect(reorder).toHaveBeenCalledWith([30, 10, 20]);
   });
 
+  test("voice channels render as a button, not a link, and invoke the join stub on click", () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    channelsResource.mockReturnValue({
+      channels: fakeChannels([
+        { id: 10, name: "general", position: 0, type: "text" },
+        { id: 40, name: "lobby", position: 1, type: "voice" },
+      ]),
+      refetch: () => {},
+      reorder: async () => {},
+    });
+    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
+
+    // Voice channel does not render as an anchor (no navigation).
+    expect(screen.queryByRole("link", { name: /lobby/ })).toBeNull();
+    const lobby = screen.getByRole("button", { name: /lobby/ });
+    expect(lobby).toBeInTheDocument();
+    fireEvent.click(lobby);
+    expect(infoSpy).toHaveBeenCalledTimes(1);
+    expect(infoSpy.mock.calls[0][0]).toMatch(/voice.*40.*lobby/);
+
+    // Text channel still renders as an anchor.
+    const general = screen.getByRole("link", { name: /general/ });
+    expect(general).toHaveAttribute("href", "/channel/10");
+
+    infoSpy.mockRestore();
+  });
+
   test("dropping a channel on itself is a no-op", () => {
     const reorder = vi.fn<(ids: number[]) => Promise<void>>().mockResolvedValue();
     channelsResource.mockReturnValue({
       channels: fakeChannels([
-        { id: 10, name: "general", position: 0 },
-        { id: 20, name: "random", position: 1 },
+        { id: 10, name: "general", position: 0, type: "text" },
+        { id: 20, name: "random", position: 1, type: "text" },
       ]),
       refetch: () => {},
       reorder,

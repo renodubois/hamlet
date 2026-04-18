@@ -1,14 +1,16 @@
 import { createSignal, Show } from "solid-js";
 import Modal from "./modal";
-import { CHANNEL_NAME_MAX_LEN, createChannel } from "../api";
+import { CHANNEL_NAME_MAX_LEN, createChannel, type ChannelType } from "../api";
 
 export default function AddChannelModal(props: { open: boolean; onClose: () => void }) {
   const [name, setName] = createSignal("");
+  const [type, setType] = createSignal<ChannelType>("text");
   const [error, setError] = createSignal<string | null>(null);
   const [submitting, setSubmitting] = createSignal(false);
 
   const close = () => {
     setName("");
+    setType("text");
     setError(null);
     props.onClose();
   };
@@ -29,7 +31,7 @@ export default function AddChannelModal(props: { open: boolean; onClose: () => v
     setError(null);
     setSubmitting(true);
     try {
-      const res = await createChannel(trimmed);
+      const res = await createChannel(trimmed, type());
       if (res.ok) {
         close();
         return;
@@ -60,6 +62,29 @@ export default function AddChannelModal(props: { open: boolean; onClose: () => v
           value={name()}
           onInput={(e) => setName(e.currentTarget.value)}
         />
+        <fieldset class="flex gap-2">
+          <legend class="text-gray-300 text-sm mb-1">Channel type</legend>
+          <label class="flex-1 flex items-center gap-2 bg-gray-700 rounded-md px-3 py-2 cursor-pointer text-gray-100 text-sm">
+            <input
+              type="radio"
+              name="channel-type"
+              value="text"
+              checked={type() === "text"}
+              onChange={() => setType("text")}
+            />
+            Text
+          </label>
+          <label class="flex-1 flex items-center gap-2 bg-gray-700 rounded-md px-3 py-2 cursor-pointer text-gray-100 text-sm">
+            <input
+              type="radio"
+              name="channel-type"
+              value="voice"
+              checked={type() === "voice"}
+              onChange={() => setType("voice")}
+            />
+            Voice
+          </label>
+        </fieldset>
         <Show when={error()}>
           <p class="text-red-400 text-sm">{error()}</p>
         </Show>

@@ -834,6 +834,7 @@ async fn test_get_channels_returns_them_ordered_by_position() {
         id: Set(b_id),
         name: Set("bravo".to_owned()),
         position: Set(2),
+        channel_type: Set("text".to_owned()),
     }
     .insert(&db)
     .await
@@ -843,6 +844,7 @@ async fn test_get_channels_returns_them_ordered_by_position() {
         id: Set(a_id),
         name: Set("alpha".to_owned()),
         position: Set(1),
+        channel_type: Set("text".to_owned()),
     }
     .insert(&db)
     .await
@@ -912,6 +914,7 @@ async fn test_reorder_channels_persists_new_order() {
         id: Set(a_id),
         name: Set("alpha".to_owned()),
         position: Set(1),
+        channel_type: Set("text".to_owned()),
     }
     .insert(&db)
     .await
@@ -921,6 +924,7 @@ async fn test_reorder_channels_persists_new_order() {
         id: Set(b_id),
         name: Set("bravo".to_owned()),
         position: Set(2),
+        channel_type: Set("text".to_owned()),
     }
     .insert(&db)
     .await
@@ -1008,6 +1012,7 @@ async fn test_reorder_channels_rejects_partial_id_set() {
         id: Set(a_id),
         name: Set("alpha".to_owned()),
         position: Set(1),
+        channel_type: Set("text".to_owned()),
     }
     .insert(&db)
     .await
@@ -1050,6 +1055,103 @@ async fn test_reorder_channels_rejects_partial_id_set() {
         .insert_header(ContentType::json())
         .insert_header((name, value))
         .set_payload(serde_json::json!({"ids": [general_id, general_id]}).to_string())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[actix_web::test]
+async fn test_create_channel_defaults_to_text_type() {
+    let (db, _) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::post()
+        .uri("/channel")
+        .insert_header(ContentType::json())
+        .insert_header((name, value))
+        .set_payload(serde_json::json!({"name": "random"}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert!(resp.status().is_success());
+    let body = test::read_body(resp).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["type"], "text");
+}
+
+#[actix_web::test]
+async fn test_create_voice_channel() {
+    let (db, _) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::post()
+        .uri("/channel")
+        .insert_header(ContentType::json())
+        .insert_header((name.clone(), value.clone()))
+        .set_payload(serde_json::json!({"name": "lobby", "type": "voice"}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert!(resp.status().is_success());
+    let json: serde_json::Value = serde_json::from_slice(&test::read_body(resp).await).unwrap();
+    assert_eq!(json["type"], "voice");
+    assert_eq!(json["name"], "lobby");
+
+    // It's persisted and listed by /channels with its type.
+    let list_req = test::TestRequest::get()
+        .uri("/channels")
+        .insert_header((name, value))
+        .to_request();
+    let list_resp = test::call_service(&app, list_req).await;
+    assert!(list_resp.status().is_success());
+    let list_json: serde_json::Value =
+        serde_json::from_slice(&test::read_body(list_resp).await).unwrap();
+    let types: Vec<&str> = list_json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["type"].as_str().unwrap())
+        .collect();
+    assert!(types.contains(&"voice"));
+}
+
+#[actix_web::test]
+async fn test_create_channel_rejects_unknown_type() {
+    let (db, _) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::post()
+        .uri("/channel")
+        .insert_header(ContentType::json())
+        .insert_header((name, value))
+        .set_payload(serde_json::json!({"name": "bad", "type": "video"}).to_string())
         .to_request();
     assert_eq!(
         test::call_service(&app, req).await.status(),

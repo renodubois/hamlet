@@ -52,8 +52,8 @@ describe("apiFetch behavior", () => {
 
   test("listChannels parses JSON array", async () => {
     const channels: Channel[] = [
-      { id: 1, name: "general", position: 0 },
-      { id: 2, name: "random", position: 1 },
+      { id: 1, name: "general", position: 0, type: "text" },
+      { id: 2, name: "random", position: 1, type: "text" },
     ];
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify(channels), {
@@ -68,8 +68,8 @@ describe("apiFetch behavior", () => {
 
   test("reorderChannels sends PUT with ids body and parses response", async () => {
     const updated: Channel[] = [
-      { id: 2, name: "random", position: 0 },
-      { id: 1, name: "general", position: 1 },
+      { id: 2, name: "random", position: 0, type: "text" },
+      { id: 1, name: "general", position: 1, type: "text" },
     ];
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify(updated), {

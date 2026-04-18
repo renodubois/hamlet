@@ -20,6 +20,7 @@ pub async fn setup_db() -> (DatabaseConnection, i64) {
         id: Set(chan_id),
         name: Set("general".to_owned()),
         position: Set(0),
+        channel_type: Set("text".to_owned()),
     }
     .insert(&db)
     .await

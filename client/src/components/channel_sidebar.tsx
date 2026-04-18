@@ -4,8 +4,14 @@ import { type Channel, type User } from "../api";
 import { useChannels } from "../channels_context";
 import AddChannelModal from "./add_channel_modal";
 import Avatar from "./avatar";
-import { SettingsIcon } from "./icons";
+import { SettingsIcon, VoiceChannelIcon } from "./icons";
 import SettingsModal from "./settings_modal";
+
+function joinVoiceChannel(channel: Channel) {
+  // TODO(voice): actually connect to LiveKit. For now this is a stub so we
+  // can wire up the UI before implementing the call path.
+  console.info(`[voice] stub: join voice channel ${channel.id} (${channel.name})`);
+}
 
 export default function ChannelSidebar(props: {
   user: User;
@@ -80,6 +86,7 @@ export default function ChannelSidebar(props: {
                   }}
                   draggable={true}
                   data-channel-id={channel.id}
+                  data-channel-type={channel.type}
                   onDragStart={(e) => handleDragStart(e, channel.id)}
                   onDragOver={(e) => handleDragOver(e, channel.id)}
                   onDragLeave={() => {
@@ -88,18 +95,32 @@ export default function ChannelSidebar(props: {
                   onDrop={(e) => handleDrop(e, channel.id, channels() ?? [])}
                   onDragEnd={clearDragState}
                 >
-                  <A
-                    href={`/channel/${channel.id}`}
-                    activeClass="bg-gray-700 text-white font-medium"
-                    inactiveClass="text-gray-400 hover:bg-gray-700 hover:text-gray-200"
-                    class="block px-3 py-1.5 rounded text-sm cursor-pointer"
-                    // Anchors are draggable by default as URLs, which hijacks
-                    // our custom drag-and-drop — suppress that here and let
-                    // the wrapping div own the drag.
-                    draggable={false}
+                  <Show
+                    when={channel.type === "voice"}
+                    fallback={
+                      <A
+                        href={`/channel/${channel.id}`}
+                        activeClass="bg-gray-700 text-white font-medium"
+                        inactiveClass="text-gray-400 hover:bg-gray-700 hover:text-gray-200"
+                        class="block px-3 py-1.5 rounded text-sm cursor-pointer"
+                        // Anchors are draggable by default as URLs, which hijacks
+                        // our custom drag-and-drop — suppress that here and let
+                        // the wrapping div own the drag.
+                        draggable={false}
+                      >
+                        # {channel.name}
+                      </A>
+                    }
                   >
-                    # {channel.name}
-                  </A>
+                    <button
+                      type="button"
+                      class="w-full flex items-center gap-2 px-3 py-1.5 rounded text-sm cursor-pointer text-left text-gray-400 hover:bg-gray-700 hover:text-gray-200"
+                      onClick={() => joinVoiceChannel(channel)}
+                    >
+                      <VoiceChannelIcon size={14} aria-hidden="true" />
+                      <span>{channel.name}</span>
+                    </button>
+                  </Show>
                 </div>
               )}
             </For>
