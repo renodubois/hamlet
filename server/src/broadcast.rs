@@ -86,6 +86,7 @@ impl Broadcaster {
     }
 
     #[cfg(test)]
+    #[allow(clippy::unwrap_used)]
     pub fn test_client(&self) -> tokio::sync::mpsc::Receiver<actix_sse::Event> {
         let (tx, rx) = tokio::sync::mpsc::channel(10);
         self.inner.lock().unwrap().clients.push(tx);
