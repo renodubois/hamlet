@@ -89,6 +89,8 @@ struct MessageResponse {
 #[derive(Clone, Debug, Deserialize)]
 struct CreateChannelRequest {
     name: String,
+    #[serde(default, rename = "type")]
+    channel_type: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -101,6 +103,8 @@ struct ChannelResponse {
     id: i64,
     name: String,
     position: i64,
+    #[serde(rename = "type")]
+    channel_type: String,
 }
 
 impl From<entity::channel::Model> for ChannelResponse {
@@ -109,9 +113,13 @@ impl From<entity::channel::Model> for ChannelResponse {
             id: c.id,
             name: c.name,
             position: c.position,
+            channel_type: c.channel_type,
         }
     }
 }
+
+const CHANNEL_TYPE_TEXT: &str = "text";
+const CHANNEL_TYPE_VOICE: &str = "voice";
 
 #[derive(Clone, Debug, Serialize)]
 struct MessageDeletedEvent {
@@ -387,6 +395,11 @@ async fn create_channel(
     if name.is_empty() || name.chars().count() > CHANNEL_NAME_MAX_LEN {
         return Err(UserError::InvalidRequest);
     }
+    let channel_type = match body.channel_type.as_deref() {
+        None | Some(CHANNEL_TYPE_TEXT) => CHANNEL_TYPE_TEXT,
+        Some(CHANNEL_TYPE_VOICE) => CHANNEL_TYPE_VOICE,
+        Some(_) => return Err(UserError::InvalidRequest),
+    };
 
     let max_position = entity::channel::Entity::find()
         .order_by_desc(entity::channel::Column::Position)
@@ -400,6 +413,7 @@ async fn create_channel(
         id: Set(generate_id()),
         name: Set(name.to_owned()),
         position: Set(next_position),
+        channel_type: Set(channel_type.to_owned()),
     };
 
     let inserted = new_channel
@@ -686,6 +700,7 @@ pub async fn seed_development_data(db: &DatabaseConnection) {
         id: Set(generate_id()),
         name: Set("general".to_owned()),
         position: Set(0),
+        channel_type: Set(CHANNEL_TYPE_TEXT.to_owned()),
     };
     general_channel.insert(db).await.unwrap();
 
@@ -826,6 +841,7 @@ mod tests {
             id: Set(chan_id),
             name: Set("general".to_owned()),
             position: Set(0),
+            channel_type: Set(CHANNEL_TYPE_TEXT.to_owned()),
         }
         .insert(&db)
         .await
@@ -963,6 +979,7 @@ mod tests {
             id: Set(other_id),
             name: Set("other".to_owned()),
             position: Set(1),
+            channel_type: Set(CHANNEL_TYPE_TEXT.to_owned()),
         }
         .insert(&db)
         .await

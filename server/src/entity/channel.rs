@@ -12,6 +12,9 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub name: String,
     pub position: i64,
+    #[serde(rename = "type")]
+    #[sea_orm(column_type = "Text")]
+    pub channel_type: String,
     #[serde(skip)]
     #[sea_orm(has_many)]
     pub messages: HasMany<super::message::Entity>,

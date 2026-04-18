@@ -11,7 +11,9 @@ export const DEV_USER: User = {
   avatar_url: null,
 };
 
-export const DEFAULT_CHANNELS: Channel[] = [{ id: 100, name: "general", position: 0 }];
+export const DEFAULT_CHANNELS: Channel[] = [
+  { id: 100, name: "general", position: 0, type: "text" },
+];
 
 export interface HandlerState {
   me: User | null;
@@ -21,7 +23,7 @@ export interface HandlerState {
   sentMessages: { channel: string; text: string }[];
   editedMessages: { id: number; text: string }[];
   deletedMessageIds: number[];
-  createdChannels: { name: string }[];
+  createdChannels: { name: string; type?: string }[];
   reorderedIds: number[] | null;
   uploadedAvatars: { size: number; type: string }[];
   deletedAvatar: boolean;
@@ -120,13 +122,15 @@ export function createHandlers(state: HandlerState) {
     }),
 
     http.post(`${BASE}/channel`, async ({ request }) => {
-      const body = (await request.json()) as { name: string };
+      const body = (await request.json()) as { name: string; type?: string };
       state.createdChannels.push(body);
       const nextPosition = state.channels.reduce((m, c) => Math.max(m, c.position), -1) + 1;
+      const channelType = body.type === "voice" ? "voice" : "text";
       const newChannel: Channel = {
         id: Math.floor(Math.random() * 1000) + 200,
         name: body.name,
         position: nextPosition,
+        type: channelType,
       };
       state.channels.push(newChannel);
       return HttpResponse.json(newChannel);

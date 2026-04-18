@@ -10,10 +10,13 @@ export interface User {
   avatar_url: string | null;
 }
 
+export type ChannelType = "text" | "voice";
+
 export interface Channel {
   id: number;
   name: string;
   position: number;
+  type: ChannelType;
 }
 
 export interface Message {
@@ -104,11 +107,11 @@ export async function deleteMessage(messageId: number): Promise<void> {
   if (!res.ok) throw new Error(`Message delete failed (${res.status})`);
 }
 
-export async function createChannel(name: string): Promise<Response> {
+export async function createChannel(name: string, type: ChannelType = "text"): Promise<Response> {
   return apiFetch("/channel", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, type }),
   });
 }
 
