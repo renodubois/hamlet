@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,13 +14,15 @@ use actix_web::{
     App, HttpRequest, HttpResponse, HttpServer, Responder, Result, delete, error, get,
     http::StatusCode,
     middleware::Logger,
-    post,
+    post, put,
     web::{self, Data},
 };
 use derive_more::{Display, Error};
 use futures_util::TryStreamExt;
 use rand::Rng;
-use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthUser;
@@ -88,10 +91,16 @@ struct CreateChannelRequest {
     name: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct ReorderChannelsRequest {
+    ids: Vec<i64>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct ChannelResponse {
     id: i64,
     name: String,
+    position: i64,
 }
 
 impl From<entity::channel::Model> for ChannelResponse {
@@ -99,6 +108,7 @@ impl From<entity::channel::Model> for ChannelResponse {
         Self {
             id: c.id,
             name: c.name,
+            position: c.position,
         }
     }
 }
@@ -108,6 +118,7 @@ impl From<entity::channel::Model> for ChannelResponse {
 enum BroadcastEvent {
     Message(MessageResponse),
     ChannelCreated(ChannelResponse),
+    ChannelsReordered(Vec<ChannelResponse>),
 }
 
 // TODO(reno): return errors as JSON
@@ -169,11 +180,14 @@ pub fn generate_id() -> i64 {
 #[get("/channels")]
 async fn get_channels(db: web::Data<DatabaseConnection>) -> Result<impl Responder, UserError> {
     let channels = entity::channel::Entity::find()
+        .order_by_asc(entity::channel::Column::Position)
+        .order_by_asc(entity::channel::Column::Id)
         .all(db.get_ref())
         .await
         .map_err(|_| UserError::DbError)?;
 
-    Ok(web::Json(channels))
+    let resp: Vec<ChannelResponse> = channels.into_iter().map(ChannelResponse::from).collect();
+    Ok(web::Json(resp))
 }
 
 #[get("/messages/{channel_id}")]
@@ -281,9 +295,18 @@ async fn create_channel(
         return Err(UserError::InvalidRequest);
     }
 
+    let max_position = entity::channel::Entity::find()
+        .order_by_desc(entity::channel::Column::Position)
+        .one(db.get_ref())
+        .await
+        .map_err(|_| UserError::DbError)?
+        .map(|c| c.position);
+    let next_position = max_position.map(|p| p + 1).unwrap_or(0);
+
     let new_channel = entity::channel::ActiveModel {
         id: Set(generate_id()),
         name: Set(name.to_owned()),
+        position: Set(next_position),
     };
 
     let inserted = new_channel
@@ -297,6 +320,49 @@ async fn create_channel(
     broadcaster.broadcast(&payload).await;
 
     Ok(web::Json(resp))
+}
+
+#[put("/channels/order")]
+async fn reorder_channels(
+    db: web::Data<DatabaseConnection>,
+    broadcaster: web::Data<Broadcaster>,
+    body: web::Json<ReorderChannelsRequest>,
+    _user: AuthUser,
+) -> Result<impl Responder, UserError> {
+    let existing = entity::channel::Entity::find()
+        .all(db.get_ref())
+        .await
+        .map_err(|_| UserError::DbError)?;
+
+    // The request must reference exactly the full set of existing channels
+    // with no duplicates or omissions — partial reorders are ambiguous.
+    let existing_ids: HashSet<i64> = existing.iter().map(|c| c.id).collect();
+    let request_ids_unique: HashSet<i64> = body.ids.iter().copied().collect();
+    if body.ids.len() != existing.len() || request_ids_unique != existing_ids {
+        return Err(UserError::InvalidRequest);
+    }
+
+    let mut by_id: HashMap<i64, entity::channel::Model> =
+        existing.into_iter().map(|c| (c.id, c)).collect();
+
+    let mut updated: Vec<entity::channel::Model> = Vec::with_capacity(body.ids.len());
+    for (idx, id) in body.ids.iter().enumerate() {
+        let model = by_id.remove(id).ok_or(UserError::InvalidRequest)?;
+        let mut active: entity::channel::ActiveModel = model.into();
+        active.position = Set(idx as i64);
+        let saved = active
+            .update(db.get_ref())
+            .await
+            .map_err(|_| UserError::DbError)?;
+        updated.push(saved);
+    }
+
+    let channels: Vec<ChannelResponse> = updated.into_iter().map(ChannelResponse::from).collect();
+    let payload = serde_json::to_string(&BroadcastEvent::ChannelsReordered(channels.clone()))
+        .map_err(|_| UserError::InternalError)?;
+    broadcaster.broadcast(&payload).await;
+
+    Ok(web::Json(channels))
 }
 
 #[get("/messages/subscribe")]
@@ -526,6 +592,7 @@ pub async fn seed_development_data(db: &DatabaseConnection) {
     let general_channel = entity::channel::ActiveModel {
         id: Set(generate_id()),
         name: Set("general".to_owned()),
+        position: Set(0),
     };
     general_channel.insert(db).await.unwrap();
 
@@ -586,6 +653,7 @@ pub fn configure_app(
                 .service(get_messages)
                 .service(create_message)
                 .service(create_channel)
+                .service(reorder_channels)
                 .service(me)
                 .service(upload_avatar)
                 .service(delete_avatar),
@@ -662,6 +730,7 @@ mod tests {
         entity::channel::ActiveModel {
             id: Set(chan_id),
             name: Set("general".to_owned()),
+            position: Set(0),
         }
         .insert(&db)
         .await
@@ -728,6 +797,56 @@ mod tests {
         assert!(
             event_str.contains("kind\\\":\\\"message\\\""),
             "broadcast event should be tagged as kind=message; got {event_str}"
+        );
+    }
+
+    #[actix_web::test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    async fn test_reorder_channels_broadcasts_to_clients() {
+        let (db, general_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+
+        let other_id = generate_id();
+        entity::channel::ActiveModel {
+            id: Set(other_id),
+            name: Set("other".to_owned()),
+            position: Set(1),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let broadcaster_data = web::Data::from(broadcaster);
+
+        let db_data = web::Data::new(db);
+        let app = test::init_service(
+            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
+        )
+        .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::put()
+            .uri("/channels/order")
+            .insert_header(ContentType::json())
+            .insert_header((name, value))
+            .set_payload(serde_json::json!({"ids": [other_id, general_id]}).to_string())
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out — broadcast was never sent")
+            .expect("channel closed");
+        let event_str = format!("{:?}", event);
+        assert!(
+            event_str.contains("kind\\\":\\\"channels_reordered\\\""),
+            "broadcast event should be tagged as kind=channels_reordered; got {event_str}"
         );
     }
 

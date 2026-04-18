@@ -1,6 +1,6 @@
 import { A } from "@solidjs/router";
 import { createSignal, For, Match, Show, Switch } from "solid-js";
-import { type User } from "../api";
+import { type Channel, type User } from "../api";
 import { useChannels } from "../channels_context";
 import AddChannelModal from "./add_channel_modal";
 import Avatar from "./avatar";
@@ -12,9 +12,49 @@ export default function ChannelSidebar(props: {
   onLogout: () => Promise<void>;
   onAvatarChange?: () => void;
 }) {
-  const { channels } = useChannels();
+  const { channels, reorder } = useChannels();
   const [addChannelOpen, setAddChannelOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
+  const [draggedId, setDraggedId] = createSignal<number | null>(null);
+  const [dropTargetId, setDropTargetId] = createSignal<number | null>(null);
+
+  function clearDragState() {
+    setDraggedId(null);
+    setDropTargetId(null);
+  }
+
+  function handleDragStart(e: DragEvent, id: number) {
+    setDraggedId(id);
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      // Some browsers refuse to start a drag unless data is set.
+      e.dataTransfer.setData("text/plain", String(id));
+    }
+  }
+
+  function handleDragOver(e: DragEvent, id: number) {
+    if (draggedId() === null) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    if (dropTargetId() !== id) setDropTargetId(id);
+  }
+
+  function handleDrop(e: DragEvent, targetId: number, list: Channel[]) {
+    e.preventDefault();
+    const sourceId = draggedId();
+    clearDragState();
+    if (sourceId == null || sourceId === targetId) return;
+    const ids = list.map((c) => c.id);
+    const from = ids.indexOf(sourceId);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    const next = [...ids];
+    next.splice(from, 1);
+    next.splice(to, 0, sourceId);
+    void reorder(next).catch((err) => {
+      console.error("failed to reorder channels", err);
+    });
+  }
 
   return (
     <div class="flex flex-col h-full">
@@ -28,7 +68,7 @@ export default function ChannelSidebar(props: {
           <p class="px-3 py-2 text-red-400 text-sm">Error loading channels</p>
         </Match>
         <Match when={channels()}>
-          <nav class="flex-1 overflow-y-auto py-2">
+          <nav class="flex-1 overflow-y-auto py-2" aria-label="Channels">
             <For each={channels()}>
               {(channel) => (
                 <A
@@ -36,6 +76,20 @@ export default function ChannelSidebar(props: {
                   activeClass="bg-gray-700 text-white font-medium"
                   inactiveClass="text-gray-400 hover:bg-gray-700 hover:text-gray-200"
                   class="block px-3 py-1.5 mx-2 rounded text-sm cursor-pointer"
+                  classList={{
+                    "opacity-50": draggedId() === channel.id,
+                    "ring-2 ring-blue-400":
+                      dropTargetId() === channel.id && draggedId() !== channel.id,
+                  }}
+                  draggable={true}
+                  data-channel-id={channel.id}
+                  onDragStart={(e) => handleDragStart(e, channel.id)}
+                  onDragOver={(e) => handleDragOver(e, channel.id)}
+                  onDragLeave={() => {
+                    if (dropTargetId() === channel.id) setDropTargetId(null);
+                  }}
+                  onDrop={(e) => handleDrop(e, channel.id, channels() ?? [])}
+                  onDragEnd={clearDragState}
                 >
                   # {channel.name}
                 </A>

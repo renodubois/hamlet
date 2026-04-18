@@ -6,6 +6,7 @@ type Listener<T> = (value: T) => void;
 interface EventsContextValue {
   onMessage: (cb: Listener<Message>) => () => void;
   onChannelCreated: (cb: Listener<Channel>) => () => void;
+  onChannelsReordered: (cb: Listener<Channel[]>) => () => void;
 }
 
 const EventsContext = createContext<EventsContextValue>();
@@ -13,6 +14,7 @@ const EventsContext = createContext<EventsContextValue>();
 export function EventsProvider(props: { children: JSX.Element }) {
   const messageListeners = new Set<Listener<Message>>();
   const channelCreatedListeners = new Set<Listener<Channel>>();
+  const channelsReorderedListeners = new Set<Listener<Channel[]>>();
 
   let eventSource: EventSource | null = null;
 
@@ -31,6 +33,8 @@ export function EventsProvider(props: { children: JSX.Element }) {
         messageListeners.forEach((cb) => cb(parsed.data));
       } else if (parsed.kind === "channel_created") {
         channelCreatedListeners.forEach((cb) => cb(parsed.data));
+      } else if (parsed.kind === "channels_reordered") {
+        channelsReorderedListeners.forEach((cb) => cb(parsed.data));
       }
     };
     eventSource = es;
@@ -41,6 +45,7 @@ export function EventsProvider(props: { children: JSX.Element }) {
     eventSource = null;
     messageListeners.clear();
     channelCreatedListeners.clear();
+    channelsReorderedListeners.clear();
   });
 
   const value: EventsContextValue = {
@@ -51,6 +56,10 @@ export function EventsProvider(props: { children: JSX.Element }) {
     onChannelCreated(cb) {
       channelCreatedListeners.add(cb);
       return () => channelCreatedListeners.delete(cb);
+    },
+    onChannelsReordered(cb) {
+      channelsReorderedListeners.add(cb);
+      return () => channelsReorderedListeners.delete(cb);
     },
   };
 

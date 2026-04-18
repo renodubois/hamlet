@@ -565,6 +565,245 @@ async fn test_create_channel_trims_and_rejects_empty_name() {
     }
 }
 
+// --- channel ordering & reordering ---
+
+#[actix_web::test]
+async fn test_get_channels_returns_them_ordered_by_position() {
+    let (db, seeded) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    // Insert two more channels with explicit positions out of insertion order.
+    let b_id = hamlet::generate_id();
+    entity::channel::ActiveModel {
+        id: Set(b_id),
+        name: Set("bravo".to_owned()),
+        position: Set(2),
+    }
+    .insert(&db)
+    .await
+    .unwrap();
+    let a_id = hamlet::generate_id();
+    entity::channel::ActiveModel {
+        id: Set(a_id),
+        name: Set("alpha".to_owned()),
+        position: Set(1),
+    }
+    .insert(&db)
+    .await
+    .unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::get()
+        .uri("/channels")
+        .insert_header((name, value))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    let body = test::read_body(resp).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let ids: Vec<i64> = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_i64().unwrap())
+        .collect();
+    // seeded "general" has position 0, alpha has 1, bravo has 2.
+    assert_eq!(ids, vec![seeded, a_id, b_id]);
+}
+
+#[actix_web::test]
+async fn test_create_channel_assigns_next_position() {
+    let (db, _) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    for expected_pos in 1..=2i64 {
+        let req = test::TestRequest::post()
+            .uri("/channel")
+            .insert_header(ContentType::json())
+            .insert_header((name.clone(), value.clone()))
+            .set_payload(serde_json::json!({"name": format!("ch-{expected_pos}")}).to_string())
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+        let json: serde_json::Value = serde_json::from_slice(&test::read_body(resp).await).unwrap();
+        assert_eq!(json["position"].as_i64().unwrap(), expected_pos);
+    }
+}
+
+#[actix_web::test]
+async fn test_reorder_channels_persists_new_order() {
+    let (db, general_id) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    let a_id = hamlet::generate_id();
+    entity::channel::ActiveModel {
+        id: Set(a_id),
+        name: Set("alpha".to_owned()),
+        position: Set(1),
+    }
+    .insert(&db)
+    .await
+    .unwrap();
+    let b_id = hamlet::generate_id();
+    entity::channel::ActiveModel {
+        id: Set(b_id),
+        name: Set("bravo".to_owned()),
+        position: Set(2),
+    }
+    .insert(&db)
+    .await
+    .unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    // Move bravo to the top, general to the bottom.
+    let new_order = vec![b_id, a_id, general_id];
+    let req = test::TestRequest::put()
+        .uri("/channels/order")
+        .insert_header(ContentType::json())
+        .insert_header((name.clone(), value.clone()))
+        .set_payload(serde_json::json!({"ids": new_order}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert!(resp.status().is_success());
+    let body = test::read_body(resp).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let returned_ids: Vec<i64> = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(returned_ids, new_order);
+    let returned_positions: Vec<i64> = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["position"].as_i64().unwrap())
+        .collect();
+    assert_eq!(returned_positions, vec![0, 1, 2]);
+
+    // GET /channels now reflects the new order.
+    let list_req = test::TestRequest::get()
+        .uri("/channels")
+        .insert_header((name, value))
+        .to_request();
+    let list_resp = test::call_service(&app, list_req).await;
+    let list_body = test::read_body(list_resp).await;
+    let list_json: serde_json::Value = serde_json::from_slice(&list_body).unwrap();
+    let listed_ids: Vec<i64> = list_json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(listed_ids, new_order);
+}
+
+#[actix_web::test]
+async fn test_reorder_channels_requires_auth() {
+    let (db, chan_id) = common::setup_db().await;
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let req = test::TestRequest::put()
+        .uri("/channels/order")
+        .insert_header(ContentType::json())
+        .set_payload(serde_json::json!({"ids": [chan_id]}).to_string())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[actix_web::test]
+async fn test_reorder_channels_rejects_partial_id_set() {
+    let (db, general_id) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    let a_id = hamlet::generate_id();
+    entity::channel::ActiveModel {
+        id: Set(a_id),
+        name: Set("alpha".to_owned()),
+        position: Set(1),
+    }
+    .insert(&db)
+    .await
+    .unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+
+    // Missing one of the existing channels.
+    let req = test::TestRequest::put()
+        .uri("/channels/order")
+        .insert_header(ContentType::json())
+        .insert_header((name.clone(), value.clone()))
+        .set_payload(serde_json::json!({"ids": [general_id]}).to_string())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    // Contains an unknown channel id.
+    let req = test::TestRequest::put()
+        .uri("/channels/order")
+        .insert_header(ContentType::json())
+        .insert_header((name.clone(), value.clone()))
+        .set_payload(serde_json::json!({"ids": [general_id, a_id, 999999]}).to_string())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    // Duplicate ids.
+    let req = test::TestRequest::put()
+        .uri("/channels/order")
+        .insert_header(ContentType::json())
+        .insert_header((name, value))
+        .set_payload(serde_json::json!({"ids": [general_id, general_id]}).to_string())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+}
+
 #[actix_web::test]
 async fn test_create_channel_rejects_too_long_name() {
     let (db, _) = common::setup_db().await;

@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { getServerUrl, setServerUrl, login, listChannels, sendMessage, type Channel } from "./api";
+import {
+  getServerUrl,
+  setServerUrl,
+  login,
+  listChannels,
+  reorderChannels,
+  sendMessage,
+  type Channel,
+} from "./api";
 
 const DEFAULT_SERVER = "http://localhost:3030";
 
@@ -42,8 +50,8 @@ describe("apiFetch behavior", () => {
 
   test("listChannels parses JSON array", async () => {
     const channels: Channel[] = [
-      { id: 1, name: "general" },
-      { id: 2, name: "random" },
+      { id: 1, name: "general", position: 0 },
+      { id: 2, name: "random", position: 1 },
     ];
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify(channels), {
@@ -54,6 +62,31 @@ describe("apiFetch behavior", () => {
 
     await expect(listChannels()).resolves.toEqual(channels);
     expect(fetchMock.mock.calls[0][0]).toBe(`${DEFAULT_SERVER}/channels`);
+  });
+
+  test("reorderChannels sends PUT with ids body and parses response", async () => {
+    const updated: Channel[] = [
+      { id: 2, name: "random", position: 0 },
+      { id: 1, name: "general", position: 1 },
+    ];
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(updated), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(reorderChannels([2, 1])).resolves.toEqual(updated);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/channels/order`);
+    expect(init.method).toBe("PUT");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(JSON.parse(init.body)).toEqual({ ids: [2, 1] });
+  });
+
+  test("reorderChannels throws on non-2xx", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 400 }));
+    await expect(reorderChannels([2, 1])).rejects.toThrow(/400/);
   });
 
   test("sendMessage targets the channel-specific endpoint", async () => {

@@ -5,7 +5,13 @@ import type { Channel, User } from "../api";
 import { renderWithRouter } from "../test/render";
 
 const channelsResource = vi.hoisted(() =>
-  vi.fn<() => { channels: () => Channel[] | undefined; refetch: () => void }>(),
+  vi.fn<
+    () => {
+      channels: () => Channel[] | undefined;
+      refetch: () => void;
+      reorder: (ids: number[]) => Promise<void>;
+    }
+  >(),
 );
 
 vi.mock("../channels_context", () => ({
@@ -48,14 +54,30 @@ function fakeChannels(data: Channel[] | undefined) {
   return wrapped;
 }
 
+function makeDataTransfer(): DataTransfer {
+  const store = new Map<string, string>();
+  return {
+    data: store,
+    effectAllowed: "none",
+    dropEffect: "none",
+    setData(type: string, value: string) {
+      store.set(type, value);
+    },
+    getData(type: string) {
+      return store.get(type) ?? "";
+    },
+  } as unknown as DataTransfer;
+}
+
 describe("<ChannelSidebar>", () => {
   test("renders each channel as a link", () => {
     channelsResource.mockReturnValue({
       channels: fakeChannels([
-        { id: 10, name: "general" },
-        { id: 20, name: "random" },
+        { id: 10, name: "general", position: 0 },
+        { id: 20, name: "random", position: 1 },
       ]),
       refetch: () => {},
+      reorder: async () => {},
     });
 
     renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
@@ -70,6 +92,7 @@ describe("<ChannelSidebar>", () => {
     channelsResource.mockReturnValue({
       channels: fakeChannels([]),
       refetch: () => {},
+      reorder: async () => {},
     });
     renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
     expect(screen.getByText("alice")).toBeInTheDocument();
@@ -79,6 +102,7 @@ describe("<ChannelSidebar>", () => {
     channelsResource.mockReturnValue({
       channels: fakeChannels([]),
       refetch: () => {},
+      reorder: async () => {},
     });
     renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
     expect(screen.queryByTestId("settings-modal-stub")).toBeNull();
@@ -90,8 +114,69 @@ describe("<ChannelSidebar>", () => {
     channelsResource.mockReturnValue({
       channels: fakeChannels([]),
       refetch: () => {},
+      reorder: async () => {},
     });
     renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
     expect(screen.queryByRole("button", { name: /^log out$/i })).toBeNull();
+  });
+
+  test("channel links are marked draggable", () => {
+    channelsResource.mockReturnValue({
+      channels: fakeChannels([
+        { id: 10, name: "general", position: 0 },
+        { id: 20, name: "random", position: 1 },
+      ]),
+      refetch: () => {},
+      reorder: async () => {},
+    });
+    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
+    const general = screen.getByText(/general/).closest("a");
+    expect(general).toHaveAttribute("draggable", "true");
+  });
+
+  test("dragging a channel onto another calls reorder with the new order", async () => {
+    const reorder = vi.fn<(ids: number[]) => Promise<void>>().mockResolvedValue();
+    channelsResource.mockReturnValue({
+      channels: fakeChannels([
+        { id: 10, name: "general", position: 0 },
+        { id: 20, name: "random", position: 1 },
+        { id: 30, name: "dev", position: 2 },
+      ]),
+      refetch: () => {},
+      reorder,
+    });
+
+    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
+
+    const dev = screen.getByText(/dev/).closest("a") as HTMLElement;
+    const general = screen.getByText(/general/).closest("a") as HTMLElement;
+    const dt = makeDataTransfer();
+
+    // Drag "dev" onto "general" — expect dev to move to index 0.
+    fireEvent.dragStart(dev, { dataTransfer: dt });
+    fireEvent.dragOver(general, { dataTransfer: dt });
+    fireEvent.drop(general, { dataTransfer: dt });
+
+    expect(reorder).toHaveBeenCalledTimes(1);
+    expect(reorder).toHaveBeenCalledWith([30, 10, 20]);
+  });
+
+  test("dropping a channel on itself is a no-op", () => {
+    const reorder = vi.fn<(ids: number[]) => Promise<void>>().mockResolvedValue();
+    channelsResource.mockReturnValue({
+      channels: fakeChannels([
+        { id: 10, name: "general", position: 0 },
+        { id: 20, name: "random", position: 1 },
+      ]),
+      refetch: () => {},
+      reorder,
+    });
+    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
+    const general = screen.getByText(/general/).closest("a") as HTMLElement;
+    const dt = makeDataTransfer();
+    fireEvent.dragStart(general, { dataTransfer: dt });
+    fireEvent.dragOver(general, { dataTransfer: dt });
+    fireEvent.drop(general, { dataTransfer: dt });
+    expect(reorder).not.toHaveBeenCalled();
   });
 });

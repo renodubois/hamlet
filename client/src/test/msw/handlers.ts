@@ -11,7 +11,7 @@ export const DEV_USER: User = {
   avatar_url: null,
 };
 
-export const DEFAULT_CHANNELS: Channel[] = [{ id: 100, name: "general" }];
+export const DEFAULT_CHANNELS: Channel[] = [{ id: 100, name: "general", position: 0 }];
 
 export interface HandlerState {
   me: User | null;
@@ -20,6 +20,7 @@ export interface HandlerState {
   validCredentials: { username: string; password: string };
   sentMessages: { channel: string; text: string }[];
   createdChannels: { name: string }[];
+  reorderedIds: number[] | null;
   uploadedAvatars: { size: number; type: string }[];
   deletedAvatar: boolean;
 }
@@ -32,6 +33,7 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     validCredentials: { username: "baipas", password: "password" },
     sentMessages: [],
     createdChannels: [],
+    reorderedIds: null,
     uploadedAvatars: [],
     deletedAvatar: false,
     ...overrides,
@@ -84,9 +86,29 @@ export function createHandlers(state: HandlerState) {
     http.post(`${BASE}/channel`, async ({ request }) => {
       const body = (await request.json()) as { name: string };
       state.createdChannels.push(body);
-      const newChannel: Channel = { id: Math.floor(Math.random() * 1000) + 200, name: body.name };
+      const nextPosition = state.channels.reduce((m, c) => Math.max(m, c.position), -1) + 1;
+      const newChannel: Channel = {
+        id: Math.floor(Math.random() * 1000) + 200,
+        name: body.name,
+        position: nextPosition,
+      };
       state.channels.push(newChannel);
       return HttpResponse.json(newChannel);
+    }),
+
+    http.put(`${BASE}/channels/order`, async ({ request }) => {
+      const body = (await request.json()) as { ids: number[] };
+      const byId = new Map(state.channels.map((c) => [c.id, c]));
+      if (body.ids.length !== state.channels.length || body.ids.some((id) => !byId.has(id))) {
+        return new HttpResponse(null, { status: 400 });
+      }
+      const reordered: Channel[] = body.ids.map((id, i) => {
+        const existing = byId.get(id) as Channel;
+        return { ...existing, position: i };
+      });
+      state.channels = reordered;
+      state.reorderedIds = body.ids;
+      return HttpResponse.json(reordered);
     }),
 
     http.post(`${BASE}/me/avatar`, async ({ request }) => {
