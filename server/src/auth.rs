@@ -88,6 +88,8 @@ pub async fn validate_session(db: &DatabaseConnection, token: &str) -> Result<Au
     Ok(AuthUser {
         id: user.id,
         username: user.username,
+        avatar_path: user.avatar_path,
+        avatar_updated_at: user.avatar_updated_at,
     })
 }
 
@@ -113,6 +115,8 @@ pub async fn register_user(
         username: Set(username.to_owned()),
         email: Set(email),
         email_verified: Set(false),
+        avatar_path: Set(None),
+        avatar_updated_at: Set(None),
     };
     let user = user.insert(db).await.map_err(|_| UserError::DbError)?;
 
@@ -182,6 +186,8 @@ pub fn clear_session_cookie() -> Cookie<'static> {
 pub struct AuthUser {
     pub id: i64,
     pub username: String,
+    pub avatar_path: Option<String>,
+    pub avatar_updated_at: Option<i64>,
 }
 
 impl FromRequest for AuthUser {

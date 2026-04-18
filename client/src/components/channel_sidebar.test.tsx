@@ -28,7 +28,13 @@ vi.mock("./settings_modal", () => ({
 
 import ChannelSidebar from "./channel_sidebar";
 
-const USER: User = { id: 1, username: "alice", email: null, email_verified: false };
+const USER: User = {
+  id: 1,
+  username: "alice",
+  email: null,
+  email_verified: false,
+  avatar_url: null,
+};
 
 function fakeChannels(data: Channel[] | undefined) {
   // createResource gives us something shaped like a Resource (loading/error/etc).

@@ -40,8 +40,8 @@ function seedAuthed() {
   const state = resetMswState();
   state.me = DEV_USER;
   state.messages["100"] = [
-    { id: 1, user_id: 1, channel_id: 100, text: "hello", username: "alice" },
-    { id: 2, user_id: 2, channel_id: 100, text: "world", username: "bob" },
+    { id: 1, user_id: 1, channel_id: 100, text: "hello", username: "alice", avatar_url: null },
+    { id: 2, user_id: 2, channel_id: 100, text: "world", username: "bob", avatar_url: null },
   ];
   return state;
 }
@@ -75,6 +75,7 @@ describe("Channel view integration", () => {
       channel_id: 100,
       text: "hot off the wire",
       username: "carol",
+      avatar_url: null,
     });
 
     await waitFor(() => {
@@ -95,6 +96,7 @@ describe("Channel view integration", () => {
       channel_id: 999,
       text: "do not show",
       username: "carol",
+      avatar_url: null,
     });
 
     // Give reactivity a tick to flush; then assert nothing appeared.
@@ -116,6 +118,37 @@ describe("Channel view integration", () => {
         channel: "100",
         text: "typed message",
       });
+    });
+  });
+
+  test("renders avatars next to each message", async () => {
+    const state = resetMswState();
+    state.me = DEV_USER;
+    state.messages["100"] = [
+      {
+        id: 1,
+        user_id: 1,
+        channel_id: 100,
+        text: "hello",
+        username: "alice",
+        avatar_url: "/uploads/avatars/1.webp?v=1",
+      },
+      {
+        id: 2,
+        user_id: 2,
+        channel_id: 100,
+        text: "world",
+        username: "bob",
+        avatar_url: null,
+      },
+    ];
+    mountAt("/channel/100");
+
+    await waitFor(() => {
+      const aliceAvatar = screen.getByRole("img", { name: /alice's avatar/i });
+      expect(aliceAvatar.querySelector("img")).not.toBeNull();
+      const bobAvatar = screen.getByRole("img", { name: /bob's avatar/i });
+      expect(bobAvatar.querySelector("svg")).not.toBeNull();
     });
   });
 });

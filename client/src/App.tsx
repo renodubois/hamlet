@@ -23,7 +23,7 @@ const AppShell: Component<{ children: JSX.Element; user: User }> = (props) => {
   return (
     <div class="flex h-screen">
       <aside class="w-60 bg-gray-800 text-gray-100 flex-shrink-0 flex flex-col">
-        <ChannelSidebar user={props.user} onLogout={auth.logout} />
+        <ChannelSidebar user={props.user} onLogout={auth.logout} onAvatarChange={auth.refresh} />
       </aside>
       <main class="flex-1 flex flex-col min-w-0">
         <Suspense>{props.children}</Suspense>

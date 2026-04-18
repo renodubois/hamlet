@@ -3,10 +3,15 @@ import { createSignal, For, Match, Show, Switch } from "solid-js";
 import { type User } from "../api";
 import { useChannels } from "../channels_context";
 import AddChannelModal from "./add_channel_modal";
+import Avatar from "./avatar";
 import { SettingsIcon } from "./icons";
 import SettingsModal from "./settings_modal";
 
-export default function ChannelSidebar(props: { user: User; onLogout: () => Promise<void> }) {
+export default function ChannelSidebar(props: {
+  user: User;
+  onLogout: () => Promise<void>;
+  onAvatarChange?: () => void;
+}) {
   const { channels } = useChannels();
   const [addChannelOpen, setAddChannelOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
@@ -50,6 +55,7 @@ export default function ChannelSidebar(props: { user: User; onLogout: () => Prom
       </div>
 
       <div class="p-3 border-t border-gray-700 flex items-center gap-2">
+        <Avatar url={props.user.avatar_url} username={props.user.username} size={24} />
         <span class="text-gray-300 text-sm truncate flex-1 min-w-0">{props.user.username}</span>
         <button
           type="button"
@@ -66,6 +72,8 @@ export default function ChannelSidebar(props: { user: User; onLogout: () => Prom
         open={settingsOpen()}
         onClose={() => setSettingsOpen(false)}
         onLogout={props.onLogout}
+        user={props.user}
+        onAvatarChange={props.onAvatarChange}
       />
     </div>
   );

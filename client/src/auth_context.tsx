@@ -18,6 +18,7 @@ interface AuthContextValue {
     email?: string,
   ) => Promise<string | null>;
   logout: () => Promise<void>;
+  refresh: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue>();
@@ -72,8 +73,12 @@ export function AuthProvider(props: { children: JSX.Element }) {
     }
   };
 
+  const refresh = () => {
+    void refetch();
+  };
+
   return (
-    <AuthContext.Provider value={{ user, login, register, logout }}>
+    <AuthContext.Provider value={{ user, login, register, logout, refresh }}>
       {props.children}
     </AuthContext.Provider>
   );

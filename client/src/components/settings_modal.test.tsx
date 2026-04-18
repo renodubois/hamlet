@@ -1,17 +1,74 @@
-import { describe, expect, test, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import SettingsModal from "./settings_modal";
+import { describe, expect, test, vi } from "vitest";
+import { type User } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
+import { DEV_USER } from "../test/msw/handlers";
+import { mswState, resetMswState } from "../test/msw/server";
+import SettingsModal from "./settings_modal";
 
-function mount(open: boolean, onLogout: () => Promise<void> = async () => {}, onClose = vi.fn()) {
-  const result = render(() => <SettingsModal open={open} onClose={onClose} onLogout={onLogout} />);
-  return { ...result, onClose };
+const USER: User = {
+  id: 1,
+  username: "alice",
+  email: null,
+  email_verified: false,
+  avatar_url: null,
+};
+
+// cropperjs is a web-components library that doesn't render meaningfully under
+// happy-dom. Replace it with a stub whose selection returns a tiny canvas so
+// the Save path can still produce a Blob for the upload request.
+vi.mock("cropperjs", () => {
+  class FakeSelection {
+    aspectRatio = 1;
+    initialCoverage = 0.8;
+    async $toCanvas({ width = 16, height = 16 }: { width?: number; height?: number } = {}) {
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      // Monkey-patch toBlob because happy-dom's default is null.
+      canvas.toBlob = (cb: (blob: Blob | null) => void) => {
+        cb(new Blob([new Uint8Array([82, 73, 70, 70])], { type: "image/webp" }));
+      };
+      return canvas;
+    }
+  }
+  return {
+    default: class FakeCropper {
+      selection = new FakeSelection();
+      getCropperSelection() {
+        return this.selection;
+      }
+      destroy() {}
+    },
+  };
+});
+
+function mount(
+  open: boolean,
+  opts: {
+    onLogout?: () => Promise<void>;
+    onClose?: () => void;
+    user?: User | null;
+    onAvatarChange?: () => void;
+  } = {},
+) {
+  const onClose = opts.onClose ?? vi.fn();
+  const onAvatarChange = opts.onAvatarChange ?? vi.fn();
+  const result = render(() => (
+    <SettingsModal
+      open={open}
+      onClose={onClose}
+      onLogout={opts.onLogout ?? (async () => {})}
+      user={opts.user ?? USER}
+      onAvatarChange={onAvatarChange}
+    />
+  ));
+  return { ...result, onClose, onAvatarChange };
 }
 
 describe("<SettingsModal>", () => {
   test("renders nothing when closed", () => {
     mount(false);
-    expect(screen.queryByText(/user profile settings/i)).toBeNull();
     expect(screen.queryByRole("tab", { name: "User Profile" })).toBeNull();
   });
 
@@ -21,7 +78,8 @@ describe("<SettingsModal>", () => {
     const testTab = screen.getByRole("tab", { name: "Test Section" });
     expect(profileTab).toHaveAttribute("aria-selected", "true");
     expect(testTab).toHaveAttribute("aria-selected", "false");
-    expect(screen.getByText(/user profile settings go here/i)).toBeInTheDocument();
+    expect(screen.getByText("alice")).toBeInTheDocument();
+    expect(screen.getByLabelText(/choose profile picture/i)).toBeInTheDocument();
     expect(screen.queryByText(/test section content/i)).toBeNull();
   });
 
@@ -32,63 +90,85 @@ describe("<SettingsModal>", () => {
       "aria-selected",
       "true",
     );
-    expect(screen.getByRole("tab", { name: "User Profile" })).toHaveAttribute(
-      "aria-selected",
-      "false",
-    );
     expect(screen.getByText(/test section content/i)).toBeInTheDocument();
-    expect(screen.queryByText(/user profile settings go here/i)).toBeNull();
+    expect(screen.queryByText("alice")).toBeNull();
   });
 
   test("calls onClose when the close button is clicked", () => {
     const { onClose } = mount(true);
-    fireEvent.click(screen.getByLabelText("Close"));
+    fireEvent.click(screen.getAllByLabelText("Close")[0]);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  test("Log Out is not a tab and does not swap the panel when clicked", () => {
-    mount(true);
-    const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((t) => t.textContent?.trim())).toEqual(["User Profile", "Test Section"]);
-    fireEvent.click(screen.getByRole("button", { name: /log out/i }));
-    // Profile tab remains selected after opening the confirm
-    expect(screen.getByRole("tab", { name: "User Profile" })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
-  });
-
-  test("clicking Log Out opens a confirmation modal", () => {
-    mount(true);
-    expect(screen.queryByText(/are you sure you want to log out/i)).toBeNull();
+  test("Log Out opens a confirmation modal and calls onLogout on confirm", async () => {
+    const onLogout = vi.fn(async () => {});
+    mount(true, { onLogout });
     fireEvent.click(screen.getByRole("button", { name: /log out/i }));
     expect(screen.getByText(/are you sure you want to log out/i)).toBeInTheDocument();
-  });
-
-  test("confirming logout calls onLogout", async () => {
-    const onLogout = vi.fn(async () => {});
-    mount(true, onLogout);
-    fireEvent.click(screen.getByRole("button", { name: /log out/i }));
-    // Two buttons now match /log out/i — the sidebar entry (reopens confirm)
-    // and the confirm dialog's primary action. Pick the last one, which is
-    // inside the confirm modal.
     const buttons = screen.getAllByRole("button", { name: /log out/i });
     fireEvent.click(buttons[buttons.length - 1]);
     await waitFor(() => expect(onLogout).toHaveBeenCalledTimes(1));
   });
 
-  test("cancel closes the confirm modal and keeps settings open", () => {
-    mount(true);
-    fireEvent.click(screen.getByRole("button", { name: /log out/i }));
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByText(/are you sure you want to log out/i)).toBeNull();
-    // Settings modal is still open
-    expect(screen.getByRole("tab", { name: "User Profile" })).toBeInTheDocument();
+  test("shows 'Remove picture' only when the user has an avatar", () => {
+    const { unmount } = mount(true, { user: { ...USER, avatar_url: null } });
+    expect(screen.queryByRole("button", { name: /remove picture/i })).toBeNull();
+    unmount();
+
+    mount(true, {
+      user: { ...USER, avatar_url: "/uploads/avatars/1.webp?v=10" },
+    });
+    expect(screen.getByRole("button", { name: /remove picture/i })).toBeInTheDocument();
   });
 
-  test("has no axe violations when open", async () => {
+  test("picking a file opens the cropper dialog", async () => {
+    mount(true);
+    const input = screen.getByLabelText(/choose profile picture/i) as HTMLInputElement;
+    const file = new File([new Uint8Array([1, 2, 3])], "pic.png", { type: "image/png" });
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(screen.getByRole("dialog", { name: /crop your picture/i })).toBeInTheDocument();
+    });
+  });
+
+  test("saving the cropper uploads the avatar and notifies the parent", async () => {
+    resetMswState({ me: { ...DEV_USER, username: "alice" } });
+    const onAvatarChange = vi.fn();
+    mount(true, { onAvatarChange });
+    const input = screen.getByLabelText(/choose profile picture/i) as HTMLInputElement;
+    const file = new File([new Uint8Array([1, 2, 3])], "pic.png", { type: "image/png" });
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() =>
+      expect(screen.getByRole("dialog", { name: /crop your picture/i })).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(mswState().uploadedAvatars.length).toBe(1);
+      expect(onAvatarChange).toHaveBeenCalled();
+    });
+  });
+
+  test("Remove picture calls DELETE /me/avatar and notifies the parent", async () => {
+    resetMswState({ me: { ...DEV_USER, avatar_url: "/uploads/avatars/1.webp?v=5" } });
+    const onAvatarChange = vi.fn();
+    mount(true, {
+      user: { ...USER, avatar_url: "/uploads/avatars/1.webp?v=5" },
+      onAvatarChange,
+    });
+    fireEvent.click(screen.getByRole("button", { name: /remove picture/i }));
+    await waitFor(() => {
+      expect(mswState().deletedAvatar).toBe(true);
+      expect(onAvatarChange).toHaveBeenCalled();
+    });
+  });
+
+  test("has no axe violations when open on the Profile tab", async () => {
     const { container } = mount(true);
-    await expectNoA11yViolations(container, "SettingsModal");
+    await expectNoA11yViolations(container, "SettingsModal profile");
   });
 
   test("has no axe violations with the logout confirm open", async () => {

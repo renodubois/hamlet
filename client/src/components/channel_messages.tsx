@@ -1,5 +1,6 @@
 import { Component, For, Match, Resource, Show, Switch } from "solid-js";
 import { type Message } from "../api";
+import Avatar from "./avatar";
 
 const ChannelMessages: Component<{ messages: Resource<Message[]> }> = (props) => {
   let messages = props.messages;
@@ -15,9 +16,12 @@ const ChannelMessages: Component<{ messages: Resource<Message[]> }> = (props) =>
         <Match when={messages()}>
           <For each={messages()}>
             {(message) => (
-              <div>
-                <span class="font-bold mr-2">{message.username}</span>
-                <span>{message.text}</span>
+              <div class="flex items-start gap-3 mb-2">
+                <Avatar url={message.avatar_url} username={message.username} size={32} />
+                <div class="min-w-0 flex-1">
+                  <span class="font-bold mr-2">{message.username}</span>
+                  <span>{message.text}</span>
+                </div>
               </div>
             )}
           </For>

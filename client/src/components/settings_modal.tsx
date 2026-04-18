@@ -1,4 +1,7 @@
-import { createSignal, For, Match, Show, Switch } from "solid-js";
+import { createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
+import { deleteAvatar, uploadAvatar, type User } from "../api";
+import Avatar from "./avatar";
+import CropperDialog from "./cropper_dialog";
 import { LogOutIcon } from "./icons";
 import Modal from "./modal";
 
@@ -25,10 +28,15 @@ export default function SettingsModal(props: {
   open: boolean;
   onClose: () => void;
   onLogout: () => Promise<void>;
+  user?: User | null;
+  onAvatarChange?: () => void;
 }) {
   const [section, setSection] = createSignal<SectionId>("profile");
   const [confirmLogout, setConfirmLogout] = createSignal(false);
   const [loggingOut, setLoggingOut] = createSignal(false);
+  const [pendingFile, setPendingFile] = createSignal<File | null>(null);
+  const [avatarError, setAvatarError] = createSignal<string | null>(null);
+  const [removing, setRemoving] = createSignal(false);
   const active = () => SECTIONS.find((s) => s.id === section()) ?? SECTIONS[0];
 
   const handleConfirmLogout = async () => {
@@ -40,6 +48,41 @@ export default function SettingsModal(props: {
       setConfirmLogout(false);
     }
   };
+
+  const handleFilePicked = (ev: Event & { currentTarget: HTMLInputElement }) => {
+    setAvatarError(null);
+    const file = ev.currentTarget.files?.[0];
+    if (!file) return;
+    setPendingFile(file);
+    // Reset so picking the same file again re-opens the cropper.
+    ev.currentTarget.value = "";
+  };
+
+  const handleCropSave = async (blob: Blob) => {
+    try {
+      await uploadAvatar(blob);
+      props.onAvatarChange?.();
+      setPendingFile(null);
+    } catch (e) {
+      setAvatarError(e instanceof Error ? e.message : "Upload failed");
+      throw e;
+    }
+  };
+
+  const handleRemoveAvatar = async () => {
+    setAvatarError(null);
+    setRemoving(true);
+    try {
+      await deleteAvatar();
+      props.onAvatarChange?.();
+    } catch (e) {
+      setAvatarError(e instanceof Error ? e.message : "Remove failed");
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  onCleanup(() => setPendingFile(null));
 
   return (
     <>
@@ -95,7 +138,50 @@ export default function SettingsModal(props: {
           >
             <Switch>
               <Match when={section() === "profile"}>
-                <p>User profile settings go here.</p>
+                <Show when={props.user} fallback={<p class="text-gray-400">Loading profile...</p>}>
+                  {(u) => (
+                    <div class="flex flex-col items-start gap-4">
+                      <div class="flex items-center gap-4">
+                        <Avatar url={u().avatar_url} username={u().username} size={96} />
+                        <div>
+                          <p class="font-semibold text-base">{u().username}</p>
+                          <Show when={u().email}>
+                            {(e) => <p class="text-xs text-gray-400">{e()}</p>}
+                          </Show>
+                        </div>
+                      </div>
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        class="sr-only"
+                        id="avatar-file-input"
+                        aria-label="Choose profile picture"
+                        onChange={handleFilePicked}
+                      />
+                      <div class="flex gap-2">
+                        <label
+                          for="avatar-file-input"
+                          class="bg-blue-600 hover:bg-blue-700 text-white rounded-md px-4 py-2 text-sm font-medium cursor-pointer"
+                        >
+                          Upload picture
+                        </label>
+                        <Show when={u().avatar_url}>
+                          <button
+                            type="button"
+                            class="text-red-400 hover:text-red-300 text-sm px-3 py-2 disabled:opacity-50"
+                            onClick={handleRemoveAvatar}
+                            disabled={removing()}
+                          >
+                            {removing() ? "Removing..." : "Remove picture"}
+                          </button>
+                        </Show>
+                      </div>
+                      <Show when={avatarError()}>
+                        {(msg) => <p class="text-red-400 text-sm">{msg()}</p>}
+                      </Show>
+                    </div>
+                  )}
+                </Show>
               </Match>
               <Match when={section() === "test"}>
                 <p>Test section content.</p>
@@ -104,6 +190,13 @@ export default function SettingsModal(props: {
           </div>
         </div>
       </Modal>
+
+      <CropperDialog
+        open={pendingFile() !== null}
+        file={pendingFile()}
+        onCancel={() => setPendingFile(null)}
+        onSave={handleCropSave}
+      />
 
       <Modal
         open={confirmLogout()}

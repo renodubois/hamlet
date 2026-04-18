@@ -8,6 +8,7 @@ export const DEV_USER: User = {
   username: "baipas",
   email: null,
   email_verified: false,
+  avatar_url: null,
 };
 
 export const DEFAULT_CHANNELS: Channel[] = [{ id: 100, name: "general" }];
@@ -19,6 +20,8 @@ export interface HandlerState {
   validCredentials: { username: string; password: string };
   sentMessages: { channel: string; text: string }[];
   createdChannels: { name: string }[];
+  uploadedAvatars: { size: number; type: string }[];
+  deletedAvatar: boolean;
 }
 
 export function createState(overrides: Partial<HandlerState> = {}): HandlerState {
@@ -29,6 +32,8 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     validCredentials: { username: "baipas", password: "password" },
     sentMessages: [],
     createdChannels: [],
+    uploadedAvatars: [],
+    deletedAvatar: false,
     ...overrides,
   };
 }
@@ -82,6 +87,27 @@ export function createHandlers(state: HandlerState) {
       const newChannel: Channel = { id: Math.floor(Math.random() * 1000) + 200, name: body.name };
       state.channels.push(newChannel);
       return HttpResponse.json(newChannel);
+    }),
+
+    http.post(`${BASE}/me/avatar`, async ({ request }) => {
+      if (!state.me) return new HttpResponse(null, { status: 401 });
+      const form = await request.formData();
+      const file = form.get("file");
+      if (!(file instanceof Blob)) return new HttpResponse(null, { status: 400 });
+      state.uploadedAvatars.push({ size: file.size, type: file.type });
+      const ts = Math.floor(Date.now() / 1000);
+      state.me = {
+        ...state.me,
+        avatar_url: `/uploads/avatars/${state.me.id}.webp?v=${ts}`,
+      };
+      return HttpResponse.json(state.me);
+    }),
+
+    http.delete(`${BASE}/me/avatar`, () => {
+      if (!state.me) return new HttpResponse(null, { status: 401 });
+      state.deletedAvatar = true;
+      state.me = { ...state.me, avatar_url: null };
+      return HttpResponse.json(state.me);
     }),
   ];
 }

@@ -14,6 +14,9 @@ pub struct Model {
     #[sea_orm(column_type = "Text", nullable)]
     pub email: Option<String>,
     pub email_verified: bool,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub avatar_path: Option<String>,
+    pub avatar_updated_at: Option<i64>,
     #[serde(skip)]
     #[sea_orm(has_many)]
     pub messages: HasMany<super::message::Entity>,

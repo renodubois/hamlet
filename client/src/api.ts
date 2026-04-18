@@ -7,6 +7,7 @@ export interface User {
   username: string;
   email: string | null;
   email_verified: boolean;
+  avatar_url: string | null;
 }
 
 export interface Channel {
@@ -20,6 +21,7 @@ export interface Message {
   channel_id: number;
   text: string;
   username: string;
+  avatar_url: string | null;
 }
 
 export function getServerUrl(): string {
@@ -92,6 +94,20 @@ export async function createChannel(name: string): Promise<Response> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name }),
   });
+}
+
+export async function uploadAvatar(blob: Blob): Promise<User> {
+  const form = new FormData();
+  form.append("file", blob, "avatar.webp");
+  const res = await apiFetch("/me/avatar", { method: "POST", body: form });
+  if (!res.ok) throw new Error(`Avatar upload failed (${res.status})`);
+  return res.json() as Promise<User>;
+}
+
+export async function deleteAvatar(): Promise<User> {
+  const res = await apiFetch("/me/avatar", { method: "DELETE" });
+  if (!res.ok) throw new Error(`Avatar delete failed (${res.status})`);
+  return res.json() as Promise<User>;
 }
 
 export type SSEEvent =
