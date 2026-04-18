@@ -28,6 +28,9 @@ export default function VoiceSettings() {
 
   const [inputDevices, setInputDevices] = createSignal<MediaDeviceInfo[]>([]);
   const [outputDevices, setOutputDevices] = createSignal<MediaDeviceInfo[]>([]);
+  // `true` until warm-up resolves (success or silent failure). Stays `false` on
+  // unsupported platforms so the fallback banner isn't obscured by the overlay.
+  const [isLoading, setIsLoading] = createSignal(supported);
   const [inputId, setInputId] = createSignal<string>(
     localStorage.getItem(VOICE_INPUT_STORAGE_KEY) ?? DEFAULT_DEVICE_ID,
   );
@@ -68,6 +71,7 @@ export default function VoiceSettings() {
   // single default input until the page has been granted microphone access. Do
   // a one-shot silent getUserMedia on mount so the dropdowns show real device
   // names, then drop the stream immediately — startMicTest re-opens its own.
+  // The loading overlay stays up until this resolves (either outcome).
   const primeDeviceLabels = async () => {
     if (!supported) return;
     try {
@@ -76,6 +80,8 @@ export default function VoiceSettings() {
       await refreshDevices();
     } catch {
       // User/OS denied permission — keep the "System default" fallback.
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -192,25 +198,9 @@ export default function VoiceSettings() {
     }
   };
 
-  // Trigger the OS permission prompt as soon as the pane opens so the user
-  // isn't ambushed by it mid-click, and so device labels populate up front
-  // (browsers hide labels until `getUserMedia` has been granted at least once).
-  // Swallows errors silently — denial surfaces with a proper message when the
-  // user clicks "Test microphone".
-  const warmUpPermission = async () => {
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-      s.getTracks().forEach((t) => t.stop());
-      await refreshDevices();
-    } catch {
-      /* user can retry via the explicit test button */
-    }
-  };
-
   onMount(() => {
     if (!supported) return;
     void refreshDevices();
-    void warmUpPermission();
     void primeDeviceLabels();
     navigator.mediaDevices.addEventListener("devicechange", refreshDevices);
   });
@@ -241,7 +231,23 @@ export default function VoiceSettings() {
   const outputLabel = (d: MediaDeviceInfo, i: number) => d.label || `Speaker ${i + 1}`;
 
   return (
-    <div class="flex flex-col gap-6">
+    <div class="relative flex flex-col gap-6">
+      <Show when={isLoading()}>
+        <div
+          role="status"
+          aria-live="polite"
+          class="absolute inset-0 z-10 flex items-center justify-center rounded-md bg-gray-800/60 backdrop-blur-sm"
+        >
+          <div class="flex items-center gap-3 text-sm text-gray-100">
+            <span
+              aria-hidden="true"
+              class="inline-block h-4 w-4 animate-spin rounded-full border-2 border-gray-500 border-t-blue-400"
+            />
+            <span>Loading audio devices…</span>
+          </div>
+        </div>
+      </Show>
+
       <Show when={!supported}>
         <p class="text-red-400" role="alert">
           This platform does not expose media device APIs, so voice chat is unavailable here.

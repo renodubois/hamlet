@@ -125,6 +125,23 @@ afterEach(() => {
 });
 
 describe("<VoiceSettings>", () => {
+  test("shows a loading overlay until the on-mount priming finishes", async () => {
+    render(() => <VoiceSettings />);
+    // Overlay is present synchronously on mount.
+    expect(screen.getByRole("status")).toHaveTextContent(/loading audio devices/i);
+    // It disappears once priming resolves.
+    await waitFor(() => {
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    });
+  });
+
+  test("no loading overlay on unsupported platforms — fallback banner shows instead", async () => {
+    removeMediaDevices();
+    render(() => <VoiceSettings />);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/does not expose media device apis/i);
+  });
+
   test("renders input and output selectors with System default entry", async () => {
     render(() => <VoiceSettings />);
     const input = screen.getByLabelText("Input device") as HTMLSelectElement;
@@ -167,9 +184,8 @@ describe("<VoiceSettings>", () => {
     fireEvent.click(btn);
 
     await waitFor(() => {
-      // Two calls: one on-mount warm-up to trigger the OS permission prompt
-      // early, and one for the explicit "Test microphone" click.
-      expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledTimes(2);
+      // After mockClear, the click triggers exactly one fresh getUserMedia call.
+      expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
     });
     expect(screen.getByRole("button", { name: /stop test/i })).toBeInTheDocument();
     expect(screen.getByRole("meter", { name: /microphone input level/i })).toBeInTheDocument();
