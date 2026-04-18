@@ -4,7 +4,7 @@ import { type Message } from "../api";
 const ChannelMessages: Component<{ messages: Resource<Message[]> }> = (props) => {
   let messages = props.messages;
   return (
-    <section class="p-8">
+    <section class="p-8 min-h-full flex flex-col justify-end">
       <Show when={messages.loading}>
         <p>Loading...</p>
       </Show>
