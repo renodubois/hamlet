@@ -1,0 +1,232 @@
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { expectNoA11yViolations } from "../test/a11y";
+import VoiceSettings, { VOICE_INPUT_STORAGE_KEY, VOICE_OUTPUT_STORAGE_KEY } from "./voice_settings";
+
+type FakeMediaDevices = {
+  enumerateDevices: ReturnType<typeof vi.fn>;
+  getUserMedia: ReturnType<typeof vi.fn>;
+  addEventListener: ReturnType<typeof vi.fn>;
+  removeEventListener: ReturnType<typeof vi.fn>;
+};
+
+function fakeDevice(kind: MediaDeviceKind, deviceId: string, label: string): MediaDeviceInfo {
+  return {
+    deviceId,
+    kind,
+    label,
+    groupId: "group",
+    toJSON: () => ({}),
+  } as MediaDeviceInfo;
+}
+
+function fakeStream(): MediaStream {
+  const track = {
+    stop: vi.fn(),
+  } as unknown as MediaStreamTrack;
+  return {
+    getTracks: () => [track],
+  } as unknown as MediaStream;
+}
+
+function installFakeAudioContext() {
+  class FakeAnalyser {
+    fftSize = 1024;
+    getByteTimeDomainData(buf: Uint8Array) {
+      buf.fill(128);
+    }
+  }
+  class FakeAudioContext {
+    currentTime = 0;
+    createMediaStreamSource() {
+      return { connect: () => {} };
+    }
+    createAnalyser() {
+      return new FakeAnalyser();
+    }
+    createMediaStreamDestination() {
+      return { stream: {} as MediaStream };
+    }
+    createOscillator() {
+      return {
+        type: "sine",
+        frequency: { value: 0 },
+        connect: () => ({ connect: () => ({}) }),
+        start: () => {},
+        stop: () => {},
+      };
+    }
+    createGain() {
+      return {
+        gain: {
+          setValueAtTime: () => {},
+          linearRampToValueAtTime: () => {},
+        },
+        connect: (next: unknown) => next,
+      };
+    }
+    close() {
+      return Promise.resolve();
+    }
+  }
+  (globalThis as unknown as { AudioContext: typeof FakeAudioContext }).AudioContext =
+    FakeAudioContext;
+}
+
+const devices: MediaDeviceInfo[] = [
+  fakeDevice("audioinput", "mic-a", "Built-in Microphone"),
+  fakeDevice("audioinput", "mic-b", "USB Headset"),
+  fakeDevice("audiooutput", "spk-a", "Built-in Speakers"),
+  fakeDevice("audiooutput", "spk-b", "HDMI Output"),
+];
+
+let fakeMediaDevices: FakeMediaDevices;
+
+function installMediaDevices() {
+  fakeMediaDevices = {
+    enumerateDevices: vi.fn().mockResolvedValue(devices),
+    getUserMedia: vi.fn().mockResolvedValue(fakeStream()),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  };
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: fakeMediaDevices,
+  });
+}
+
+function removeMediaDevices() {
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: undefined,
+  });
+}
+
+beforeEach(() => {
+  installMediaDevices();
+  installFakeAudioContext();
+  // Prevent the rAF loop from running forever in tests.
+  vi.stubGlobal("requestAnimationFrame", () => 0);
+  vi.stubGlobal("cancelAnimationFrame", () => {});
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("<VoiceSettings>", () => {
+  test("renders input and output selectors with System default entry", async () => {
+    render(() => <VoiceSettings />);
+    const input = screen.getByLabelText("Input device") as HTMLSelectElement;
+    const output = screen.getByLabelText("Output device") as HTMLSelectElement;
+    expect(input).toBeInTheDocument();
+    expect(output).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: "Built-in Microphone" })).toBeInTheDocument();
+      expect(screen.getByRole("option", { name: "Built-in Speakers" })).toBeInTheDocument();
+    });
+    // "System default" appears once per select.
+    expect(screen.getAllByRole("option", { name: "System default" }).length).toBe(2);
+  });
+
+  test("persists selected devices to localStorage", async () => {
+    render(() => <VoiceSettings />);
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: "USB Headset" })).toBeInTheDocument(),
+    );
+
+    const input = screen.getByLabelText("Input device") as HTMLSelectElement;
+    fireEvent.change(input, { target: { value: "mic-b" } });
+    expect(localStorage.getItem(VOICE_INPUT_STORAGE_KEY)).toBe("mic-b");
+
+    const output = screen.getByLabelText("Output device") as HTMLSelectElement;
+    // The output select is disabled on platforms without setSinkId support (happy-dom),
+    // so we read/write storage directly via the input path instead — persistence of
+    // input selection is the behavior under test here.
+    expect(output).toBeInTheDocument();
+  });
+
+  test("starts microphone test and shows a meter", async () => {
+    render(() => <VoiceSettings />);
+    const btn = screen.getByRole("button", { name: /test microphone/i });
+    fireEvent.click(btn);
+
+    await waitFor(() => {
+      expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByRole("button", { name: /stop test/i })).toBeInTheDocument();
+    expect(screen.getByRole("meter", { name: /microphone input level/i })).toBeInTheDocument();
+  });
+
+  test("passes selected input deviceId as constraint to getUserMedia", async () => {
+    render(() => <VoiceSettings />);
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: "USB Headset" })).toBeInTheDocument(),
+    );
+    const input = screen.getByLabelText("Input device") as HTMLSelectElement;
+    fireEvent.change(input, { target: { value: "mic-b" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /test microphone/i }));
+    await waitFor(() => {
+      expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledWith({
+        audio: { deviceId: { exact: "mic-b" } },
+      });
+    });
+  });
+
+  test("shows an error when microphone permission is denied", async () => {
+    fakeMediaDevices.getUserMedia.mockRejectedValueOnce(new Error("Permission denied"));
+    render(() => <VoiceSettings />);
+    fireEvent.click(screen.getByRole("button", { name: /test microphone/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/permission denied/i);
+    });
+    expect(screen.getByRole("button", { name: /test microphone/i })).toBeInTheDocument();
+  });
+
+  test("restores the last selected input from localStorage", async () => {
+    localStorage.setItem(VOICE_INPUT_STORAGE_KEY, "mic-b");
+    render(() => <VoiceSettings />);
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: "USB Headset" })).toBeInTheDocument(),
+    );
+    const input = screen.getByLabelText("Input device") as HTMLSelectElement;
+    expect(input.value).toBe("mic-b");
+  });
+
+  test("shows fallback message when mediaDevices is unsupported", async () => {
+    removeMediaDevices();
+    render(() => <VoiceSettings />);
+    expect(screen.getByRole("alert")).toHaveTextContent(/does not expose media device apis/i);
+    expect(screen.getByLabelText("Input device")).toBeDisabled();
+  });
+
+  test("persists output device selection to localStorage", async () => {
+    // setSinkId isn't present in happy-dom; force the output select enabled for this test
+    // by defining setSinkId on the prototype, then verify we save the value on change.
+    Object.defineProperty(HTMLAudioElement.prototype, "setSinkId", {
+      configurable: true,
+      value: () => Promise.resolve(),
+    });
+    try {
+      render(() => <VoiceSettings />);
+      await waitFor(() =>
+        expect(screen.getByRole("option", { name: "HDMI Output" })).toBeInTheDocument(),
+      );
+      const output = screen.getByLabelText("Output device") as HTMLSelectElement;
+      fireEvent.change(output, { target: { value: "spk-b" } });
+      expect(localStorage.getItem(VOICE_OUTPUT_STORAGE_KEY)).toBe("spk-b");
+    } finally {
+      delete (HTMLAudioElement.prototype as unknown as { setSinkId?: unknown }).setSinkId;
+    }
+  });
+
+  test("has no axe violations", async () => {
+    const { container } = render(() => <VoiceSettings />);
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: "USB Headset" })).toBeInTheDocument(),
+    );
+    await expectNoA11yViolations(container, "VoiceSettings");
+  });
+});

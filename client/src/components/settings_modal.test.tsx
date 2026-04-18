@@ -75,8 +75,10 @@ describe("<SettingsModal>", () => {
   test("shows the User Profile section by default when open", () => {
     mount(true);
     const profileTab = screen.getByRole("tab", { name: "User Profile" });
+    const voiceTab = screen.getByRole("tab", { name: "Voice & Video" });
     const testTab = screen.getByRole("tab", { name: "Test Section" });
     expect(profileTab).toHaveAttribute("aria-selected", "true");
+    expect(voiceTab).toHaveAttribute("aria-selected", "false");
     expect(testTab).toHaveAttribute("aria-selected", "false");
     expect(screen.getByText("alice")).toBeInTheDocument();
     expect(screen.getByLabelText(/choose profile picture/i)).toBeInTheDocument();
@@ -92,6 +94,17 @@ describe("<SettingsModal>", () => {
     );
     expect(screen.getByText(/test section content/i)).toBeInTheDocument();
     expect(screen.queryByText("alice")).toBeNull();
+  });
+
+  test("swaps to the Voice & Video Section when its tab is clicked", () => {
+    mount(true);
+    fireEvent.click(screen.getByRole("tab", { name: "Voice & Video" }));
+    expect(screen.getByRole("tab", { name: "Voice & Video" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByLabelText("Input device")).toBeInTheDocument();
+    expect(screen.getByLabelText("Output device")).toBeInTheDocument();
   });
 
   test("calls onClose when the close button is clicked", () => {

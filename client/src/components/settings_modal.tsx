@@ -4,8 +4,9 @@ import Avatar from "./avatar";
 import CropperDialog from "./cropper_dialog";
 import { LogOutIcon } from "./icons";
 import Modal from "./modal";
+import VoiceSettings from "./voice_settings";
 
-type SectionId = "profile" | "test";
+type SectionId = "profile" | "voice" | "test";
 
 interface Section {
   id: SectionId;
@@ -20,6 +21,12 @@ const SECTIONS: Section[] = [
     label: "User Profile",
     tabId: "settings-tab-profile",
     panelId: "settings-panel-profile",
+  },
+  {
+    id: "voice",
+    label: "Voice & Video",
+    tabId: "settings-tab-voice",
+    panelId: "settings-panel-voice",
   },
   { id: "test", label: "Test Section", tabId: "settings-tab-test", panelId: "settings-panel-test" },
 ];
@@ -182,6 +189,9 @@ export default function SettingsModal(props: {
                     </div>
                   )}
                 </Show>
+              </Match>
+              <Match when={section() === "voice"}>
+                <VoiceSettings />
               </Match>
               <Match when={section() === "test"}>
                 <p>Test section content.</p>
