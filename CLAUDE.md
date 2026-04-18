@@ -11,6 +11,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Each subdirectory has its own `CLAUDE.md` with commands, architecture details, and gotchas. Start there for work scoped to one side.
 
+## Testing expectations
+
+New functionality should come with tests. The client side has a full test stack (Vitest unit/component/integration, MSW for HTTP, axe for accessibility, Playwright for E2E) — see `client/CLAUDE.md` for how to pick the right layer and which helpers to use.
+
+Before marking any change as done, run the relevant checks for the side you touched:
+
+- **`client/`** — `npm run fmt`, `npm run lint`, `npm run typecheck`, `npm run test`. Run `npm run test:e2e` if the change could affect a smoke-tested flow (login, sending messages). Run `npm run size` if the change might affect bundle size.
+- **`server/`** — follow `server/CLAUDE.md` for its test/format/lint commands.
+
 ## Running the full app
 
 Start both in separate terminals:

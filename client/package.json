@@ -13,7 +13,11 @@
     "lint": "oxlint",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "size": "npm run build && size-limit"
   },
   "dependencies": {
     "@solidjs/router": "0.16.1",
@@ -22,17 +26,28 @@
     "solid-js": "^1.9.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@size-limit/file": "^12.1.0",
+    "@solidjs/testing-library": "^0.8.10",
     "@tailwindcss/postcss": "^4.1.13",
     "@tauri-apps/cli": "^2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/user-event": "^14.6.1",
     "@types/node": "^22.0.0",
+    "axe-core": "^4.11.3",
+    "happy-dom": "^20.9.0",
+    "msw": "^2.13.4",
     "oxfmt": "^0.45.0",
     "oxlint": "^1.60.0",
     "oxlint-tsgolint": "^0.21.1",
     "postcss": "^8.4.49",
+    "size-limit": "^12.1.0",
     "solid-devtools": "^0.34.3",
     "tailwindcss": "^4.1.13",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
-    "vite-plugin-solid": "^2.11.0"
+    "vite-plugin-solid": "^2.11.0",
+    "vitest": "^4.1.4",
+    "vitest-axe": "^0.1.0"
   }
 }
