@@ -1,6 +1,14 @@
 import { createContext, createSignal, onCleanup, type JSX, useContext } from "solid-js";
-import { LocalAudioTrack, RemoteAudioTrack, Room, RoomEvent, Track } from "livekit-client";
-import { getVoiceToken } from "./api";
+import {
+  LocalAudioTrack,
+  type Participant,
+  ParticipantEvent,
+  RemoteAudioTrack,
+  Room,
+  RoomEvent,
+  Track,
+} from "livekit-client";
+import { getVoiceToken, postVoiceSpeaking } from "./api";
 import {
   VOICE_INPUT_STORAGE_KEY,
   VOICE_OUTPUT_STORAGE_KEY,
@@ -14,6 +22,7 @@ interface VoiceChatContextValue {
   isMuted: () => boolean;
   isDeafened: () => boolean;
   lastError: () => string | null;
+  speakingUserIds: () => ReadonlySet<number>;
   join: (channelId: number) => Promise<void>;
   leave: () => Promise<void>;
   toggleMuted: () => Promise<void>;
@@ -33,8 +42,15 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
   const [isMuted, setIsMuted] = createSignal(false);
   const [isDeafened, setIsDeafened] = createSignal(false);
   const [lastError, setLastError] = createSignal<string | null>(null);
+  const [speakingUserIds, setSpeakingUserIds] = createSignal<ReadonlySet<number>>(new Set());
 
   let room: Room | null = null;
+  // Last speaking state we POSTed for the local participant, so we only emit
+  // on transitions rather than on every IsSpeakingChanged callback.
+  let lastLocalSpeaking = false;
+  // user_id → speaking (true). Absent keys are not speaking. Rebuilt into the
+  // reactive speakingUserIds signal on every transition.
+  const speakingById = new Map<number, boolean>();
   // Each subscribed remote audio track gets its own <audio> element so we can
   // (a) drive output routing via setSinkId per-track and (b) mute them all
   // together when the user deafens.
@@ -50,6 +66,9 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
   }
 
   async function leave(): Promise<void> {
+    // Capture channel id before we reset it so the final "stopped speaking"
+    // broadcast lands in the correct room.
+    const leavingChannelId = activeChannelId();
     if (room) {
       const r = room;
       room = null;
@@ -59,6 +78,12 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     setActiveChannelId(null);
     setIsMuted(false);
     setIsDeafened(false);
+    speakingById.clear();
+    setSpeakingUserIds(new Set<number>());
+    if (lastLocalSpeaking && leavingChannelId != null) {
+      void postVoiceSpeaking(leavingChannelId, false);
+    }
+    lastLocalSpeaking = false;
   }
 
   function attachRemoteAudio(track: RemoteAudioTrack): void {
@@ -129,6 +154,43 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
         setActiveChannelId(null);
         setIsMuted(false);
         setIsDeafened(false);
+        speakingById.clear();
+        setSpeakingUserIds(new Set<number>());
+        lastLocalSpeaking = false;
+      });
+
+      // Per-participant speaking detection is meaningfully snappier than
+      // RoomEvent.ActiveSpeakersChanged, which the SFU aggregates on a ~500ms
+      // server tick. IsSpeakingChanged is driven by local audio-level samples,
+      // so the ring tracks the waveform much more closely.
+      const wireSpeakingListener = (p: Participant, isLocal: boolean) => {
+        const id = Number(p.identity);
+        if (!Number.isFinite(id)) return;
+        p.on(ParticipantEvent.IsSpeakingChanged, (speaking: boolean) => {
+          const prev = speakingById.get(id) ?? false;
+          if (speaking === prev) return;
+          if (speaking) speakingById.set(id, true);
+          else speakingById.delete(id);
+          setSpeakingUserIds(new Set(speakingById.keys()));
+          if (isLocal && speaking !== lastLocalSpeaking) {
+            lastLocalSpeaking = speaking;
+            // `channelId` is captured directly — activeChannelId() isn't set
+            // until after connect() resolves, but this listener can fire as
+            // soon as the mic track publishes.
+            void postVoiceSpeaking(channelId, speaking);
+          }
+        });
+      };
+
+      // Register room-level participant churn handlers up front so we don't
+      // miss joins/leaves that fire during or right after connect().
+      newRoom.on(RoomEvent.ParticipantConnected, (p) => wireSpeakingListener(p, false));
+      newRoom.on(RoomEvent.ParticipantDisconnected, (p) => {
+        const id = Number(p.identity);
+        if (!Number.isFinite(id)) return;
+        if (speakingById.delete(id)) {
+          setSpeakingUserIds(new Set(speakingById.keys()));
+        }
       });
 
       console.log("[voice] connecting…");
@@ -136,6 +198,13 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
       console.log("[voice] connected; enabling mic…");
       await newRoom.localParticipant.setMicrophoneEnabled(true);
       console.log("[voice] mic enabled");
+
+      // Identity on the local participant is only populated after connect
+      // resolves, so we wire these listeners here. Remote participants that
+      // were already in the room at join-time also need manual wiring —
+      // ParticipantConnected only fires for subsequent joiners.
+      wireSpeakingListener(newRoom.localParticipant, true);
+      newRoom.remoteParticipants.forEach((p) => wireSpeakingListener(p, false));
 
       // Apply the saved input gain by swapping the default capture track for
       // one that's routed through a Web Audio GainNode.
@@ -182,6 +251,7 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
         isMuted,
         isDeafened,
         lastError,
+        speakingUserIds,
         join,
         leave,
         toggleMuted,

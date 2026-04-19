@@ -32,4 +32,16 @@ describe("<Avatar>", () => {
     const { container } = render(() => <Avatar url={null} username="bob" size={32} />);
     await expectNoA11yViolations(container, "Avatar with identicon");
   });
+
+  test("applies the speaking ring when isSpeaking is true", () => {
+    render(() => <Avatar url={null} username="bob" size={32} isSpeaking={true} />);
+    const wrapper = screen.getByRole("img", { name: /bob's avatar/i });
+    expect(wrapper.className).toMatch(/ring-green-500/);
+  });
+
+  test("omits the speaking ring when isSpeaking is false", () => {
+    render(() => <Avatar url={null} username="bob" size={32} isSpeaking={false} />);
+    const wrapper = screen.getByRole("img", { name: /bob's avatar/i });
+    expect(wrapper.className).not.toMatch(/ring-green-500/);
+  });
 });

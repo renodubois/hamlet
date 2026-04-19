@@ -11,11 +11,15 @@ export default function Avatar(props: {
   url: string | null | undefined;
   username: string;
   size: number;
+  isSpeaking?: boolean;
 }) {
   const label = () => `${props.username}'s avatar`;
   return (
     <span
       class="inline-block overflow-hidden rounded-full bg-gray-700 flex-shrink-0"
+      classList={{
+        "ring-2 ring-green-500": !!props.isSpeaking,
+      }}
       style={{ width: `${props.size}px`, height: `${props.size}px` }}
       aria-label={label()}
       role="img"

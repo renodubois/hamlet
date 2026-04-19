@@ -156,6 +156,12 @@ export interface VoiceParticipantLeft {
   user_id: number;
 }
 
+export interface VoiceParticipantSpeaking {
+  channel_id: number;
+  user_id: number;
+  speaking: boolean;
+}
+
 export interface VoiceToken {
   url: string;
   token: string;
@@ -174,6 +180,16 @@ export async function listVoiceParticipants(channelId: number): Promise<VoicePar
   return res.json() as Promise<VoiceParticipant[]>;
 }
 
+export async function postVoiceSpeaking(channelId: number, speaking: boolean): Promise<void> {
+  await apiFetch(`/voice/speaking`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ channel_id: channelId, speaking }),
+  }).catch(() => {
+    // Best-effort — losing a transition just means a momentary stale indicator.
+  });
+}
+
 export type SSEEvent =
   | { kind: "message"; data: Message }
   | { kind: "message_updated"; data: Message }
@@ -181,7 +197,8 @@ export type SSEEvent =
   | { kind: "channel_created"; data: Channel }
   | { kind: "channels_reordered"; data: Channel[] }
   | { kind: "voice_participant_joined"; data: VoiceParticipant }
-  | { kind: "voice_participant_left"; data: VoiceParticipantLeft };
+  | { kind: "voice_participant_left"; data: VoiceParticipantLeft }
+  | { kind: "voice_participant_speaking_changed"; data: VoiceParticipantSpeaking };
 
 export function messagesEventSource(): EventSource {
   return new EventSource(`${getServerUrl()}/messages/subscribe`, {

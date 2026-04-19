@@ -1,8 +1,9 @@
-import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { listVoiceParticipants, type Channel, type VoiceParticipant } from "../api";
 import { useEvents } from "../events_context";
 import { useVoiceChat } from "../voice_chat_context";
 import Avatar from "./avatar";
+import { showSpeakingIndicatorsEverywhere } from "./voice_settings";
 import {
   HeadphoneOffIcon,
   HeadphonesIcon,
@@ -26,9 +27,19 @@ export default function VoiceChannel(props: { channel: Channel }) {
   const voice = useVoiceChat();
   const [participants, setParticipants] = createSignal<VoiceParticipant[]>([]);
   const [localError, setLocalError] = createSignal<string | null>(null);
+  // Speakers known from SSE broadcasts — used to render the ring when we're
+  // NOT connected to this channel. In-channel speakers come from LiveKit via
+  // voice.speakingUserIds() instead.
+  const [remoteSpeakers, setRemoteSpeakers] = createSignal<ReadonlySet<number>>(new Set());
 
   const isActive = () => voice.activeChannelId() === props.channel.id;
   const isBusy = () => voice.isConnecting();
+
+  const speakingIds = createMemo<ReadonlySet<number>>(() => {
+    if (isActive()) return voice.speakingUserIds();
+    if (showSpeakingIndicatorsEverywhere()) return remoteSpeakers();
+    return new Set();
+  });
 
   async function handleToggleJoin() {
     setLocalError(null);
@@ -60,11 +71,29 @@ export default function VoiceChannel(props: { channel: Channel }) {
     const unsubLeft = events.onVoiceParticipantLeft((p) => {
       if (p.channel_id !== props.channel.id) return;
       setParticipants((prev) => prev.filter((x) => x.user_id !== p.user_id));
+      setRemoteSpeakers((prev) => {
+        if (!prev.has(p.user_id)) return prev;
+        const next = new Set(prev);
+        next.delete(p.user_id);
+        return next;
+      });
+    });
+    const unsubSpeaking = events.onVoiceParticipantSpeakingChanged((s) => {
+      if (s.channel_id !== props.channel.id) return;
+      setRemoteSpeakers((prev) => {
+        const has = prev.has(s.user_id);
+        if (s.speaking === has) return prev;
+        const next = new Set(prev);
+        if (s.speaking) next.add(s.user_id);
+        else next.delete(s.user_id);
+        return next;
+      });
     });
 
     onCleanup(() => {
       unsubJoined();
       unsubLeft();
+      unsubSpeaking();
     });
   });
 
@@ -104,7 +133,12 @@ export default function VoiceChannel(props: { channel: Channel }) {
           <For each={participants()}>
             {(p) => (
               <li class="flex items-center gap-2 px-2 py-1 text-xs text-gray-300">
-                <Avatar url={p.avatar_url} username={p.username} size={18} />
+                <Avatar
+                  url={p.avatar_url}
+                  username={p.username}
+                  size={18}
+                  isSpeaking={speakingIds().has(p.user_id)}
+                />
                 <span class="truncate">{p.username}</span>
               </li>
             )}

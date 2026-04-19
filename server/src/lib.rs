@@ -136,6 +136,13 @@ struct VoiceParticipantLeftEvent {
 }
 
 #[derive(Clone, Debug, Serialize)]
+struct VoiceParticipantSpeakingEvent {
+    channel_id: i64,
+    user_id: i64,
+    speaking: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 enum BroadcastEvent {
     Message(MessageResponse),
@@ -145,6 +152,7 @@ enum BroadcastEvent {
     ChannelsReordered(Vec<ChannelResponse>),
     VoiceParticipantJoined(VoiceParticipant),
     VoiceParticipantLeft(VoiceParticipantLeftEvent),
+    VoiceParticipantSpeakingChanged(VoiceParticipantSpeakingEvent),
 }
 
 // TODO(reno): return errors as JSON
@@ -550,6 +558,44 @@ async fn list_voice_participants(
 ) -> Result<impl Responder, UserError> {
     let channel_id = path.into_inner();
     Ok(web::Json(voice_state.participants(channel_id)))
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct VoiceSpeakingRequest {
+    channel_id: i64,
+    speaking: bool,
+}
+
+/// Broadcast a user's speaking-state transition to every SSE subscriber.
+///
+/// The client is the source of truth here — LiveKit does emit speaking events
+/// server-side but not via webhooks, so participants forward their own local
+/// transitions. We gate on membership so a stray POST from a user who isn't
+/// actually in the channel can't spoof a ring.
+#[post("/voice/speaking")]
+async fn post_voice_speaking(
+    voice_state: web::Data<VoiceState>,
+    broadcaster: web::Data<Broadcaster>,
+    body: web::Json<VoiceSpeakingRequest>,
+    user: AuthUser,
+) -> Result<impl Responder, UserError> {
+    let is_member = voice_state
+        .participants(body.channel_id)
+        .iter()
+        .any(|p| p.user_id == user.id);
+    if !is_member {
+        return Err(UserError::Forbidden);
+    }
+    let payload = serde_json::to_string(&BroadcastEvent::VoiceParticipantSpeakingChanged(
+        VoiceParticipantSpeakingEvent {
+            channel_id: body.channel_id,
+            user_id: user.id,
+            speaking: body.speaking,
+        },
+    ))
+    .map_err(|_| UserError::InternalError)?;
+    broadcaster.broadcast(&payload).await;
+    Ok(HttpResponse::NoContent().finish())
 }
 
 /// Apply a single parsed LiveKit webhook event to in-memory state and
@@ -981,6 +1027,7 @@ pub fn configure_app_with_voice(
                 .service(reorder_channels)
                 .service(mint_voice_token)
                 .service(list_voice_participants)
+                .service(post_voice_speaking)
                 .service(me)
                 .service(upload_avatar)
                 .service(delete_avatar),
@@ -1542,5 +1589,100 @@ mod tests {
             .to_request();
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 503);
+    }
+
+    #[actix_web::test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    async fn test_post_voice_speaking_broadcasts_for_members() {
+        let (db, chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let broadcaster_data = web::Data::from(broadcaster);
+        let voice_state = VoiceState::new();
+        voice_state.add_participant(VoiceParticipant {
+            user_id: user.id,
+            channel_id: chan_id,
+            username: user.username.clone(),
+            avatar_url: None,
+        });
+
+        let db_data = web::Data::new(db);
+        let voice_state_data = web::Data::new(voice_state);
+        let voice_cfg_data: web::Data<Option<VoiceConfig>> = web::Data::new(None);
+        let app = test::init_service(App::new().configure(|cfg| {
+            configure_app_with_voice(
+                cfg,
+                db_data,
+                broadcaster_data,
+                voice_cfg_data,
+                voice_state_data,
+            )
+        }))
+        .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::post()
+            .uri("/voice/speaking")
+            .insert_header((name, value))
+            .set_json(serde_json::json!({ "channel_id": chan_id, "speaking": true }))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 204);
+
+        let broadcast = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        let s = format!("{:?}", broadcast);
+        assert!(
+            s.contains("voice_participant_speaking_changed"),
+            "broadcast should be voice_participant_speaking_changed, got {s}"
+        );
+        assert!(
+            s.contains(&user.id.to_string()),
+            "broadcast should include user id, got {s}"
+        );
+    }
+
+    #[actix_web::test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    async fn test_post_voice_speaking_rejects_non_members() {
+        let (db, chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let broadcaster_data = web::Data::from(broadcaster);
+        // voice_state is empty — alice is NOT in the channel.
+        let voice_state_data = web::Data::new(VoiceState::new());
+        let voice_cfg_data: web::Data<Option<VoiceConfig>> = web::Data::new(None);
+
+        let db_data = web::Data::new(db);
+        let app = test::init_service(App::new().configure(|cfg| {
+            configure_app_with_voice(
+                cfg,
+                db_data,
+                broadcaster_data,
+                voice_cfg_data,
+                voice_state_data,
+            )
+        }))
+        .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::post()
+            .uri("/voice/speaking")
+            .insert_header((name, value))
+            .set_json(serde_json::json!({ "channel_id": chan_id, "speaking": true }))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 403);
     }
 }

@@ -1,12 +1,18 @@
 import { describe, expect, test, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
-import type { Channel, VoiceParticipant, VoiceParticipantLeft } from "../api";
+import type {
+  Channel,
+  VoiceParticipant,
+  VoiceParticipantLeft,
+  VoiceParticipantSpeaking,
+} from "../api";
 import { mswState, resetMswState } from "../test/msw/server";
 import VoiceChannel from "./voice_channel";
 
 type JoinedListener = (p: VoiceParticipant) => void;
 type LeftListener = (p: VoiceParticipantLeft) => void;
+type SpeakingListener = (p: VoiceParticipantSpeaking) => void;
 
 interface MockVoiceChatApi {
   activeChannelId: () => number | null;
@@ -17,6 +23,8 @@ interface MockVoiceChatApi {
   isDeafened: () => boolean;
   setIsDeafened: (v: boolean) => void;
   lastError: () => string | null;
+  speakingUserIds: () => ReadonlySet<number>;
+  setSpeakingUserIds: (ids: ReadonlySet<number>) => void;
   join: ReturnType<typeof vi.fn>;
   leave: ReturnType<typeof vi.fn>;
   toggleMuted: ReturnType<typeof vi.fn>;
@@ -26,6 +34,8 @@ interface MockVoiceChatApi {
 let mockVoice: MockVoiceChatApi;
 const joinedListeners = new Set<JoinedListener>();
 const leftListeners = new Set<LeftListener>();
+const speakingListeners = new Set<SpeakingListener>();
+const [showEverywhere, setShowEverywhere] = createSignal(false);
 
 vi.mock("../voice_chat_context", () => ({
   useVoiceChat: () => mockVoice,
@@ -46,13 +56,22 @@ vi.mock("../events_context", () => ({
       leftListeners.add(cb);
       return () => leftListeners.delete(cb);
     },
+    onVoiceParticipantSpeakingChanged: (cb: SpeakingListener) => {
+      speakingListeners.add(cb);
+      return () => speakingListeners.delete(cb);
+    },
   }),
+}));
+
+vi.mock("./voice_settings", () => ({
+  showSpeakingIndicatorsEverywhere: () => showEverywhere(),
 }));
 
 function makeVoiceMock(overrides?: Partial<MockVoiceChatApi>): MockVoiceChatApi {
   const [activeChannelId, setActiveChannelId] = createSignal<number | null>(null);
   const [isMuted, setIsMuted] = createSignal(false);
   const [isDeafened, setIsDeafened] = createSignal(false);
+  const [speakingUserIds, setSpeakingUserIds] = createSignal<ReadonlySet<number>>(new Set());
   return {
     activeChannelId,
     setActiveChannelId,
@@ -62,6 +81,8 @@ function makeVoiceMock(overrides?: Partial<MockVoiceChatApi>): MockVoiceChatApi 
     isDeafened,
     setIsDeafened,
     lastError: () => null,
+    speakingUserIds,
+    setSpeakingUserIds,
     join: vi.fn<(id: number) => Promise<void>>().mockResolvedValue(),
     leave: vi.fn<() => Promise<void>>().mockResolvedValue(),
     toggleMuted: vi.fn<() => Promise<void>>().mockResolvedValue(),
@@ -84,6 +105,8 @@ function setup(initial: VoiceParticipant[] = []) {
   state.voiceParticipants[String(CHANNEL.id)] = initial;
   joinedListeners.clear();
   leftListeners.clear();
+  speakingListeners.clear();
+  setShowEverywhere(false);
   mockVoice = makeVoiceMock();
   return state;
 }
@@ -177,6 +200,48 @@ describe("<VoiceChannel>", () => {
     expect(screen.getByRole("button", { name: /Mute microphone/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Deafen/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Disconnect from voice/ })).toBeInTheDocument();
+  });
+
+  test("renders a speaking ring on the avatar for in-channel speakers", async () => {
+    setup([{ user_id: 2, channel_id: 42, username: "bob", avatar_url: null }]);
+    mockVoice.setActiveChannelId(42);
+    render(() => <VoiceChannel channel={CHANNEL} />);
+
+    await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
+
+    const avatar = screen.getByRole("img", { name: /bob's avatar/i });
+    expect(avatar.className).not.toMatch(/ring-green-500/);
+
+    mockVoice.setSpeakingUserIds(new Set([2]));
+    await waitFor(() => expect(avatar.className).toMatch(/ring-green-500/));
+  });
+
+  test("does not show ring from SSE speaking events when not connected and setting off", async () => {
+    setup([{ user_id: 2, channel_id: 42, username: "bob", avatar_url: null }]);
+    // Not active — we're not connected to this channel.
+    render(() => <VoiceChannel channel={CHANNEL} />);
+    await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
+
+    speakingListeners.forEach((cb) => cb({ channel_id: 42, user_id: 2, speaking: true }));
+    await Promise.resolve();
+
+    const avatar = screen.getByRole("img", { name: /bob's avatar/i });
+    expect(avatar.className).not.toMatch(/ring-green-500/);
+  });
+
+  test("shows ring from SSE speaking events when setting is on and not connected", async () => {
+    setup([{ user_id: 2, channel_id: 42, username: "bob", avatar_url: null }]);
+    setShowEverywhere(true);
+    render(() => <VoiceChannel channel={CHANNEL} />);
+    await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
+
+    speakingListeners.forEach((cb) => cb({ channel_id: 42, user_id: 2, speaking: true }));
+
+    const avatar = screen.getByRole("img", { name: /bob's avatar/i });
+    await waitFor(() => expect(avatar.className).toMatch(/ring-green-500/));
+
+    speakingListeners.forEach((cb) => cb({ channel_id: 42, user_id: 2, speaking: false }));
+    await waitFor(() => expect(avatar.className).not.toMatch(/ring-green-500/));
   });
 
   test("mute/deafen/disconnect buttons call the voice context", () => {

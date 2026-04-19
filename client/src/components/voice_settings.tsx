@@ -4,6 +4,17 @@ export const VOICE_INPUT_STORAGE_KEY = "hamlet:voice:input_device";
 export const VOICE_OUTPUT_STORAGE_KEY = "hamlet:voice:output_device";
 export const VOICE_NOISE_SUPPRESSION_STORAGE_KEY = "hamlet:voice:noise_suppression";
 export const VOICE_INPUT_GAIN_STORAGE_KEY = "hamlet:voice:input_gain";
+export const VOICE_SHOW_SPEAKING_EVERYWHERE_KEY = "hamlet:voice:show_speaking_everywhere";
+
+// Module-scope signal so toggling the checkbox in the modal updates the
+// sidebar live without a storage-event round trip. Consumers read via the
+// exported getter.
+const [showSpeakingEverywhereSignal, setShowSpeakingEverywhereSignal] = createSignal<boolean>(
+  typeof localStorage !== "undefined" &&
+    localStorage.getItem(VOICE_SHOW_SPEAKING_EVERYWHERE_KEY) === "on",
+);
+
+export const showSpeakingIndicatorsEverywhere = showSpeakingEverywhereSignal;
 
 // "" means "let the browser pick the system default".
 const DEFAULT_DEVICE_ID = "";
@@ -60,6 +71,9 @@ export default function VoiceSettings() {
     getNoiseSuppressionEnabled(),
   );
   const [inputGain, setInputGain] = createSignal<number>(getInputGain());
+  const [showSpeakingEverywhere, setShowSpeakingEverywhere] = createSignal<boolean>(
+    showSpeakingEverywhereSignal(),
+  );
   const [micTesting, setMicTesting] = createSignal(false);
   const [micLevel, setMicLevel] = createSignal(0);
   const [micError, setMicError] = createSignal<string | null>(null);
@@ -234,6 +248,11 @@ export default function VoiceSettings() {
     localStorage.setItem(VOICE_NOISE_SUPPRESSION_STORAGE_KEY, noiseSuppression() ? "on" : "off"),
   );
   createEffect(() => localStorage.setItem(VOICE_INPUT_GAIN_STORAGE_KEY, String(inputGain())));
+  createEffect(() => {
+    const v = showSpeakingEverywhere();
+    localStorage.setItem(VOICE_SHOW_SPEAKING_EVERYWHERE_KEY, v ? "on" : "off");
+    setShowSpeakingEverywhereSignal(v);
+  });
 
   // <select>'s `value` only applies if the matching <option> already exists. The
   // device list loads asynchronously, so we also reapply the value whenever the
@@ -396,6 +415,23 @@ export default function VoiceSettings() {
             <span class="font-medium text-gray-100">Noise suppression</span>
             <span class="text-xs text-gray-400">
               Filters steady background noise (fans, typing). Uses the browser's built-in processor.
+            </span>
+          </span>
+        </label>
+
+        <label class="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            class="mt-0.5"
+            checked={showSpeakingEverywhere()}
+            onChange={(e) => setShowSpeakingEverywhere(e.currentTarget.checked)}
+          />
+          <span class="flex flex-col gap-0.5">
+            <span class="font-medium text-gray-100">
+              Show speaking indicators for voice channels I'm not in
+            </span>
+            <span class="text-xs text-gray-400">
+              Highlights speakers in the sidebar even when you haven't joined the channel.
             </span>
           </span>
         </label>

@@ -7,6 +7,7 @@ import {
   type SSEEvent,
   type VoiceParticipant,
   type VoiceParticipantLeft,
+  type VoiceParticipantSpeaking,
 } from "./api";
 
 type Listener<T> = (value: T) => void;
@@ -19,6 +20,7 @@ interface EventsContextValue {
   onChannelsReordered: (cb: Listener<Channel[]>) => () => void;
   onVoiceParticipantJoined: (cb: Listener<VoiceParticipant>) => () => void;
   onVoiceParticipantLeft: (cb: Listener<VoiceParticipantLeft>) => () => void;
+  onVoiceParticipantSpeakingChanged: (cb: Listener<VoiceParticipantSpeaking>) => () => void;
 }
 
 const EventsContext = createContext<EventsContextValue>();
@@ -31,6 +33,7 @@ export function EventsProvider(props: { children: JSX.Element }) {
   const channelsReorderedListeners = new Set<Listener<Channel[]>>();
   const voiceJoinedListeners = new Set<Listener<VoiceParticipant>>();
   const voiceLeftListeners = new Set<Listener<VoiceParticipantLeft>>();
+  const voiceSpeakingListeners = new Set<Listener<VoiceParticipantSpeaking>>();
 
   let eventSource: EventSource | null = null;
 
@@ -59,6 +62,8 @@ export function EventsProvider(props: { children: JSX.Element }) {
         voiceJoinedListeners.forEach((cb) => cb(parsed.data));
       } else if (parsed.kind === "voice_participant_left") {
         voiceLeftListeners.forEach((cb) => cb(parsed.data));
+      } else if (parsed.kind === "voice_participant_speaking_changed") {
+        voiceSpeakingListeners.forEach((cb) => cb(parsed.data));
       }
     };
     eventSource = es;
@@ -74,6 +79,7 @@ export function EventsProvider(props: { children: JSX.Element }) {
     channelsReorderedListeners.clear();
     voiceJoinedListeners.clear();
     voiceLeftListeners.clear();
+    voiceSpeakingListeners.clear();
   });
 
   const value: EventsContextValue = {
@@ -104,6 +110,10 @@ export function EventsProvider(props: { children: JSX.Element }) {
     onVoiceParticipantLeft(cb) {
       voiceLeftListeners.add(cb);
       return () => voiceLeftListeners.delete(cb);
+    },
+    onVoiceParticipantSpeakingChanged(cb) {
+      voiceSpeakingListeners.add(cb);
+      return () => voiceSpeakingListeners.delete(cb);
     },
   };
 
