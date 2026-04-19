@@ -162,7 +162,7 @@ export default function VoiceChannel(props: { channel: Channel }) {
         </div>
       </Show>
 
-      <Show when={(isActive() || isBusy()) && (localError() || voice.lastError())}>
+      <Show when={localError() || voice.lastError()}>
         <p class="ml-6 mb-1 text-xs text-red-400" role="alert">
           {localError() ?? voice.lastError()}
         </p>

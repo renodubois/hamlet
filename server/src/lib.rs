@@ -1412,7 +1412,7 @@ mod tests {
         let session = auth::create_session(&db, user.id).await.unwrap();
 
         let voice_cfg = VoiceConfig {
-            url: "ws://livekit:7880".to_string(),
+            url: "ws://localhost:7880".to_string(),
             api_key: "devkey".to_string(),
             api_secret: "devsecretdevsecretdevsecretdevsecret".to_string(),
         };
@@ -1458,7 +1458,7 @@ mod tests {
         let session = auth::create_session(&db, user.id).await.unwrap();
 
         let voice_cfg = VoiceConfig {
-            url: "ws://livekit:7880".to_string(),
+            url: "ws://localhost:7880".to_string(),
             api_key: "devkey".to_string(),
             api_secret: "devsecretdevsecretdevsecretdevsecret".to_string(),
         };

@@ -97,6 +97,7 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
       if (room) await leave();
 
       const { url, token } = await getVoiceToken(channelId);
+      console.log("[voice] token OK — url:", url, "channel:", channelId);
 
       const inputDeviceId = localStorage.getItem(VOICE_INPUT_STORAGE_KEY) ?? "";
       const newRoom = new Room({
@@ -120,7 +121,8 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
         if (track instanceof RemoteAudioTrack) detachTrack(track);
       });
 
-      newRoom.on(RoomEvent.Disconnected, () => {
+      newRoom.on(RoomEvent.Disconnected, (reason) => {
+        console.warn("[voice] disconnected, reason:", reason);
         // LiveKit disconnected us (server-side kick, network failure, etc.).
         room = null;
         detachAll();
@@ -129,16 +131,23 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
         setIsDeafened(false);
       });
 
+      console.log("[voice] connecting…");
       await newRoom.connect(url, token);
+      console.log("[voice] connected; enabling mic…");
       await newRoom.localParticipant.setMicrophoneEnabled(true);
+      console.log("[voice] mic enabled");
 
       // Apply the saved input gain by swapping the default capture track for
       // one that's routed through a Web Audio GainNode.
-      await applyInputGain(newRoom, getInputGain()).catch(() => {});
+      await applyInputGain(newRoom, getInputGain()).catch((err) => {
+        console.warn("[voice] applyInputGain failed (continuing):", err);
+      });
 
       room = newRoom;
       setActiveChannelId(channelId);
+      console.log("[voice] activeChannelId set to", channelId);
     } catch (e) {
+      console.error("[voice] join failed:", e);
       setLastError(e instanceof Error ? e.message : "Could not join voice channel");
       await leave();
     } finally {
