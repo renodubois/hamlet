@@ -24,6 +24,14 @@ export default function LoginScreen() {
     if (err) setError(err);
   };
 
+  const devLogin = async (devUsername: string) => {
+    setError(null);
+    setSubmitting(true);
+    const err = await auth.login(server(), devUsername, "password");
+    setSubmitting(false);
+    if (err) setError(err);
+  };
+
   const switchMode = (next: "login" | "register") => {
     setMode(next);
     setError(null);
@@ -80,6 +88,29 @@ export default function LoginScreen() {
             {submitting() ? "Please wait..." : mode() === "login" ? "Sign in" : "Create account"}
           </button>
         </form>
+        <Show when={import.meta.env.DEV}>
+          <div class="mt-4 border-t border-gray-700 pt-4">
+            <p class="text-gray-400 text-xs mb-2">Dev shortcuts</p>
+            <div class="flex gap-2">
+              <button
+                class="flex-1 bg-gray-700 hover:bg-gray-600 text-gray-100 rounded-md p-3 font-medium disabled:opacity-50 transition-colors"
+                type="button"
+                disabled={submitting()}
+                onClick={() => devLogin("baipas")}
+              >
+                Log in as baipas
+              </button>
+              <button
+                class="flex-1 bg-gray-700 hover:bg-gray-600 text-gray-100 rounded-md p-3 font-medium disabled:opacity-50 transition-colors"
+                type="button"
+                disabled={submitting()}
+                onClick={() => devLogin("teo")}
+              >
+                Log in as teo
+              </button>
+            </div>
+          </div>
+        </Show>
         <p class="text-gray-400 text-sm mt-4 text-center">
           <Show
             when={mode() === "login"}

@@ -881,7 +881,19 @@ pub async fn seed_development_data(db: &DatabaseConnection) {
     };
     general_channel.insert(db).await.unwrap();
 
+    let voice_channel = entity::channel::ActiveModel {
+        id: Set(generate_id()),
+        name: Set("voice".to_owned()),
+        position: Set(1),
+        channel_type: Set(CHANNEL_TYPE_VOICE.to_owned()),
+    };
+    voice_channel.insert(db).await.unwrap();
+
     let dev_user = auth::register_user(db, "baipas", "password", None)
+        .await
+        .unwrap();
+
+    auth::register_user(db, "teo", "password", None)
         .await
         .unwrap();
 

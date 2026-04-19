@@ -67,7 +67,7 @@ Real-time messaging uses SSE: the server exposes `GET /messages/subscribe`, and 
 
 ## Data model
 
-SeaORM entities in `server/src/entity/`: `user`, `channel`, `message`, `credential`, `session`. IDs are random 16-digit integers (not autoincrement). The database is in-memory and resets on every server restart; dev data (a `general` channel and a `baipas`/`password` dev user) is seeded on startup along with a fixed session token printed to stdout.
+SeaORM entities in `server/src/entity/`: `user`, `channel`, `message`, `credential`, `session`. IDs are random 16-digit integers (not autoincrement). The database is in-memory and resets on every server restart; dev data (a `general` text channel, a `voice` voice channel, and two dev users — `baipas`/`password` and `teo`/`password`) is seeded on startup along with a fixed session token for `baipas` printed to stdout.
 
 The in-memory database is a temporary choice for ease of local development and testing. The plan is to migrate to a persistent SQLite file, but that work hasn't happened yet. When designing new features, assume data will eventually need to survive server restarts — avoid patterns that rely on the reset-on-restart behavior (e.g. hardcoded session tokens, seed-only data, schema changes that would be painful to migrate).
 
