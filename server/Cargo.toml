@@ -21,6 +21,8 @@ hex = "0.4"
 actix-multipart = "0.7"
 actix-files = "0.6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+livekit-api = { version = "0.4", default-features = false, features = ["access-token", "webhooks", "services-tokio", "signal-client-tokio", "rustls-tls-native-roots"] }
+livekit-protocol = "0.7"
 
 [lints.rust]
 unsafe_code = "forbid"

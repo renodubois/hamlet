@@ -6,7 +6,19 @@ rtc:
   port_range_start: 50000
   port_range_end: 50100
   use_external_ip: false
+  # Advertise loopback as the ICE candidate so the Tauri client on the host
+  # machine can reach LiveKit via the published UDP ports. Without this,
+  # LiveKit falls back to the container's internal Docker IP, which isn't
+  # routable from outside the Compose network.
+  node_ip: 127.0.0.1
 keys:
   devkey: devsecretdevsecretdevsecretdevsecret
+# Participant events drive the sidebar's "who's in this channel" UI. LiveKit
+# signs these with the API secret above, and the server's `/livekit/webhook`
+# handler verifies the signature before updating state.
+webhook:
+  api_key: devkey
+  urls:
+    - http://server:3030/livekit/webhook
 logging:
   level: info

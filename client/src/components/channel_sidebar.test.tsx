@@ -32,6 +32,18 @@ vi.mock("./settings_modal", () => ({
   ),
 }));
 
+// VoiceChannel pulls in livekit-client transitively and needs the
+// VoiceChatProvider. Stub it out so the sidebar's own behavior stays testable
+// without standing up the whole voice stack — it has dedicated coverage in
+// voice_channel.test.tsx.
+vi.mock("./voice_channel", () => ({
+  default: (props: { channel: Channel }) => (
+    <button type="button" data-testid={`voice-channel-${props.channel.id}`}>
+      {props.channel.name}
+    </button>
+  ),
+}));
+
 import ChannelSidebar from "./channel_sidebar";
 
 const USER: User = {
@@ -165,8 +177,7 @@ describe("<ChannelSidebar>", () => {
     expect(reorder).toHaveBeenCalledWith([30, 10, 20]);
   });
 
-  test("voice channels render as a button, not a link, and invoke the join stub on click", () => {
-    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+  test("voice channels render the VoiceChannel component instead of a link", () => {
     channelsResource.mockReturnValue({
       channels: fakeChannels([
         { id: 10, name: "general", position: 0, type: "text" },
@@ -177,19 +188,14 @@ describe("<ChannelSidebar>", () => {
     });
     renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
 
-    // Voice channel does not render as an anchor (no navigation).
+    // Voice channels delegate to VoiceChannel (stubbed above) — they do not
+    // render as navigation anchors.
     expect(screen.queryByRole("link", { name: /lobby/ })).toBeNull();
-    const lobby = screen.getByRole("button", { name: /lobby/ });
-    expect(lobby).toBeInTheDocument();
-    fireEvent.click(lobby);
-    expect(infoSpy).toHaveBeenCalledTimes(1);
-    expect(infoSpy.mock.calls[0][0]).toMatch(/voice.*40.*lobby/);
+    expect(screen.getByTestId("voice-channel-40")).toBeInTheDocument();
 
-    // Text channel still renders as an anchor.
+    // Text channels still render as anchors.
     const general = screen.getByRole("link", { name: /general/ });
     expect(general).toHaveAttribute("href", "/channel/10");
-
-    infoSpy.mockRestore();
   });
 
   test("dropping a channel on itself is a no-op", () => {

@@ -25,6 +25,7 @@
     "@tauri-apps/plugin-opener": "^2",
     "cropperjs": "^2.1.1",
     "jdenticon": "^3.3.0",
+    "livekit-client": "^2.18.3",
     "lucide-solid": "^1.8.0",
     "solid-js": "^1.9.3"
   },
