@@ -2,16 +2,21 @@ import { describe, expect, test, vi } from "vitest";
 import { render, screen } from "@solidjs/testing-library";
 import TypingIndicator, { TYPING_EXPIRY_MS, formatTypingMessage } from "./typing_indicator";
 import type { EventsContextValue } from "../events_context";
-import type { UserTyping } from "../api";
+import type { Message, UserTyping } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
 
 function fakeEvents(): {
   events: EventsContextValue;
   emit: (t: UserTyping) => void;
+  emitMessage: (m: Message) => void;
 } {
   let emit: (t: UserTyping) => void = () => {};
+  let emitMessage: (m: Message) => void = () => {};
   const events: EventsContextValue = {
-    onMessage: () => () => {},
+    onMessage: (cb) => {
+      emitMessage = cb;
+      return () => {};
+    },
     onMessageUpdated: () => () => {},
     onMessageDeleted: () => () => {},
     onChannelCreated: () => () => {},
@@ -24,7 +29,19 @@ function fakeEvents(): {
       return () => {};
     },
   };
-  return { events, emit: (t) => emit(t) };
+  return { events, emit: (t) => emit(t), emitMessage: (m) => emitMessage(m) };
+}
+
+function fakeMessage(
+  overrides: Partial<Message> & Pick<Message, "user_id" | "channel_id">,
+): Message {
+  return {
+    id: 1,
+    text: "hi",
+    username: "someone",
+    avatar_url: null,
+    ...overrides,
+  };
 }
 
 describe("formatTypingMessage", () => {
@@ -124,6 +141,34 @@ describe("<TypingIndicator>", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  test("clears a user's entry when they send a message in the channel", async () => {
+    const { events, emit, emitMessage } = fakeEvents();
+    render(() => <TypingIndicator channelId={100} currentUserId={1} events={events} />);
+    emit({ channel_id: 100, user_id: 2, username: "bob" });
+    expect(await screen.findByText(/bob is typing/i)).toBeInTheDocument();
+    emitMessage(fakeMessage({ user_id: 2, channel_id: 100, username: "bob" }));
+    expect(screen.queryByTestId("typing-indicator")).toBeNull();
+  });
+
+  test("ignores messages from other channels when clearing", async () => {
+    const { events, emit, emitMessage } = fakeEvents();
+    render(() => <TypingIndicator channelId={100} currentUserId={1} events={events} />);
+    emit({ channel_id: 100, user_id: 2, username: "bob" });
+    expect(await screen.findByText(/bob is typing/i)).toBeInTheDocument();
+    emitMessage(fakeMessage({ user_id: 2, channel_id: 999, username: "bob" }));
+    expect(screen.getByText(/bob is typing/i)).toBeInTheDocument();
+  });
+
+  test("only clears the user who sent the message", async () => {
+    const { events, emit, emitMessage } = fakeEvents();
+    render(() => <TypingIndicator channelId={100} currentUserId={1} events={events} />);
+    emit({ channel_id: 100, user_id: 2, username: "bob" });
+    emit({ channel_id: 100, user_id: 3, username: "carol" });
+    expect(await screen.findByText(/bob and carol are typing/i)).toBeInTheDocument();
+    emitMessage(fakeMessage({ user_id: 2, channel_id: 100, username: "bob" }));
+    expect(await screen.findByText(/carol is typing/i)).toBeInTheDocument();
   });
 
   test("four typers collapses to 'Several people'", async () => {

@@ -1,11 +1,11 @@
 import { Show, createSignal, onCleanup, onMount } from "solid-js";
-import type { UserTyping } from "../api";
+import type { Message, UserTyping } from "../api";
 import type { EventsContextValue } from "../events_context";
 
 // How long after a user's last typing ping the indicator keeps showing them.
 // Must be longer than TYPING_PING_INTERVAL_MS in channel.tsx or the indicator
 // will flicker between pings.
-export const TYPING_EXPIRY_MS = 3500;
+export const TYPING_EXPIRY_MS = 2500;
 
 // How often we prune expired entries.
 const TYPING_SWEEP_MS = 500;
@@ -54,8 +54,17 @@ export default function TypingIndicator(props: Props) {
     });
   };
 
+  const clearUser = (userId: number) => {
+    setEntries((prev) => {
+      if (!(userId in prev)) return prev;
+      const next = { ...prev };
+      delete next[userId];
+      return next;
+    });
+  };
+
   onMount(() => {
-    const unsub = props.events.onUserTyping((t: UserTyping) => {
+    const unsubTyping = props.events.onUserTyping((t: UserTyping) => {
       if (t.channel_id !== props.channelId) return;
       if (props.currentUserId !== null && t.user_id === props.currentUserId) return;
       setEntries((prev) => ({
@@ -63,9 +72,14 @@ export default function TypingIndicator(props: Props) {
         [t.user_id]: { username: t.username, lastSeen: now() },
       }));
     });
+    const unsubMessage = props.events.onMessage((m: Message) => {
+      if (m.channel_id !== props.channelId) return;
+      clearUser(m.user_id);
+    });
     const timer = window.setInterval(prune, TYPING_SWEEP_MS);
     onCleanup(() => {
-      unsub();
+      unsubTyping();
+      unsubMessage();
       window.clearInterval(timer);
     });
   });
