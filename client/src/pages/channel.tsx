@@ -1,10 +1,16 @@
 import { useParams } from "@solidjs/router";
 import { createResource, createSignal, onCleanup, onMount } from "solid-js";
 import ChannelMessages from "../components/channel_messages";
-import { listMessages, sendMessage } from "../api";
+import TypingIndicator from "../components/typing_indicator";
+import { listMessages, sendMessage, sendTyping } from "../api";
 import { useChannels } from "../channels_context";
 import { useEvents } from "../events_context";
 import { useAuth } from "../auth_context";
+
+// How often the client will POST /typing while the user is typing.
+// Smaller = snappier start for other users but more server traffic.
+// Must be less than TYPING_EXPIRY_MS in typing_indicator.tsx.
+const TYPING_PING_INTERVAL_MS = 2000;
 
 export default function ChannelView() {
   const params = useParams<{ id: string }>();
@@ -14,6 +20,16 @@ export default function ChannelView() {
   const channel = () => channels()?.find((c) => String(c.id) === params.id);
   const [message, setMessage] = createSignal("");
   const [messages, { mutate }] = createResource(() => params.id, listMessages);
+  let lastTypingSentAt = 0;
+
+  const handleInput = (value: string) => {
+    setMessage(value);
+    if (value.length === 0) return;
+    const now = Date.now();
+    if (now - lastTypingSentAt < TYPING_PING_INTERVAL_MS) return;
+    lastTypingSentAt = now;
+    void sendTyping(params.id);
+  };
 
   onMount(() => {
     const unsubCreated = events.onMessage((m) => {
@@ -51,18 +67,24 @@ export default function ChannelView() {
       </div>
 
       <section class="flex-shrink-0 p-4 border-t border-gray-200">
+        <TypingIndicator
+          channelId={Number(params.id)}
+          currentUserId={user()?.id ?? null}
+          events={events}
+        />
         <form
           onSubmit={(e) => {
             e.preventDefault();
             void sendMessage(params.id, message());
             setMessage("");
+            lastTypingSentAt = 0;
           }}
         >
           <div class="flex">
             <input
               class="bg-gray-100 rounded-md p-4 w-full"
               value={message()}
-              onInput={(e) => setMessage(e.currentTarget.value)}
+              onInput={(e) => handleInput(e.currentTarget.value)}
               placeholder="Send a new message..."
             />
             <input class="bg-blue-100 ml-2 p-4 rounded-md" type="button" value="Send" />

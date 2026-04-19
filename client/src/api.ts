@@ -162,6 +162,18 @@ export interface VoiceParticipantSpeaking {
   speaking: boolean;
 }
 
+export interface UserTyping {
+  channel_id: number;
+  user_id: number;
+  username: string;
+}
+
+export async function sendTyping(channelId: string): Promise<void> {
+  await apiFetch(`/typing/${channelId}`, { method: "POST" }).catch(() => {
+    // Best-effort — a dropped ping just shortens the other side's indicator by one tick.
+  });
+}
+
 export interface VoiceToken {
   url: string;
   token: string;
@@ -198,7 +210,8 @@ export type SSEEvent =
   | { kind: "channels_reordered"; data: Channel[] }
   | { kind: "voice_participant_joined"; data: VoiceParticipant }
   | { kind: "voice_participant_left"; data: VoiceParticipantLeft }
-  | { kind: "voice_participant_speaking_changed"; data: VoiceParticipantSpeaking };
+  | { kind: "voice_participant_speaking_changed"; data: VoiceParticipantSpeaking }
+  | { kind: "user_typing"; data: UserTyping };
 
 export function messagesEventSource(): EventSource {
   return new EventSource(`${getServerUrl()}/messages/subscribe`, {

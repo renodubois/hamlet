@@ -29,6 +29,7 @@ export interface HandlerState {
   deletedAvatar: boolean;
   voiceParticipants: Record<string, VoiceParticipant[]>;
   voiceTokensMinted: number[];
+  typingPings: string[];
 }
 
 export function createState(overrides: Partial<HandlerState> = {}): HandlerState {
@@ -46,6 +47,7 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     deletedAvatar: false,
     voiceParticipants: {},
     voiceTokensMinted: [],
+    typingPings: [],
     ...overrides,
   };
 }
@@ -179,6 +181,11 @@ export function createHandlers(state: HandlerState) {
     http.get(`${BASE}/voice/participants/:id`, ({ params }) => {
       const id = String(params.id);
       return HttpResponse.json(state.voiceParticipants[id] ?? []);
+    }),
+
+    http.post(`${BASE}/typing/:id`, ({ params }) => {
+      state.typingPings.push(String(params.id));
+      return new HttpResponse(null, { status: 204 });
     }),
 
     http.post(`${BASE}/voice/token/:id`, ({ params }) => {

@@ -311,6 +311,65 @@ describe("Channel view integration", () => {
     });
   });
 
+  test("shows a typing indicator when another user's user_typing event arrives", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushUserTyping({ channel_id: 100, user_id: 2, username: "carol" });
+
+    await waitFor(() => {
+      expect(screen.getByText(/carol is typing/i)).toBeInTheDocument();
+    });
+  });
+
+  test("does not show a typing indicator for the current user's own pings", async () => {
+    const state = resetMswState();
+    state.me = DEV_USER;
+    // Own messages have a right-click "edit" menu — we use that as our signal
+    // that the auth resource has resolved so currentUserId is known.
+    state.messages["100"] = [
+      {
+        id: 42,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        text: "mine",
+        username: DEV_USER.username,
+        avatar_url: null,
+      },
+    ];
+    mountAt("/channel/100");
+
+    const ownMessage = await screen.findByText("mine");
+    await waitFor(() => {
+      fireEvent.contextMenu(ownMessage);
+      expect(screen.queryByRole("menuitem", { name: /edit message/i })).not.toBeNull();
+    });
+    // Dismiss the menu.
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushUserTyping({ channel_id: 100, user_id: DEV_USER.id, username: DEV_USER.username });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByTestId("typing-indicator")).toBeNull();
+  });
+
+  test("POSTs a typing ping to the current channel when the input changes", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "h" } });
+
+    await waitFor(() => {
+      expect(mswState().typingPings).toContain("100");
+    });
+  });
+
   test("renders avatars next to each message", async () => {
     const state = resetMswState();
     state.me = DEV_USER;

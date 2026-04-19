@@ -1,4 +1,4 @@
-import type { Channel, Message, MessageDeleted, SSEEvent } from "../../api";
+import type { Channel, Message, MessageDeleted, SSEEvent, UserTyping } from "../../api";
 
 type Listener = (ev: MessageEvent<string>) => void;
 
@@ -33,6 +33,10 @@ export class FakeEventSource {
 
   pushChannelCreated(channel: Channel) {
     this.push({ kind: "channel_created", data: channel });
+  }
+
+  pushUserTyping(data: UserTyping) {
+    this.push({ kind: "user_typing", data });
   }
 
   close() {

@@ -143,6 +143,13 @@ struct VoiceParticipantSpeakingEvent {
 }
 
 #[derive(Clone, Debug, Serialize)]
+struct UserTypingEvent {
+    channel_id: i64,
+    user_id: i64,
+    username: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 enum BroadcastEvent {
     Message(MessageResponse),
@@ -153,6 +160,7 @@ enum BroadcastEvent {
     VoiceParticipantJoined(VoiceParticipant),
     VoiceParticipantLeft(VoiceParticipantLeftEvent),
     VoiceParticipantSpeakingChanged(VoiceParticipantSpeakingEvent),
+    UserTyping(UserTypingEvent),
 }
 
 // TODO(reno): return errors as JSON
@@ -496,6 +504,35 @@ async fn reorder_channels(
 #[get("/messages/subscribe")]
 async fn subscribe_to_channel_events(broadcaster: web::Data<Broadcaster>) -> impl Responder {
     broadcaster.new_client().await
+}
+
+#[post("/typing/{channel_id}")]
+async fn post_typing(
+    db: web::Data<DatabaseConnection>,
+    broadcaster: web::Data<Broadcaster>,
+    path: web::Path<i64>,
+    user: AuthUser,
+) -> Result<impl Responder, UserError> {
+    let channel_id = path.into_inner();
+
+    let channel = entity::channel::Entity::find_by_id(channel_id)
+        .one(db.get_ref())
+        .await
+        .map_err(|_| UserError::DbError)?;
+
+    if channel.is_none() {
+        return Err(UserError::NoChannelFoundError);
+    }
+
+    let payload = serde_json::to_string(&BroadcastEvent::UserTyping(UserTypingEvent {
+        channel_id,
+        user_id: user.id,
+        username: user.username.clone(),
+    }))
+    .map_err(|_| UserError::InternalError)?;
+    broadcaster.broadcast(&payload).await;
+
+    Ok(HttpResponse::NoContent().finish())
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1023,6 +1060,7 @@ pub fn configure_app_with_voice(
                 .service(create_message)
                 .service(update_message)
                 .service(delete_message)
+                .service(post_typing)
                 .service(create_channel)
                 .service(reorder_channels)
                 .service(mint_voice_token)
@@ -1189,6 +1227,79 @@ mod tests {
             event_str.contains("kind\\\":\\\"message\\\""),
             "broadcast event should be tagged as kind=message; got {event_str}"
         );
+    }
+
+    #[actix_web::test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    async fn test_post_typing_broadcasts_to_clients() {
+        let (db, chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let broadcaster_data = web::Data::from(broadcaster);
+
+        let db_data = web::Data::new(db);
+        let app = test::init_service(
+            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
+        )
+        .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::post()
+            .uri(&format!("/typing/{}", chan_id))
+            .insert_header((name, value))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out — broadcast was never sent")
+            .expect("channel closed");
+
+        let event_str = format!("{:?}", event);
+        assert!(
+            event_str.contains("kind\\\":\\\"user_typing\\\""),
+            "broadcast event should be tagged as kind=user_typing; got {event_str}"
+        );
+        assert!(
+            event_str.contains("alice"),
+            "broadcast event should contain the typing user's username; got {event_str}"
+        );
+        assert!(
+            event_str.contains(&format!("\\\"channel_id\\\":{}", chan_id)),
+            "broadcast event should contain the channel_id; got {event_str}"
+        );
+    }
+
+    #[actix_web::test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    async fn test_post_typing_rejects_unknown_channel() {
+        let (db, _chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let broadcaster_data = web::Data::from(broadcaster);
+        let db_data = web::Data::new(db);
+        let app = test::init_service(
+            App::new().configure(|cfg| configure_app(cfg, db_data, broadcaster_data)),
+        )
+        .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::post()
+            .uri("/typing/99999999999999")
+            .insert_header((name, value))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[actix_web::test]

@@ -5,6 +5,7 @@ import {
   type Message,
   type MessageDeleted,
   type SSEEvent,
+  type UserTyping,
   type VoiceParticipant,
   type VoiceParticipantLeft,
   type VoiceParticipantSpeaking,
@@ -12,7 +13,7 @@ import {
 
 type Listener<T> = (value: T) => void;
 
-interface EventsContextValue {
+export interface EventsContextValue {
   onMessage: (cb: Listener<Message>) => () => void;
   onMessageUpdated: (cb: Listener<Message>) => () => void;
   onMessageDeleted: (cb: Listener<MessageDeleted>) => () => void;
@@ -21,6 +22,7 @@ interface EventsContextValue {
   onVoiceParticipantJoined: (cb: Listener<VoiceParticipant>) => () => void;
   onVoiceParticipantLeft: (cb: Listener<VoiceParticipantLeft>) => () => void;
   onVoiceParticipantSpeakingChanged: (cb: Listener<VoiceParticipantSpeaking>) => () => void;
+  onUserTyping: (cb: Listener<UserTyping>) => () => void;
 }
 
 const EventsContext = createContext<EventsContextValue>();
@@ -34,6 +36,7 @@ export function EventsProvider(props: { children: JSX.Element }) {
   const voiceJoinedListeners = new Set<Listener<VoiceParticipant>>();
   const voiceLeftListeners = new Set<Listener<VoiceParticipantLeft>>();
   const voiceSpeakingListeners = new Set<Listener<VoiceParticipantSpeaking>>();
+  const userTypingListeners = new Set<Listener<UserTyping>>();
 
   let eventSource: EventSource | null = null;
 
@@ -64,6 +67,8 @@ export function EventsProvider(props: { children: JSX.Element }) {
         voiceLeftListeners.forEach((cb) => cb(parsed.data));
       } else if (parsed.kind === "voice_participant_speaking_changed") {
         voiceSpeakingListeners.forEach((cb) => cb(parsed.data));
+      } else if (parsed.kind === "user_typing") {
+        userTypingListeners.forEach((cb) => cb(parsed.data));
       }
     };
     eventSource = es;
@@ -80,6 +85,7 @@ export function EventsProvider(props: { children: JSX.Element }) {
     voiceJoinedListeners.clear();
     voiceLeftListeners.clear();
     voiceSpeakingListeners.clear();
+    userTypingListeners.clear();
   });
 
   const value: EventsContextValue = {
@@ -114,6 +120,10 @@ export function EventsProvider(props: { children: JSX.Element }) {
     onVoiceParticipantSpeakingChanged(cb) {
       voiceSpeakingListeners.add(cb);
       return () => voiceSpeakingListeners.delete(cb);
+    },
+    onUserTyping(cb) {
+      userTypingListeners.add(cb);
+      return () => userTypingListeners.delete(cb);
     },
   };
 
