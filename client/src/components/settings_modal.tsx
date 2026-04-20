@@ -1,5 +1,11 @@
-import { createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
-import { deleteAvatar, uploadAvatar, type User } from "../api";
+import { createEffect, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
+import {
+  deleteAvatar,
+  DISPLAY_NAME_MAX_LEN,
+  updateDisplayName,
+  uploadAvatar,
+  type User,
+} from "../api";
 import Avatar from "./avatar";
 import CropperDialog from "./cropper_dialog";
 import { LogOutIcon } from "./icons";
@@ -43,7 +49,16 @@ export default function SettingsModal(props: {
   const [pendingFile, setPendingFile] = createSignal<File | null>(null);
   const [avatarError, setAvatarError] = createSignal<string | null>(null);
   const [removing, setRemoving] = createSignal(false);
+  const [displayNameDraft, setDisplayNameDraft] = createSignal("");
+  const [displayNameSaving, setDisplayNameSaving] = createSignal(false);
+  const [displayNameError, setDisplayNameError] = createSignal<string | null>(null);
   const active = () => SECTIONS.find((s) => s.id === section()) ?? SECTIONS[0];
+
+  // Keep the editable field in sync with the latest persisted display name
+  // (e.g. when the auth context refetches after a successful save).
+  createEffect(() => {
+    setDisplayNameDraft(props.user?.display_name ?? "");
+  });
 
   const handleConfirmLogout = async () => {
     setLoggingOut(true);
@@ -72,6 +87,38 @@ export default function SettingsModal(props: {
     } catch (e) {
       setAvatarError(e instanceof Error ? e.message : "Upload failed");
       throw e;
+    }
+  };
+
+  const saveDisplayName = async () => {
+    const trimmed = displayNameDraft().trim();
+    if (trimmed.length > DISPLAY_NAME_MAX_LEN) {
+      setDisplayNameError(`Display name must be ${DISPLAY_NAME_MAX_LEN} characters or fewer`);
+      return;
+    }
+    setDisplayNameError(null);
+    setDisplayNameSaving(true);
+    try {
+      await updateDisplayName(trimmed.length === 0 ? null : trimmed);
+      props.onAvatarChange?.();
+    } catch (e) {
+      setDisplayNameError(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setDisplayNameSaving(false);
+    }
+  };
+
+  const clearDisplayName = async () => {
+    setDisplayNameError(null);
+    setDisplayNameSaving(true);
+    try {
+      await updateDisplayName(null);
+      setDisplayNameDraft("");
+      props.onAvatarChange?.();
+    } catch (e) {
+      setDisplayNameError(e instanceof Error ? e.message : "Reset failed");
+    } finally {
+      setDisplayNameSaving(false);
     }
   };
 
@@ -146,11 +193,18 @@ export default function SettingsModal(props: {
               <Match when={section() === "profile"}>
                 <Show when={props.user} fallback={<p class="text-gray-400">Loading profile...</p>}>
                   {(u) => (
-                    <div class="flex flex-col items-start gap-4">
+                    <div class="flex flex-col items-start gap-4 w-full">
                       <div class="flex items-center gap-4">
-                        <Avatar url={u().avatar_url} username={u().username} size={96} />
+                        <Avatar
+                          url={u().avatar_url}
+                          username={u().display_name ?? u().username}
+                          size={96}
+                        />
                         <div>
-                          <p class="font-semibold text-base">{u().username}</p>
+                          <p class="font-semibold text-base">{u().display_name ?? u().username}</p>
+                          <Show when={u().display_name}>
+                            <p class="text-xs text-gray-400">@{u().username}</p>
+                          </Show>
                           <Show when={u().email}>
                             {(e) => <p class="text-xs text-gray-400">{e()}</p>}
                           </Show>
@@ -185,6 +239,57 @@ export default function SettingsModal(props: {
                       <Show when={avatarError()}>
                         {(msg) => <p class="text-red-400 text-sm">{msg()}</p>}
                       </Show>
+
+                      <form
+                        class="flex flex-col gap-2 w-full max-w-md pt-4 border-t border-gray-700"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          void saveDisplayName();
+                        }}
+                      >
+                        <label for="display-name-input" class="text-sm font-medium text-gray-200">
+                          Display name
+                        </label>
+                        <p class="text-xs text-gray-400">
+                          Shown next to your messages. Leave blank to use your username (@
+                          {u().username}).
+                        </p>
+                        <input
+                          id="display-name-input"
+                          type="text"
+                          class="bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:border-blue-500 focus:outline-none"
+                          placeholder={u().username}
+                          maxLength={DISPLAY_NAME_MAX_LEN}
+                          value={displayNameDraft()}
+                          onInput={(e) => setDisplayNameDraft(e.currentTarget.value)}
+                          disabled={displayNameSaving()}
+                        />
+                        <div class="flex gap-2 items-center">
+                          <button
+                            type="submit"
+                            class="bg-blue-600 hover:bg-blue-700 text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
+                            disabled={
+                              displayNameSaving() ||
+                              displayNameDraft().trim() === (u().display_name ?? "")
+                            }
+                          >
+                            {displayNameSaving() ? "Saving..." : "Save"}
+                          </button>
+                          <Show when={u().display_name}>
+                            <button
+                              type="button"
+                              class="text-gray-300 hover:text-gray-100 text-sm px-3 py-2 disabled:opacity-50"
+                              onClick={() => void clearDisplayName()}
+                              disabled={displayNameSaving()}
+                            >
+                              Reset to username
+                            </button>
+                          </Show>
+                        </div>
+                        <Show when={displayNameError()}>
+                          {(msg) => <p class="text-red-400 text-sm">{msg()}</p>}
+                        </Show>
+                      </form>
                     </div>
                   )}
                 </Show>

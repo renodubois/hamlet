@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import { describe, expect, test, vi } from "vitest";
 import { type User } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
@@ -9,6 +9,7 @@ import SettingsModal from "./settings_modal";
 const USER: User = {
   id: 1,
   username: "alice",
+  display_name: null,
   email: null,
   email_verified: false,
   avatar_url: null,
@@ -139,11 +140,9 @@ describe("<SettingsModal>", () => {
     const file = new File([new Uint8Array([1, 2, 3])], "pic.png", { type: "image/png" });
     fireEvent.change(input, { target: { files: [file] } });
 
-    await waitFor(() =>
-      expect(screen.getByRole("dialog", { name: /crop your picture/i })).toBeInTheDocument(),
-    );
+    const cropDialog = await screen.findByRole("dialog", { name: /crop your picture/i });
 
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    fireEvent.click(within(cropDialog).getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => {
       expect(mswState().uploadedAvatars.length).toBe(1);
@@ -163,6 +162,56 @@ describe("<SettingsModal>", () => {
       expect(mswState().deletedAvatar).toBe(true);
       expect(onAvatarChange).toHaveBeenCalled();
     });
+  });
+
+  test("Save button sends PUT /me with the new display name", async () => {
+    resetMswState({ me: { ...DEV_USER, username: "alice" } });
+    const onAvatarChange = vi.fn();
+    mount(true, { onAvatarChange });
+
+    const input = screen.getByLabelText(/display name/i) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "Ally" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(mswState().displayNameUpdates).toContainEqual("Ally");
+      expect(onAvatarChange).toHaveBeenCalled();
+    });
+  });
+
+  test("Save sends null when the field is cleared to whitespace", async () => {
+    resetMswState({ me: { ...DEV_USER, username: "alice", display_name: "Ally" } });
+    mount(true, { user: { ...USER, display_name: "Ally" } });
+
+    const input = screen.getByLabelText(/display name/i) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "   " } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(mswState().displayNameUpdates).toContainEqual(null);
+    });
+  });
+
+  test("Reset to username is only shown when a display name is set and it clears the name", async () => {
+    // With no display name, the reset button is hidden.
+    const { unmount } = mount(true);
+    expect(screen.queryByRole("button", { name: /reset to username/i })).toBeNull();
+    unmount();
+
+    resetMswState({ me: { ...DEV_USER, username: "alice", display_name: "Ally" } });
+    mount(true, { user: { ...USER, display_name: "Ally" } });
+    fireEvent.click(screen.getByRole("button", { name: /reset to username/i }));
+
+    await waitFor(() => {
+      expect(mswState().displayNameUpdates).toContainEqual(null);
+    });
+  });
+
+  test("shows the display name (and @username) in the header when set", () => {
+    mount(true, { user: { ...USER, display_name: "Ally" } });
+    expect(screen.getByRole("heading", { name: /settings/i })).toBeInTheDocument();
+    expect(screen.getByText("Ally")).toBeInTheDocument();
+    expect(screen.getByText("@alice")).toBeInTheDocument();
   });
 
   test("has no axe violations when open on the Profile tab", async () => {

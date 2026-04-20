@@ -98,6 +98,7 @@ function setup(initial: VoiceParticipant[] = []) {
   state.me = {
     id: 1,
     username: "alice",
+    display_name: null,
     email: null,
     email_verified: false,
     avatar_url: null,

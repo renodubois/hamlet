@@ -1,10 +1,12 @@
 const DEFAULT_SERVER = "http://localhost:3030";
 
 export const CHANNEL_NAME_MAX_LEN = 128;
+export const DISPLAY_NAME_MAX_LEN = 64;
 
 export interface User {
   id: number;
   username: string;
+  display_name: string | null;
   email: string | null;
   email_verified: boolean;
   avatar_url: string | null;
@@ -25,7 +27,12 @@ export interface Message {
   channel_id: number;
   text: string;
   username: string;
+  display_name: string | null;
   avatar_url: string | null;
+}
+
+export function messageDisplayName(msg: Pick<Message, "username" | "display_name">): string {
+  return msg.display_name ?? msg.username;
 }
 
 export function getServerUrl(): string {
@@ -136,6 +143,16 @@ export async function uploadAvatar(blob: Blob): Promise<User> {
 export async function deleteAvatar(): Promise<User> {
   const res = await apiFetch("/me/avatar", { method: "DELETE" });
   if (!res.ok) throw new Error(`Avatar delete failed (${res.status})`);
+  return res.json() as Promise<User>;
+}
+
+export async function updateDisplayName(displayName: string | null): Promise<User> {
+  const res = await apiFetch("/me", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ display_name: displayName }),
+  });
+  if (!res.ok) throw new Error(`Display name update failed (${res.status})`);
   return res.json() as Promise<User>;
 }
 

@@ -26,6 +26,7 @@ const ownMessage: Message = {
   channel_id: 1,
   text: "hello from me",
   username: "me",
+  display_name: null,
   avatar_url: null,
 };
 
@@ -35,6 +36,7 @@ const otherMessage: Message = {
   channel_id: 1,
   text: "hello from them",
   username: "them",
+  display_name: null,
   avatar_url: null,
 };
 
@@ -92,6 +94,21 @@ describe("<ChannelMessages> hover action toolbar", () => {
     expect(dialog).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
     expect(deleteMessage).toHaveBeenCalledWith(ownMessage.id);
+  });
+
+  test("renders the display_name in place of username when set", async () => {
+    const named: Message = {
+      ...otherMessage,
+      display_name: "Them The Great",
+    };
+    await mount([named], SELF_ID);
+    expect(screen.getByText("Them The Great")).toBeInTheDocument();
+    expect(screen.queryByText("them")).toBeNull();
+  });
+
+  test("falls back to username when display_name is null", async () => {
+    await mount([otherMessage], SELF_ID);
+    expect(screen.getByText("them")).toBeInTheDocument();
   });
 
   test("has no a11y violations with a mix of own and other messages", async () => {

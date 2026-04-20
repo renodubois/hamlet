@@ -12,6 +12,8 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub username: String,
     #[sea_orm(column_type = "Text", nullable)]
+    pub display_name: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
     pub email: Option<String>,
     pub email_verified: bool,
     #[sea_orm(column_type = "Text", nullable)]

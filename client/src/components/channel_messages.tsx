@@ -9,7 +9,7 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
-import { deleteMessage, editMessage, type Message } from "../api";
+import { deleteMessage, editMessage, messageDisplayName, type Message } from "../api";
 import Avatar from "./avatar";
 import { DeleteIcon, EditIcon } from "./icons";
 import Modal from "./modal";
@@ -125,9 +125,9 @@ const ChannelMessages: Component<{
                 class="group relative flex items-start gap-3 px-2 py-1 -mx-2 rounded-md hover:bg-gray-50 focus-within:bg-gray-50"
                 onContextMenu={(e) => handleContextMenu(e, message)}
               >
-                <Avatar url={message.avatar_url} username={message.username} size={32} />
+                <Avatar url={message.avatar_url} username={messageDisplayName(message)} size={32} />
                 <div class="min-w-0 flex-1">
-                  <div class="font-bold">{message.username}</div>
+                  <div class="font-bold">{messageDisplayName(message)}</div>
                   <Show when={editingId() === message.id} fallback={<div>{message.text}</div>}>
                     <form
                       class="flex gap-2 items-center"

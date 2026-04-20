@@ -39,6 +39,7 @@ function fakeMessage(
     id: 1,
     text: "hi",
     username: "someone",
+    display_name: null,
     avatar_url: null,
     ...overrides,
   };

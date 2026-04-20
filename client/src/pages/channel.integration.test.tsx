@@ -40,8 +40,24 @@ function seedAuthed() {
   const state = resetMswState();
   state.me = DEV_USER;
   state.messages["100"] = [
-    { id: 1, user_id: 1, channel_id: 100, text: "hello", username: "alice", avatar_url: null },
-    { id: 2, user_id: 2, channel_id: 100, text: "world", username: "bob", avatar_url: null },
+    {
+      id: 1,
+      user_id: 1,
+      channel_id: 100,
+      text: "hello",
+      username: "alice",
+      display_name: null,
+      avatar_url: null,
+    },
+    {
+      id: 2,
+      user_id: 2,
+      channel_id: 100,
+      text: "world",
+      username: "bob",
+      display_name: null,
+      avatar_url: null,
+    },
   ];
   return state;
 }
@@ -75,6 +91,7 @@ describe("Channel view integration", () => {
       channel_id: 100,
       text: "hot off the wire",
       username: "carol",
+      display_name: null,
       avatar_url: null,
     });
 
@@ -96,6 +113,7 @@ describe("Channel view integration", () => {
       channel_id: 999,
       text: "do not show",
       username: "carol",
+      display_name: null,
       avatar_url: null,
     });
 
@@ -131,6 +149,7 @@ describe("Channel view integration", () => {
         channel_id: 100,
         text: "original",
         username: "baipas",
+        display_name: null,
         avatar_url: null,
       },
     ];
@@ -163,6 +182,7 @@ describe("Channel view integration", () => {
         channel_id: 100,
         text: "someone else",
         username: "bob",
+        display_name: null,
         avatar_url: null,
       },
     ];
@@ -184,6 +204,7 @@ describe("Channel view integration", () => {
         channel_id: 100,
         text: "delete me",
         username: "baipas",
+        display_name: null,
         avatar_url: null,
       },
     ];
@@ -213,6 +234,7 @@ describe("Channel view integration", () => {
         channel_id: 100,
         text: "keep me",
         username: "baipas",
+        display_name: null,
         avatar_url: null,
       },
     ];
@@ -244,6 +266,7 @@ describe("Channel view integration", () => {
         channel_id: 100,
         text: "blank me",
         username: "baipas",
+        display_name: null,
         avatar_url: null,
       },
     ];
@@ -301,6 +324,7 @@ describe("Channel view integration", () => {
       channel_id: 100,
       text: "hello (edited)",
       username: "alice",
+      display_name: null,
       avatar_url: null,
     });
 
@@ -336,6 +360,7 @@ describe("Channel view integration", () => {
         channel_id: 100,
         text: "mine",
         username: DEV_USER.username,
+        display_name: null,
         avatar_url: null,
       },
     ];
@@ -379,6 +404,7 @@ describe("Channel view integration", () => {
         channel_id: 100,
         text: "before edit",
         username: "baipas",
+        display_name: null,
         avatar_url: null,
       },
     ];
@@ -409,6 +435,7 @@ describe("Channel view integration", () => {
         channel_id: 100,
         text: "zap me",
         username: "baipas",
+        display_name: null,
         avatar_url: null,
       },
     ];
@@ -435,6 +462,7 @@ describe("Channel view integration", () => {
         channel_id: 100,
         text: "not mine",
         username: "bob",
+        display_name: null,
         avatar_url: null,
       },
     ];
@@ -457,6 +485,7 @@ describe("Channel view integration", () => {
         channel_id: 100,
         text: "hello",
         username: "alice",
+        display_name: null,
         avatar_url: "/uploads/avatars/1.webp?v=1",
       },
       {
@@ -465,6 +494,7 @@ describe("Channel view integration", () => {
         channel_id: 100,
         text: "world",
         username: "bob",
+        display_name: null,
         avatar_url: null,
       },
     ];

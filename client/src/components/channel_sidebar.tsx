@@ -126,8 +126,14 @@ export default function ChannelSidebar(props: {
       </div>
 
       <div class="p-3 border-t border-gray-700 flex items-center gap-2">
-        <Avatar url={props.user.avatar_url} username={props.user.username} size={24} />
-        <span class="text-gray-300 text-sm truncate flex-1 min-w-0">{props.user.username}</span>
+        <Avatar
+          url={props.user.avatar_url}
+          username={props.user.display_name ?? props.user.username}
+          size={24}
+        />
+        <span class="text-gray-300 text-sm truncate flex-1 min-w-0">
+          {props.user.display_name ?? props.user.username}
+        </span>
         <button
           type="button"
           aria-label="Settings"

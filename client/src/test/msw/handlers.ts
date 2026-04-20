@@ -6,6 +6,7 @@ const BASE = "http://localhost:3030";
 export const DEV_USER: User = {
   id: 1,
   username: "baipas",
+  display_name: null,
   email: null,
   email_verified: false,
   avatar_url: null,
@@ -27,6 +28,7 @@ export interface HandlerState {
   reorderedIds: number[] | null;
   uploadedAvatars: { size: number; type: string }[];
   deletedAvatar: boolean;
+  displayNameUpdates: (string | null)[];
   voiceParticipants: Record<string, VoiceParticipant[]>;
   voiceTokensMinted: number[];
   typingPings: string[];
@@ -45,6 +47,7 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     reorderedIds: null,
     uploadedAvatars: [],
     deletedAvatar: false,
+    displayNameUpdates: [],
     voiceParticipants: {},
     voiceTokensMinted: [],
     typingPings: [],
@@ -56,6 +59,18 @@ export function createHandlers(state: HandlerState) {
   return [
     http.get(`${BASE}/me`, () => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
+      return HttpResponse.json(state.me);
+    }),
+
+    http.put(`${BASE}/me`, async ({ request }) => {
+      if (!state.me) return new HttpResponse(null, { status: 401 });
+      const body = (await request.json()) as { display_name: string | null };
+      const raw = body.display_name;
+      const trimmed = typeof raw === "string" ? raw.trim() : null;
+      const next = trimmed && trimmed.length > 0 ? trimmed : null;
+      if (next !== null && next.length > 64) return new HttpResponse(null, { status: 400 });
+      state.displayNameUpdates.push(next);
+      state.me = { ...state.me, display_name: next };
       return HttpResponse.json(state.me);
     }),
 

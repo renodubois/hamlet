@@ -49,10 +49,16 @@ struct LoginRequest {
     password: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct UpdateProfileRequest {
+    display_name: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct UserResponse {
     id: i64,
     username: String,
+    display_name: Option<String>,
     email: Option<String>,
     email_verified: bool,
     avatar_url: Option<String>,
@@ -71,6 +77,7 @@ impl From<entity::user::Model> for UserResponse {
         Self {
             id: u.id,
             username: u.username,
+            display_name: u.display_name,
             email: u.email,
             email_verified: u.email_verified,
             avatar_url,
@@ -85,6 +92,7 @@ struct MessageResponse {
     channel_id: i64,
     text: String,
     username: String,
+    display_name: Option<String>,
     avatar_url: Option<String>,
 }
 
@@ -221,6 +229,7 @@ const AVATARS_SUBDIR: &str = "avatars";
 
 const ID_LENGTH: u32 = 16;
 const CHANNEL_NAME_MAX_LEN: usize = 128;
+const DISPLAY_NAME_MAX_LEN: usize = 64;
 
 pub fn generate_id() -> i64 {
     let min = 10_i64.pow(ID_LENGTH - 1);
@@ -267,12 +276,13 @@ async fn get_messages(
     let messages: Vec<MessageResponse> = rows
         .into_iter()
         .map(|(m, u)| {
-            let (username, avatar_url) = match u {
+            let (username, display_name, avatar_url) = match u {
                 Some(u) => (
                     u.username,
+                    u.display_name,
                     avatar_url(u.avatar_path.as_deref(), u.avatar_updated_at),
                 ),
-                None => ("[deleted]".into(), None),
+                None => ("[deleted]".into(), None, None),
             };
             MessageResponse {
                 id: m.id,
@@ -280,6 +290,7 @@ async fn get_messages(
                 channel_id: m.channel_id,
                 text: m.text,
                 username,
+                display_name,
                 avatar_url,
             }
         })
@@ -325,6 +336,7 @@ async fn create_message(
         channel_id: inserted.channel_id,
         text: inserted.text,
         username: user.username.clone(),
+        display_name: user.display_name.clone(),
         avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
     };
     let payload = serde_json::to_string(&BroadcastEvent::Message(resp.clone()))
@@ -368,6 +380,7 @@ async fn update_message(
         channel_id,
         text: updated.text,
         username: user.username.clone(),
+        display_name: user.display_name.clone(),
         avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
     };
     let payload = serde_json::to_string(&BroadcastEvent::MessageUpdated(resp.clone()))
@@ -796,6 +809,43 @@ async fn me(
     Ok(web::Json(UserResponse::from(user)))
 }
 
+#[put("/me")]
+async fn update_me(
+    db: web::Data<DatabaseConnection>,
+    user: AuthUser,
+    body: web::Json<UpdateProfileRequest>,
+) -> Result<impl Responder, UserError> {
+    // Treat whitespace-only input as "clear it" so users can't accidentally
+    // stash a name that renders as blank.
+    let new_display_name = match body.display_name.as_deref() {
+        None => None,
+        Some(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else if trimmed.chars().count() > DISPLAY_NAME_MAX_LEN {
+                return Err(UserError::InvalidRequest);
+            } else {
+                Some(trimmed.to_owned())
+            }
+        }
+    };
+
+    let existing = entity::user::Entity::find_by_id(user.id)
+        .one(db.get_ref())
+        .await
+        .map_err(|_| UserError::DbError)?
+        .ok_or(UserError::Unauthorized)?;
+    let mut model: entity::user::ActiveModel = existing.into();
+    model.display_name = Set(new_display_name);
+    let updated = model
+        .update(db.get_ref())
+        .await
+        .map_err(|_| UserError::DbError)?;
+
+    Ok(web::Json(UserResponse::from(updated)))
+}
+
 fn now_unix_secs() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -1067,6 +1117,7 @@ pub fn configure_app_with_voice(
                 .service(list_voice_participants)
                 .service(post_voice_speaking)
                 .service(me)
+                .service(update_me)
                 .service(upload_avatar)
                 .service(delete_avatar),
         );

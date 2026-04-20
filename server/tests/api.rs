@@ -319,6 +319,192 @@ async fn test_me_after_logout_is_unauthorized() {
     );
 }
 
+// --- display name ---
+
+#[actix_web::test]
+async fn test_me_returns_null_display_name_initially() {
+    let (db, _) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::get()
+        .uri("/me")
+        .insert_header((name, value))
+        .to_request();
+    let body = test::read_body(test::call_service(&app, req).await).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["display_name"].is_null());
+}
+
+#[actix_web::test]
+async fn test_update_me_sets_and_clears_display_name() {
+    let (db, _) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    // Set a display name.
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::put()
+        .uri("/me")
+        .insert_header(ContentType::json())
+        .insert_header((name.clone(), value.clone()))
+        .set_payload(serde_json::json!({"display_name": "Alice Wonderland"}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert!(resp.status().is_success());
+    let json: serde_json::Value = serde_json::from_slice(&test::read_body(resp).await).unwrap();
+    assert_eq!(json["display_name"], "Alice Wonderland");
+    assert_eq!(json["username"], "alice");
+
+    // /me reflects the new value.
+    let req = test::TestRequest::get()
+        .uri("/me")
+        .insert_header((name.clone(), value.clone()))
+        .to_request();
+    let json: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    assert_eq!(json["display_name"], "Alice Wonderland");
+
+    // Clear it back to null by sending null.
+    let req = test::TestRequest::put()
+        .uri("/me")
+        .insert_header(ContentType::json())
+        .insert_header((name.clone(), value.clone()))
+        .set_payload(serde_json::json!({"display_name": null}).to_string())
+        .to_request();
+    let json: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    assert!(json["display_name"].is_null());
+
+    // Whitespace-only is also treated as clear.
+    let req = test::TestRequest::put()
+        .uri("/me")
+        .insert_header(ContentType::json())
+        .insert_header((name.clone(), value.clone()))
+        .set_payload(serde_json::json!({"display_name": "   "}).to_string())
+        .to_request();
+    let json: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    assert!(json["display_name"].is_null());
+}
+
+#[actix_web::test]
+async fn test_update_me_rejects_overlong_display_name() {
+    let (db, _) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    // 65 chars — one over the 64-char limit.
+    let long = "a".repeat(65);
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::put()
+        .uri("/me")
+        .insert_header(ContentType::json())
+        .insert_header((name, value))
+        .set_payload(serde_json::json!({"display_name": long}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[actix_web::test]
+async fn test_update_me_requires_auth() {
+    let (db, _) = common::setup_db().await;
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let req = test::TestRequest::put()
+        .uri("/me")
+        .insert_header(ContentType::json())
+        .set_payload(serde_json::json!({"display_name": "anyone"}).to_string())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[actix_web::test]
+async fn test_messages_include_display_name_when_set() {
+    let (db, chan_id) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(
+            cfg,
+            web::Data::new(db.clone()),
+            web::Data::from(Broadcaster::new()),
+        )
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+
+    // Set display name first.
+    let req = test::TestRequest::put()
+        .uri("/me")
+        .insert_header(ContentType::json())
+        .insert_header((name.clone(), value.clone()))
+        .set_payload(serde_json::json!({"display_name": "Ally"}).to_string())
+        .to_request();
+    assert!(test::call_service(&app, req).await.status().is_success());
+
+    // Post a message — the response should carry the display name.
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{chan_id}"))
+        .insert_header(ContentType::json())
+        .insert_header((name.clone(), value.clone()))
+        .set_payload(serde_json::json!({"text": "hi"}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    let json: serde_json::Value = serde_json::from_slice(&test::read_body(resp).await).unwrap();
+    assert_eq!(json["display_name"], "Ally");
+    assert_eq!(json["username"], "alice");
+
+    // Listing messages returns the same display name.
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header((name, value))
+        .to_request();
+    let json: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    let rows = json.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["display_name"], "Ally");
+    assert_eq!(rows[0]["username"], "alice");
+}
+
 // --- session expiry ---
 
 #[actix_web::test]

@@ -8,6 +8,8 @@ import {
   sendMessage,
   editMessage,
   deleteMessage,
+  messageDisplayName,
+  updateDisplayName,
   type Channel,
 } from "./api";
 
@@ -150,5 +152,62 @@ describe("apiFetch behavior", () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
     await login("a", "b");
     expect(fetchMock.mock.calls[0][0]).toBe("http://example.test:9000/login");
+  });
+
+  test("updateDisplayName sends PUT /me with display_name body", async () => {
+    const me = {
+      id: 1,
+      username: "alice",
+      display_name: "Ally",
+      email: null,
+      email_verified: false,
+      avatar_url: null,
+    };
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(me), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(updateDisplayName("Ally")).resolves.toEqual(me);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/me`);
+    expect(init.method).toBe("PUT");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(JSON.parse(init.body)).toEqual({ display_name: "Ally" });
+  });
+
+  test("updateDisplayName passes null to clear the display name", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: 1,
+          username: "alice",
+          display_name: null,
+          email: null,
+          email_verified: false,
+          avatar_url: null,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    await updateDisplayName(null);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ display_name: null });
+  });
+
+  test("updateDisplayName throws on non-2xx", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 400 }));
+    await expect(updateDisplayName("too long")).rejects.toThrow(/400/);
+  });
+});
+
+describe("messageDisplayName", () => {
+  test("prefers display_name when present", () => {
+    expect(messageDisplayName({ username: "alice", display_name: "Ally" })).toBe("Ally");
+  });
+
+  test("falls back to username when display_name is null", () => {
+    expect(messageDisplayName({ username: "alice", display_name: null })).toBe("alice");
   });
 });

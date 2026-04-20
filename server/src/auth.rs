@@ -88,6 +88,7 @@ pub async fn validate_session(db: &DatabaseConnection, token: &str) -> Result<Au
     Ok(AuthUser {
         id: user.id,
         username: user.username,
+        display_name: user.display_name,
         avatar_path: user.avatar_path,
         avatar_updated_at: user.avatar_updated_at,
     })
@@ -113,6 +114,7 @@ pub async fn register_user(
     let user = entity::user::ActiveModel {
         id: Set(user_id),
         username: Set(username.to_owned()),
+        display_name: Set(None),
         email: Set(email),
         email_verified: Set(false),
         avatar_path: Set(None),
@@ -186,6 +188,7 @@ pub fn clear_session_cookie() -> Cookie<'static> {
 pub struct AuthUser {
     pub id: i64,
     pub username: String,
+    pub display_name: Option<String>,
     pub avatar_path: Option<String>,
     pub avatar_updated_at: Option<i64>,
 }
