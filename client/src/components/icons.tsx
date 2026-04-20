@@ -9,4 +9,6 @@ export {
   HeadphoneOff as HeadphoneOffIcon,
   Headphones as HeadphonesIcon,
   PhoneOff as PhoneOffIcon,
+  Pencil as EditIcon,
+  Trash2 as DeleteIcon,
 } from "lucide-solid";

@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@solidjs/testing-library";
+import { render, screen, fireEvent, waitFor, within } from "@solidjs/testing-library";
 import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
 import { AuthProvider } from "../auth_context";
 import { ChannelsProvider } from "../channels_context";
@@ -195,8 +195,8 @@ describe("Channel view integration", () => {
     const deleteItem = await screen.findByRole("menuitem", { name: /delete message/i });
     fireEvent.click(deleteItem);
 
-    const confirmBtn = await screen.findByRole("button", { name: /^delete$/i });
-    fireEvent.click(confirmBtn);
+    const dialog = await screen.findByRole("dialog", { name: /delete message/i });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^delete$/i }));
 
     await waitFor(() => {
       expect(mswState().deletedMessageIds).toContain(7);
@@ -260,12 +260,11 @@ describe("Channel view integration", () => {
     const form = assertExists(input.closest("form"), "form");
     fireEvent.submit(form);
 
-    await screen.findByRole("dialog", { name: /delete message/i });
+    const dialog = await screen.findByRole("dialog", { name: /delete message/i });
     // No edit should have been sent for the blank text.
     expect(mswState().editedMessages).not.toContainEqual({ id: 11, text: "" });
 
-    const confirmBtn = await screen.findByRole("button", { name: /^delete$/i });
-    fireEvent.click(confirmBtn);
+    fireEvent.click(within(dialog).getByRole("button", { name: /^delete$/i }));
 
     await waitFor(() => {
       expect(mswState().deletedMessageIds).toContain(11);
@@ -367,6 +366,84 @@ describe("Channel view integration", () => {
 
     await waitFor(() => {
       expect(mswState().typingPings).toContain("100");
+    });
+  });
+
+  test("clicking the hover toolbar Edit button opens the edit form and PUTs /message/:id", async () => {
+    const state = resetMswState();
+    state.me = DEV_USER;
+    state.messages["100"] = [
+      {
+        id: 21,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        text: "before edit",
+        username: "baipas",
+        avatar_url: null,
+      },
+    ];
+    mountAt("/channel/100");
+
+    await screen.findByText("before edit");
+
+    // Toolbar buttons are always in the DOM (hidden via CSS until hover);
+    // the test can click them directly without simulating mouseover.
+    fireEvent.click(await screen.findByRole("button", { name: /^edit$/i }));
+
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "after edit" } });
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+
+    await waitFor(() => {
+      expect(mswState().editedMessages).toContainEqual({ id: 21, text: "after edit" });
+    });
+  });
+
+  test("clicking the hover toolbar Delete button confirms and DELETEs /message/:id", async () => {
+    const state = resetMswState();
+    state.me = DEV_USER;
+    state.messages["100"] = [
+      {
+        id: 22,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        text: "zap me",
+        username: "baipas",
+        avatar_url: null,
+      },
+    ];
+    mountAt("/channel/100");
+
+    await screen.findByText("zap me");
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+
+    const dialog = await screen.findByRole("dialog", { name: /delete message/i });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^delete$/i }));
+
+    await waitFor(() => {
+      expect(mswState().deletedMessageIds).toContain(22);
+    });
+  });
+
+  test("does not render the hover toolbar on another user's message", async () => {
+    const state = resetMswState();
+    state.me = DEV_USER;
+    state.messages["100"] = [
+      {
+        id: 23,
+        user_id: 999,
+        channel_id: 100,
+        text: "not mine",
+        username: "bob",
+        avatar_url: null,
+      },
+    ];
+    mountAt("/channel/100");
+
+    await screen.findByText("not mine");
+    // Wait a tick for the auth resource to resolve so currentUserId is known.
+    await waitFor(() => {
+      expect(screen.queryByRole("toolbar", { name: /message actions/i })).toBeNull();
     });
   });
 

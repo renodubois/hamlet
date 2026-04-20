@@ -11,6 +11,7 @@ import {
 } from "solid-js";
 import { deleteMessage, editMessage, type Message } from "../api";
 import Avatar from "./avatar";
+import { DeleteIcon, EditIcon } from "./icons";
 import Modal from "./modal";
 
 interface ContextMenuState {
@@ -94,8 +95,16 @@ const ChannelMessages: Component<{
     cancelEditing();
   };
 
+  const isOwnMessage = (msg: Message) =>
+    props.currentUserId !== null && msg.user_id === props.currentUserId;
+
+  // Whether any hover-toolbar action applies to this message. Today only
+  // owner-gated actions (Edit, Delete) exist; non-owner actions (react,
+  // reply, quote, …) will OR into this check when they land.
+  const hasAnyAction = (msg: Message) => isOwnMessage(msg);
+
   const handleContextMenu = (e: MouseEvent, msg: Message) => {
-    if (props.currentUserId === null || msg.user_id !== props.currentUserId) return;
+    if (!isOwnMessage(msg)) return;
     e.preventDefault();
     setContextMenu({ messageId: msg.id, x: e.clientX, y: e.clientY });
   };
@@ -113,15 +122,15 @@ const ChannelMessages: Component<{
           <For each={messages()}>
             {(message) => (
               <div
-                class="flex items-start gap-3 mb-2"
+                class="group relative flex items-start gap-3 px-2 py-1 -mx-2 rounded-md hover:bg-gray-50 focus-within:bg-gray-50"
                 onContextMenu={(e) => handleContextMenu(e, message)}
               >
                 <Avatar url={message.avatar_url} username={message.username} size={32} />
                 <div class="min-w-0 flex-1">
-                  <span class="font-bold mr-2">{message.username}</span>
-                  <Show when={editingId() === message.id} fallback={<span>{message.text}</span>}>
+                  <div class="font-bold">{message.username}</div>
+                  <Show when={editingId() === message.id} fallback={<div>{message.text}</div>}>
                     <form
-                      class="inline-flex gap-2 items-center"
+                      class="flex gap-2 items-center"
                       onSubmit={(e) => {
                         e.preventDefault();
                         void saveEdit(message);
@@ -149,6 +158,34 @@ const ChannelMessages: Component<{
                     </form>
                   </Show>
                 </div>
+                <Show when={hasAnyAction(message) && editingId() !== message.id}>
+                  <div
+                    role="toolbar"
+                    aria-label="Message actions"
+                    class="absolute -top-3 right-2 flex gap-1 rounded-md border border-gray-200 bg-white shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+                  >
+                    <Show when={isOwnMessage(message)}>
+                      <button
+                        type="button"
+                        aria-label="Edit"
+                        title="Edit"
+                        class="p-1.5 rounded-md hover:bg-gray-100"
+                        onClick={() => startEditing(message)}
+                      >
+                        <EditIcon size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Delete"
+                        title="Delete"
+                        class="p-1.5 rounded-md text-red-600 hover:bg-red-50"
+                        onClick={() => requestDelete(message.id)}
+                      >
+                        <DeleteIcon size={14} />
+                      </button>
+                    </Show>
+                  </div>
+                </Show>
               </div>
             )}
           </For>
