@@ -3,6 +3,7 @@ import { fireEvent, render, screen, within } from "@solidjs/testing-library";
 import { createResource } from "solid-js";
 import type { Message } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
+import { makeMessage } from "../test/fixtures";
 import { assertExists } from "../test/render";
 
 vi.mock("../api", async () => {
@@ -11,16 +12,22 @@ vi.mock("../api", async () => {
     ...actual,
     editMessage: vi.fn().mockResolvedValue(undefined),
     deleteMessage: vi.fn().mockResolvedValue(undefined),
+    setMessageEmbedsSuppressed: vi.fn().mockResolvedValue({
+      id: 0,
+      channel_id: 0,
+      suppress_embeds: true,
+      embeds: [],
+    }),
   };
 });
 
 import ChannelMessages from "./channel_messages";
-import { deleteMessage, editMessage } from "../api";
+import { deleteMessage, editMessage, setMessageEmbedsSuppressed } from "../api";
 
 const SELF_ID = 1;
 const OTHER_ID = 2;
 
-const ownMessage: Message = {
+const ownMessage: Message = makeMessage({
   id: 100,
   user_id: SELF_ID,
   channel_id: 1,
@@ -28,9 +35,9 @@ const ownMessage: Message = {
   username: "me",
   display_name: null,
   avatar_url: null,
-};
+});
 
-const otherMessage: Message = {
+const otherMessage: Message = makeMessage({
   id: 200,
   user_id: OTHER_ID,
   channel_id: 1,
@@ -38,7 +45,7 @@ const otherMessage: Message = {
   username: "them",
   display_name: null,
   avatar_url: null,
-};
+});
 
 async function mount(messages: Message[], currentUserId: number | null) {
   const [resource] = createResource(() => Promise.resolve(messages));
@@ -114,5 +121,81 @@ describe("<ChannelMessages> hover action toolbar", () => {
   test("has no a11y violations with a mix of own and other messages", async () => {
     const { container } = await mount([ownMessage, otherMessage], SELF_ID);
     await expectNoA11yViolations(container, "channel messages");
+  });
+});
+
+describe("<ChannelMessages> embeds", () => {
+  const embeddedOwnMessage: Message = makeMessage({
+    id: 300,
+    user_id: SELF_ID,
+    channel_id: 1,
+    text: "check this https://example.com",
+    username: "me",
+    embeds: [
+      {
+        id: 9000,
+        message_id: 300,
+        url: "https://example.com",
+        title: "Example domain",
+        description: "A description.",
+        image_url: null,
+        site_name: "Example",
+        embed_type: "link",
+        iframe_url: null,
+        iframe_width: null,
+        iframe_height: null,
+      },
+    ],
+  });
+
+  const embeddedOtherMessage: Message = makeMessage({
+    id: 400,
+    user_id: OTHER_ID,
+    channel_id: 1,
+    text: "look: https://example.com",
+    username: "them",
+    embeds: [
+      {
+        id: 9001,
+        message_id: 400,
+        url: "https://example.com",
+        title: "Example domain",
+        description: null,
+        image_url: null,
+        site_name: null,
+        embed_type: "link",
+        iframe_url: null,
+        iframe_width: null,
+        iframe_height: null,
+      },
+    ],
+  });
+
+  test("renders the embed title and description", async () => {
+    await mount([embeddedOwnMessage], SELF_ID);
+    expect(screen.getByRole("link", { name: /example domain/i })).toBeInTheDocument();
+    expect(screen.getByText("A description.")).toBeInTheDocument();
+  });
+
+  test("does not render embeds when suppress_embeds is true", async () => {
+    const suppressed: Message = {
+      ...embeddedOwnMessage,
+      suppress_embeds: true,
+    };
+    await mount([suppressed], SELF_ID);
+    expect(screen.queryByRole("link", { name: /example domain/i })).toBeNull();
+  });
+
+  test("shows the Remove embed button only on the author's own messages", async () => {
+    await mount([embeddedOwnMessage, embeddedOtherMessage], SELF_ID);
+    const removes = screen.getAllByRole("button", { name: /remove embed/i });
+    // One button — only the author's embed is removable.
+    expect(removes.length).toBe(1);
+  });
+
+  test("clicking Remove embed calls setMessageEmbedsSuppressed with suppress=true", async () => {
+    await mount([embeddedOwnMessage], SELF_ID);
+    fireEvent.click(screen.getByRole("button", { name: /remove embed/i }));
+    expect(setMessageEmbedsSuppressed).toHaveBeenCalledWith(embeddedOwnMessage.id, true);
   });
 });

@@ -19,6 +19,7 @@ function fakeEvents(): {
     },
     onMessageUpdated: () => () => {},
     onMessageDeleted: () => () => {},
+    onMessageEmbedsUpdated: () => () => {},
     onChannelCreated: () => () => {},
     onChannelsReordered: () => () => {},
     onVoiceParticipantJoined: () => () => {},
@@ -41,6 +42,8 @@ function fakeMessage(
     username: "someone",
     display_name: null,
     avatar_url: null,
+    suppress_embeds: false,
+    embeds: [],
     ...overrides,
   };
 }
@@ -198,6 +201,7 @@ describe("<TypingIndicator>", () => {
       onMessage: () => () => {},
       onMessageUpdated: () => () => {},
       onMessageDeleted: () => () => {},
+      onMessageEmbedsUpdated: () => () => {},
       onChannelCreated: () => () => {},
       onChannelsReordered: () => () => {},
       onVoiceParticipantJoined: () => () => {},

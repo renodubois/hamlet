@@ -13,6 +13,7 @@ pub struct Model {
     pub channel_id: i64,
     #[sea_orm(column_type = "Text")]
     pub text: String,
+    pub suppress_embeds: bool,
     #[serde(skip)]
     #[sea_orm(
         belongs_to,
@@ -31,6 +32,9 @@ pub struct Model {
         on_delete = "NoAction"
     )]
     pub user: HasOne<super::user::Entity>,
+    #[serde(skip)]
+    #[sea_orm(has_many)]
+    pub embeds: HasMany<super::embed::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

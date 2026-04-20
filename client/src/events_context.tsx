@@ -4,6 +4,7 @@ import {
   type Channel,
   type Message,
   type MessageDeleted,
+  type MessageEmbedsUpdated,
   type SSEEvent,
   type UserTyping,
   type VoiceParticipant,
@@ -17,6 +18,7 @@ export interface EventsContextValue {
   onMessage: (cb: Listener<Message>) => () => void;
   onMessageUpdated: (cb: Listener<Message>) => () => void;
   onMessageDeleted: (cb: Listener<MessageDeleted>) => () => void;
+  onMessageEmbedsUpdated: (cb: Listener<MessageEmbedsUpdated>) => () => void;
   onChannelCreated: (cb: Listener<Channel>) => () => void;
   onChannelsReordered: (cb: Listener<Channel[]>) => () => void;
   onVoiceParticipantJoined: (cb: Listener<VoiceParticipant>) => () => void;
@@ -31,6 +33,7 @@ export function EventsProvider(props: { children: JSX.Element }) {
   const messageListeners = new Set<Listener<Message>>();
   const messageUpdatedListeners = new Set<Listener<Message>>();
   const messageDeletedListeners = new Set<Listener<MessageDeleted>>();
+  const messageEmbedsUpdatedListeners = new Set<Listener<MessageEmbedsUpdated>>();
   const channelCreatedListeners = new Set<Listener<Channel>>();
   const channelsReorderedListeners = new Set<Listener<Channel[]>>();
   const voiceJoinedListeners = new Set<Listener<VoiceParticipant>>();
@@ -57,6 +60,8 @@ export function EventsProvider(props: { children: JSX.Element }) {
         messageUpdatedListeners.forEach((cb) => cb(parsed.data));
       } else if (parsed.kind === "message_deleted") {
         messageDeletedListeners.forEach((cb) => cb(parsed.data));
+      } else if (parsed.kind === "message_embeds_updated") {
+        messageEmbedsUpdatedListeners.forEach((cb) => cb(parsed.data));
       } else if (parsed.kind === "channel_created") {
         channelCreatedListeners.forEach((cb) => cb(parsed.data));
       } else if (parsed.kind === "channels_reordered") {
@@ -80,6 +85,7 @@ export function EventsProvider(props: { children: JSX.Element }) {
     messageListeners.clear();
     messageUpdatedListeners.clear();
     messageDeletedListeners.clear();
+    messageEmbedsUpdatedListeners.clear();
     channelCreatedListeners.clear();
     channelsReorderedListeners.clear();
     voiceJoinedListeners.clear();
@@ -100,6 +106,10 @@ export function EventsProvider(props: { children: JSX.Element }) {
     onMessageDeleted(cb) {
       messageDeletedListeners.add(cb);
       return () => messageDeletedListeners.delete(cb);
+    },
+    onMessageEmbedsUpdated(cb) {
+      messageEmbedsUpdatedListeners.add(cb);
+      return () => messageEmbedsUpdatedListeners.delete(cb);
     },
     onChannelCreated(cb) {
       channelCreatedListeners.add(cb);

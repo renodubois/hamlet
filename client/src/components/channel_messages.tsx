@@ -9,9 +9,17 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
-import { deleteMessage, editMessage, messageDisplayName, type Message } from "../api";
+import {
+  deleteMessage,
+  editMessage,
+  messageDisplayName,
+  setMessageEmbedsSuppressed,
+  type Message,
+} from "../api";
+import { linkifyText } from "../linkify";
 import Avatar from "./avatar";
 import { DeleteIcon, EditIcon } from "./icons";
+import MessageEmbed from "./message_embed";
 import Modal from "./modal";
 
 interface ContextMenuState {
@@ -77,6 +85,14 @@ const ChannelMessages: Component<{
     if (editingId() === id) cancelEditing();
   };
 
+  const suppressEmbeds = async (msg: Message) => {
+    try {
+      await setMessageEmbedsSuppressed(msg.id, true);
+    } catch (e) {
+      console.error("failed to suppress embeds", e);
+    }
+  };
+
   const saveEdit = async (msg: Message) => {
     const next = draft();
     if (next.length === 0) {
@@ -128,7 +144,27 @@ const ChannelMessages: Component<{
                 <Avatar url={message.avatar_url} username={messageDisplayName(message)} size={32} />
                 <div class="min-w-0 flex-1">
                   <div class="font-bold">{messageDisplayName(message)}</div>
-                  <Show when={editingId() === message.id} fallback={<div>{message.text}</div>}>
+                  <Show
+                    when={editingId() === message.id}
+                    fallback={
+                      <div class="whitespace-pre-wrap break-words">
+                        {linkifyText(message.text).map((tok) =>
+                          tok.type === "link" ? (
+                            <a
+                              href={tok.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              class="text-blue-700 hover:underline break-all"
+                            >
+                              {tok.url}
+                            </a>
+                          ) : (
+                            tok.value
+                          ),
+                        )}
+                      </div>
+                    }
+                  >
                     <form
                       class="flex gap-2 items-center"
                       onSubmit={(e) => {
@@ -156,6 +192,20 @@ const ChannelMessages: Component<{
                         Cancel
                       </button>
                     </form>
+                  </Show>
+                  <Show when={!message.suppress_embeds && message.embeds.length > 0}>
+                    <div class="flex flex-col gap-1">
+                      <For each={message.embeds}>
+                        {(embed) => (
+                          <MessageEmbed
+                            embed={embed}
+                            onRemove={
+                              isOwnMessage(message) ? () => void suppressEmbeds(message) : undefined
+                            }
+                          />
+                        )}
+                      </For>
+                    </div>
                   </Show>
                 </div>
                 <Show when={hasAnyAction(message) && editingId() !== message.id}>

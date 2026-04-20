@@ -21,6 +21,22 @@ export interface Channel {
   type: ChannelType;
 }
 
+export type EmbedType = "link" | "photo" | "video" | "rich";
+
+export interface Embed {
+  id: number;
+  message_id: number;
+  url: string;
+  title: string | null;
+  description: string | null;
+  image_url: string | null;
+  site_name: string | null;
+  embed_type: EmbedType;
+  iframe_url: string | null;
+  iframe_width: number | null;
+  iframe_height: number | null;
+}
+
 export interface Message {
   id: number;
   user_id: number;
@@ -29,6 +45,15 @@ export interface Message {
   username: string;
   display_name: string | null;
   avatar_url: string | null;
+  suppress_embeds: boolean;
+  embeds: Embed[];
+}
+
+export interface MessageEmbedsUpdated {
+  id: number;
+  channel_id: number;
+  suppress_embeds: boolean;
+  embeds: Embed[];
 }
 
 export function messageDisplayName(msg: Pick<Message, "username" | "display_name">): string {
@@ -112,6 +137,19 @@ export async function editMessage(messageId: number, text: string): Promise<Mess
 export async function deleteMessage(messageId: number): Promise<void> {
   const res = await apiFetch(`/message/${messageId}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`Message delete failed (${res.status})`);
+}
+
+export async function setMessageEmbedsSuppressed(
+  messageId: number,
+  suppress: boolean,
+): Promise<MessageEmbedsUpdated> {
+  const res = await apiFetch(`/message/${messageId}/suppress_embeds`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ suppress }),
+  });
+  if (!res.ok) throw new Error(`Suppress embeds failed (${res.status})`);
+  return res.json() as Promise<MessageEmbedsUpdated>;
 }
 
 export async function createChannel(name: string, type: ChannelType = "text"): Promise<Response> {
@@ -223,6 +261,7 @@ export type SSEEvent =
   | { kind: "message"; data: Message }
   | { kind: "message_updated"; data: Message }
   | { kind: "message_deleted"; data: MessageDeleted }
+  | { kind: "message_embeds_updated"; data: MessageEmbedsUpdated }
   | { kind: "channel_created"; data: Channel }
   | { kind: "channels_reordered"; data: Channel[] }
   | { kind: "voice_participant_joined"; data: VoiceParticipant }

@@ -65,10 +65,21 @@ export default function ChannelView() {
       if (String(d.channel_id) !== params.id) return;
       mutate((prev) => prev?.filter((existing) => existing.id !== d.id));
     });
+    const unsubEmbeds = events.onMessageEmbedsUpdated((e) => {
+      if (String(e.channel_id) !== params.id) return;
+      mutate((prev) =>
+        prev?.map((existing) =>
+          existing.id === e.id
+            ? { ...existing, suppress_embeds: e.suppress_embeds, embeds: e.embeds }
+            : existing,
+        ),
+      );
+    });
     onCleanup(() => {
       unsubCreated();
       unsubUpdated();
       unsubDeleted();
+      unsubEmbeds();
     });
   });
 

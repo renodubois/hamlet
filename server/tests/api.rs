@@ -670,6 +670,7 @@ async fn insert_message(
         user_id: Set(user_id),
         channel_id: Set(channel_id),
         text: Set(text.to_owned()),
+        suppress_embeds: Set(false),
     }
     .insert(db)
     .await
@@ -1370,4 +1371,247 @@ async fn test_create_channel_rejects_too_long_name() {
         test::call_service(&app, req).await.status(),
         StatusCode::BAD_REQUEST
     );
+}
+
+// --- embeds / suppress_embeds ---
+
+#[actix_web::test]
+async fn test_message_create_returns_empty_embeds_and_not_suppressed() {
+    let (db, chan_id) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(
+            cfg,
+            web::Data::new(db.clone()),
+            web::Data::from(Broadcaster::new()),
+        )
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{}", chan_id))
+        .insert_header(ContentType::json())
+        .insert_header((name, value))
+        .set_payload(serde_json::json!({"text": "hello https://example.com"}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert!(resp.status().is_success());
+    let body: serde_json::Value = test::read_body_json(resp).await;
+    // Fetch is disabled in tests, so even though the text has a URL the
+    // response still returns an empty embed list. What we care about here is
+    // that the fields are present and well-typed.
+    assert_eq!(body["suppress_embeds"], false);
+    assert!(body["embeds"].is_array());
+    assert_eq!(body["embeds"].as_array().unwrap().len(), 0);
+}
+
+#[actix_web::test]
+async fn test_suppress_embeds_toggles_flag_and_returns_state() {
+    let (db, chan_id) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+    let msg_id = insert_message(&db, user.id, chan_id, "check this https://example.com").await;
+
+    // Seed one embed row so we can see the flip reflected in what's returned.
+    let embed_id = hamlet::generate_id();
+    entity::embed::ActiveModel {
+        id: Set(embed_id),
+        message_id: Set(msg_id),
+        url: Set("https://example.com".into()),
+        title: Set(Some("Example".into())),
+        description: Set(None),
+        image_url: Set(None),
+        site_name: Set(None),
+        embed_type: Set("link".into()),
+        iframe_url: Set(None),
+        iframe_width: Set(None),
+        iframe_height: Set(None),
+    }
+    .insert(&db)
+    .await
+    .unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(
+            cfg,
+            web::Data::new(db.clone()),
+            web::Data::from(Broadcaster::new()),
+        )
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{}/suppress_embeds", msg_id))
+        .insert_header(ContentType::json())
+        .insert_header((name.clone(), value.clone()))
+        .set_payload(serde_json::json!({"suppress": true}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert!(resp.status().is_success());
+    let body: serde_json::Value = test::read_body_json(resp).await;
+    assert_eq!(body["suppress_embeds"], true);
+    assert_eq!(body["id"], msg_id);
+    assert_eq!(body["embeds"].as_array().unwrap().len(), 1);
+
+    // Row is persisted and the suppressed flag is set.
+    let stored = entity::message::Entity::find_by_id(msg_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stored.suppress_embeds);
+
+    // Un-suppressing works too.
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{}/suppress_embeds", msg_id))
+        .insert_header(ContentType::json())
+        .insert_header((name, value))
+        .set_payload(serde_json::json!({"suppress": false}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert!(resp.status().is_success());
+    let body: serde_json::Value = test::read_body_json(resp).await;
+    assert_eq!(body["suppress_embeds"], false);
+}
+
+#[actix_web::test]
+async fn test_suppress_embeds_rejects_other_users_messages() {
+    let (db, chan_id) = common::setup_db().await;
+    let author = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let intruder = auth::register_user(&db, "mallory", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, intruder.id).await.unwrap();
+    let msg_id = insert_message(&db, author.id, chan_id, "hi").await;
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(
+            cfg,
+            web::Data::new(db.clone()),
+            web::Data::from(Broadcaster::new()),
+        )
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{}/suppress_embeds", msg_id))
+        .insert_header(ContentType::json())
+        .insert_header((name, value))
+        .set_payload(serde_json::json!({"suppress": true}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[actix_web::test]
+async fn test_suppress_embeds_requires_auth() {
+    let (db, _) = common::setup_db().await;
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let req = test::TestRequest::post()
+        .uri("/message/12345/suppress_embeds")
+        .insert_header(ContentType::json())
+        .set_payload(serde_json::json!({"suppress": true}).to_string())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[actix_web::test]
+async fn test_suppress_embeds_returns_404_for_unknown_message() {
+    let (db, _) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(cfg, web::Data::new(db), web::Data::from(Broadcaster::new()))
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::post()
+        .uri("/message/99999/suppress_embeds")
+        .insert_header(ContentType::json())
+        .insert_header((name, value))
+        .set_payload(serde_json::json!({"suppress": true}).to_string())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[actix_web::test]
+async fn test_get_messages_surfaces_embeds() {
+    let (db, chan_id) = common::setup_db().await;
+    let user = auth::register_user(&db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let session = auth::create_session(&db, user.id).await.unwrap();
+    let msg_id = insert_message(&db, user.id, chan_id, "https://example.com").await;
+
+    let embed_id = hamlet::generate_id();
+    entity::embed::ActiveModel {
+        id: Set(embed_id),
+        message_id: Set(msg_id),
+        url: Set("https://example.com".into()),
+        title: Set(Some("Example".into())),
+        description: Set(Some("desc".into())),
+        image_url: Set(Some("https://example.com/img.png".into())),
+        site_name: Set(Some("Example Site".into())),
+        embed_type: Set("video".into()),
+        iframe_url: Set(Some("https://www.youtube.com/embed/abc".into())),
+        iframe_width: Set(Some(560)),
+        iframe_height: Set(Some(315)),
+    }
+    .insert(&db)
+    .await
+    .unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| {
+        configure_app(
+            cfg,
+            web::Data::new(db.clone()),
+            web::Data::from(Broadcaster::new()),
+        )
+    }))
+    .await;
+
+    let (name, value) = common::session_cookie_header(&session.token);
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{}", chan_id))
+        .insert_header((name, value))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert!(resp.status().is_success());
+    let body: serde_json::Value = test::read_body_json(resp).await;
+    let msgs = body.as_array().unwrap();
+    let msg = msgs.iter().find(|m| m["id"] == msg_id).unwrap();
+    let embeds = msg["embeds"].as_array().unwrap();
+    assert_eq!(embeds.len(), 1);
+    assert_eq!(embeds[0]["title"], "Example");
+    assert_eq!(embeds[0]["url"], "https://example.com");
+    assert_eq!(embeds[0]["embed_type"], "video");
+    assert_eq!(embeds[0]["iframe_url"], "https://www.youtube.com/embed/abc");
+    assert_eq!(embeds[0]["iframe_width"], 560);
+    assert_eq!(embeds[0]["iframe_height"], 315);
+    assert_eq!(msg["suppress_embeds"], false);
 }

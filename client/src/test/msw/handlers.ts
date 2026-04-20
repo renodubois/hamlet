@@ -32,6 +32,7 @@ export interface HandlerState {
   voiceParticipants: Record<string, VoiceParticipant[]>;
   voiceTokensMinted: number[];
   typingPings: string[];
+  suppressedEmbeds: { id: number; suppress: boolean }[];
 }
 
 export function createState(overrides: Partial<HandlerState> = {}): HandlerState {
@@ -51,6 +52,7 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     voiceParticipants: {},
     voiceTokensMinted: [],
     typingPings: [],
+    suppressedEmbeds: [],
     ...overrides,
   };
 }
@@ -137,6 +139,26 @@ export function createHandlers(state: HandlerState) {
         if (idx >= 0) {
           list.splice(idx, 1);
           return new HttpResponse(null, { status: 204 });
+        }
+      }
+      return new HttpResponse(null, { status: 404 });
+    }),
+
+    http.post(`${BASE}/message/:id/suppress_embeds`, async ({ request, params }) => {
+      const id = Number(params.id);
+      const body = (await request.json()) as { suppress: boolean };
+      state.suppressedEmbeds.push({ id, suppress: body.suppress });
+      for (const channel of Object.keys(state.messages)) {
+        const list = state.messages[channel];
+        const idx = list.findIndex((m) => m.id === id);
+        if (idx >= 0) {
+          list[idx] = { ...list[idx], suppress_embeds: body.suppress };
+          return HttpResponse.json({
+            id,
+            channel_id: list[idx].channel_id,
+            suppress_embeds: body.suppress,
+            embeds: list[idx].embeds,
+          });
         }
       }
       return new HttpResponse(null, { status: 404 });

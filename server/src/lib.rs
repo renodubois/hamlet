@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 pub mod auth;
 pub mod broadcast;
+pub mod embeds;
 pub mod entity;
 pub mod middleware;
 pub mod voice;
@@ -86,6 +87,39 @@ impl From<entity::user::Model> for UserResponse {
 }
 
 #[derive(Clone, Debug, Serialize)]
+struct EmbedResponse {
+    id: i64,
+    message_id: i64,
+    url: String,
+    title: Option<String>,
+    description: Option<String>,
+    image_url: Option<String>,
+    site_name: Option<String>,
+    embed_type: String,
+    iframe_url: Option<String>,
+    iframe_width: Option<i32>,
+    iframe_height: Option<i32>,
+}
+
+impl From<entity::embed::Model> for EmbedResponse {
+    fn from(e: entity::embed::Model) -> Self {
+        Self {
+            id: e.id,
+            message_id: e.message_id,
+            url: e.url,
+            title: e.title,
+            description: e.description,
+            image_url: e.image_url,
+            site_name: e.site_name,
+            embed_type: e.embed_type,
+            iframe_url: e.iframe_url,
+            iframe_width: e.iframe_width,
+            iframe_height: e.iframe_height,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
 struct MessageResponse {
     id: i64,
     user_id: i64,
@@ -94,6 +128,21 @@ struct MessageResponse {
     username: String,
     display_name: Option<String>,
     avatar_url: Option<String>,
+    suppress_embeds: bool,
+    embeds: Vec<EmbedResponse>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MessageEmbedsUpdatedEvent {
+    id: i64,
+    channel_id: i64,
+    suppress_embeds: bool,
+    embeds: Vec<EmbedResponse>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SuppressEmbedsRequest {
+    suppress: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -163,6 +212,7 @@ enum BroadcastEvent {
     Message(MessageResponse),
     MessageUpdated(MessageResponse),
     MessageDeleted(MessageDeletedEvent),
+    MessageEmbedsUpdated(MessageEmbedsUpdatedEvent),
     ChannelCreated(ChannelResponse),
     ChannelsReordered(Vec<ChannelResponse>),
     VoiceParticipantJoined(VoiceParticipant),
@@ -227,7 +277,11 @@ pub struct AvatarStorage {
 const AVATAR_MAX_BYTES: usize = 2 * 1024 * 1024;
 const AVATARS_SUBDIR: &str = "avatars";
 
-const ID_LENGTH: u32 = 16;
+// 15 digits caps values at 10^15-1, which is below JS Number.MAX_SAFE_INTEGER
+// (2^53-1 ≈ 9.007×10^15). The browser parses response JSON into f64, so any
+// 16-digit id above that threshold loses precision and corrupts every
+// follow-up request keyed on it.
+const ID_LENGTH: u32 = 15;
 const CHANNEL_NAME_MAX_LEN: usize = 128;
 const DISPLAY_NAME_MAX_LEN: usize = 64;
 
@@ -235,6 +289,110 @@ pub fn generate_id() -> i64 {
     let min = 10_i64.pow(ID_LENGTH - 1);
     let max = 10_i64.pow(ID_LENGTH);
     rand::rng().random_range(min..max)
+}
+
+/// Cap on how many URLs per message we actually fetch. If a message is a wall
+/// of 200 links we still broadcast it instantly — we just don't try to turn
+/// them all into embed cards.
+const MAX_EMBEDS_PER_MESSAGE: usize = 5;
+
+/// Runtime switch controlling whether message creation kicks off an outbound
+/// OpenGraph fetch. Tests use `Disabled` to keep the suite hermetic;
+/// `start_server` uses `Enabled`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EmbedFetcher {
+    Enabled,
+    #[default]
+    Disabled,
+}
+
+/// Spawn the embed-refresh task for a single message. Returns immediately —
+/// the task handles its own errors by logging them. When disabled, this is a
+/// no-op so no network traffic leaks out during tests.
+fn spawn_embed_refresh(
+    fetcher: web::Data<EmbedFetcher>,
+    db: web::Data<DatabaseConnection>,
+    broadcaster: web::Data<Broadcaster>,
+    message_id: i64,
+    channel_id: i64,
+    text: String,
+) {
+    if matches!(**fetcher, EmbedFetcher::Disabled) {
+        return;
+    }
+    actix_web::rt::spawn(async move {
+        let urls = embeds::extract_urls(&text);
+        let mut fetched: Vec<embeds::FetchedEmbed> = Vec::new();
+        for url in urls.into_iter().take(MAX_EMBEDS_PER_MESSAGE) {
+            match embeds::fetch_embed(&url).await {
+                Ok(e) => fetched.push(e),
+                Err(err) => {
+                    eprintln!("embed fetch failed for {url}: {err:?}");
+                }
+            }
+        }
+        if let Err(err) =
+            apply_fetched_embeds(db.get_ref(), &broadcaster, message_id, channel_id, fetched).await
+        {
+            eprintln!("embed apply failed for message {message_id}: {err:?}");
+        }
+    });
+}
+
+/// Replace the embed rows for `message_id` with `fetched` and broadcast a
+/// MessageEmbedsUpdated event. Silently skips if the message was deleted
+/// between the fetch finishing and this write landing.
+async fn apply_fetched_embeds(
+    db: &DatabaseConnection,
+    broadcaster: &Broadcaster,
+    message_id: i64,
+    channel_id: i64,
+    fetched: Vec<embeds::FetchedEmbed>,
+) -> Result<(), UserError> {
+    entity::embed::Entity::delete_many()
+        .filter(entity::embed::Column::MessageId.eq(message_id))
+        .exec(db)
+        .await
+        .map_err(|_| UserError::DbError)?;
+
+    let Some(msg) = entity::message::Entity::find_by_id(message_id)
+        .one(db)
+        .await
+        .map_err(|_| UserError::DbError)?
+    else {
+        return Ok(());
+    };
+
+    let mut inserted: Vec<EmbedResponse> = Vec::new();
+    for f in fetched {
+        let model = entity::embed::ActiveModel {
+            id: Set(generate_id()),
+            message_id: Set(message_id),
+            url: Set(f.url),
+            title: Set(f.title),
+            description: Set(f.description),
+            image_url: Set(f.image_url),
+            site_name: Set(f.site_name),
+            embed_type: Set(f.embed_type.as_str().to_owned()),
+            iframe_url: Set(f.iframe_url),
+            iframe_width: Set(f.iframe_width),
+            iframe_height: Set(f.iframe_height),
+        };
+        let saved = model.insert(db).await.map_err(|_| UserError::DbError)?;
+        inserted.push(EmbedResponse::from(saved));
+    }
+
+    let payload = serde_json::to_string(&BroadcastEvent::MessageEmbedsUpdated(
+        MessageEmbedsUpdatedEvent {
+            id: message_id,
+            channel_id,
+            suppress_embeds: msg.suppress_embeds,
+            embeds: inserted,
+        },
+    ))
+    .map_err(|_| UserError::InternalError)?;
+    broadcaster.broadcast(&payload).await;
+    Ok(())
 }
 
 #[get("/channels")]
@@ -273,6 +431,9 @@ async fn get_messages(
         .await
         .map_err(|_| UserError::DbError)?;
 
+    let message_ids: Vec<i64> = rows.iter().map(|(m, _)| m.id).collect();
+    let embeds_by_message = load_embeds_for_messages(db.get_ref(), &message_ids).await?;
+
     let messages: Vec<MessageResponse> = rows
         .into_iter()
         .map(|(m, u)| {
@@ -284,6 +445,7 @@ async fn get_messages(
                 ),
                 None => ("[deleted]".into(), None, None),
             };
+            let embeds = embeds_by_message.get(&m.id).cloned().unwrap_or_default();
             MessageResponse {
                 id: m.id,
                 user_id: m.user_id,
@@ -292,6 +454,8 @@ async fn get_messages(
                 username,
                 display_name,
                 avatar_url,
+                suppress_embeds: m.suppress_embeds,
+                embeds,
             }
         })
         .collect();
@@ -299,10 +463,35 @@ async fn get_messages(
     Ok(web::Json(messages))
 }
 
+/// Load all embeds for a batch of message ids, grouped by message id. Returns
+/// an empty map if `ids` is empty (skips the round-trip).
+async fn load_embeds_for_messages(
+    db: &DatabaseConnection,
+    ids: &[i64],
+) -> Result<HashMap<i64, Vec<EmbedResponse>>, UserError> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows = entity::embed::Entity::find()
+        .filter(entity::embed::Column::MessageId.is_in(ids.iter().copied()))
+        .order_by_asc(entity::embed::Column::Id)
+        .all(db)
+        .await
+        .map_err(|_| UserError::DbError)?;
+    let mut out: HashMap<i64, Vec<EmbedResponse>> = HashMap::new();
+    for row in rows {
+        out.entry(row.message_id)
+            .or_default()
+            .push(EmbedResponse::from(row));
+    }
+    Ok(out)
+}
+
 #[post("/message/{channel_id}")]
 async fn create_message(
     db: web::Data<DatabaseConnection>,
     broadcaster: web::Data<Broadcaster>,
+    embed_fetcher: web::Data<EmbedFetcher>,
     path: web::Path<i64>,
     body: web::Json<SendMessageRequest>,
     user: AuthUser,
@@ -323,6 +512,7 @@ async fn create_message(
         user_id: Set(user.id),
         channel_id: Set(channel_id),
         text: Set(body.text.clone()),
+        suppress_embeds: Set(false),
     };
 
     let inserted = new_message
@@ -334,14 +524,28 @@ async fn create_message(
         id: inserted.id,
         user_id: inserted.user_id,
         channel_id: inserted.channel_id,
-        text: inserted.text,
+        text: inserted.text.clone(),
         username: user.username.clone(),
         display_name: user.display_name.clone(),
         avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
+        suppress_embeds: inserted.suppress_embeds,
+        embeds: Vec::new(),
     };
     let payload = serde_json::to_string(&BroadcastEvent::Message(resp.clone()))
         .map_err(|_| UserError::InternalError)?;
     broadcaster.broadcast(&payload).await;
+
+    // Embed fetching runs in the background so the POST returns immediately.
+    // When it finishes it writes `embed` rows and broadcasts a
+    // MessageEmbedsUpdated event so existing clients pick the cards up.
+    spawn_embed_refresh(
+        embed_fetcher.clone(),
+        db.clone(),
+        broadcaster.clone(),
+        inserted.id,
+        inserted.channel_id,
+        inserted.text,
+    );
 
     Ok(web::Json(resp))
 }
@@ -350,6 +554,7 @@ async fn create_message(
 async fn update_message(
     db: web::Data<DatabaseConnection>,
     broadcaster: web::Data<Broadcaster>,
+    embed_fetcher: web::Data<EmbedFetcher>,
     path: web::Path<i64>,
     body: web::Json<SendMessageRequest>,
     user: AuthUser,
@@ -367,6 +572,7 @@ async fn update_message(
     }
 
     let channel_id = existing.channel_id;
+    let previous_text = existing.text.clone();
     let mut active: entity::message::ActiveModel = existing.into();
     active.text = Set(body.text.clone());
     let updated = active
@@ -374,20 +580,97 @@ async fn update_message(
         .await
         .map_err(|_| UserError::DbError)?;
 
+    // Whatever the client had for embeds may no longer apply — the safest
+    // thing is to echo back whatever's currently persisted, then let the
+    // refresh task overwrite it if the URL set changed.
+    let existing_embeds = load_embeds_for_messages(db.get_ref(), &[updated.id])
+        .await?
+        .remove(&updated.id)
+        .unwrap_or_default();
+
     let resp = MessageResponse {
         id: updated.id,
         user_id: updated.user_id,
         channel_id,
-        text: updated.text,
+        text: updated.text.clone(),
         username: user.username.clone(),
         display_name: user.display_name.clone(),
         avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
+        suppress_embeds: updated.suppress_embeds,
+        embeds: existing_embeds,
     };
     let payload = serde_json::to_string(&BroadcastEvent::MessageUpdated(resp.clone()))
         .map_err(|_| UserError::InternalError)?;
     broadcaster.broadcast(&payload).await;
 
+    // Only re-fetch embeds if the URL set actually changed — a typo fix with
+    // the same link should stay as-is.
+    if embeds::extract_urls(&previous_text) != embeds::extract_urls(&updated.text) {
+        spawn_embed_refresh(
+            embed_fetcher.clone(),
+            db.clone(),
+            broadcaster.clone(),
+            updated.id,
+            channel_id,
+            updated.text,
+        );
+    }
+
     Ok(web::Json(resp))
+}
+
+#[post("/message/{message_id}/suppress_embeds")]
+async fn suppress_message_embeds(
+    db: web::Data<DatabaseConnection>,
+    broadcaster: web::Data<Broadcaster>,
+    path: web::Path<i64>,
+    body: web::Json<SuppressEmbedsRequest>,
+    user: AuthUser,
+) -> Result<impl Responder, UserError> {
+    let message_id = path.into_inner();
+
+    let existing = entity::message::Entity::find_by_id(message_id)
+        .one(db.get_ref())
+        .await
+        .map_err(|_| UserError::DbError)?
+        .ok_or(UserError::NotFound)?;
+
+    // Only the author can hide their own message's embeds — matches the rest
+    // of the message mutation endpoints.
+    if existing.user_id != user.id {
+        return Err(UserError::Forbidden);
+    }
+
+    let channel_id = existing.channel_id;
+    let mut active: entity::message::ActiveModel = existing.into();
+    active.suppress_embeds = Set(body.suppress);
+    let updated = active
+        .update(db.get_ref())
+        .await
+        .map_err(|_| UserError::DbError)?;
+
+    let embeds = load_embeds_for_messages(db.get_ref(), &[message_id])
+        .await?
+        .remove(&message_id)
+        .unwrap_or_default();
+
+    let payload = serde_json::to_string(&BroadcastEvent::MessageEmbedsUpdated(
+        MessageEmbedsUpdatedEvent {
+            id: message_id,
+            channel_id,
+            suppress_embeds: updated.suppress_embeds,
+            embeds: embeds.clone(),
+        },
+    ))
+    .map_err(|_| UserError::InternalError)?;
+    broadcaster.broadcast(&payload).await;
+
+    Ok(web::Json(MessageEmbedsUpdatedEvent {
+        id: message_id,
+        channel_id,
+        suppress_embeds: updated.suppress_embeds,
+        embeds,
+    }))
 }
 
 #[delete("/message/{message_id}")]
@@ -693,20 +976,19 @@ async fn apply_voice_webhook(
                 broadcaster.broadcast(&payload).await;
             }
         }
-        "participant_left" | "participant_connection_aborted" => {
+        "participant_left" | "participant_connection_aborted"
             if voice_state
                 .remove_participant(channel_id, user_id)
-                .is_some()
-            {
-                let payload = serde_json::to_string(&BroadcastEvent::VoiceParticipantLeft(
-                    VoiceParticipantLeftEvent {
-                        channel_id,
-                        user_id,
-                    },
-                ))
-                .map_err(|_| UserError::InternalError)?;
-                broadcaster.broadcast(&payload).await;
-            }
+                .is_some() =>
+        {
+            let payload = serde_json::to_string(&BroadcastEvent::VoiceParticipantLeft(
+                VoiceParticipantLeftEvent {
+                    channel_id,
+                    user_id,
+                },
+            ))
+            .map_err(|_| UserError::InternalError)?;
+            broadcaster.broadcast(&payload).await;
         }
         _ => {}
     }
@@ -1063,9 +1345,10 @@ pub async fn seed_development_data(db: &DatabaseConnection) {
 }
 
 /// Three-argument form for tests and any deployment that doesn't need voice.
-/// Calls `configure_app_with_voice` with an unconfigured `VoiceConfig` and a
-/// fresh `VoiceState`, so `/voice/*` endpoints reply with 503 but everything
-/// else works identically.
+/// Calls `configure_app_with_voice` with an unconfigured `VoiceConfig`, a
+/// fresh `VoiceState`, and a disabled `EmbedFetcher`, so `/voice/*` endpoints
+/// reply with 503, no outbound OG fetches happen, and everything else works
+/// identically.
 pub fn configure_app(
     cfg: &mut web::ServiceConfig,
     db_data: Data<DatabaseConnection>,
@@ -1077,6 +1360,7 @@ pub fn configure_app(
         broadcaster,
         Data::new(None::<VoiceConfig>),
         Data::new(VoiceState::new()),
+        Data::new(EmbedFetcher::Disabled),
     );
 }
 
@@ -1086,11 +1370,13 @@ pub fn configure_app_with_voice(
     broadcaster: Data<Broadcaster>,
     voice_cfg: Data<Option<VoiceConfig>>,
     voice_state: Data<VoiceState>,
+    embed_fetcher: Data<EmbedFetcher>,
 ) {
     cfg.app_data(db_data.clone())
         .app_data(broadcaster)
         .app_data(voice_cfg)
         .app_data(voice_state)
+        .app_data(embed_fetcher)
         // Public — no auth required
         .service(register)
         .service(login)
@@ -1110,6 +1396,7 @@ pub fn configure_app_with_voice(
                 .service(create_message)
                 .service(update_message)
                 .service(delete_message)
+                .service(suppress_message_embeds)
                 .service(post_typing)
                 .service(create_channel)
                 .service(reorder_channels)
@@ -1142,6 +1429,7 @@ pub async fn start_server(
     }
     let voice_cfg_data = web::Data::new(voice_cfg);
     let voice_state_data = web::Data::new(VoiceState::new());
+    let embed_fetcher_data = web::Data::new(EmbedFetcher::Enabled);
 
     // logger config - should review
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
@@ -1175,6 +1463,7 @@ pub async fn start_server(
                     broadcaster_data.clone(),
                     voice_cfg_data.clone(),
                     voice_state_data.clone(),
+                    embed_fetcher_data.clone(),
                 )
             })
     })
@@ -1368,6 +1657,7 @@ mod tests {
             user_id: Set(user.id),
             channel_id: Set(chan_id),
             text: Set("bye".into()),
+            suppress_embeds: Set(false),
         }
         .insert(&db)
         .await
@@ -1645,6 +1935,7 @@ mod tests {
                 web::Data::from(Broadcaster::new()),
                 web::Data::new(Some(voice_cfg)),
                 web::Data::new(VoiceState::new()),
+                web::Data::new(EmbedFetcher::Disabled),
             )
         }))
         .await;
@@ -1691,6 +1982,7 @@ mod tests {
                 web::Data::from(Broadcaster::new()),
                 web::Data::new(Some(voice_cfg.clone())),
                 web::Data::new(VoiceState::new()),
+                web::Data::new(EmbedFetcher::Disabled),
             )
         }))
         .await;
@@ -1783,6 +2075,7 @@ mod tests {
                 broadcaster_data,
                 voice_cfg_data,
                 voice_state_data,
+                web::Data::new(EmbedFetcher::Disabled),
             )
         }))
         .await;
@@ -1834,6 +2127,7 @@ mod tests {
                 broadcaster_data,
                 voice_cfg_data,
                 voice_state_data,
+                web::Data::new(EmbedFetcher::Disabled),
             )
         }))
         .await;

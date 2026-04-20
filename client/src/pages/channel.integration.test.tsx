@@ -48,6 +48,8 @@ function seedAuthed() {
       username: "alice",
       display_name: null,
       avatar_url: null,
+      suppress_embeds: false,
+      embeds: [],
     },
     {
       id: 2,
@@ -57,6 +59,8 @@ function seedAuthed() {
       username: "bob",
       display_name: null,
       avatar_url: null,
+      suppress_embeds: false,
+      embeds: [],
     },
   ];
   return state;
@@ -93,6 +97,8 @@ describe("Channel view integration", () => {
       username: "carol",
       display_name: null,
       avatar_url: null,
+      suppress_embeds: false,
+      embeds: [],
     });
 
     await waitFor(() => {
@@ -115,6 +121,8 @@ describe("Channel view integration", () => {
       username: "carol",
       display_name: null,
       avatar_url: null,
+      suppress_embeds: false,
+      embeds: [],
     });
 
     // Give reactivity a tick to flush; then assert nothing appeared.
@@ -151,6 +159,8 @@ describe("Channel view integration", () => {
         username: "baipas",
         display_name: null,
         avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
       },
     ];
     mountAt("/channel/100");
@@ -184,6 +194,8 @@ describe("Channel view integration", () => {
         username: "bob",
         display_name: null,
         avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
       },
     ];
     mountAt("/channel/100");
@@ -206,6 +218,8 @@ describe("Channel view integration", () => {
         username: "baipas",
         display_name: null,
         avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
       },
     ];
     mountAt("/channel/100");
@@ -236,6 +250,8 @@ describe("Channel view integration", () => {
         username: "baipas",
         display_name: null,
         avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
       },
     ];
     mountAt("/channel/100");
@@ -268,6 +284,8 @@ describe("Channel view integration", () => {
         username: "baipas",
         display_name: null,
         avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
       },
     ];
     mountAt("/channel/100");
@@ -326,6 +344,8 @@ describe("Channel view integration", () => {
       username: "alice",
       display_name: null,
       avatar_url: null,
+      suppress_embeds: false,
+      embeds: [],
     });
 
     await waitFor(() => {
@@ -362,6 +382,8 @@ describe("Channel view integration", () => {
         username: DEV_USER.username,
         display_name: null,
         avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
       },
     ];
     mountAt("/channel/100");
@@ -406,6 +428,8 @@ describe("Channel view integration", () => {
         username: "baipas",
         display_name: null,
         avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
       },
     ];
     mountAt("/channel/100");
@@ -437,6 +461,8 @@ describe("Channel view integration", () => {
         username: "baipas",
         display_name: null,
         avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
       },
     ];
     mountAt("/channel/100");
@@ -464,6 +490,8 @@ describe("Channel view integration", () => {
         username: "bob",
         display_name: null,
         avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
       },
     ];
     mountAt("/channel/100");
@@ -487,6 +515,8 @@ describe("Channel view integration", () => {
         username: "alice",
         display_name: null,
         avatar_url: "/uploads/avatars/1.webp?v=1",
+        suppress_embeds: false,
+        embeds: [],
       },
       {
         id: 2,
@@ -496,6 +526,8 @@ describe("Channel view integration", () => {
         username: "bob",
         display_name: null,
         avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
       },
     ];
     mountAt("/channel/100");
@@ -505,6 +537,103 @@ describe("Channel view integration", () => {
       expect(aliceAvatar.querySelector("img")).not.toBeNull();
       const bobAvatar = screen.getByRole("img", { name: /bob's avatar/i });
       expect(bobAvatar.querySelector("svg")).not.toBeNull();
+    });
+  });
+
+  test("applies a message_embeds_updated SSE event to the existing message", async () => {
+    const state = seedAuthed();
+    state.messages["100"] = [
+      {
+        id: 77,
+        user_id: 1,
+        channel_id: 100,
+        text: "see https://example.com",
+        username: "alice",
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+    ];
+    mountAt("/channel/100");
+
+    // Message text now renders http(s) URLs as <a> tags, so "see " and the
+    // URL live in separate nodes — assert the link anchor is present.
+    await waitFor(() =>
+      expect(screen.getByRole("link", { name: "https://example.com" })).toBeInTheDocument(),
+    );
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessageEmbedsUpdated({
+      id: 77,
+      channel_id: 100,
+      suppress_embeds: false,
+      embeds: [
+        {
+          id: 5000,
+          message_id: 77,
+          url: "https://example.com",
+          title: "Example domain",
+          description: null,
+          image_url: null,
+          site_name: "Example",
+          embed_type: "link",
+          iframe_url: null,
+          iframe_width: null,
+          iframe_height: null,
+        },
+      ],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("link", { name: /example domain/i })).toBeInTheDocument();
+    });
+  });
+
+  test("message_embeds_updated with suppress_embeds=true hides existing embeds", async () => {
+    const state = seedAuthed();
+    state.messages["100"] = [
+      {
+        id: 88,
+        user_id: 1,
+        channel_id: 100,
+        text: "see https://example.com",
+        username: "alice",
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [
+          {
+            id: 6000,
+            message_id: 88,
+            url: "https://example.com",
+            title: "Will go away",
+            description: null,
+            image_url: null,
+            site_name: null,
+            embed_type: "link",
+            iframe_url: null,
+            iframe_width: null,
+            iframe_height: null,
+          },
+        ],
+      },
+    ];
+    mountAt("/channel/100");
+
+    await waitFor(() => {
+      expect(screen.getByRole("link", { name: /will go away/i })).toBeInTheDocument();
+    });
+
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessageEmbedsUpdated({
+      id: 88,
+      channel_id: 100,
+      suppress_embeds: true,
+      embeds: [],
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("link", { name: /will go away/i })).toBeNull();
     });
   });
 });
