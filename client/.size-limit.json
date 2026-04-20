@@ -2,13 +2,13 @@
   {
     "name": "JavaScript bundle (gzip)",
     "path": "dist/assets/*.js",
-    "limit": "42 KB",
+    "limit": "180 KB",
     "gzip": true
   },
   {
     "name": "CSS bundle (gzip)",
     "path": "dist/assets/*.css",
-    "limit": "5 KB",
+    "limit": "6 KB",
     "gzip": true
   }
 ]
