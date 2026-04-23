@@ -33,9 +33,7 @@ test("sends a message and sees it render in the channel", async ({ page }) => {
   // the URL to settle before touching the message input — clicking the link
   // while the auto-nav is still resolving can leave us on the wrong
   // channel and blow up the initial /messages/:id fetch.
-  const generalLink = page
-    .getByRole("navigation", { name: /channels/i })
-    .getByText("# general");
+  const generalLink = page.getByRole("navigation", { name: /channels/i }).getByText("# general");
   await generalLink.click();
   await page.waitForURL(/\/channel\/\d+$/);
   await expect(page.getByRole("heading", { name: /^#\s*general$/i })).toBeVisible();

@@ -1,8 +1,8 @@
 import { useParams } from "@solidjs/router";
-import { createResource, createSignal, onCleanup, onMount } from "solid-js";
+import { createEffect, createResource, createSignal, onCleanup, onMount } from "solid-js";
 import ChannelMessages from "../components/channel_messages";
 import TypingIndicator from "../components/typing_indicator";
-import { listMessages, sendMessage, sendTyping } from "../api";
+import { listMessages, sendMessage, sendTyping, type Message, type User } from "../api";
 import { useChannels } from "../channels_context";
 import { useEvents } from "../events_context";
 import { useAuth } from "../auth_context";
@@ -11,6 +11,23 @@ import { useAuth } from "../auth_context";
 // Smaller = snappier start for other users but more server traffic.
 // Must be less than TYPING_EXPIRY_MS in typing_indicator.tsx.
 const TYPING_PING_INTERVAL_MS = 2000;
+
+export function syncMessagesForCurrentUser(
+  messages: Message[] | undefined,
+  user: User | null | undefined,
+): Message[] | undefined {
+  if (!messages || !user) return messages;
+  return messages.map((message) =>
+    message.user_id === user.id
+      ? {
+          ...message,
+          username: user.username,
+          display_name: user.display_name,
+          avatar_url: user.avatar_url,
+        }
+      : message,
+  );
+}
 
 export default function ChannelView() {
   const params = useParams<{ id: string }>();
@@ -21,6 +38,10 @@ export default function ChannelView() {
   const [message, setMessage] = createSignal("");
   const [messages, { mutate }] = createResource(() => params.id, listMessages);
   let lastTypingSentAt = 0;
+
+  createEffect(() => {
+    mutate((prev) => syncMessagesForCurrentUser(prev, user()));
+  });
 
   const handleInput = (value: string) => {
     setMessage(value);
