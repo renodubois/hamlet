@@ -13,6 +13,8 @@ describe("syncMessagesForCurrentUser", () => {
         username: "alice",
         display_name: null,
         avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
       },
       {
         id: 2,
@@ -22,6 +24,8 @@ describe("syncMessagesForCurrentUser", () => {
         username: "bob",
         display_name: null,
         avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
       },
     ];
 
@@ -43,6 +47,8 @@ describe("syncMessagesForCurrentUser", () => {
         username: "alice",
         display_name: "Ally",
         avatar_url: "/uploads/avatars/7.webp?v=2",
+        suppress_embeds: false,
+        embeds: [],
       },
       {
         id: 2,
@@ -52,6 +58,8 @@ describe("syncMessagesForCurrentUser", () => {
         username: "bob",
         display_name: null,
         avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
       },
     ]);
   });

@@ -3,12 +3,12 @@ import type { RouteDefinition } from "@solidjs/router";
 
 export const routes: RouteDefinition[] = [
   {
-    path: "/",
-    component: () => null,
-  },
-  {
     path: "/channel/:id",
     component: lazy(() => import("./pages/channel")),
+  },
+  {
+    path: "/",
+    component: () => null,
   },
   {
     path: "**",

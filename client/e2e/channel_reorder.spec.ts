@@ -38,7 +38,8 @@ test("rearranges channels by drag-and-drop and persists the new order on reload"
   await page.getByPlaceholder("Username").fill("baipas");
   await page.getByPlaceholder("Password").fill("password");
   await page.getByRole("button", { name: /sign in/i }).click();
-  await expect(page.getByRole("heading", { name: /general/i })).toBeVisible();
+  await expect(page.getByText("baipas")).toBeVisible();
+  await expect(page.getByRole("navigation", { name: /channels/i })).toBeVisible();
 
   // Seed two extra channels under unique names so concurrent runs don't
   // collide on the "random"/"dev" list.
@@ -79,22 +80,35 @@ test("rearranges channels by drag-and-drop and persists the new order on reload"
     return out;
   }
 
-  // Baseline: newly-created channels should sit below `general` in
-  // insertion order, since the server assigns position = max + 1.
+  // Baseline: the freshly-created channels should preserve insertion order,
+  // even if older text channels from prior runs already exist above them.
   const before = await orderedTextNames();
-  expect(before.slice(0, 3)).toEqual(["general", names[0], names[1]]);
+  expect(before.indexOf(names[0])).toBeGreaterThanOrEqual(0);
+  expect(before.indexOf(names[1])).toBeGreaterThan(before.indexOf(names[0]));
 
   // Drag the second new channel above `general`.
   await dragByEvents(rowSelector(names[1]), rowSelector("general"));
 
   await expect
-    .poll(async () => (await orderedTextNames()).slice(0, 3))
-    .toEqual([names[1], "general", names[0]]);
+    .poll(async () => {
+      const current = await orderedTextNames();
+      const dragged = current.indexOf(names[1]);
+      const general = current.indexOf("general");
+      const otherNew = current.indexOf(names[0]);
+      return dragged >= 0 && general === dragged + 1 && otherNew > general;
+    })
+    .toBe(true);
 
   // Persistence: hard-reload and confirm the server returned the new order.
   await page.reload();
-  await expect(page.getByRole("heading", { name: /general/i })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: /channels/i })).toBeVisible();
   await expect
-    .poll(async () => (await orderedTextNames()).slice(0, 3))
-    .toEqual([names[1], "general", names[0]]);
+    .poll(async () => {
+      const current = await orderedTextNames();
+      const dragged = current.indexOf(names[1]);
+      const general = current.indexOf("general");
+      const otherNew = current.indexOf(names[0]);
+      return dragged >= 0 && general === dragged + 1 && otherNew > general;
+    })
+    .toBe(true);
 });

@@ -8,6 +8,7 @@ export function makeMessage(
   partial: Partial<Message> & Pick<Message, "id" | "user_id" | "channel_id" | "text" | "username">,
 ): Message {
   return {
+    display_name: null,
     avatar_url: null,
     suppress_embeds: false,
     embeds: [],

@@ -549,6 +549,7 @@ describe("Channel view integration", () => {
         channel_id: 100,
         text: "see https://example.com",
         username: "alice",
+        display_name: null,
         avatar_url: null,
         suppress_embeds: false,
         embeds: [],
@@ -599,6 +600,7 @@ describe("Channel view integration", () => {
         channel_id: 100,
         text: "see https://example.com",
         username: "alice",
+        display_name: null,
         avatar_url: null,
         suppress_embeds: false,
         embeds: [

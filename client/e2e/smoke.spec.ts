@@ -29,13 +29,16 @@ test("sends a message and sees it render in the channel", async ({ page }) => {
   await page.getByRole("button", { name: /sign in/i }).click();
 
   // Navigate to general explicitly so this test doesn't depend on whichever
-  // channel the app auto-picks after reorder-spec side effects. Wait for
-  // the URL to settle before touching the message input — clicking the link
-  // while the auto-nav is still resolving can leave us on the wrong
-  // channel and blow up the initial /messages/:id fetch.
+  // channel the app auto-picks after reorder-spec side effects. Reading the
+  // href from the sidebar keeps the test coupled to the real UI, while
+  // `page.goto()` avoids flaky click-vs-drag behavior from the draggable
+  // sidebar rows.
   const generalLink = page.getByRole("navigation", { name: /channels/i }).getByText("# general");
-  await generalLink.click();
-  await page.waitForURL(/\/channel\/\d+$/);
+  const generalHref = await generalLink.getAttribute("href");
+  expect(generalHref).toBeTruthy();
+  if (!generalHref) throw new Error("general link is missing an href");
+  await page.goto(generalHref);
+  await expect(page).toHaveURL(new RegExp(`${generalHref.replace("/", "\\/")}$`));
   await expect(page.getByRole("heading", { name: /^#\s*general$/i })).toBeVisible();
 
   const marker = `hello from playwright ${Date.now()}`;

@@ -20,7 +20,7 @@ if (!(root instanceof HTMLElement)) {
 render(
   () => (
     <AuthProvider>
-      <Router root={(props) => <App>{props.children}</App>}>{routes}</Router>
+      <Router root={App}>{routes}</Router>
     </AuthProvider>
   ),
   root,
