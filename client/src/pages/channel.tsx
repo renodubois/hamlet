@@ -1,6 +1,8 @@
 import { useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, onCleanup, onMount } from "solid-js";
 import ChannelMessages from "../components/channel_messages";
+import EmojiPicker from "../components/emoji_picker";
+import { EmojiIcon } from "../components/icons";
 import TypingIndicator from "../components/typing_indicator";
 import { listMessages, sendMessage, sendTyping, type Message, type User } from "../api";
 import { useChannels } from "../channels_context";
@@ -36,7 +38,10 @@ export default function ChannelView() {
   const { user } = useAuth();
   const channel = () => channels()?.find((c) => String(c.id) === params.id);
   const [message, setMessage] = createSignal("");
+  const [emojiPickerOpen, setEmojiPickerOpen] = createSignal(false);
   const [messages, { mutate }] = createResource(() => params.id, listMessages);
+  let messageInputRef: HTMLInputElement | undefined;
+  let emojiButtonRef: HTMLButtonElement | undefined;
   let lastTypingSentAt = 0;
 
   createEffect(() => {
@@ -50,6 +55,11 @@ export default function ChannelView() {
     if (now - lastTypingSentAt < TYPING_PING_INTERVAL_MS) return;
     lastTypingSentAt = now;
     void sendTyping(params.id);
+  };
+
+  const handleEmojiSelect = (emoji: string) => {
+    handleInput(`${message()}${emoji}`);
+    queueMicrotask(() => messageInputRef?.focus());
   };
 
   onMount(() => {
@@ -109,17 +119,43 @@ export default function ChannelView() {
             e.preventDefault();
             void sendMessage(params.id, message());
             setMessage("");
+            setEmojiPickerOpen(false);
             lastTypingSentAt = 0;
           }}
         >
-          <div class="flex">
+          <div class="flex items-center gap-2">
             <input
+              ref={(el) => {
+                messageInputRef = el;
+              }}
               class="bg-gray-100 rounded-md p-4 w-full"
               value={message()}
               onInput={(e) => handleInput(e.currentTarget.value)}
               placeholder="Send a new message..."
             />
-            <input class="bg-blue-100 ml-2 p-4 rounded-md" type="button" value="Send" />
+            <button
+              ref={(el) => {
+                emojiButtonRef = el;
+              }}
+              type="button"
+              class="rounded-md bg-gray-100 p-4 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400"
+              aria-label="Open emoji picker"
+              aria-haspopup="dialog"
+              aria-expanded={emojiPickerOpen()}
+              title="Emoji"
+              onClick={() => setEmojiPickerOpen((open) => !open)}
+            >
+              <EmojiIcon size={20} aria-hidden="true" />
+            </button>
+            <button class="bg-blue-100 p-4 rounded-md" type="submit">
+              Send
+            </button>
+            <EmojiPicker
+              open={emojiPickerOpen()}
+              anchor={() => emojiButtonRef}
+              onSelect={handleEmojiSelect}
+              onClose={() => setEmojiPickerOpen(false)}
+            />
           </div>
         </form>
       </section>

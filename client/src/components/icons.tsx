@@ -11,5 +11,6 @@ export {
   PhoneOff as PhoneOffIcon,
   Pencil as EditIcon,
   Trash2 as DeleteIcon,
+  Smile as EmojiIcon,
   X as CloseIcon,
 } from "lucide-solid";

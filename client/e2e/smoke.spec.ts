@@ -1,4 +1,5 @@
-import { test, expect } from "@playwright/test";
+import { mkdir } from "node:fs/promises";
+import { test, expect, type Page } from "@playwright/test";
 
 // The server seeds a dev user (baipas / password) and a 'general' channel on
 // every start. These E2E tests rely on that seed data. Because the server's
@@ -22,7 +23,7 @@ test("logs in as the dev user and lands in a channel", async ({ page }) => {
   ).toBeVisible();
 });
 
-test("sends a message and sees it render in the channel", async ({ page }) => {
+async function loginAndOpenGeneral(page: Page) {
   await page.goto("/");
   await page.getByPlaceholder("Username").fill("baipas");
   await page.getByPlaceholder("Password").fill("password");
@@ -40,6 +41,10 @@ test("sends a message and sees it render in the channel", async ({ page }) => {
   await page.goto(generalHref);
   await expect(page).toHaveURL(new RegExp(`${generalHref.replace("/", "\\/")}$`));
   await expect(page.getByRole("heading", { name: /^#\s*general$/i })).toBeVisible();
+}
+
+test("sends a message and sees it render in the channel", async ({ page }) => {
+  await loginAndOpenGeneral(page);
 
   const marker = `hello from playwright ${Date.now()}`;
   const input = page.getByPlaceholder(/send a new message/i);
@@ -47,4 +52,33 @@ test("sends a message and sees it render in the channel", async ({ page }) => {
   await input.press("Enter");
 
   await expect(page.getByText(marker)).toBeVisible({ timeout: 10_000 });
+});
+
+test("selects an emoji from the picker and sends it", async ({ page }, testInfo) => {
+  await loginAndOpenGeneral(page);
+
+  const marker = `emoji from playwright ${Date.now()} `;
+  const expected = `${marker}😄`;
+  const input = page.getByPlaceholder(/send a new message/i);
+  await input.fill(marker);
+  await page.getByRole("button", { name: /open emoji picker/i }).click();
+
+  const picker = page.getByRole("dialog", { name: /emoji picker/i });
+  await expect(picker).toBeVisible();
+  await picker.getByRole("textbox", { name: /search emojis/i }).fill(":smile:");
+  await expect(
+    picker.getByRole("button", { name: /grinning face with smiling eyes emoji/i }),
+  ).toBeVisible();
+
+  const screenshotPath = "test-results/emoji-picker-working.png";
+  await mkdir("test-results", { recursive: true });
+  await page.screenshot({ path: screenshotPath });
+  await testInfo.attach("emoji picker working", { path: screenshotPath, contentType: "image/png" });
+
+  await picker.getByRole("button", { name: /grinning face with smiling eyes emoji/i }).click();
+  await expect(picker).toBeHidden();
+  await expect(input).toHaveValue(expected);
+  await input.press("Enter");
+
+  await expect(page.getByText(expected)).toBeVisible({ timeout: 10_000 });
 });

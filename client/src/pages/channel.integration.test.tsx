@@ -416,6 +416,50 @@ describe("Channel view integration", () => {
     });
   });
 
+  test("selecting an emoji appends it to the draft, closes the picker, and sends it", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "hello " } });
+    fireEvent.click(screen.getByRole("button", { name: /open emoji picker/i }));
+
+    const dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
+    fireEvent.input(within(dialog).getByRole("textbox", { name: /search emojis/i }), {
+      target: { value: ":smile:" },
+    });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /grinning face with smiling eyes emoji/i }),
+    );
+
+    await waitFor(() => expect(input.value).toBe("hello 😄"));
+    expect(screen.queryByRole("dialog", { name: /emoji picker/i })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(input));
+
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+    await waitFor(() => {
+      expect(mswState().sentMessages).toContainEqual({ channel: "100", text: "hello 😄" });
+    });
+  });
+
+  test("selecting an emoji into an empty draft posts a typing ping", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    await screen.findByPlaceholderText(/send a new message/i);
+    fireEvent.click(screen.getByRole("button", { name: /open emoji picker/i }));
+
+    const dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
+    fireEvent.input(within(dialog).getByRole("textbox", { name: /search emojis/i }), {
+      target: { value: "heart" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: /red heart emoji/i }));
+
+    await waitFor(() => {
+      expect(mswState().typingPings).toContain("100");
+    });
+  });
+
   test("clicking the hover toolbar Edit button opens the edit form and PUTs /message/:id", async () => {
     const state = resetMswState();
     state.me = DEV_USER;
