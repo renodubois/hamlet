@@ -8,20 +8,22 @@ use rand::RngCore;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 
 use crate::entity;
-use crate::{UserError, generate_id};
+use crate::error::AppError;
+use crate::util::generate_id;
 
 pub const SESSION_COOKIE: &str = "session";
 pub const PASSWORD_PROVIDER: &str = "password";
 const SESSION_DURATION_SECS: i64 = 60 * 60 * 24 * 30;
 
-pub fn hash_password(password: &str) -> Result<String, UserError> {
+pub fn hash_password(password: &str) -> Result<String, AppError> {
     let mut salt_bytes = [0u8; 16];
     rand::rng().fill_bytes(&mut salt_bytes);
-    let salt = SaltString::encode_b64(&salt_bytes).map_err(|_| UserError::InternalError)?;
+    let salt = SaltString::encode_b64(&salt_bytes)
+        .map_err(|e| AppError::Internal(format!("salt: {e}")))?;
     Argon2::default()
         .hash_password(password.as_bytes(), &salt)
         .map(|h| h.to_string())
-        .map_err(|_| UserError::InternalError)
+        .map_err(|e| AppError::Internal(format!("argon2: {e}")))
 }
 
 pub fn verify_password(password: &str, hash: &str) -> bool {
@@ -49,7 +51,7 @@ fn now_secs() -> i64 {
 pub async fn create_session(
     db: &DatabaseConnection,
     user_id: i64,
-) -> Result<entity::session::Model, UserError> {
+) -> Result<entity::session::Model, AppError> {
     let now = now_secs();
     let session = entity::session::ActiveModel {
         token: Set(generate_session_token()),
@@ -57,33 +59,30 @@ pub async fn create_session(
         created_at: Set(now),
         expires_at: Set(now + SESSION_DURATION_SECS),
     };
-    session.insert(db).await.map_err(|_| UserError::DbError)
+    Ok(session.insert(db).await?)
 }
 
-pub async fn destroy_session(db: &DatabaseConnection, token: &str) -> Result<(), UserError> {
+pub async fn destroy_session(db: &DatabaseConnection, token: &str) -> Result<(), AppError> {
     entity::session::Entity::delete_by_id(token.to_owned())
         .exec(db)
-        .await
-        .map_err(|_| UserError::DbError)?;
+        .await?;
     Ok(())
 }
 
-pub async fn validate_session(db: &DatabaseConnection, token: &str) -> Result<AuthUser, UserError> {
+pub async fn validate_session(db: &DatabaseConnection, token: &str) -> Result<AuthUser, AppError> {
     let session = entity::session::Entity::find_by_id(token.to_owned())
         .one(db)
-        .await
-        .map_err(|_| UserError::DbError)?
-        .ok_or(UserError::Unauthorized)?;
+        .await?
+        .ok_or(AppError::Unauthorized)?;
 
     if session.expires_at <= now_secs() {
-        return Err(UserError::Unauthorized);
+        return Err(AppError::Unauthorized);
     }
 
     let user = entity::user::Entity::find_by_id(session.user_id)
         .one(db)
-        .await
-        .map_err(|_| UserError::DbError)?
-        .ok_or(UserError::Unauthorized)?;
+        .await?
+        .ok_or(AppError::Unauthorized)?;
 
     Ok(AuthUser {
         id: user.id,
@@ -99,15 +98,14 @@ pub async fn register_user(
     username: &str,
     password: &str,
     email: Option<String>,
-) -> Result<entity::user::Model, UserError> {
+) -> Result<entity::user::Model, AppError> {
     let existing = entity::credential::Entity::find()
         .filter(entity::credential::Column::Provider.eq(PASSWORD_PROVIDER))
         .filter(entity::credential::Column::ExternalId.eq(username))
         .one(db)
-        .await
-        .map_err(|_| UserError::DbError)?;
+        .await?;
     if existing.is_some() {
-        return Err(UserError::UsernameTaken);
+        return Err(AppError::UsernameTaken);
     }
 
     let user_id = generate_id();
@@ -120,7 +118,7 @@ pub async fn register_user(
         avatar_path: Set(None),
         avatar_updated_at: Set(None),
     };
-    let user = user.insert(db).await.map_err(|_| UserError::DbError)?;
+    let user = user.insert(db).await?;
 
     let hash = hash_password(password)?;
     let credential = entity::credential::ActiveModel {
@@ -130,10 +128,7 @@ pub async fn register_user(
         external_id: Set(username.to_owned()),
         secret: Set(Some(hash)),
     };
-    credential
-        .insert(db)
-        .await
-        .map_err(|_| UserError::DbError)?;
+    credential.insert(db).await?;
 
     Ok(user)
 }
@@ -142,28 +137,26 @@ pub async fn authenticate_password(
     db: &DatabaseConnection,
     username: &str,
     password: &str,
-) -> Result<entity::user::Model, UserError> {
+) -> Result<entity::user::Model, AppError> {
     let credential = entity::credential::Entity::find()
         .filter(entity::credential::Column::Provider.eq(PASSWORD_PROVIDER))
         .filter(entity::credential::Column::ExternalId.eq(username))
         .one(db)
-        .await
-        .map_err(|_| UserError::DbError)?
-        .ok_or(UserError::InvalidCredentials)?;
+        .await?
+        .ok_or(AppError::InvalidCredentials)?;
 
     let hash = credential
         .secret
         .as_deref()
-        .ok_or(UserError::InvalidCredentials)?;
+        .ok_or(AppError::InvalidCredentials)?;
     if !verify_password(password, hash) {
-        return Err(UserError::InvalidCredentials);
+        return Err(AppError::InvalidCredentials);
     }
 
     entity::user::Entity::find_by_id(credential.user_id)
         .one(db)
-        .await
-        .map_err(|_| UserError::DbError)?
-        .ok_or(UserError::InvalidCredentials)
+        .await?
+        .ok_or(AppError::InvalidCredentials)
 }
 
 pub fn session_cookie(token: String) -> Cookie<'static> {
@@ -194,8 +187,8 @@ pub struct AuthUser {
 }
 
 impl FromRequest for AuthUser {
-    type Error = UserError;
-    type Future = Pin<Box<dyn Future<Output = Result<Self, UserError>>>>;
+    type Error = AppError;
+    type Future = Pin<Box<dyn Future<Output = Result<Self, AppError>>>>;
 
     fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
         // Fast path: already validated by require_auth middleware
@@ -207,8 +200,8 @@ impl FromRequest for AuthUser {
         let token = req.cookie(SESSION_COOKIE).map(|c| c.value().to_owned());
 
         Box::pin(async move {
-            let db = db.ok_or(UserError::InternalError)?;
-            let token = token.ok_or(UserError::Unauthorized)?;
+            let db = db.ok_or_else(|| AppError::Internal("missing db data".to_owned()))?;
+            let token = token.ok_or(AppError::Unauthorized)?;
             validate_session(db.get_ref(), &token).await
         })
     }
