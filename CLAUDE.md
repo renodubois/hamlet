@@ -20,6 +20,8 @@ Before marking any change as done, run the relevant checks for the side you touc
 - **`client/`** — `npm run fmt`, `npm run lint`, `npm run typecheck`, `npm run test`. Run `npm run test:e2e` if the change could affect a smoke-tested flow (login, sending messages). Run `npm run size` if the change might affect bundle size.
 - **`server/`** — follow `server/CLAUDE.md` for its test/format/lint commands.
 
+A single `scripts/check.sh` runs every check both sides expose — fmt, lint, typecheck/clippy, tests, and (if installed) `cargo audit` — in the order CI would. `scripts/check.sh server` or `scripts/check.sh client` scopes to one side; `--fix` applies formatter fixes before running the rest. Use it as a pre-push gate.
+
 ### Fix failing checks even if you didn't cause them
 
 If any test, linter, type check, size budget, or other repo-level check fails while you're working — **fix it**, even if the failure predates your change and isn't in the files you were sent to edit. "Not my fault" is not a reason to leave the tree red. Track the fix alongside your main change (or as its own follow-up commit on the same branch), and explain in the commit message what the pre-existing breakage was. Flaky tests count: stabilize them, don't retry-until-green.
