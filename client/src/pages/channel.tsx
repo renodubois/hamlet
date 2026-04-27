@@ -1,10 +1,10 @@
 import { useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, onCleanup, onMount } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
-import ChannelMessages from "../components/channel_messages";
-import EmojiPicker from "../components/emoji_picker";
+import ChannelMessages from "../components/channel-messages";
+import EmojiPicker from "../components/emoji-picker";
 import { EmojiIcon } from "../components/icons";
-import TypingIndicator from "../components/typing_indicator";
+import TypingIndicator from "../components/typing-indicator";
 import { listMessages, sendMessage, sendTyping, type Message } from "../api";
 import { useChannels } from "../contexts/channels";
 import { useEvents } from "../contexts/events";

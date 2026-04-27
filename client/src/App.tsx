@@ -1,11 +1,11 @@
 import { children, createEffect, ErrorBoundary, Suspense, type Component, Show } from "solid-js";
 import { useLocation, useNavigate, type RouteSectionProps } from "@solidjs/router";
-import ChannelSidebar from "./components/channel_sidebar";
+import ChannelSidebar from "./components/channel-sidebar";
 import { useAuth } from "./contexts/auth";
 import { ChannelsProvider, useChannels } from "./contexts/channels";
 import { EventsProvider } from "./contexts/events";
 import { type User } from "./api";
-import { VoiceChatProvider } from "./contexts/voice_chat";
+import { VoiceChatProvider } from "./contexts/voice-chat";
 
 function ErrorPanel(props: { error: unknown; reset?: () => void; title?: string }) {
   const message = () => (props.error instanceof Error ? props.error.message : String(props.error));

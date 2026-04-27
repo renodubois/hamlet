@@ -20,7 +20,7 @@ vi.mock("../api", async () => {
   };
 });
 
-import ChannelMessages from "./channel_messages";
+import ChannelMessages from "./channel-messages";
 import { deleteMessage, editMessage, setMessageEmbedsSuppressed } from "../api";
 
 const SELF_ID = 1;

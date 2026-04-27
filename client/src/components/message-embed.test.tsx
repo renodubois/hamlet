@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import { render, screen } from "@solidjs/testing-library";
 import type { Embed } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
-import MessageEmbed from "./message_embed";
+import MessageEmbed from "./message-embed";
 
 function makeEmbed(partial: Partial<Embed>): Embed {
   return {

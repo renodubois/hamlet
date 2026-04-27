@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { render, screen } from "@solidjs/testing-library";
-import TypingIndicator, { formatTypingMessage } from "./typing_indicator";
+import TypingIndicator, { formatTypingMessage } from "./typing-indicator";
 import { TYPING_EXPIRY_MS } from "../constants";
 import type { EventsContextValue } from "../contexts/events";
 import type { Message, UserTyping } from "../api";

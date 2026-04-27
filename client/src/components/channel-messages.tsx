@@ -9,7 +9,7 @@ import {
 import { linkifyText } from "../linkify";
 import Avatar from "./avatar";
 import { DeleteIcon, EditIcon } from "./icons";
-import MessageEmbed from "./message_embed";
+import MessageEmbed from "./message-embed";
 import Modal from "./modal";
 
 interface ContextMenuState {

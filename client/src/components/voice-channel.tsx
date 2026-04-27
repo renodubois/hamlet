@@ -1,7 +1,7 @@
 import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { listVoiceParticipants, type Channel, type VoiceParticipant } from "../api";
 import { useEvents } from "../contexts/events";
-import { useVoiceChat } from "../contexts/voice_chat";
+import { useVoiceChat } from "../contexts/voice-chat";
 import Avatar from "./avatar";
 import { showSpeakingIndicatorsEverywhere } from "../voice/settings";
 import {

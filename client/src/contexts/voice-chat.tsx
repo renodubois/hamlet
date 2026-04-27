@@ -13,7 +13,7 @@ import {
   getInputGain,
   getNoiseSuppressionEnabled,
 } from "../voice/settings";
-import { createAudioRouter } from "../voice/audio_routing";
+import { createAudioRouter } from "../voice/audio-routing";
 import { applyInputGain } from "../voice/livekit";
 
 interface VoiceChatContextValue {

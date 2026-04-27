@@ -4,7 +4,7 @@ import { type User } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
 import { DEV_USER } from "../test/msw/handlers";
 import { mswState, resetMswState } from "../test/msw/server";
-import SettingsModal from "./settings_modal";
+import SettingsModal from "./settings-modal";
 
 const USER: User = {
   id: 1,
