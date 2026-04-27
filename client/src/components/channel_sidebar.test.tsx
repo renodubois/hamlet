@@ -14,7 +14,7 @@ const channelsResource = vi.hoisted(() =>
   >(),
 );
 
-vi.mock("../channels_context", () => ({
+vi.mock("../contexts/channels", () => ({
   useChannels: () => channelsResource(),
 }));
 

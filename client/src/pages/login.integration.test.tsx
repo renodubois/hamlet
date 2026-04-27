@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@solidjs/testing-library";
 import { Show } from "solid-js";
-import { AuthProvider, useAuth } from "../auth_context";
+import { AuthProvider, useAuth } from "../contexts/auth";
 import { assertExists } from "../test/render";
 import LoginScreen from "./login";
 

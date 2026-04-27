@@ -1,11 +1,7 @@
 import { Show, createSignal, onCleanup, onMount } from "solid-js";
 import type { Message, UserTyping } from "../api";
-import type { EventsContextValue } from "../events_context";
-
-// How long after a user's last typing ping the indicator keeps showing them.
-// Must be longer than TYPING_PING_INTERVAL_MS in channel.tsx or the indicator
-// will flicker between pings.
-export const TYPING_EXPIRY_MS = 2500;
+import type { EventsContextValue } from "../contexts/events";
+import { TYPING_EXPIRY_MS } from "../constants";
 
 // How often we prune expired entries.
 const TYPING_SWEEP_MS = 500;

@@ -6,7 +6,7 @@ import {
   logout as apiLogout,
   setServerUrl,
   type User,
-} from "./api";
+} from "../api";
 
 interface AuthContextValue {
   user: Resource<User | null>;

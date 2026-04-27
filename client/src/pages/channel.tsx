@@ -5,14 +5,10 @@ import EmojiPicker from "../components/emoji_picker";
 import { EmojiIcon } from "../components/icons";
 import TypingIndicator from "../components/typing_indicator";
 import { listMessages, sendMessage, sendTyping, type Message, type User } from "../api";
-import { useChannels } from "../channels_context";
-import { useEvents } from "../events_context";
-import { useAuth } from "../auth_context";
-
-// How often the client will POST /typing while the user is typing.
-// Smaller = snappier start for other users but more server traffic.
-// Must be less than TYPING_EXPIRY_MS in typing_indicator.tsx.
-const TYPING_PING_INTERVAL_MS = 2000;
+import { useChannels } from "../contexts/channels";
+import { useEvents } from "../contexts/events";
+import { useAuth } from "../contexts/auth";
+import { TYPING_PING_INTERVAL_MS } from "../constants";
 
 export function syncMessagesForCurrentUser(
   messages: Message[] | undefined,

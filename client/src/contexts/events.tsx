@@ -10,7 +10,7 @@ import {
   type VoiceParticipant,
   type VoiceParticipantLeft,
   type VoiceParticipantSpeaking,
-} from "./api";
+} from "../api";
 
 type Listener<T> = (value: T) => void;
 

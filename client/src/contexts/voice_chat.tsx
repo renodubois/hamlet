@@ -8,13 +8,13 @@ import {
   RoomEvent,
   Track,
 } from "livekit-client";
-import { getVoiceToken, postVoiceSpeaking } from "./api";
+import { getVoiceToken, postVoiceSpeaking } from "../api";
 import {
   VOICE_INPUT_STORAGE_KEY,
   VOICE_OUTPUT_STORAGE_KEY,
   getInputGain,
   getNoiseSuppressionEnabled,
-} from "./components/voice_settings";
+} from "../voice/settings";
 
 interface VoiceChatContextValue {
   activeChannelId: () => number | null;

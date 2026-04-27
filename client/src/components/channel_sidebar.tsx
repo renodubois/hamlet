@@ -1,7 +1,7 @@
 import { A } from "@solidjs/router";
 import { createSignal, For, Match, Show, Switch } from "solid-js";
 import { type Channel, type User } from "../api";
-import { useChannels } from "../channels_context";
+import { useChannels } from "../contexts/channels";
 import AddChannelModal from "./add_channel_modal";
 import Avatar from "./avatar";
 import { SettingsIcon } from "./icons";

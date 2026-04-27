@@ -37,11 +37,11 @@ const leftListeners = new Set<LeftListener>();
 const speakingListeners = new Set<SpeakingListener>();
 const [showEverywhere, setShowEverywhere] = createSignal(false);
 
-vi.mock("../voice_chat_context", () => ({
+vi.mock("../contexts/voice_chat", () => ({
   useVoiceChat: () => mockVoice,
 }));
 
-vi.mock("../events_context", () => ({
+vi.mock("../contexts/events", () => ({
   useEvents: () => ({
     onMessage: () => () => {},
     onMessageUpdated: () => () => {},
@@ -63,7 +63,7 @@ vi.mock("../events_context", () => ({
   }),
 }));
 
-vi.mock("./voice_settings", () => ({
+vi.mock("../voice/settings", () => ({
   showSpeakingIndicatorsEverywhere: () => showEverywhere(),
 }));
 

@@ -1,12 +1,12 @@
 import { children, createEffect, Suspense, type Component, Show } from "solid-js";
 import { useLocation, useNavigate, type RouteSectionProps } from "@solidjs/router";
 import ChannelSidebar from "./components/channel_sidebar";
-import { useAuth } from "./auth_context";
-import { ChannelsProvider, useChannels } from "./channels_context";
-import { EventsProvider } from "./events_context";
+import { useAuth } from "./contexts/auth";
+import { ChannelsProvider, useChannels } from "./contexts/channels";
+import { EventsProvider } from "./contexts/events";
 import LoginScreen from "./pages/login";
 import { type User } from "./api";
-import { VoiceChatProvider } from "./voice_chat_context";
+import { VoiceChatProvider } from "./contexts/voice_chat";
 
 const AppShell: Component<{ children?: RouteSectionProps["children"]; user: User }> = (props) => {
   const auth = useAuth();
