@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, For, Show, onCleanup, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
-import { CONSERVATIVE_EMOJIS, type EmojiEntry } from "../emoji/emoji_data";
-import { searchEmojis } from "../emoji/emoji_search";
+import { CONSERVATIVE_EMOJIS, type EmojiEntry } from "../emoji/emoji-data";
+import { searchEmojis } from "../emoji/emoji-search";
 
 const PICKER_WIDTH = 320;
 const PICKER_MAX_HEIGHT = 360;

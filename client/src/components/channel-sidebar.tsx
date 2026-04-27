@@ -1,12 +1,12 @@
 import { A } from "@solidjs/router";
 import { createSignal, For, Match, Show, Switch } from "solid-js";
 import { type Channel, type User } from "../api";
-import { useChannels } from "../channels_context";
-import AddChannelModal from "./add_channel_modal";
+import { useChannels } from "../contexts/channels";
+import AddChannelModal from "./add-channel-modal";
 import Avatar from "./avatar";
 import { SettingsIcon } from "./icons";
-import SettingsModal from "./settings_modal";
-import VoiceChannel from "./voice_channel";
+import SettingsModal from "./settings-modal";
+import VoiceChannel from "./voice-channel";
 
 export default function ChannelSidebar(props: {
   user: User;

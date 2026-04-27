@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { expectNoA11yViolations } from "../test/a11y";
-import VoiceSettings, { VOICE_INPUT_STORAGE_KEY, VOICE_OUTPUT_STORAGE_KEY } from "./voice_settings";
+import VoiceSettings from "./voice-settings";
+import { VOICE_INPUT_STORAGE_KEY, VOICE_OUTPUT_STORAGE_KEY } from "../voice/settings";
 
 type FakeMediaDevices = {
   enumerateDevices: ReturnType<typeof vi.fn>;

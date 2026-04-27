@@ -1,9 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { describe, expect, test, vi } from "vitest";
-import type { EmojiEntry } from "../emoji/emoji_data";
+import type { EmojiEntry } from "../emoji/emoji-data";
 import { expectNoA11yViolations } from "../test/a11y";
-import EmojiPicker from "./emoji_picker";
+import EmojiPicker from "./emoji-picker";
 
 const EMOJIS: readonly EmojiEntry[] = [
   {

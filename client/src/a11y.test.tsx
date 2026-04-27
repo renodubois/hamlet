@@ -2,7 +2,7 @@ import { describe, test } from "vitest";
 import { render } from "@solidjs/testing-library";
 import Modal from "./components/modal";
 import LoginScreen from "./pages/login";
-import { AuthProvider } from "./auth_context";
+import { AuthProvider } from "./contexts/auth";
 import { expectNoA11yViolations } from "./test/a11y";
 
 describe("Accessibility", () => {

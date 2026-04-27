@@ -1,16 +1,11 @@
 import { createEffect, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
-import {
-  deleteAvatar,
-  DISPLAY_NAME_MAX_LEN,
-  updateDisplayName,
-  uploadAvatar,
-  type User,
-} from "../api";
+import { deleteAvatar, updateDisplayName, uploadAvatar, type User } from "../api";
+import { DISPLAY_NAME_MAX_LEN } from "../constants";
 import Avatar from "./avatar";
-import CropperDialog from "./cropper_dialog";
+import CropperDialog from "./cropper-dialog";
 import { LogOutIcon } from "./icons";
 import Modal from "./modal";
-import VoiceSettings from "./voice_settings";
+import VoiceSettings from "./voice-settings";
 
 type SectionId = "profile" | "voice";
 

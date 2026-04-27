@@ -1,9 +1,9 @@
 import { describe, expect, test, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@solidjs/testing-library";
 import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
-import { AuthProvider } from "../auth_context";
-import { ChannelsProvider } from "../channels_context";
-import { EventsProvider } from "../events_context";
+import { AuthProvider } from "../contexts/auth";
+import { ChannelsProvider } from "../contexts/channels";
+import { EventsProvider } from "../contexts/events";
 import { FakeEventSource, latestFakeEventSource } from "../test/msw/sse";
 import { mswState, resetMswState } from "../test/msw/server";
 import { DEV_USER } from "../test/msw/handlers";

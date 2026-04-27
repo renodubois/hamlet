@@ -14,17 +14,17 @@ const channelsResource = vi.hoisted(() =>
   >(),
 );
 
-vi.mock("../channels_context", () => ({
+vi.mock("../contexts/channels", () => ({
   useChannels: () => channelsResource(),
 }));
 
 // AddChannelModal pulls in the real api module transitively; stub it to keep
 // this test tight on the sidebar itself.
-vi.mock("./add_channel_modal", () => ({
+vi.mock("./add-channel-modal", () => ({
   default: () => null,
 }));
 
-vi.mock("./settings_modal", () => ({
+vi.mock("./settings-modal", () => ({
   default: (props: { open: boolean }) => (
     <Show when={props.open}>
       <div data-testid="settings-modal-stub">settings-open</div>
@@ -35,8 +35,8 @@ vi.mock("./settings_modal", () => ({
 // VoiceChannel pulls in livekit-client transitively and needs the
 // VoiceChatProvider. Stub it out so the sidebar's own behavior stays testable
 // without standing up the whole voice stack — it has dedicated coverage in
-// voice_channel.test.tsx.
-vi.mock("./voice_channel", () => ({
+// voice-channel.test.tsx.
+vi.mock("./voice-channel", () => ({
   default: (props: { channel: Channel }) => (
     <button type="button" data-testid={`voice-channel-${props.channel.id}`}>
       {props.channel.name}
@@ -44,7 +44,7 @@ vi.mock("./voice_channel", () => ({
   ),
 }));
 
-import ChannelSidebar from "./channel_sidebar";
+import ChannelSidebar from "./channel-sidebar";
 
 const USER: User = {
   id: 1,

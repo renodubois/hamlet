@@ -7,9 +7,9 @@ import {
   type JSX,
   type Resource,
 } from "solid-js";
-import { listChannels, reorderChannels, type Channel } from "./api";
-import { useAuth } from "./auth_context";
-import { useEvents } from "./events_context";
+import { listChannels, reorderChannels, type Channel } from "../api";
+import { useAuth } from "./auth";
+import { useEvents } from "./events";
 
 interface ChannelsContextValue {
   channels: Resource<Channel[]>;

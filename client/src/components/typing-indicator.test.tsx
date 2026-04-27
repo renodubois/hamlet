@@ -1,7 +1,8 @@
 import { describe, expect, test, vi } from "vitest";
 import { render, screen } from "@solidjs/testing-library";
-import TypingIndicator, { TYPING_EXPIRY_MS, formatTypingMessage } from "./typing_indicator";
-import type { EventsContextValue } from "../events_context";
+import TypingIndicator, { formatTypingMessage } from "./typing-indicator";
+import { TYPING_EXPIRY_MS } from "../constants";
+import type { EventsContextValue } from "../contexts/events";
 import type { Message, UserTyping } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
 

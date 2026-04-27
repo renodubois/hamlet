@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import type { EmojiEntry } from "./emoji_data";
-import { normalizeEmojiQuery, searchEmojis } from "./emoji_search";
+import type { EmojiEntry } from "./emoji-data";
+import { normalizeEmojiQuery, searchEmojis } from "./emoji-search";
 
 const EMOJIS: readonly EmojiEntry[] = [
   {

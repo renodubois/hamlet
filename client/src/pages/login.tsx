@@ -1,5 +1,5 @@
 import { createSignal, Show } from "solid-js";
-import { useAuth } from "../auth_context";
+import { useAuth } from "../contexts/auth";
 import { getServerUrl } from "../api";
 
 export default function LoginScreen() {

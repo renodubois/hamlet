@@ -8,7 +8,7 @@ import type {
   VoiceParticipantSpeaking,
 } from "../api";
 import { mswState, resetMswState } from "../test/msw/server";
-import VoiceChannel from "./voice_channel";
+import VoiceChannel from "./voice-channel";
 
 type JoinedListener = (p: VoiceParticipant) => void;
 type LeftListener = (p: VoiceParticipantLeft) => void;
@@ -37,11 +37,11 @@ const leftListeners = new Set<LeftListener>();
 const speakingListeners = new Set<SpeakingListener>();
 const [showEverywhere, setShowEverywhere] = createSignal(false);
 
-vi.mock("../voice_chat_context", () => ({
+vi.mock("../contexts/voice-chat", () => ({
   useVoiceChat: () => mockVoice,
 }));
 
-vi.mock("../events_context", () => ({
+vi.mock("../contexts/events", () => ({
   useEvents: () => ({
     onMessage: () => () => {},
     onMessageUpdated: () => () => {},
@@ -63,7 +63,7 @@ vi.mock("../events_context", () => ({
   }),
 }));
 
-vi.mock("./voice_settings", () => ({
+vi.mock("../voice/settings", () => ({
   showSpeakingIndicatorsEverywhere: () => showEverywhere(),
 }));
 

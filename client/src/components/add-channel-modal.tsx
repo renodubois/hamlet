@@ -1,6 +1,7 @@
 import { createSignal, Show } from "solid-js";
 import Modal from "./modal";
-import { CHANNEL_NAME_MAX_LEN, createChannel, type ChannelType } from "../api";
+import { createChannel, type ChannelType } from "../api";
+import { CHANNEL_NAME_MAX_LEN } from "../constants";
 
 export default function AddChannelModal(props: { open: boolean; onClose: () => void }) {
   const [name, setName] = createSignal("");

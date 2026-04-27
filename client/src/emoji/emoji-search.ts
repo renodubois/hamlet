@@ -1,4 +1,4 @@
-import type { EmojiEntry } from "./emoji_data";
+import type { EmojiEntry } from "./emoji-data";
 
 export function normalizeEmojiQuery(query: string): string {
   return query.trim().toLowerCase().replace(/\s+/g, " ");
