@@ -14,6 +14,9 @@ import {
 
 type Listener<T> = (value: T) => void;
 
+// Look up the data type for a given SSEEvent kind.
+type DataFor<K extends SSEEvent["kind"]> = Extract<SSEEvent, { kind: K }>["data"];
+
 export interface EventsContextValue {
   onMessage: (cb: Listener<Message>) => () => void;
   onMessageUpdated: (cb: Listener<Message>) => () => void;
@@ -30,16 +33,21 @@ export interface EventsContextValue {
 const EventsContext = createContext<EventsContextValue>();
 
 export function EventsProvider(props: { children: JSX.Element }) {
-  const messageListeners = new Set<Listener<Message>>();
-  const messageUpdatedListeners = new Set<Listener<Message>>();
-  const messageDeletedListeners = new Set<Listener<MessageDeleted>>();
-  const messageEmbedsUpdatedListeners = new Set<Listener<MessageEmbedsUpdated>>();
-  const channelCreatedListeners = new Set<Listener<Channel>>();
-  const channelsReorderedListeners = new Set<Listener<Channel[]>>();
-  const voiceJoinedListeners = new Set<Listener<VoiceParticipant>>();
-  const voiceLeftListeners = new Set<Listener<VoiceParticipantLeft>>();
-  const voiceSpeakingListeners = new Set<Listener<VoiceParticipantSpeaking>>();
-  const userTypingListeners = new Set<Listener<UserTyping>>();
+  // One Set per SSEEvent kind. Callbacks are stored as type-erased functions;
+  // the typed `subscribe` wrapper below preserves the kind→data correspondence
+  // from the SSEEvent discriminated union at the boundary.
+  const listeners = new Map<SSEEvent["kind"], Set<Listener<unknown>>>();
+
+  function subscribe<K extends SSEEvent["kind"]>(kind: K, cb: Listener<DataFor<K>>): () => void {
+    let set = listeners.get(kind);
+    if (!set) {
+      set = new Set();
+      listeners.set(kind, set);
+    }
+    const captured = set;
+    captured.add(cb as Listener<unknown>);
+    return () => captured.delete(cb as Listener<unknown>);
+  }
 
   let eventSource: EventSource | null = null;
 
@@ -54,27 +62,12 @@ export function EventsProvider(props: { children: JSX.Element }) {
         console.warn("bad SSE payload", e, m.data);
         return;
       }
-      if (parsed.kind === "message") {
-        messageListeners.forEach((cb) => cb(parsed.data));
-      } else if (parsed.kind === "message_updated") {
-        messageUpdatedListeners.forEach((cb) => cb(parsed.data));
-      } else if (parsed.kind === "message_deleted") {
-        messageDeletedListeners.forEach((cb) => cb(parsed.data));
-      } else if (parsed.kind === "message_embeds_updated") {
-        messageEmbedsUpdatedListeners.forEach((cb) => cb(parsed.data));
-      } else if (parsed.kind === "channel_created") {
-        channelCreatedListeners.forEach((cb) => cb(parsed.data));
-      } else if (parsed.kind === "channels_reordered") {
-        channelsReorderedListeners.forEach((cb) => cb(parsed.data));
-      } else if (parsed.kind === "voice_participant_joined") {
-        voiceJoinedListeners.forEach((cb) => cb(parsed.data));
-      } else if (parsed.kind === "voice_participant_left") {
-        voiceLeftListeners.forEach((cb) => cb(parsed.data));
-      } else if (parsed.kind === "voice_participant_speaking_changed") {
-        voiceSpeakingListeners.forEach((cb) => cb(parsed.data));
-      } else if (parsed.kind === "user_typing") {
-        userTypingListeners.forEach((cb) => cb(parsed.data));
-      }
+      const set = listeners.get(parsed.kind);
+      if (!set) return;
+      // Safe: `subscribe` only feeds each Set with callbacks whose data type
+      // matches the key, so for any given Set every callback can accept
+      // `parsed.data` when `parsed.kind === key`.
+      set.forEach((cb) => cb(parsed.data));
     };
     eventSource = es;
   });
@@ -82,59 +75,20 @@ export function EventsProvider(props: { children: JSX.Element }) {
   onCleanup(() => {
     eventSource?.close();
     eventSource = null;
-    messageListeners.clear();
-    messageUpdatedListeners.clear();
-    messageDeletedListeners.clear();
-    messageEmbedsUpdatedListeners.clear();
-    channelCreatedListeners.clear();
-    channelsReorderedListeners.clear();
-    voiceJoinedListeners.clear();
-    voiceLeftListeners.clear();
-    voiceSpeakingListeners.clear();
-    userTypingListeners.clear();
+    listeners.clear();
   });
 
   const value: EventsContextValue = {
-    onMessage(cb) {
-      messageListeners.add(cb);
-      return () => messageListeners.delete(cb);
-    },
-    onMessageUpdated(cb) {
-      messageUpdatedListeners.add(cb);
-      return () => messageUpdatedListeners.delete(cb);
-    },
-    onMessageDeleted(cb) {
-      messageDeletedListeners.add(cb);
-      return () => messageDeletedListeners.delete(cb);
-    },
-    onMessageEmbedsUpdated(cb) {
-      messageEmbedsUpdatedListeners.add(cb);
-      return () => messageEmbedsUpdatedListeners.delete(cb);
-    },
-    onChannelCreated(cb) {
-      channelCreatedListeners.add(cb);
-      return () => channelCreatedListeners.delete(cb);
-    },
-    onChannelsReordered(cb) {
-      channelsReorderedListeners.add(cb);
-      return () => channelsReorderedListeners.delete(cb);
-    },
-    onVoiceParticipantJoined(cb) {
-      voiceJoinedListeners.add(cb);
-      return () => voiceJoinedListeners.delete(cb);
-    },
-    onVoiceParticipantLeft(cb) {
-      voiceLeftListeners.add(cb);
-      return () => voiceLeftListeners.delete(cb);
-    },
-    onVoiceParticipantSpeakingChanged(cb) {
-      voiceSpeakingListeners.add(cb);
-      return () => voiceSpeakingListeners.delete(cb);
-    },
-    onUserTyping(cb) {
-      userTypingListeners.add(cb);
-      return () => userTypingListeners.delete(cb);
-    },
+    onMessage: (cb) => subscribe("message", cb),
+    onMessageUpdated: (cb) => subscribe("message_updated", cb),
+    onMessageDeleted: (cb) => subscribe("message_deleted", cb),
+    onMessageEmbedsUpdated: (cb) => subscribe("message_embeds_updated", cb),
+    onChannelCreated: (cb) => subscribe("channel_created", cb),
+    onChannelsReordered: (cb) => subscribe("channels_reordered", cb),
+    onVoiceParticipantJoined: (cb) => subscribe("voice_participant_joined", cb),
+    onVoiceParticipantLeft: (cb) => subscribe("voice_participant_left", cb),
+    onVoiceParticipantSpeakingChanged: (cb) => subscribe("voice_participant_speaking_changed", cb),
+    onUserTyping: (cb) => subscribe("user_typing", cb),
   };
 
   return <EventsContext.Provider value={value}>{props.children}</EventsContext.Provider>;
