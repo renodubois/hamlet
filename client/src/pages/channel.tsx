@@ -1,31 +1,15 @@
 import { useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, onCleanup, onMount } from "solid-js";
+import { createStore, reconcile } from "solid-js/store";
 import ChannelMessages from "../components/channel_messages";
 import EmojiPicker from "../components/emoji_picker";
 import { EmojiIcon } from "../components/icons";
 import TypingIndicator from "../components/typing_indicator";
-import { listMessages, sendMessage, sendTyping, type Message, type User } from "../api";
+import { listMessages, sendMessage, sendTyping, type Message } from "../api";
 import { useChannels } from "../contexts/channels";
 import { useEvents } from "../contexts/events";
 import { useAuth } from "../contexts/auth";
 import { TYPING_PING_INTERVAL_MS } from "../constants";
-
-export function syncMessagesForCurrentUser(
-  messages: Message[] | undefined,
-  user: User | null | undefined,
-): Message[] | undefined {
-  if (!messages || !user) return messages;
-  return messages.map((message) =>
-    message.user_id === user.id
-      ? {
-          ...message,
-          username: user.username,
-          display_name: user.display_name,
-          avatar_url: user.avatar_url,
-        }
-      : message,
-  );
-}
 
 export default function ChannelView() {
   const params = useParams<{ id: string }>();
@@ -35,13 +19,39 @@ export default function ChannelView() {
   const channel = () => channels()?.find((c) => String(c.id) === params.id);
   const [message, setMessage] = createSignal("");
   const [emojiPickerOpen, setEmojiPickerOpen] = createSignal(false);
-  const [messages, { mutate }] = createResource(() => params.id, listMessages);
+  // The Resource owns loading/error state for the initial fetch; the Store
+  // owns the reactive list that SSE events mutate granularly. createStore
+  // means an embed update on one row only re-renders that row.
+  const [resource] = createResource(() => params.id, listMessages);
+  const [messages, setMessages] = createStore<Message[]>([]);
   let messageInputRef: HTMLInputElement | undefined;
   let emojiButtonRef: HTMLButtonElement | undefined;
   let lastTypingSentAt = 0;
 
+  // Reconcile the fetched array into the store on initial load and on every
+  // channel switch. The "id" key tells reconcile to diff items rather than
+  // replace the whole array, so already-rendered rows survive when the same
+  // message appears in both the old and new fetches.
   createEffect(() => {
-    mutate((prev) => syncMessagesForCurrentUser(prev, user()));
+    const data = resource();
+    setMessages(reconcile(data ?? [], { key: "id" }));
+  });
+
+  // When the current user's profile changes (display_name, avatar), patch
+  // every message of theirs in place so the rendered list reflects the new
+  // values without a refetch.
+  createEffect(() => {
+    const u = user();
+    if (!u) return;
+    setMessages(
+      (m) => m.user_id === u.id,
+      (m) => ({
+        ...m,
+        username: u.username,
+        display_name: u.display_name,
+        avatar_url: u.avatar_url,
+      }),
+    );
   });
 
   const handleInput = (value: string) => {
@@ -61,25 +71,22 @@ export default function ChannelView() {
   onMount(() => {
     const unsubCreated = events.onMessage((m) => {
       if (String(m.channel_id) !== params.id) return;
-      mutate((prev) => [...(prev ?? []), m]);
+      setMessages(messages.length, m);
     });
     const unsubUpdated = events.onMessageUpdated((m) => {
       if (String(m.channel_id) !== params.id) return;
-      mutate((prev) => prev?.map((existing) => (existing.id === m.id ? m : existing)));
+      setMessages((existing) => existing.id === m.id, m);
     });
     const unsubDeleted = events.onMessageDeleted((d) => {
       if (String(d.channel_id) !== params.id) return;
-      mutate((prev) => prev?.filter((existing) => existing.id !== d.id));
+      setMessages((arr) => arr.filter((existing) => existing.id !== d.id));
     });
     const unsubEmbeds = events.onMessageEmbedsUpdated((e) => {
       if (String(e.channel_id) !== params.id) return;
-      mutate((prev) =>
-        prev?.map((existing) =>
-          existing.id === e.id
-            ? { ...existing, suppress_embeds: e.suppress_embeds, embeds: e.embeds }
-            : existing,
-        ),
-      );
+      setMessages((existing) => existing.id === e.id, {
+        suppress_embeds: e.suppress_embeds,
+        embeds: e.embeds,
+      });
     });
     onCleanup(() => {
       unsubCreated();
@@ -101,7 +108,12 @@ export default function ChannelView() {
       </section>
 
       <div class="flex-1 overflow-y-auto">
-        <ChannelMessages messages={messages} currentUserId={user()?.id ?? null} />
+        <ChannelMessages
+          messages={messages}
+          loading={resource.loading}
+          error={resource.error}
+          currentUserId={user()?.id ?? null}
+        />
       </div>
 
       <section class="flex-shrink-0 p-4 border-t border-gray-200">

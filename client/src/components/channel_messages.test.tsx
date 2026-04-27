@@ -1,6 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@solidjs/testing-library";
-import { createResource } from "solid-js";
 import type { Message } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
 import { makeMessage } from "../test/fixtures";
@@ -47,15 +46,15 @@ const otherMessage: Message = makeMessage({
   avatar_url: null,
 });
 
-async function mount(messages: Message[], currentUserId: number | null) {
-  const [resource] = createResource(() => Promise.resolve(messages));
-  const result = render(() => (
-    <ChannelMessages messages={resource} currentUserId={currentUserId} />
+function mount(messages: Message[], currentUserId: number | null) {
+  return render(() => (
+    <ChannelMessages
+      messages={messages}
+      loading={false}
+      error={null}
+      currentUserId={currentUserId}
+    />
   ));
-  // Let the resource resolve so `messages()` returns data before assertions.
-  await Promise.resolve();
-  await Promise.resolve();
-  return result;
 }
 
 describe("<ChannelMessages> hover action toolbar", () => {
