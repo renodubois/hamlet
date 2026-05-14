@@ -1,4 +1,3 @@
-import { mkdir } from "node:fs/promises";
 import { test, expect, type Page } from "@playwright/test";
 
 // The server seeds a dev user (baipas / password) and a 'general' channel on
@@ -54,28 +53,37 @@ test("sends a message and sees it render in the channel", async ({ page }) => {
   await expect(page.getByText(marker)).toBeVisible({ timeout: 10_000 });
 });
 
-test("selects an emoji from the picker and sends it", async ({ page }, testInfo) => {
+test("selects an emoji from the picker and sends it", async ({ page }) => {
   await loginAndOpenGeneral(page);
 
   const marker = `emoji from playwright ${Date.now()} `;
-  const expected = `${marker}😄`;
+  const expected = `${marker}💛`;
   const input = page.getByPlaceholder(/send a new message/i);
   await input.fill(marker);
-  await page.getByRole("button", { name: /open emoji picker/i }).click();
+
+  const emojiTrigger = page.getByRole("button", { name: /open emoji picker/i });
+  await expect(emojiTrigger).toHaveCSS("cursor", "pointer");
+  await emojiTrigger.click();
 
   const picker = page.getByRole("dialog", { name: /emoji picker/i });
   await expect(picker).toBeVisible();
-  await picker.getByRole("textbox", { name: /search emojis/i }).fill(":smile:");
-  await expect(
-    picker.getByRole("button", { name: /grinning face with smiling eyes emoji/i }),
-  ).toBeVisible();
 
-  const screenshotPath = "test-results/emoji-picker-working.png";
-  await mkdir("test-results", { recursive: true });
-  await page.screenshot({ path: screenshotPath });
-  await testInfo.attach("emoji picker working", { path: screenshotPath, contentType: "image/png" });
+  const search = picker.getByRole("combobox", { name: /search and select emoji/i });
+  await search.fill("heart");
 
-  await picker.getByRole("button", { name: /grinning face with smiling eyes emoji/i }).click();
+  const footer = picker.getByRole("group", { name: /emoji shortcodes/i });
+  await expect(footer).toContainText(":heart:");
+
+  const heartCell = picker.getByRole("gridcell", { name: /^Emoji :heart:$/ });
+  const heartButton = heartCell.getByRole("button", { name: /^Emoji :heart:$/ });
+  await expect(heartButton).toHaveCSS("cursor", "pointer");
+
+  await search.press("ArrowRight");
+  const yellowHeartCell = picker.getByRole("gridcell", { name: /^Emoji :yellow_heart:$/ });
+  await expect(yellowHeartCell).toHaveAttribute("aria-selected", "true");
+  await expect(footer).toContainText(":yellow_heart:");
+
+  await search.press("Enter");
   await expect(picker).toBeHidden();
   await expect(input).toHaveValue(expected);
   await input.press("Enter");

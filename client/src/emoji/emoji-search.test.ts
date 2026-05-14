@@ -1,63 +1,90 @@
 import { describe, expect, test } from "vitest";
-import type { EmojiEntry } from "./emoji-data";
+import { CONSERVATIVE_EMOJIS, type EmojiEntry } from "./emoji-data";
 import { normalizeEmojiQuery, searchEmojis } from "./emoji-search";
 
 const EMOJIS: readonly EmojiEntry[] = [
   {
     emoji: "😄",
-    name: "grinning face with smiling eyes",
     shortcodes: [":smile:"],
-    keywords: ["happy", "laugh"],
     category: "Smileys & Emotion",
   },
   {
     emoji: "❤️",
-    name: "red heart",
     shortcodes: [":heart:"],
-    keywords: ["love", "favorite"],
     category: "Smileys & Emotion",
   },
   {
     emoji: "👍",
-    name: "thumbs up",
     shortcodes: [":thumbsup:", ":+1:"],
-    keywords: ["approve", "yes"],
     category: "People & Body",
+  },
+  {
+    emoji: "👎",
+    shortcodes: [":thumbsdown:", ":-1:"],
+    category: "People & Body",
+  },
+  {
+    emoji: "✅",
+    shortcodes: [":white_check_mark:"],
+    category: "Symbols",
   },
 ];
 
+const emojiGlyphs = (emojis: readonly EmojiEntry[]) => emojis.map((emoji) => emoji.emoji);
+
 describe("emoji search", () => {
-  test("normalizes case and whitespace", () => {
-    expect(normalizeEmojiQuery("  Big   SMILE  ")).toBe("big smile");
+  test("normalizes case, boundary colons, and separators", () => {
+    expect(normalizeEmojiQuery("  :White Check-Mark:  ")).toBe("whitecheckmark");
   });
 
-  test("empty query returns every emoji", () => {
+  test("empty query and colon-only query return every emoji", () => {
     expect(searchEmojis("", EMOJIS)).toEqual(EMOJIS);
     expect(searchEmojis("   ", EMOJIS)).toEqual(EMOJIS);
+    expect(searchEmojis(":", EMOJIS)).toEqual(EMOJIS);
   });
 
-  test("matches emoji names", () => {
-    expect(searchEmojis("heart", EMOJIS).map((emoji) => emoji.emoji)).toEqual(["❤️"]);
+  test("matches shortcodes with and without boundary colons", () => {
+    expect(emojiGlyphs(searchEmojis(":smile:", EMOJIS))).toEqual(["😄"]);
+    expect(emojiGlyphs(searchEmojis("smile", EMOJIS))).toEqual(["😄"]);
+    expect(emojiGlyphs(searchEmojis(":smile", EMOJIS))).toEqual(["😄"]);
+    expect(emojiGlyphs(searchEmojis("smile:", EMOJIS))).toEqual(["😄"]);
   });
 
-  test("matches keywords", () => {
-    expect(searchEmojis("favorite", EMOJIS).map((emoji) => emoji.emoji)).toEqual(["❤️"]);
+  test("keeps built-in plain and yellow hearts first for bare heart searches", () => {
+    expect(emojiGlyphs(searchEmojis("heart", CONSERVATIVE_EMOJIS)).slice(0, 2)).toEqual([
+      "❤️",
+      "💛",
+    ]);
   });
 
-  test("matches shortcodes with colons", () => {
-    expect(searchEmojis(":smile:", EMOJIS).map((emoji) => emoji.emoji)).toEqual(["😄"]);
+  test("matches partial shortcodes", () => {
+    expect(emojiGlyphs(searchEmojis("smi", EMOJIS))).toEqual(["😄"]);
+    expect(emojiGlyphs(searchEmojis("thumb", EMOJIS))).toEqual(["👍", "👎"]);
   });
 
-  test("matches shortcodes without colons", () => {
-    expect(searchEmojis("thumbsup", EMOJIS).map((emoji) => emoji.emoji)).toEqual(["👍"]);
+  test("matches symbolic shortcodes without collapsing signs", () => {
+    expect(emojiGlyphs(searchEmojis("+1", EMOJIS))).toEqual(["👍"]);
+    expect(emojiGlyphs(searchEmojis("-1", EMOJIS))).toEqual(["👎"]);
   });
 
-  test("matches symbolic shortcodes", () => {
-    expect(searchEmojis("+1", EMOJIS).map((emoji) => emoji.emoji)).toEqual(["👍"]);
+  test("normalizes spaces, underscores, and hyphens as equivalent and optional", () => {
+    expect(emojiGlyphs(searchEmojis("white_check_mark", EMOJIS))).toEqual(["✅"]);
+    expect(emojiGlyphs(searchEmojis("white check mark", EMOJIS))).toEqual(["✅"]);
+    expect(emojiGlyphs(searchEmojis("white-check-mark", EMOJIS))).toEqual(["✅"]);
+    expect(emojiGlyphs(searchEmojis("whitecheckmark", EMOJIS))).toEqual(["✅"]);
   });
 
   test("is case-insensitive", () => {
-    expect(searchEmojis("LOVE", EMOJIS).map((emoji) => emoji.emoji)).toEqual(["❤️"]);
+    expect(emojiGlyphs(searchEmojis("WHITE CHECK", EMOJIS))).toEqual(["✅"]);
+  });
+
+  test("does not match names or keywords", () => {
+    expect(searchEmojis("favorite", EMOJIS)).toEqual([]);
+    expect(searchEmojis("red", EMOJIS)).toEqual([]);
+  });
+
+  test("does not strip internal colons", () => {
+    expect(searchEmojis("sm:ile", EMOJIS)).toEqual([]);
   });
 
   test("returns an empty list when nothing matches", () => {

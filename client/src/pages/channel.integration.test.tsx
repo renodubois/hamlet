@@ -425,12 +425,11 @@ describe("Channel view integration", () => {
     fireEvent.click(screen.getByRole("button", { name: /open emoji picker/i }));
 
     const dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
-    fireEvent.input(within(dialog).getByRole("textbox", { name: /search emojis/i }), {
+    fireEvent.input(within(dialog).getByRole("combobox", { name: /search and select emoji/i }), {
       target: { value: ":smile:" },
     });
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: /grinning face with smiling eyes emoji/i }),
-    );
+    const smileCell = within(dialog).getByRole("gridcell", { name: /emoji :smile:/i });
+    fireEvent.click(within(smileCell).getByRole("button", { name: /emoji :smile:/i }));
 
     await waitFor(() => expect(input.value).toBe("hello 😄"));
     expect(screen.queryByRole("dialog", { name: /emoji picker/i })).toBeNull();
@@ -450,10 +449,11 @@ describe("Channel view integration", () => {
     fireEvent.click(screen.getByRole("button", { name: /open emoji picker/i }));
 
     const dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
-    fireEvent.input(within(dialog).getByRole("textbox", { name: /search emojis/i }), {
+    fireEvent.input(within(dialog).getByRole("combobox", { name: /search and select emoji/i }), {
       target: { value: "heart" },
     });
-    fireEvent.click(within(dialog).getByRole("button", { name: /red heart emoji/i }));
+    const heartCell = within(dialog).getByRole("gridcell", { name: /emoji :heart:/i });
+    fireEvent.click(within(heartCell).getByRole("button", { name: /emoji :heart:/i }));
 
     await waitFor(() => {
       expect(mswState().typingPings).toContain("100");

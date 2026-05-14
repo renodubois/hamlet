@@ -137,6 +137,7 @@ export default function ChannelView() {
                 messageInputRef = el;
               }}
               class="bg-gray-100 rounded-md p-4 w-full"
+              autocorrect="off"
               value={message()}
               onInput={(e) => handleInput(e.currentTarget.value)}
               placeholder="Send a new message..."
@@ -146,7 +147,7 @@ export default function ChannelView() {
                 emojiButtonRef = el;
               }}
               type="button"
-              class="rounded-md bg-gray-100 p-4 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400"
+              class="cursor-pointer rounded-md bg-gray-100 p-4 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400"
               aria-label="Open emoji picker"
               aria-haspopup="dialog"
               aria-expanded={emojiPickerOpen()}
