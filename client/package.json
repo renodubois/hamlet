@@ -10,7 +10,7 @@
     "build": "vite build",
     "serve": "vite preview",
     "tauri": "tauri",
-    "lint": "find . \\( -path ./node_modules -o -path ./dist -o -path ./src-tauri -o -path ./test-results -o -path ./playwright-report \\) -prune -o \\( -name '*.ts' -o -name '*.tsx' \\) -print | xargs oxlint",
+    "lint": "oxlint",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "typecheck": "tsc --noEmit",

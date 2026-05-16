@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Hamlet
+Comment=Native Hamlet chat client
+Exec=hamlet-client-iced
+Icon=works.earendil.hamlet
+Terminal=false
+Categories=Network;Chat;InstantMessaging;
+StartupNotify=true
+StartupWMClass=Hamlet

@@ -1,0 +1,54 @@
+[package]
+name = "hamlet-client-iced"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Native Iced desktop client for Hamlet chat."
+license = "MIT"
+authors = ["Hamlet contributors"]
+
+[dependencies]
+directories = "6.0.0"
+iced = { version = "0.14.0", features = ["image", "tokio"] }
+livekit = "0.7.40"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "cookies", "json", "multipart", "rustls-tls"] }
+rfd = "0.17"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+url = "2.5"
+
+[dev-dependencies]
+iced_test = "0.14.0"
+tempfile = "3.27"
+
+[package.metadata.bundle]
+name = "Hamlet"
+identifier = "works.earendil.hamlet"
+icon = [
+    "packaging/icons/hamlet-16.png",
+    "packaging/icons/hamlet-32.png",
+    "packaging/icons/hamlet-64.png",
+    "packaging/icons/hamlet-128.png",
+    "packaging/icons/hamlet-256.png",
+    "packaging/icons/hamlet-512.png",
+]
+category = "public.app-category.social-networking"
+short_description = "Native Hamlet chat client"
+long_description = "A native Rust/Iced desktop alpha for Hamlet chat. The Tauri/Solid client remains available during the alpha."
+copyright = "Copyright © 2026 Hamlet contributors"
+osx_minimum_system_version = "12.0"
+osx_info_plist_exts = ["packaging/macos/microphone-permission.plist"]
+resources = [
+    "packaging/linux/works.earendil.hamlet.desktop",
+    "packaging/linux/works.earendil.hamlet.metainfo.xml",
+    "packaging/windows/hamlet.exe.manifest",
+]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+expect_used = "warn"
+unwrap_used = "warn"

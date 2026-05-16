@@ -1,0 +1,4 @@
+<key>NSMicrophoneUsageDescription</key>
+<string>Hamlet uses the microphone so you can talk in voice channels after joining them.</string>
+<key>NSHighResolutionCapable</key>
+<true/>

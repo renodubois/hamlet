@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Hamlet app icon</title>
+  <desc id="desc">Rounded dark and blue tile with a gold accent and white H.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1c2333"/>
+      <stop offset="0.52" stop-color="#1c2333"/>
+      <stop offset="0.52" stop-color="#4b81ed"/>
+      <stop offset="1" stop-color="#4b81ed"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <rect x="82" y="102" width="36" height="308" rx="18" fill="#ffc35c"/>
+  <path fill="#f5f7fa" d="M164 118h54v122h76V118h54v276h-54V284h-76v110h-54z"/>
+</svg>

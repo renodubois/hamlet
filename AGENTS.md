@@ -11,6 +11,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Each subdirectory has its own `CLAUDE.md` with commands, architecture details, and gotchas. Start there for work scoped to one side.
 
+## Planning documents
+
+Any sort of planning document should live in `docs/plans/`. Include the date and a short topic summary in the filename, for example `YYYY-MM-DD-short-topic-summary.md`.
+
 ## Testing expectations
 
 New functionality should come with tests. The client side has a full test stack (Vitest unit/component/integration, MSW for HTTP, axe for accessibility, Playwright for E2E) — see `client/CLAUDE.md` for how to pick the right layer and which helpers to use.
