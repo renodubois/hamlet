@@ -1,3 +1,11 @@
+---
+id: 10
+name: Settings shell and display-name profile updates
+status: completed
+tags: [client-iced]
+blocked_by: [5]
+---
+
 # Issue 10: Settings shell and display-name profile updates
 
 **Type**: AFK

@@ -1,3 +1,11 @@
+---
+id: 16
+name: LiveKit voice join/leave/switch with native audio worker
+status: completed
+tags: [client-iced]
+blocked_by: [15]
+---
+
 # Issue 16: LiveKit voice join/leave/switch with native audio worker
 
 **Type**: AFK

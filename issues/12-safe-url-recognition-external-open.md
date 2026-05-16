@@ -1,3 +1,11 @@
+---
+id: 12
+name: Safe URL recognition and external link opening
+status: completed
+tags: [client-iced]
+blocked_by: [5]
+---
+
 # Issue 12: Safe URL recognition and external link opening
 
 **Type**: AFK

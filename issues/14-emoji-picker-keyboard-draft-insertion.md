@@ -1,3 +1,11 @@
+---
+id: 14
+name: Emoji picker and keyboard-friendly draft insertion
+status: completed
+tags: [client-iced]
+blocked_by: [5]
+---
+
 # Issue 14: Emoji picker and keyboard-friendly draft insertion
 
 **Type**: AFK

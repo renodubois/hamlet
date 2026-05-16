@@ -1,3 +1,11 @@
+---
+id: 5
+name: Send messages with authenticated SSE live updates
+status: completed
+tags: [client-iced]
+blocked_by: [4]
+---
+
 # Issue 5: Send messages with authenticated SSE live updates
 
 **Type**: AFK

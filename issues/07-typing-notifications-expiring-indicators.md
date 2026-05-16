@@ -1,3 +1,11 @@
+---
+id: 7
+name: Typing notifications and expiring indicators
+status: completed
+tags: [client-iced]
+blocked_by: [5]
+---
+
 # Issue 7: Typing notifications and expiring indicators
 
 **Type**: AFK

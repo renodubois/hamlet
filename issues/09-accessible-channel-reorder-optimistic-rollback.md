@@ -1,3 +1,11 @@
+---
+id: 9
+name: Accessible channel reorder with optimistic rollback and live reorder events
+status: completed
+tags: [client-iced]
+blocked_by: [8]
+---
+
 # Issue 9: Accessible channel reorder with optimistic rollback and live reorder events
 
 **Type**: AFK

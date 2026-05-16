@@ -1,3 +1,11 @@
+---
+id: 3
+name: Startup session restore, invalid-session recovery, and logout
+status: completed
+tags: [client-iced]
+blocked_by: [2]
+---
+
 # Issue 3: Startup session restore, invalid-session recovery, and logout
 
 **Type**: AFK

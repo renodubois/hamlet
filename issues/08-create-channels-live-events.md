@@ -1,3 +1,11 @@
+---
+id: 8
+name: Create text/voice channels and apply live channel-create events
+status: completed
+tags: [client-iced]
+blocked_by: [5]
+---
+
 # Issue 8: Create text/voice channels and apply live channel-create events
 
 **Type**: AFK

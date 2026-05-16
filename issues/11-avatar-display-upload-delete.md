@@ -1,3 +1,11 @@
+---
+id: 11
+name: Avatar display, fallback generation, upload/delete, and image URL handling
+status: completed
+tags: [client-iced]
+blocked_by: [10]
+---
+
 # Issue 11: Avatar display, fallback generation, upload/delete, and image URL handling
 
 **Type**: AFK

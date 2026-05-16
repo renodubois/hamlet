@@ -1,3 +1,11 @@
+---
+id: 17
+name: Voice controls, speaking indicators, device preferences, and permission handling
+status: completed
+tags: [client-iced]
+blocked_by: [16]
+---
+
 # Issue 17: Voice controls, speaking indicators, device preferences, and permission handling
 
 **Type**: AFK

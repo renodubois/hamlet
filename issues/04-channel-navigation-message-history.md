@@ -1,3 +1,11 @@
+---
+id: 4
+name: Channel navigation with message-history read path
+status: completed
+tags: [client-iced]
+blocked_by: [3]
+---
+
 # Issue 4: Channel navigation with message-history read path
 
 **Type**: AFK

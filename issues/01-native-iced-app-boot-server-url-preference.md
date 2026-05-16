@@ -1,3 +1,11 @@
+---
+id: 1
+name: Native Iced app boot, server URL preference, and fixture harness
+status: completed
+tags: [client-iced]
+blocked_by: []
+---
+
 # Issue 1: Native Iced app boot, server URL preference, and fixture harness
 
 **Type**: AFK

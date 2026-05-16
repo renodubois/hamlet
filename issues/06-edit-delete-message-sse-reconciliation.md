@@ -1,3 +1,11 @@
+---
+id: 6
+name: Edit/delete own messages and reconcile message SSE events
+status: completed
+tags: [client-iced]
+blocked_by: [5]
+---
+
 # Issue 6: Edit/delete own messages and reconcile message SSE events
 
 **Type**: AFK

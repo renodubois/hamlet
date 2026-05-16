@@ -1,3 +1,11 @@
+---
+id: 13
+name: Native embeds, image previews, embed events, and suppress action
+status: completed
+tags: [client-iced]
+blocked_by: [6, 12]
+---
+
 # Issue 13: Native embeds, image previews, embed events, and suppress action
 
 **Type**: AFK

@@ -1,3 +1,11 @@
+---
+id: 2
+name: Cookie-backed login/register with clear errors
+status: completed
+tags: [client-iced]
+blocked_by: [1]
+---
+
 # Issue 2: Cookie-backed login/register with clear errors
 
 **Type**: AFK

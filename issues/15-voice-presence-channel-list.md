@@ -1,3 +1,11 @@
+---
+id: 15
+name: Voice presence in channel list without joining audio
+status: completed
+tags: [client-iced]
+blocked_by: [5]
+---
+
 # Issue 15: Voice presence in channel list without joining audio
 
 **Type**: AFK

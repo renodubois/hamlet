@@ -1,3 +1,11 @@
+---
+id: 18
+name: Package native desktop alpha with native QA checklist and boundary docs
+status: completed
+tags: [client-iced]
+blocked_by: [9, 11, 13, 14, 15, 17]
+---
+
 # Issue 18: Package native desktop alpha with native QA checklist and boundary docs
 
 **Type**: AFK
