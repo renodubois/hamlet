@@ -1,43 +1,78 @@
 ---
 name: to-issues
-description: Break a plan, spec, or PRD into independently-grabbable issue Markdown files using tracer-bullet vertical slices. Use when user wants to convert a plan into issues, create implementation tickets, or break down work into issues.
+description: Break a plan, spec, or PRD into a project-tagged set of independently-grabbable tracer-bullet issues and create them with the `it` issue tracker. Use when user wants to convert a plan into issues, create implementation tickets, or break down work into issues.
 ---
 
 # To Issues
 
-Break a plan into independently-grabbable issue drafts using vertical slices (tracer bullets), then save the approved issue list as individual Markdown files in the repository's `issues/` directory.
+Break a plan into a project-tagged set of independently-grabbable issues using vertical slices (tracer bullets), then create the approved issues with the repository's `it` issue tracker.
 
-One document = one issue. Top-level files in `issues/` represent active or in-progress issues. Completed issues live in `issues/complete/`.
+`it` is a tiny markdown-backed tracker. Use it as the source of truth for issue files; do not hand-write, rename, move, or archive issue Markdown files unless the user explicitly asks.
+
+A "project" is represented by one shared tag on every issue in the set. Use a short kebab-case project tag prefixed with `project-`, for example `project-native-notifications`. All issues created from the same plan must include this shared project tag.
+
+## `it` commands
+
+Use these commands from the repository root unless the user specifies another issue directory:
+
+```bash
+it list --dir issues
+it list --dir issues --tag project-example
+it show <id> --dir issues
+it create "<name>" --dir issues --tags "project-example,tag-a,tag-b" --blocked-by "1,2" --body "$body"
+it status <id> completed --dir issues
+```
+
+Notes:
+
+- `it create` writes `issues/<id>-<slug>.md` and owns the frontmatter (`id`, `name`, `status`, `tags`, `blocked_by`). Do not duplicate that frontmatter in the body.
+- Omit `--blocked-by` when there are no blockers.
+- Tags are comma-separated. Every issue in a generated set must include the same `project-<slug>` tag. Also include short kebab-case area tags such as `server`, `client`, or `client-iced`, and slice type tags (`afk` or `hitl`). Follow existing tag conventions when they are clear.
+- For multiline bodies, build a shell variable or temporary file, then pass it to `--body`; do not try to manually create the issue file.
+- If `it` is unavailable or errors in a way you cannot resolve, stop and ask the user how to proceed instead of falling back to manual issue files.
 
 ## Process
 
 ### 1. Gather context
 
-Work from whatever is already in the conversation context. If the user passes a source reference (issue number, URL, or path) as an argument, read its full body and comments when accessible. If the source cannot be fetched directly, ask the user to provide the missing content.
+Work from whatever is already in the conversation context. If the user passes a source reference (issue ID, URL, or path) as an argument, read its full body and comments when accessible.
+
+For existing tracked issues, use `it show <id> --dir issues`. For the issue queue and tag conventions, use `it list --dir issues` before drafting. If the work belongs to an existing project, identify its `project-<slug>` tag and inspect it with `it list --dir issues --tag <project-tag>`. If the source cannot be fetched directly, ask the user to provide the missing content.
 
 ### 2. Explore the codebase (optional)
 
-If you have not already explored the codebase, do so to understand the current state of the code. Issue titles and descriptions should use the project's domain glossary vocabulary, and respect ADRs in the area you're touching.
+If you have not already explored the codebase, do so to understand the current state of the code. Issue titles and descriptions should use the project's domain glossary vocabulary and respect ADRs in the area you're touching.
 
-### 3. Draft vertical slices
+### 3. Choose the project tag
+
+Derive a concise project tag from the plan/source title, unless the user provides one. Use `project-<short-kebab-case-topic>`; avoid generic tags such as `project-feature` or `project-refactor`.
+
+Check whether that tag already exists with `it list --dir issues --tag <project-tag>`. If it exists, decide whether the new issues should join that project or use a more specific tag. Include the proposed project tag when asking the user to approve the breakdown.
+
+### 4. Draft vertical slices
 
 Break the plan into **tracer bullet** issues. Each issue is a thin vertical slice that cuts through ALL integration layers end-to-end, NOT a horizontal slice of one layer.
 
-Slices may be 'HITL' or 'AFK'. HITL slices require human interaction, such as an architectural decision or a design review. AFK slices can be implemented and merged without human interaction. Prefer AFK over HITL where possible.
+Slices may be **HITL** or **AFK**. HITL slices require human interaction, such as an architectural decision or a design review. AFK slices can be implemented and merged without human interaction. Prefer AFK over HITL where possible.
 
 <vertical-slice-rules>
-- Each slice delivers a narrow but COMPLETE path through every layer (schema, API, UI, tests)
+- Each slice delivers a narrow but COMPLETE path through every relevant layer (for example schema, API, UI, tests)
 - A completed slice is demoable or verifiable on its own
 - Prefer many thin slices over few thick ones
+- Avoid duplicate issues by checking the current tracker state first
 </vertical-slice-rules>
 
-### 4. Quiz the user
+Use provisional labels while drafting, such as `Slice A` or `Draft 1`. Do not promise tracker IDs until after `it create` returns them.
 
-Present the proposed breakdown as a numbered list. For each slice, show:
+### 5. Quiz the user
+
+Present the proposed project tag and breakdown as a numbered list. For each slice, show:
 
 - **Title**: short descriptive name
 - **Type**: HITL / AFK
-- **Blocked by**: which other slices (if any) must complete first
+- **Project tag**: the shared `project-<slug>` tag for the issue set
+- **Suggested tags**: comma-separated tags to pass to `it create`, including the project tag
+- **Blocked by**: provisional labels for other new slices, or existing tracker IDs for existing blockers
 - **User stories covered**: which user stories this addresses (if the source material has them)
 
 Ask the user:
@@ -46,26 +81,23 @@ Ask the user:
 - Are the dependency relationships correct?
 - Should any slices be merged or split further?
 - Are the correct slices marked as HITL and AFK?
+- Is the project tag right, and should these issues join an existing project tag instead?
+- Are the suggested tags right?
 
-Iterate until the user approves the breakdown.
+Iterate until the user approves the breakdown. Do not create issues before approval.
 
-### 5. Write individual issue files
+### 6. Create approved issues with `it`
 
-Write the approved slices as individual Markdown files in the repository's `issues/` directory. If `issues/` or `issues/complete/` does not exist, create it.
+Create one tracker issue per approved slice using `it create`. Every created issue must include the approved shared project tag. Do not write the issue set as a single combined document. Do not place issue files in `docs/`. Do not manually write files into `issues/`.
 
-Do not write the issue set as a single combined document. Do not place new issue files in `docs/`. Do not publish issues to an issue tracker, create tickets, close or modify parent issues, or apply triage labels.
+Create issues in dependency order (blockers first). Let `it` assign real IDs, then maintain a mapping from provisional labels to created tracker IDs. When creating a later issue, translate its blockers to real IDs and pass them with `--blocked-by "1,2"`.
 
-List and number issues in dependency order (blockers first). Use stable issue identifiers such as `Issue 1`, `Issue 2`, etc. Reference those identifiers in each issue's "Blocked by" field.
+If a dependency cycle prevents topological creation, stop and ask the user to resolve the dependency graph.
 
-Use concise, descriptive kebab-case filenames prefixed with the zero-padded issue number, for example:
+Each issue body should use this Markdown template. The frontmatter is created by `it`; include only the body below.
 
-- `issues/01-authenticated-profile-view.md`
-- `issues/02-edit-profile-display-name.md`
-
-Each file should contain exactly one issue using this template:
-
-<issue-file-template>
-# Issue <N>: <Short descriptive title>
+<issue-body-template>
+# <Short descriptive title>
 
 **Type**: HITL / AFK
 
@@ -89,13 +121,47 @@ Avoid specific file paths or code snippets — they go stale fast. Exception: if
 
 ## Blocked by
 
-- Issue identifier(s) that must complete first
+- Tracker issue ID(s), e.g. `#12`, that must complete first
 
 Or "None - can start immediately" if no blockers.
-</issue-file-template>
+</issue-body-template>
 
-### 6. Move completed issues
+Example creation pattern:
 
-When an issue is done, move its Markdown file from `issues/` to `issues/complete/` and keep the original filename. The top-level `issues/` directory should contain only active, available, blocked, or in-progress issues so it remains easy to scan.
+```bash
+body=$(cat <<'EOF'
+# Short descriptive title
 
-Do not duplicate completed issues in both places. Do not rewrite a completed issue into a separate archive format unless the user explicitly asks.
+**Type**: AFK
+
+**User stories covered**: Not specified.
+
+## What to build
+
+Build the narrow end-to-end behavior.
+
+## Acceptance criteria
+
+- [ ] The behavior works from the user's perspective.
+- [ ] Automated coverage verifies the behavior.
+
+## Blocked by
+
+None - can start immediately
+EOF
+)
+
+it create "Short descriptive title" --dir issues --tags "project-short-topic,afk,client" --body "$body"
+```
+
+After creating all issues, run `it list --dir issues` or `it show <id> --dir issues` as needed to verify the IDs, tags, statuses, and blockers.
+
+### 7. Report the created issues
+
+Reply with the project tag and a concise summary of the created issues in dependency order:
+
+Project: `project-<slug>`
+
+- `#<id>` — title — tags — blocked by
+
+If the user asks to mark an issue complete, use `it status <id> completed --dir issues`; do not move files between directories.
