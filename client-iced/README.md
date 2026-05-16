@@ -23,7 +23,7 @@ The default server URL is `http://localhost:3030`. The URL can be edited from th
 Packaging metadata lives in `Cargo.toml` under `[package.metadata.bundle]`. The alpha bundle identity is:
 
 - app name: `Hamlet`
-- bundle/application id: `works.earendil.hamlet`
+- bundle/application id: `com.renodubois.hamlet`
 - icon assets: `packaging/icons/hamlet-*.png` and `packaging/icons/hamlet-icon.svg`
 - macOS microphone and high-DPI Info.plist additions: `packaging/macos/microphone-permission.plist`
 - Linux desktop/metainfo templates: `packaging/linux/`

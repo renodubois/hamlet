@@ -148,7 +148,7 @@ pub struct FileStorage {
 
 impl FileStorage {
     pub fn new() -> Result<Self, StorageError> {
-        let project_dirs = ProjectDirs::from("works.earendil", "Hamlet", "Hamlet")
+        let project_dirs = ProjectDirs::from("com", "renodubois", "hamlet")
             .ok_or(StorageError::ConfigDirectoryUnavailable)?;
 
         Ok(Self::at_path(
