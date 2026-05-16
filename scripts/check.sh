@@ -17,6 +17,7 @@ Usage:
   scripts/check.sh client iced        # just the native Iced client
   scripts/check.sh all --client iced  # server + native Iced client
   scripts/check.sh --fix              # apply fmt fixes before running checks
+  scripts/check.sh --e2e              # also run Playwright E2E tests
   scripts/check.sh client iced --fix  # combinable
 
 Client checks:
@@ -24,6 +25,9 @@ Client checks:
   iced  -> client-iced/: cargo fmt -- --check (or fmt with --fix),
            cargo check --all-targets, cargo clippy --all-targets -- -D warnings,
            cargo test
+
+Optional checks:
+  --e2e -> client/: npm run test:e2e (Playwright)
 
 Each step prints `===> <step>` before running and a one-line summary at the end.
 The script aborts on the first failure with a non-zero exit code, so it's safe
@@ -42,6 +46,7 @@ target_seen=0
 client_target="all"
 client_seen=0
 fix=0
+run_e2e=0
 
 set_client_target() {
   local value="$1"
@@ -78,6 +83,7 @@ while [[ $# -gt 0 ]]; do
       set_client_target "${1#--client=}"
       ;;
     --fix) fix=1 ;;
+    --e2e) run_e2e=1 ;;
     -h|--help)
       usage
       exit 0
@@ -164,10 +170,19 @@ client_checks() {
   esac
 }
 
+client_e2e_checks() {
+  cd "$REPO_ROOT/client"
+  run "client-tauri: npm run test:e2e" npm run test:e2e
+}
+
 case "$target" in
   server) server_checks ;;
   client) client_checks ;;
   all)    server_checks; client_checks ;;
 esac
+
+if (( run_e2e )); then
+  client_e2e_checks
+fi
 
 printf '\n%sAll checks passed.%s\n' "$green$bold" "$reset"

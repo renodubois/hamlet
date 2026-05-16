@@ -24,7 +24,7 @@ Before marking any change as done, run the relevant checks for the side you touc
 - **`client/`** — `npm run fmt`, `npm run lint`, `npm run typecheck`, `npm run test`. Run `npm run test:e2e` if the change could affect a smoke-tested flow (login, sending messages). Run `npm run size` if the change might affect bundle size.
 - **`server/`** — follow `server/CLAUDE.md` for its test/format/lint commands.
 
-A single `scripts/check.sh` runs every check both sides expose — fmt, lint, typecheck/clippy, tests, and (if installed) `cargo audit` — in the order CI would. `scripts/check.sh server` or `scripts/check.sh client` scopes to one side; `--fix` applies formatter fixes before running the rest. Use it as a pre-push gate.
+A single `scripts/check.sh` runs the default checks both sides expose — fmt, lint, typecheck/clippy, tests, and (if installed) `cargo audit` — in the order CI would. `scripts/check.sh server` or `scripts/check.sh client` scopes to one side; `--fix` applies formatter fixes before running the rest; `--e2e` adds the Playwright E2E suite. Use E2E testing for features whenever it feels necessary for confidence; prefer more testing over less. Use it as a pre-push gate.
 
 ### Fix failing checks even if you didn't cause them
 
