@@ -19,11 +19,11 @@ Usage:
   scripts/check.sh --e2e                   # also run Playwright E2E tests
 
 Client checks:
-  electron -> client-electron/: npm run fmt:check (or fmt with --fix), lint,
+  electron -> client/: npm run fmt:check (or fmt with --fix), lint,
               typecheck, test
 
 Optional checks:
-  --e2e -> run Playwright E2E for client-electron/ when client checks are selected
+  --e2e -> run Playwright E2E for client/ when client checks are selected
 
 Each step prints `===> <step>` before running and a one-line summary at the end.
 The script aborts on the first failure with a non-zero exit code, so it's safe
@@ -131,41 +131,41 @@ server_checks() {
   fi
 }
 
-client_electron_checks() {
-  if [[ ! -d "$REPO_ROOT/client-electron" ]]; then
-    die "client-electron/ does not exist"
+client_checks() {
+  if [[ ! -d "$REPO_ROOT/client" ]]; then
+    die "client/ does not exist"
   fi
 
-  cd "$REPO_ROOT/client-electron"
+  cd "$REPO_ROOT/client"
   if (( fix )); then
-    run "client-electron: npm run fmt" npm run fmt
+    run "client: npm run fmt" npm run fmt
   else
-    run "client-electron: npm run fmt:check" npm run fmt:check
+    run "client: npm run fmt:check" npm run fmt:check
   fi
-  run "client-electron: npm run lint" npm run lint
-  run "client-electron: npm run typecheck" npm run typecheck
-  run "client-electron: npm run test" npm run test
+  run "client: npm run lint" npm run lint
+  run "client: npm run typecheck" npm run typecheck
+  run "client: npm run test" npm run test
 }
 
-client_electron_e2e_checks() {
-  if [[ ! -d "$REPO_ROOT/client-electron" ]]; then
-    die "client-electron/ does not exist"
+client_e2e_checks() {
+  if [[ ! -d "$REPO_ROOT/client" ]]; then
+    die "client/ does not exist"
   fi
 
-  cd "$REPO_ROOT/client-electron"
-  run "client-electron: npm run test:e2e" npm run test:e2e
+  cd "$REPO_ROOT/client"
+  run "client: npm run test:e2e" npm run test:e2e
 }
 
 case "$target" in
   server) server_checks ;;
-  client) client_electron_checks ;;
-  all)    server_checks; client_electron_checks ;;
+  client) client_checks ;;
+  all)    server_checks; client_checks ;;
 esac
 
 if (( run_e2e )); then
   case "$target" in
-    server) skip "client-electron E2E not run for server-only target" ;;
-    client|all) client_electron_e2e_checks ;;
+    server) skip "client E2E not run for server-only target" ;;
+    client|all) client_e2e_checks ;;
   esac
 fi
 

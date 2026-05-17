@@ -8,8 +8,8 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
 fi
 
 # The hook runs from the repo root ($CLAUDE_PROJECT_DIR). Client deps and
-# Playwright's Chromium live under client-electron/.
-cd "${CLAUDE_PROJECT_DIR:-$(pwd)}/client-electron"
+# Playwright's Chromium live under client/.
+cd "${CLAUDE_PROJECT_DIR:-$(pwd)}/client"
 
 # `npm install` is idempotent and cheaper on re-runs than `npm ci`, which
 # also plays nicely with the container state caching between sessions.

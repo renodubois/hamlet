@@ -1,5 +1,5 @@
 {
-  "name": "client-electron",
+  "name": "client",
   "version": "0.1.0",
   "description": "Hamlet Electron alpha client",
   "license": "MIT",

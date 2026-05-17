@@ -29,7 +29,7 @@ afterEach(async () => {
 describe("Electron alpha package metadata", () => {
   it("uses a distinct alpha identity and platform metadata", () => {
     const options = createPackagerOptions({
-      rootDir: "/repo/client-electron",
+      rootDir: "/repo/client",
       appVersion: "0.1.0",
       platform: "darwin",
       arch: "arm64",
@@ -53,12 +53,10 @@ describe("Electron alpha package metadata", () => {
       quiet: true,
     });
     expect(options.executableName).toBeUndefined();
-    expect(options.icon).toBe(
-      path.join("/repo/client-electron", "packaging", "icons", "icon.icns"),
-    );
+    expect(options.icon).toBe(path.join("/repo/client", "packaging", "icons", "icon.icns"));
     expect(
       createPackagerOptions({
-        rootDir: "/repo/client-electron",
+        rootDir: "/repo/client",
         appVersion: "0.1.0",
         platform: "linux",
         arch: "x64",
@@ -72,7 +70,7 @@ describe("Electron alpha package metadata", () => {
 
   it("leaves signing, notarization, installers, auto-update, and public distribution deferred", () => {
     const options = createPackagerOptions({
-      rootDir: "/repo/client-electron",
+      rootDir: "/repo/client",
       appVersion: "0.1.0",
       platform: "win32",
       arch: "x64",

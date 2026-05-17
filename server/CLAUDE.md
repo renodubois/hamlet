@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is the Rust/Actix-web backend for **Hamlet**, a Discord-like chat app. It is a standalone git repo; the Electron/Solid.js frontend lives in a sibling `client-electron/` directory (see `../CLAUDE.md` for the combined workspace view). The server binds `127.0.0.1:3030` and the frontend expects it there.
+This is the Rust/Actix-web backend for **Hamlet**, a Discord-like chat app. It is a standalone git repo; the Electron/Solid.js frontend lives in a sibling `client/` directory (see `../CLAUDE.md` for the combined workspace view). The server binds `127.0.0.1:3030` and the frontend expects it there.
 
 ## Commands
 

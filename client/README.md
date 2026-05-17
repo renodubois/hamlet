@@ -13,7 +13,7 @@ development, manual QA, or most E2E runs.
 Install client dependencies once:
 
 ```bash
-cd client-electron
+cd client
 npm install
 ```
 
@@ -38,7 +38,7 @@ shell does not proxy application APIs through Electron IPC.
 
 ## Commands
 
-Run commands from `client-electron/` unless noted.
+Run commands from `client/` unless noted.
 
 | Goal                             | Command                                   | Notes                                                                                                                                                             |
 | -------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -118,17 +118,17 @@ Two-client local development recipe:
 cd server && cargo run
 
 # Terminal 2: one shared renderer dev server
-cd client-electron && npm run dev
+cd client && npm run dev
 
 # Terminal 3: first Electron profile
-cd client-electron
+cd client
 npm run electron:build
 HAMLET_DATA_DIR=/tmp/hamlet-electron-baipas \
 HAMLET_RENDERER_URL=http://127.0.0.1:1422 \
 npx electron .
 
 # Terminal 4: second Electron profile
-cd client-electron
+cd client
 HAMLET_DATA_DIR=/tmp/hamlet-electron-teo \
 HAMLET_RENDERER_URL=http://127.0.0.1:1422 \
 npx electron .
@@ -204,7 +204,7 @@ for the target machine, then complete the platform smoke areas below.
 
 1. Start the Hamlet server (`cargo run`) or the server Compose stack when LiveKit
    voice is in scope.
-2. From `client-electron/`, run either `npm run electron:dev` for shell dev QA or
+2. From `client/`, run either `npm run electron:dev` for shell dev QA or
    `npm run package:launch` for unpacked package QA.
 3. Use seeded local users such as `baipas` / `password` and `teo` / `password`
    when the dev server seed data is available.

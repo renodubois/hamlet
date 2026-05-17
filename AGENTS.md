@@ -7,9 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Hamlet** is a Discord-like chat app. It has two independent parts:
 
 - `server/` — Rust/Actix-web HTTP API on `127.0.0.1:3030` with SQLite
-- `client-electron/` — Electron desktop app wrapping a SolidJS frontend
+- `client/` — Electron desktop app wrapping a SolidJS frontend
 
-The server has its own `CLAUDE.md` with commands, architecture details, and gotchas. The Electron client keeps its usage and QA notes in `client-electron/README.md`.
+The server has its own `CLAUDE.md` with commands, architecture details, and gotchas. The Electron client keeps its usage and QA notes in `client/README.md`.
 
 ## Planning documents
 
@@ -17,11 +17,11 @@ Any sort of planning document should live in `docs/plans/`. Include the date and
 
 ## Testing expectations
 
-New functionality should come with tests. The Electron client has a full test stack (Vitest unit/component/integration, MSW for HTTP, axe for accessibility, Playwright for renderer and Electron E2E) — see `client-electron/README.md` for the available commands and QA notes.
+New functionality should come with tests. The Electron client has a full test stack (Vitest unit/component/integration, MSW for HTTP, axe for accessibility, Playwright for renderer and Electron E2E) — see `client/README.md` for the available commands and QA notes.
 
 Before marking any change as done, run the relevant checks for the side you touched:
 
-- **`client-electron/`** — `npm run fmt`, `npm run lint`, `npm run typecheck`, `npm run test`. Run `npm run test:e2e` if the change could affect a smoke-tested flow (login, sending messages, shell launch). Run `npm run size` if the change might affect bundle size.
+- **`client/`** — `npm run fmt`, `npm run lint`, `npm run typecheck`, `npm run test`. Run `npm run test:e2e` if the change could affect a smoke-tested flow (login, sending messages, shell launch). Run `npm run size` if the change might affect bundle size.
 - **`server/`** — follow `server/CLAUDE.md` for its test/format/lint commands.
 
 A single `scripts/check.sh` runs the default checks both sides expose — fmt, lint, typecheck/clippy, tests, and (if installed) `cargo audit` — in the order CI would. `scripts/check.sh server` or `scripts/check.sh client` scopes to one side; `--fix` applies formatter fixes before running the rest; `--e2e` adds the Playwright E2E suite. Use E2E testing for features whenever it feels necessary for confidence; prefer more testing over less. Use it as a pre-push gate.
@@ -39,7 +39,7 @@ Start both in separate terminals:
 cd server && cargo run
 
 # Terminal 2 — Electron app
-cd client-electron && npm run electron:dev
+cd client && npm run electron:dev
 ```
 
 The frontend defaults to `http://127.0.0.1:3030`; this is configurable at login and stored in localStorage. The Electron renderer uses the fixed local origin `http://127.0.0.1:1422` in development and packaged modes.
@@ -71,7 +71,7 @@ The server binds to whatever `HAMLET_BIND_ADDR` is set to (default `127.0.0.1:30
 
 ## How the two parts connect
 
-All application logic goes over HTTP. The frontend calls the server via the `client-electron/src/api/` modules; normal Hamlet APIs do not go through Electron IPC.
+All application logic goes over HTTP. The frontend calls the server via the `client/src/api/` modules; normal Hamlet APIs do not go through Electron IPC.
 
 Real-time messaging uses SSE: the server exposes `GET /messages/subscribe`, and each channel view opens an `EventSource` on mount that closes on cleanup. New messages are POSTed to `POST /message/{channel_id}`, which triggers a broadcast to all subscribers.
 
