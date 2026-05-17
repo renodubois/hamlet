@@ -1,5 +1,6 @@
-import { app, BrowserWindow, dialog, shell, session } from "electron";
+import { app, BrowserWindow, dialog, nativeTheme, shell, session } from "electron";
 import path from "node:path";
+import { forceLightAppearance } from "./appearance";
 import { ELECTRON_WINDOW_TITLE } from "./constants";
 import {
   configureSingleInstanceLock,
@@ -62,6 +63,7 @@ export async function createMainWindow(): Promise<BrowserWindow> {
 
 async function startApp(): Promise<void> {
   app.setName(ELECTRON_WINDOW_TITLE);
+  forceLightAppearance(nativeTheme);
   configureUserDataDirectory(app);
 
   if (!configureSingleInstanceLock(app, handleSecondInstanceLaunch)) {

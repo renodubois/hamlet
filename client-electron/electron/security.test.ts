@@ -327,6 +327,7 @@ describe("Electron BrowserWindow security defaults", () => {
     expect(createMainWindowOptions("/tmp/preload.cjs", "/tmp/icon.png")).toMatchObject({
       title: ELECTRON_WINDOW_TITLE,
       icon: "/tmp/icon.png",
+      backgroundColor: "#ffffff",
       webPreferences: {
         preload: "/tmp/preload.cjs",
         nodeIntegration: false,

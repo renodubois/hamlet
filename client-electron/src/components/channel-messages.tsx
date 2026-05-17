@@ -118,7 +118,7 @@ const ChannelMessages: Component<{
   };
 
   return (
-    <section class="p-8 min-h-full flex flex-col justify-end">
+    <section class="bg-white text-gray-900 p-8 min-h-full flex flex-col justify-end">
       <Show when={props.loading && props.messages.length === 0}>
         <p>Loading...</p>
       </Show>

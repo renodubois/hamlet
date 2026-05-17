@@ -158,7 +158,7 @@ export function createMainWindowOptions(
     minWidth: 960,
     minHeight: 600,
     show: false,
-    backgroundColor: "#111827",
+    backgroundColor: "#ffffff",
     ...(iconPath === undefined ? {} : { icon: iconPath }),
     webPreferences: createSecureWebPreferences(preloadPath),
   };

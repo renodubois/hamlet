@@ -109,7 +109,7 @@ export function createPackagerOptions({ rootDir, appVersion, platform, arch }) {
     icon: packageIconPath(rootDir, targetPlatform),
     usageDescription: { ...ALPHA_PACKAGE_METADATA.usageDescription },
     win32metadata: { ...ALPHA_PACKAGE_METADATA.win32metadata },
-    darwinDarkModeSupport: true,
+    darwinDarkModeSupport: false,
     overwrite: true,
     asar: false,
     prune: false,

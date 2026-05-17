@@ -93,7 +93,7 @@ export default function ChannelView() {
   }
 
   return (
-    <div class="flex flex-col h-full">
+    <div class="flex flex-col h-full bg-white text-gray-900">
       <section class="bg-gray-100 text-gray-700 p-4 flex-shrink-0">
         <h1 class="text-2xl font-bold"># {channel()?.name ?? params.id}</h1>
       </section>
