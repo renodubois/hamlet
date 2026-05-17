@@ -1,0 +1,24 @@
+# Oxlint reads .eslintignore and parent .gitignore files when walking directories.
+# Keep JS/TS source files discoverable even when this repo lives under a broader
+# parent ignore file (for example, a home-directory .gitignore containing `*`).
+!*/
+!*.js
+!*.jsx
+!*.ts
+!*.tsx
+!*.mjs
+!*.cjs
+!**/*.js
+!**/*.jsx
+!**/*.ts
+!**/*.tsx
+!**/*.mjs
+!**/*.cjs
+
+# Dependencies and generated output.
+node_modules/
+dist/
+dist-electron/
+release/
+test-results/
+playwright-report/
