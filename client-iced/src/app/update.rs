@@ -136,6 +136,8 @@ pub fn reduce(state: &mut AppState, message: AppMessage) -> Vec<AppEffect> {
         }
         AppMessage::ChannelsLoaded(result) => complete_channels_load(state, result),
         AppMessage::ChannelSelected(channel_id) => select_channel(state, channel_id),
+        AppMessage::AddChannelPressed => open_create_channel(state),
+        AppMessage::CancelCreateChannelPressed => close_create_channel(state),
         AppMessage::CreateChannelNameEdited(name) => edit_create_channel_name(state, name),
         AppMessage::CreateChannelKindSelected(kind) => select_create_channel_kind(state, kind),
         AppMessage::CreateChannelPressed => begin_create_channel(state),
@@ -970,11 +972,38 @@ fn select_channel(state: &mut AppState, channel_id: Id) -> Vec<AppEffect> {
     }
 }
 
+fn open_create_channel(state: &mut AppState) -> Vec<AppEffect> {
+    let Some(signed_in) = state.signed_in.as_mut() else {
+        return Vec::new();
+    };
+
+    signed_in.create_channel.is_open = true;
+
+    Vec::new()
+}
+
+fn close_create_channel(state: &mut AppState) -> Vec<AppEffect> {
+    let Some(signed_in) = state.signed_in.as_mut() else {
+        return Vec::new();
+    };
+
+    if signed_in.create_channel.status == CreateChannelStatus::Creating {
+        return Vec::new();
+    }
+
+    signed_in.create_channel.is_open = false;
+    signed_in.create_channel.name.clear();
+    signed_in.create_channel.status = CreateChannelStatus::Idle;
+
+    Vec::new()
+}
+
 fn edit_create_channel_name(state: &mut AppState, name: String) -> Vec<AppEffect> {
     let Some(signed_in) = state.signed_in.as_mut() else {
         return Vec::new();
     };
 
+    signed_in.create_channel.is_open = true;
     signed_in.create_channel.name = name;
     signed_in.create_channel.clear_failure();
 
@@ -986,6 +1015,7 @@ fn select_create_channel_kind(state: &mut AppState, kind: ChannelKind) -> Vec<Ap
         return Vec::new();
     };
 
+    signed_in.create_channel.is_open = true;
     signed_in.create_channel.kind = kind;
     signed_in.create_channel.clear_failure();
 
@@ -1029,6 +1059,7 @@ fn complete_create_channel(
                 };
 
                 signed_in.create_channel.name.clear();
+                signed_in.create_channel.is_open = false;
                 signed_in.create_channel.status = CreateChannelStatus::Idle;
 
                 if matches!(&signed_in.channels, ChannelListState::Loaded(_)) {

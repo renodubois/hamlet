@@ -56,6 +56,8 @@ pub enum AppMessage {
     },
     ChannelsLoaded(Result<Vec<Channel>, ApiError>),
     ChannelSelected(Id),
+    AddChannelPressed,
+    CancelCreateChannelPressed,
     CreateChannelNameEdited(String),
     CreateChannelKindSelected(ChannelKind),
     CreateChannelPressed,

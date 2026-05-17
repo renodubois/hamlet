@@ -10,24 +10,33 @@ usage() {
 Local CI: run the same checks GitHub Actions would, without leaving your machine.
 
 Usage:
-  scripts/check.sh                    # everything (server + both clients)
-  scripts/check.sh server             # just the Rust backend
-  scripts/check.sh client             # both clients
-  scripts/check.sh client tauri       # just the Tauri/Solid client
-  scripts/check.sh client iced        # just the native Iced client
-  scripts/check.sh all --client iced  # server + native Iced client
-  scripts/check.sh --fix              # apply fmt fixes before running checks
-  scripts/check.sh --e2e              # also run Playwright E2E tests
-  scripts/check.sh client iced --fix  # combinable
+  scripts/check.sh                         # everything (server + all available clients)
+  scripts/check.sh server                  # just the Rust backend
+  scripts/check.sh client                  # all available clients
+  scripts/check.sh client tauri            # just the Tauri/Solid client
+  scripts/check.sh client electron         # just the Electron/Solid client
+  scripts/check.sh client iced             # just the native Iced client
+  scripts/check.sh all --client iced       # server + native Iced client
+  scripts/check.sh all --client electron   # server + Electron/Solid client
+  scripts/check.sh --fix                   # apply fmt fixes before running checks
+  scripts/check.sh --e2e                   # also run Playwright E2E tests
+  scripts/check.sh client iced --fix       # combinable
 
 Client checks:
-  tauri -> client/: npm run fmt:check (or fmt with --fix), lint, typecheck, test
-  iced  -> client-iced/: cargo fmt -- --check (or fmt with --fix),
-           cargo check --all-targets, cargo clippy --all-targets -- -D warnings,
-           cargo test
+  tauri    -> client/: npm run fmt:check (or fmt with --fix), lint, typecheck, test
+  electron -> client-electron/: npm run fmt:check (or fmt with --fix), lint,
+              typecheck, test
+  iced     -> client-iced/: cargo fmt -- --check (or fmt with --fix),
+              cargo check --all-targets, cargo clippy --all-targets -- -D warnings,
+              cargo test
 
 Optional checks:
-  --e2e -> client/: npm run test:e2e (Playwright)
+  --e2e -> run Playwright E2E for selected web clients:
+           client/: npm run test:e2e; client-electron/: npm run test:e2e
+           when selected or when client-electron/ exists under the all selector
+
+When checking all clients, client-electron/ is skipped until that directory exists.
+Selecting `electron` explicitly requires client-electron/ to be present.
 
 Each step prints `===> <step>` before running and a one-line summary at the end.
 The script aborts on the first failure with a non-zero exit code, so it's safe
@@ -54,11 +63,11 @@ set_client_target() {
     die "multiple client selectors provided"
   fi
   case "$value" in
-    tauri|iced)
+    tauri|electron|iced)
       client_target="$value"
       client_seen=1
       ;;
-    *) die "invalid client selector: $value (expected tauri or iced)" ;;
+    *) die "invalid client selector: $value (expected tauri, electron, or iced)" ;;
   esac
 }
 
@@ -71,12 +80,12 @@ while [[ $# -gt 0 ]]; do
       target="$1"
       target_seen=1
       ;;
-    tauri|iced)
+    tauri|electron|iced)
       set_client_target "$1"
       ;;
     --client)
       shift
-      [[ $# -gt 0 ]] || die "--client requires a value: tauri or iced"
+      [[ $# -gt 0 ]] || die "--client requires a value: tauri, electron, or iced"
       set_client_target "$1"
       ;;
     --client=*)
@@ -112,6 +121,7 @@ fi
 step() { printf '%s===> %s%s\n' "$bold" "$1" "$reset"; }
 ok()   { printf '%s    ok%s\n' "$green" "$reset"; }
 fail() { printf '%s    FAILED%s\n' "$red" "$reset"; }
+skip() { printf '%s    skipped: %s%s\n' "$dim" "$1" "$reset"; }
 
 run() {
   local label="$1"; shift
@@ -132,8 +142,7 @@ server_checks() {
   if command -v cargo-audit >/dev/null 2>&1; then
     run "server: cargo audit" cargo audit
   else
-    printf '%s    skipped: cargo-audit not installed (`cargo install cargo-audit`)%s\n' \
-      "$dim" "$reset"
+    skip 'cargo-audit not installed (`cargo install cargo-audit`)'
   fi
 }
 
@@ -147,6 +156,30 @@ client_tauri_checks() {
   run "client-tauri: npm run lint" npm run lint
   run "client-tauri: npm run typecheck" npm run typecheck
   run "client-tauri: npm run test" npm run test
+}
+
+client_electron_checks() {
+  if [[ ! -d "$REPO_ROOT/client-electron" ]]; then
+    die "client-electron/ does not exist yet"
+  fi
+
+  cd "$REPO_ROOT/client-electron"
+  if (( fix )); then
+    run "client-electron: npm run fmt" npm run fmt
+  else
+    run "client-electron: npm run fmt:check" npm run fmt:check
+  fi
+  run "client-electron: npm run lint" npm run lint
+  run "client-electron: npm run typecheck" npm run typecheck
+  run "client-electron: npm run test" npm run test
+}
+
+maybe_client_electron_checks() {
+  if [[ -d "$REPO_ROOT/client-electron" ]]; then
+    client_electron_checks
+  else
+    skip "client-electron/ not found"
+  fi
 }
 
 client_iced_checks() {
@@ -164,15 +197,42 @@ client_iced_checks() {
 
 client_checks() {
   case "$client_target" in
-    all)   client_tauri_checks; client_iced_checks ;;
-    tauri) client_tauri_checks ;;
-    iced)  client_iced_checks ;;
+    all)      client_tauri_checks; maybe_client_electron_checks; client_iced_checks ;;
+    tauri)    client_tauri_checks ;;
+    electron) client_electron_checks ;;
+    iced)     client_iced_checks ;;
   esac
 }
 
-client_e2e_checks() {
+client_tauri_e2e_checks() {
   cd "$REPO_ROOT/client"
   run "client-tauri: npm run test:e2e" npm run test:e2e
+}
+
+client_electron_e2e_checks() {
+  if [[ ! -d "$REPO_ROOT/client-electron" ]]; then
+    die "client-electron/ does not exist yet"
+  fi
+
+  cd "$REPO_ROOT/client-electron"
+  run "client-electron: npm run test:e2e" npm run test:e2e
+}
+
+maybe_client_electron_e2e_checks() {
+  if [[ -d "$REPO_ROOT/client-electron" ]]; then
+    client_electron_e2e_checks
+  else
+    skip "client-electron/ E2E not run because client-electron/ was not found"
+  fi
+}
+
+client_e2e_checks() {
+  case "$client_target" in
+    all)      client_tauri_e2e_checks; maybe_client_electron_e2e_checks ;;
+    tauri)    client_tauri_e2e_checks ;;
+    electron) client_electron_e2e_checks ;;
+    iced)     skip "client-iced has no separate Playwright E2E step; cargo test covers native smoke tests" ;;
+  esac
 }
 
 case "$target" in

@@ -669,6 +669,7 @@ impl AvatarUpdateStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateChannelState {
+    pub is_open: bool,
     pub name: String,
     pub kind: ChannelKind,
     pub status: CreateChannelStatus,
@@ -685,6 +686,7 @@ impl CreateChannelState {
 impl Default for CreateChannelState {
     fn default() -> Self {
         Self {
+            is_open: false,
             name: String::new(),
             kind: ChannelKind::Text,
             status: CreateChannelStatus::Idle,

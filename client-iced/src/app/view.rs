@@ -1,5 +1,7 @@
-use iced::widget::{button, column, container, image, rich_text, row, span, text, text_input};
-use iced::{Color, ContentFit, Element, Fill, border};
+use iced::widget::{
+    button, column, container, image, rich_text, row, scrollable, span, text, text_input,
+};
+use iced::{Color, ContentFit, Element, Fill, Font, border, font};
 
 use crate::auth::{
     AuthStatus, AvatarUpdateStatus, ChannelListState, ChannelReorderState, CreateChannelState,
@@ -8,6 +10,7 @@ use crate::auth::{
     VoicePresenceState, message_action_visibility,
 };
 use crate::avatar::{AvatarImageCache, fallback_avatar};
+use crate::design;
 use crate::embeds::{
     EmbedImageCache, EmbedImageStatus, EmbedRenderMode, embed_render_mode, embed_site_label,
 };
@@ -33,92 +36,123 @@ pub fn view(state: &AppState) -> Element<'_, AppMessage> {
 fn signed_out_view(state: &AppState) -> Element<'_, AppMessage> {
     let signed_out = &state.signed_out;
 
-    let mut content = column![
-        text("Hamlet").size(40),
-        text("Native Iced client").size(18),
-        text("Connect to a Hamlet server to continue."),
+    let server_url_input = text_input("http://localhost:3030", &signed_out.server_url)
+        .id(SERVER_URL_INPUT_ID)
+        .on_input(AppMessage::ServerUrlEdited)
+        .padding(12)
+        .width(Fill)
+        .style(design::text_input_style::field);
+    let mut server_group = column![
+        text("Server").size(18).color(design::color::TEXT),
+        text("Choose the Hamlet server this desktop client should connect to.")
+            .color(design::color::TEXT_MUTED),
+        text("Server URL").color(design::color::TEXT_MUTED),
+        server_url_input,
+        save_server_url_button(&signed_out.server_url_status),
     ]
-    .spacing(12)
-    .width(420);
-
-    if state.is_loading_preferences() {
-        content = content.push(text("Loading saved preferences…"));
-    }
-
-    if state.is_restoring_session() {
-        content = content.push(text("Restoring your saved session…"));
-    }
-
-    content = content
-        .push(text("Server URL"))
-        .push(
-            text_input("http://localhost:3030", &signed_out.server_url)
-                .id(SERVER_URL_INPUT_ID)
-                .on_input(AppMessage::ServerUrlEdited)
-                .padding(10)
-                .width(Fill),
-        )
-        .push(save_server_url_button(&signed_out.server_url_status));
+    .spacing(design::spacing::SM);
 
     if let Some(message) = signed_out.server_url_status.message() {
-        content = content.push(text(message));
+        server_group = server_group.push(text(message).color(design::color::TEXT_MUTED));
     }
 
-    content = content
-        .push(text("Username"))
-        .push(
-            text_input("username", &signed_out.username)
-                .id(USERNAME_INPUT_ID)
-                .on_input(AppMessage::UsernameEdited)
-                .padding(10)
-                .width(Fill),
-        )
-        .push(text("Password"))
-        .push(
-            text_input("password", &signed_out.password)
-                .id(PASSWORD_INPUT_ID)
-                .secure(true)
-                .on_input(AppMessage::PasswordEdited)
-                .padding(10)
-                .width(Fill),
-        );
+    let account_group = column![
+        text("Account").size(18).color(design::color::TEXT),
+        text("Sign in with your username and password, or register a new account.")
+            .color(design::color::TEXT_MUTED),
+        text("Username").color(design::color::TEXT_MUTED),
+        text_input("username", &signed_out.username)
+            .id(USERNAME_INPUT_ID)
+            .on_input(AppMessage::UsernameEdited)
+            .padding(12)
+            .width(Fill)
+            .style(design::text_input_style::field),
+        text("Password").color(design::color::TEXT_MUTED),
+        text_input("password", &signed_out.password)
+            .id(PASSWORD_INPUT_ID)
+            .secure(true)
+            .on_input(AppMessage::PasswordEdited)
+            .padding(12)
+            .width(Fill)
+            .style(design::text_input_style::field),
+    ]
+    .spacing(design::spacing::SM);
 
-    if let Some(label) = signed_out.auth_status.submitting_label() {
-        content = content.push(text(label));
-    }
-
-    content = content.push(
+    let mut actions = column![
         row![
             login_button(&signed_out.auth_status),
             register_button(&signed_out.auth_status),
         ]
-        .spacing(8),
-    );
+        .spacing(design::spacing::SM),
+    ]
+    .spacing(design::spacing::SM);
+
+    if let Some(label) = signed_out.auth_status.submitting_label() {
+        actions = actions.push(text(label).color(design::color::TEXT_MUTED));
+    }
 
     #[cfg(debug_assertions)]
     {
-        let dev_button = if signed_out.auth_status.is_submitting() || state.is_restoring_session() {
-            button("Use dev credentials (debug)")
-        } else {
-            button("Use dev credentials (debug)").on_press(AppMessage::UseDevCredentials)
-        };
+        let dev_button =
+            if signed_out.auth_status.is_submitting() || state.is_restoring_session() {
+                button("Use dev credentials (debug)")
+            } else {
+                button("Use dev credentials (debug)").on_press(AppMessage::UseDevCredentials)
+            }
+            .style(design::button_style::secondary);
 
-        content = content.push(dev_button);
+        actions = actions.push(dev_button);
     }
 
     if let Some(message) = signed_out.auth_status.message() {
-        content = content.push(text(message));
+        actions = actions.push(text(message).color(design::color::TEXT_MUTED));
     }
 
     if let Some(notice) = &signed_out.notice {
-        content = content.push(text(notice));
+        actions = actions.push(text(notice).color(design::color::TEXT_MUTED));
     }
 
-    container(content)
-        .padding(32)
-        .center_x(Fill)
-        .center_y(Fill)
-        .into()
+    let mut status = column![].spacing(design::spacing::SM);
+    if state.is_loading_preferences() {
+        status = status.push(text("Loading saved preferences…").color(design::color::TEXT_MUTED));
+    }
+    if state.is_restoring_session() {
+        status =
+            status.push(text("Restoring your saved session…").color(design::color::TEXT_MUTED));
+    }
+
+    let panel = column![
+        column![
+            text("Hamlet").size(44).color(design::color::TEXT),
+            text("Native Iced client")
+                .size(18)
+                .color(design::color::ACCENT),
+            text("A focused desktop home for your Hamlet conversations.")
+                .color(design::color::TEXT_MUTED),
+        ]
+        .spacing(design::spacing::XS),
+        status,
+        container(server_group)
+            .padding(design::spacing::LG)
+            .style(design::container_style::field_group),
+        container(account_group)
+            .padding(design::spacing::LG)
+            .style(design::container_style::field_group),
+        actions,
+    ]
+    .spacing(design::spacing::LG)
+    .width(460);
+
+    container(
+        container(panel)
+            .padding(design::spacing::XL)
+            .style(design::container_style::hero_panel),
+    )
+    .padding(design::spacing::XXL)
+    .center_x(Fill)
+    .center_y(Fill)
+    .style(design::container_style::app_background)
+    .into()
 }
 
 fn signed_in_view(state: &AppState) -> Element<'_, AppMessage> {
@@ -129,17 +163,6 @@ fn signed_in_view(state: &AppState) -> Element<'_, AppMessage> {
             .center_y(Fill)
             .into();
     };
-    let display_name = signed_in.display_name();
-    let settings_button = if signed_in.profile_settings.is_open {
-        button("Close settings").on_press(AppMessage::CloseSettingsPressed)
-    } else {
-        button("Settings").on_press(AppMessage::OpenSettingsPressed)
-    };
-    let logout_button = match signed_in.logout_status {
-        LogoutStatus::Idle => button("Log out").on_press(AppMessage::LogoutPressed),
-        LogoutStatus::LoggingOut => button("Logging out…"),
-    };
-
     let avatar_context = AvatarViewContext {
         cache: &signed_in.avatar_images,
         server_url: &signed_in.server_url,
@@ -154,7 +177,7 @@ fn signed_in_view(state: &AppState) -> Element<'_, AppMessage> {
         signed_in.selected_channel_id,
         &signed_in.channel_reorder,
         &signed_in.create_channel,
-        &signed_in.user,
+        signed_in,
         sidebar_voice,
     );
     let main = match &signed_in.channels {
@@ -179,54 +202,60 @@ fn signed_in_view(state: &AppState) -> Element<'_, AppMessage> {
             &signed_in.avatar_images,
             &signed_in.server_url,
         ),
-        ChannelListState::Failed(message) => column![
-            text("Could not load channels."),
-            text(message),
-            button("Retry channels").on_press(AppMessage::RetryChannelsPressed),
-        ]
-        .spacing(8),
-        ChannelListState::Loading => column![text("Loading channels…")].spacing(8),
-        ChannelListState::NotLoaded => column![text("Channels are not loaded yet.")].spacing(8),
+        ChannelListState::Failed(message) => container(
+            column![
+                text("Could not load channels."),
+                text(message),
+                button("Retry channels").on_press(AppMessage::RetryChannelsPressed),
+            ]
+            .spacing(8),
+        )
+        .padding(design::spacing::LG)
+        .width(Fill)
+        .height(Fill)
+        .style(design::container_style::main_surface)
+        .into(),
+        ChannelListState::Loading => container(text("Loading channels…"))
+            .padding(design::spacing::LG)
+            .width(Fill)
+            .height(Fill)
+            .style(design::container_style::main_surface)
+            .into(),
+        ChannelListState::NotLoaded => container(text("Channels are not loaded yet."))
+            .padding(design::spacing::LG)
+            .width(Fill)
+            .height(Fill)
+            .style(design::container_style::main_surface)
+            .into(),
     };
 
-    let mut content = column![
-        text("Hamlet").size(40),
-        row![
-            avatar_view(
-                &signed_in.avatar_images,
-                &signed_in.server_url,
-                signed_in.user.id,
-                &signed_in.user.username,
-                signed_in.user.display_name.as_deref(),
-                signed_in.user.avatar_url.as_deref(),
-                40,
-            ),
-            text(format!("Signed in as {display_name}")),
-            settings_button,
-            logout_button,
-        ]
-        .spacing(8),
-        text(format!("Realtime: {:?}", signed_in.realtime_status)),
-        text(
-            signed_in
-                .voice_connection
-                .message()
-                .unwrap_or_else(|| "Voice: idle".to_string()),
-        ),
+    let main_content = if signed_in.profile_settings.is_open {
+        column![profile_settings_view(signed_in), main]
+            .spacing(design::spacing::LG)
+            .height(Fill)
+    } else {
+        column![main].height(Fill)
+    };
+
+    let shell = row![
+        container(sidebar)
+            .padding(design::spacing::LG)
+            .width(280)
+            .height(Fill)
+            .style(design::container_style::sidebar),
+        container(main_content)
+            .padding(design::spacing::LG)
+            .width(Fill)
+            .height(Fill)
+            .style(design::container_style::main_shell),
     ]
-    .spacing(12)
+    .height(Fill)
     .width(Fill);
 
-    if signed_in.profile_settings.is_open {
-        content = content.push(profile_settings_view(signed_in));
-    }
-
-    content = content.push(row![sidebar, main].spacing(24));
-
-    container(content)
-        .padding(32)
-        .center_x(Fill)
-        .center_y(Fill)
+    container(shell)
+        .width(Fill)
+        .height(Fill)
+        .style(design::container_style::app_background)
         .into()
 }
 
@@ -349,33 +378,21 @@ fn channel_sidebar<'a>(
     selected_channel_id: Option<i64>,
     channel_reorder: &'a ChannelReorderState,
     create_channel: &'a CreateChannelState,
-    current_user: &'a User,
+    signed_in: &'a crate::auth::SignedInState,
     voice: SidebarVoiceContext<'a>,
 ) -> iced::widget::Column<'a, AppMessage> {
-    let mut sidebar = column![
-        text("Channels").size(24),
-        current_user_sidebar_row(current_user, voice.avatars),
-    ]
-    .spacing(6)
-    .width(220);
+    let mut channel_nav = column![text("Channels").size(16).color(design::color::TEXT_MUTED)]
+        .spacing(design::spacing::SM)
+        .width(Fill);
 
     if let Some(message) = channel_reorder.message() {
-        sidebar = sidebar.push(text(message));
+        channel_nav = channel_nav.push(text(message));
     }
-    if let Some(message) = voice.presence.message() {
-        sidebar = sidebar.push(text(message));
-    }
-    if let Some(message) = voice.connection.message() {
-        sidebar = sidebar.push(text(message));
-    }
-
-    sidebar = sidebar.push(create_channel_form(create_channel));
-
     match channels {
         ChannelListState::Loaded(channels) => {
             let disable_reorder = channel_reorder.is_committing();
             for (index, channel) in channels.iter().enumerate() {
-                sidebar = sidebar.push(channel_entry(
+                channel_nav = channel_nav.push(channel_entry(
                     channel,
                     selected_channel_id,
                     index,
@@ -386,20 +403,79 @@ fn channel_sidebar<'a>(
             }
         }
         ChannelListState::Loading => {
-            sidebar = sidebar.push(text("Loading…"));
+            channel_nav = channel_nav.push(text("Loading…"));
         }
         ChannelListState::Failed(message) => {
-            sidebar = sidebar
+            channel_nav = channel_nav
                 .push(text("Failed to load channels."))
                 .push(text(message))
                 .push(button("Retry").on_press(AppMessage::RetryChannelsPressed));
         }
         ChannelListState::NotLoaded => {
-            sidebar = sidebar.push(text("Not loaded."));
+            channel_nav = channel_nav.push(text("Not loaded."));
         }
     }
 
-    sidebar
+    column![
+        column![
+            text("Hamlet workspace").size(24),
+            text("Native Iced client")
+                .size(13)
+                .color(design::color::TEXT_MUTED),
+        ]
+        .spacing(design::spacing::XS),
+        channel_nav,
+        iced::widget::Space::new().height(Fill),
+        create_channel_footer(create_channel),
+        user_sidebar_footer(signed_in, voice.avatars),
+    ]
+    .spacing(design::spacing::SM)
+    .width(Fill)
+    .height(Fill)
+}
+
+fn create_channel_footer<'a>(
+    create_channel: &'a CreateChannelState,
+) -> iced::widget::Container<'a, AppMessage> {
+    let content = if create_channel.is_open {
+        create_channel_form(create_channel)
+    } else {
+        column![button("Add channel").on_press(AppMessage::AddChannelPressed)].width(Fill)
+    };
+
+    container(content)
+        .padding(design::spacing::SM)
+        .width(Fill)
+        .style(design::container_style::field_group)
+}
+
+fn user_sidebar_footer<'a>(
+    signed_in: &'a crate::auth::SignedInState,
+    avatars: AvatarViewContext<'a>,
+) -> iced::widget::Container<'a, AppMessage> {
+    let settings_button = if signed_in.profile_settings.is_open {
+        button("Close settings").on_press(AppMessage::CloseSettingsPressed)
+    } else {
+        button("Settings").on_press(AppMessage::OpenSettingsPressed)
+    };
+    let logout_button = match signed_in.logout_status {
+        LogoutStatus::Idle => button("Log out").on_press(AppMessage::LogoutPressed),
+        LogoutStatus::LoggingOut => button("Logging out…"),
+    };
+
+    container(
+        column![
+            current_user_sidebar_row(&signed_in.user, avatars),
+            text(format!("Signed in as {}", signed_in.display_name()))
+                .size(12)
+                .color(design::color::TEXT_MUTED),
+            row![settings_button, logout_button].spacing(design::spacing::SM),
+        ]
+        .spacing(design::spacing::SM),
+    )
+    .padding(design::spacing::SM)
+    .width(Fill)
+    .style(design::container_style::field_group)
 }
 
 fn current_user_sidebar_row<'a>(
@@ -418,7 +494,9 @@ fn current_user_sidebar_row<'a>(
         ),
         column![
             text(user_display_name(user).to_string()).size(14),
-            text(format!("@{}", user.username)).size(12),
+            text(format!("@{}", user.username))
+                .size(12)
+                .color(design::color::TEXT_MUTED),
         ]
         .spacing(1),
     ]
@@ -443,20 +521,27 @@ fn create_channel_form<'a>(
             button("Create").on_press(AppMessage::CreateChannelPressed)
         }
     };
+    let cancel_button = match create_channel.status {
+        CreateChannelStatus::Creating => button("Cancel"),
+        CreateChannelStatus::Idle | CreateChannelStatus::Failed(_) => {
+            button("Cancel").on_press(AppMessage::CancelCreateChannelPressed)
+        }
+    };
     let mut form = column![
-        text("Create channel").size(18),
+        text("Create channel").size(16),
         text_input("channel-name", &create_channel.name)
             .id(CREATE_CHANNEL_NAME_INPUT_ID)
             .on_input(AppMessage::CreateChannelNameEdited)
             .padding(10)
             .width(Fill),
         row![text_button, voice_button].spacing(6),
-        submit_button,
+        row![submit_button, cancel_button].spacing(6),
     ]
-    .spacing(6);
+    .spacing(6)
+    .width(Fill);
 
     if let Some(message) = create_channel.status.message() {
-        form = form.push(text(message));
+        form = form.push(text(message).size(12).color(design::color::TEXT_MUTED));
     }
 
     form
@@ -526,7 +611,7 @@ fn channel_row<'a>(
             disable_reorder || index.saturating_add(1) >= channel_count,
         ),
     ]
-    .spacing(4)
+    .spacing(2)
 }
 
 fn move_channel_button<'a>(
@@ -535,10 +620,13 @@ fn move_channel_button<'a>(
     disabled: bool,
 ) -> iced::widget::Button<'a, AppMessage> {
     let label = match direction {
-        ChannelMoveDirection::Up => "Move up",
-        ChannelMoveDirection::Down => "Move down",
+        ChannelMoveDirection::Up => "↑",
+        ChannelMoveDirection::Down => "↓",
     };
-    let button = button(text(label));
+    let button = button(text(label))
+        .padding([2, 6])
+        .width(28)
+        .style(design::button_style::reorder_control);
 
     if disabled {
         button
@@ -554,18 +642,33 @@ fn channel_button<'a>(
     channel: &'a Channel,
     selected_channel_id: Option<i64>,
 ) -> iced::widget::Button<'a, AppMessage> {
+    let selected = Some(channel.id) == selected_channel_id;
     let prefix = match channel.kind {
         ChannelKind::Text => "#",
         ChannelKind::Voice => "🔊",
     };
-    let selected = if Some(channel.id) == selected_channel_id {
-        " •"
-    } else {
-        ""
-    };
+    let selected_marker = if selected { " •" } else { "" };
+    let label = compact_channel_name(&channel.name);
+    let button = button(text(format!("{prefix} {label}{selected_marker}")))
+        .padding([5, 8])
+        .on_press(AppMessage::ChannelSelected(channel.id));
 
-    button(text(format!("{prefix} {}{selected}", channel.name)))
-        .on_press(AppMessage::ChannelSelected(channel.id))
+    match channel.kind {
+        ChannelKind::Text => button.style(design::button_style::channel_text(selected)),
+        ChannelKind::Voice => button.style(design::button_style::channel_voice(selected)),
+    }
+}
+
+fn compact_channel_name(name: &str) -> String {
+    const MAX_CHARS: usize = 24;
+
+    let mut chars = name.chars();
+    let shortened: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{shortened}…")
+    } else {
+        name.to_string()
+    }
 }
 
 fn voice_participants_sidebar<'a>(
@@ -573,18 +676,13 @@ fn voice_participants_sidebar<'a>(
     voice: SidebarVoiceContext<'a>,
 ) -> iced::widget::Column<'a, AppMessage> {
     let participants = voice.presence.participants(channel.id);
-    let mut list = iced::widget::Column::new()
-        .spacing(1)
-        .push(voice_connection_button(channel, voice.connection));
-
-    if let Some(error) = voice
-        .connection
-        .error
-        .as_ref()
-        .filter(|error| error.channel_id == Some(channel.id))
-    {
-        list = list.push(text(format!("  {}", error.message)).size(14));
-    }
+    let mut list = iced::widget::Column::new().spacing(2).push(
+        row![
+            text("  ").width(14),
+            voice_connection_button(channel, voice.connection)
+        ]
+        .spacing(2),
+    );
 
     for participant in participants {
         let suffix = if voice.presence.is_speaking(channel.id, participant.user_id) {
@@ -594,7 +692,7 @@ fn voice_participants_sidebar<'a>(
         };
         list = list.push(
             row![
-                text("  •"),
+                text("  •").color(design::color::TEXT_MUTED),
                 avatar_view(
                     voice.avatars.cache,
                     voice.avatars.server_url,
@@ -604,7 +702,9 @@ fn voice_participants_sidebar<'a>(
                     participant.avatar_url.as_deref(),
                     18,
                 ),
-                text(format!("{}{}", participant.username, suffix)).size(14),
+                text(format!("{}{}", participant.username, suffix))
+                    .size(13)
+                    .color(design::color::TEXT_MUTED),
             ]
             .spacing(4),
         );
@@ -630,6 +730,8 @@ fn voice_connection_button<'a>(
     } else {
         button("Join voice")
     };
+
+    let button = button.style(design::button_style::primary);
 
     if voice_connection.is_connected_to(channel.id) {
         button.on_press(AppMessage::VoiceLeavePressed)
@@ -664,22 +766,28 @@ fn channel_main<'a>(
     voice_connection: &'a VoiceConnectionState,
     avatar_images: &'a AvatarImageCache,
     server_url: &'a str,
-) -> iced::widget::Column<'a, AppMessage> {
+) -> Element<'a, AppMessage> {
     let Some(channel) =
         selected_channel_id.and_then(|id| channels.iter().find(|channel| channel.id == id))
     else {
-        return column![text("No text channels are available yet.")].spacing(8);
+        return container(text("No text channels are available yet."))
+            .padding(design::spacing::LG)
+            .width(Fill)
+            .height(Fill)
+            .style(design::container_style::main_surface)
+            .into();
     };
 
     match channel.kind {
-        ChannelKind::Text => text_channel_view(channel, text_channel),
+        ChannelKind::Text => text_channel_view(channel, text_channel).into(),
         ChannelKind::Voice => voice_channel_view(
             channel,
             voice_presence,
             voice_connection,
             avatar_images,
             server_url,
-        ),
+        )
+        .into(),
     }
 }
 
@@ -691,33 +799,16 @@ fn voice_channel_view<'a>(
     server_url: &'a str,
 ) -> iced::widget::Column<'a, AppMessage> {
     let participants = voice_presence.participants(channel.id);
-    let mut content = column![
-        text(format!("🔊 {}", channel.name)).size(24),
-        text("Native LiveKit voice is available for this channel."),
-        voice_connection_button(channel, voice_connection),
-        voice_controls(channel, voice_connection),
-    ]
-    .spacing(8);
-
-    if let Some(message) = voice_connection.message() {
-        content = content.push(text(message));
-    }
-    if let Some(error) = voice_connection
-        .error
-        .as_ref()
-        .filter(|error| error.channel_id == Some(channel.id))
-    {
-        content = content.push(button("Retry voice connection").on_press(
-            AppMessage::VoiceJoinPressed(error.channel_id.unwrap_or(channel.id)),
-        ));
-    }
+    let action_card = voice_action_card(channel, voice_presence, voice_connection);
+    let mut participant_list = column![text("Connected participants").size(18)]
+        .spacing(design::spacing::SM)
+        .width(Fill);
 
     if participants.is_empty() {
-        content = content.push(text("No one is connected."));
+        participant_list = participant_list.push(text("No one is connected."));
     } else {
-        content = content.push(text("Connected participants:"));
         for participant in participants {
-            content = content.push(voice_participant_row(
+            participant_list = participant_list.push(voice_participant_row(
                 participant,
                 voice_presence.is_speaking(channel.id, participant.user_id),
                 avatar_images,
@@ -726,7 +817,99 @@ fn voice_channel_view<'a>(
         }
     }
 
-    content
+    column![
+        container(
+            column![
+                text(format!("🔊 {}", channel.name)).size(24),
+                text("Voice channel")
+                    .size(13)
+                    .color(design::color::MAIN_TEXT_MUTED),
+            ]
+            .spacing(design::spacing::XS),
+        )
+        .padding([design::spacing::MD, design::spacing::LG])
+        .width(Fill)
+        .style(design::container_style::main_surface),
+        scrollable(
+            column![
+                container(action_card)
+                    .padding(design::spacing::LG)
+                    .width(Fill)
+                    .style(design::container_style::main_surface),
+                container(participant_list)
+                    .padding(design::spacing::LG)
+                    .width(Fill)
+                    .style(design::container_style::main_surface),
+            ]
+            .spacing(design::spacing::MD)
+        )
+        .height(Fill)
+        .width(Fill),
+        container(voice_controls(channel, voice_connection))
+            .padding(design::spacing::LG)
+            .width(Fill)
+            .style(design::container_style::main_surface),
+    ]
+    .spacing(design::spacing::MD)
+    .height(Fill)
+    .width(Fill)
+}
+
+fn voice_action_card<'a>(
+    channel: &'a Channel,
+    voice_presence: &'a VoicePresenceState,
+    voice_connection: &'a VoiceConnectionState,
+) -> iced::widget::Column<'a, AppMessage> {
+    let mut card = column![
+        text("LiveKit voice").size(18),
+        text("Native LiveKit voice is available for this channel.")
+            .color(design::color::MAIN_TEXT_MUTED),
+        voice_connection_button(channel, voice_connection),
+    ]
+    .spacing(design::spacing::SM)
+    .width(Fill);
+
+    if let Some(message) = voice_connection_message_for_channel(channel.id, voice_connection) {
+        card = card.push(text(message).color(design::color::MAIN_TEXT_MUTED));
+    }
+    if let Some(message) = voice_presence.message() {
+        card = card.push(text(message).color(design::color::MAIN_TEXT_MUTED));
+    }
+    if voice_connection
+        .error
+        .as_ref()
+        .is_some_and(|error| error.channel_id.is_none() || error.channel_id == Some(channel.id))
+    {
+        card = card.push(
+            button("Retry voice connection").on_press(AppMessage::VoiceJoinPressed(channel.id)),
+        );
+    }
+
+    card
+}
+
+fn voice_connection_message_for_channel(
+    channel_id: Id,
+    voice_connection: &VoiceConnectionState,
+) -> Option<String> {
+    if let Some(error) = &voice_connection.error
+        && (error.channel_id.is_none() || error.channel_id == Some(channel_id))
+    {
+        return Some(format!("Voice connection error: {}", error.message));
+    }
+
+    if voice_connection.target_channel_id() == Some(channel_id) {
+        return voice_connection.message();
+    }
+
+    if voice_connection.has_active_connection() {
+        return Some(
+            "You are connected to another voice channel. Use Switch voice to move here."
+                .to_string(),
+        );
+    }
+
+    None
 }
 
 fn voice_controls<'a>(
@@ -757,14 +940,18 @@ fn voice_controls<'a>(
         button(mute_label).on_press(mute_message)
     } else {
         button(mute_label)
-    };
+    }
+    .style(design::button_style::secondary);
     let deafen_button = if voice_connection.is_connected_to(channel.id) {
         button(deafen_label).on_press(deafen_message)
     } else {
         button(deafen_label)
-    };
+    }
+    .style(design::button_style::secondary);
 
-    row![mute_button, deafen_button].spacing(8)
+    row![text("Voice controls").size(18), mute_button, deafen_button]
+        .spacing(design::spacing::SM)
+        .align_y(iced::Alignment::Center)
 }
 
 fn voice_participant_row<'a>(
@@ -795,31 +982,31 @@ fn text_channel_view<'a>(
     channel: &'a Channel,
     text_channel: TextChannelViewState<'a>,
 ) -> iced::widget::Column<'a, AppMessage> {
-    let mut content = column![text(format!("# {}", channel.name)).size(24)].spacing(8);
+    let mut message_body = column![].spacing(design::spacing::MD);
 
     if let Some(message) = text_channel.external_link_status.message() {
-        content = content.push(text(message));
+        message_body = message_body.push(text(message).color(design::color::MAIN_TEXT_MUTED));
     }
 
     match text_channel.history {
         MessageHistoryState::NotLoaded => {
-            content = content.push(text("No message history loaded."));
+            message_body = message_body.push(text("No message history loaded."));
         }
         MessageHistoryState::Loading { .. } => {
-            content = content.push(text("Loading message history…"));
+            message_body = message_body.push(text("Loading message history…"));
         }
         MessageHistoryState::Failed { message, .. } => {
-            content = content
+            message_body = message_body
                 .push(text("Could not load message history."))
                 .push(text(message))
                 .push(button("Retry messages").on_press(AppMessage::RetryMessageHistoryPressed));
         }
         MessageHistoryState::Loaded { messages, .. } => {
             if messages.is_empty() {
-                content = content.push(text("No messages yet."));
+                message_body = message_body.push(text("No messages yet."));
             } else {
                 for message in messages {
-                    content = content.push(message_row(
+                    message_body = message_body.push(message_row(
                         message,
                         text_channel.current_user_id,
                         text_channel.message_actions,
@@ -833,20 +1020,48 @@ fn text_channel_view<'a>(
     }
 
     if let Some(message) = text_channel.typing.indicator_message(channel.id) {
-        content = content.push(text(message));
+        message_body = message_body.push(text(message).color(design::color::MAIN_TEXT_MUTED));
     }
 
-    content = content.push(message_composer(
+    let mut composer = column![message_composer(
         text_channel.draft,
         text_channel.emoji_picker,
         text_channel.send_status,
-    ));
+    )]
+    .spacing(design::spacing::SM);
 
     if let Some(message) = text_channel.send_status.message() {
-        content = content.push(text(message));
+        composer = composer.push(text(message).color(design::color::MAIN_TEXT_MUTED));
     }
 
-    content
+    column![
+        container(
+            column![
+                text(format!("# {}", channel.name)).size(24),
+                text("Text channel")
+                    .size(13)
+                    .color(design::color::MAIN_TEXT_MUTED),
+            ]
+            .spacing(design::spacing::XS),
+        )
+        .padding([design::spacing::MD, design::spacing::LG])
+        .width(Fill)
+        .style(design::container_style::main_surface),
+        scrollable(
+            container(message_body)
+                .padding(design::spacing::LG)
+                .width(Fill)
+        )
+        .height(Fill)
+        .width(Fill),
+        container(composer)
+            .padding([design::spacing::MD, design::spacing::LG])
+            .width(Fill)
+            .style(design::container_style::composer_bar),
+    ]
+    .spacing(design::spacing::SM)
+    .height(Fill)
+    .width(Fill)
 }
 
 fn message_composer<'a>(
@@ -857,27 +1072,38 @@ fn message_composer<'a>(
     let input = text_input("Message", draft)
         .id(COMPOSER_INPUT_ID)
         .on_input(AppMessage::DraftEdited)
+        .padding(12)
+        .width(Fill)
+        .style(design::text_input_style::composer);
+    let emoji_button_label = if emoji_picker.is_open { "✕" } else { "😊" };
+    let emoji_button = button(text(emoji_button_label).size(18))
+        .on_press(AppMessage::ToggleEmojiPickerPressed)
         .padding(10)
-        .width(Fill);
-    let emoji_button_label = if emoji_picker.is_open {
-        "Close emoji"
-    } else {
-        "Emoji"
-    };
-    let emoji_button = button(emoji_button_label).on_press(AppMessage::ToggleEmojiPickerPressed);
+        .width(44)
+        .style(design::button_style::composer_secondary);
     let send_button = match send_status {
         SendMessageStatus::Sending => button("Sending…"),
         SendMessageStatus::Idle | SendMessageStatus::Failed(_) => {
             button("Send").on_press(AppMessage::SendMessagePressed)
         }
-    };
-    let mut composer = column![row![input, emoji_button, send_button].spacing(8)].spacing(8);
+    }
+    .padding(10)
+    .style(design::button_style::primary);
+    let controls = row![input, emoji_button, send_button]
+        .spacing(design::spacing::SM)
+        .width(Fill);
+    let mut composer = column![].spacing(design::spacing::SM).width(Fill);
 
     if emoji_picker.is_open {
-        composer = composer.push(emoji_picker_view(emoji_picker));
+        composer = composer.push(
+            container(emoji_picker_view(emoji_picker))
+                .padding(design::spacing::MD)
+                .width(Fill)
+                .style(design::container_style::emoji_picker),
+        );
     }
 
-    composer
+    composer.push(controls)
 }
 
 fn emoji_picker_view<'a>(
@@ -946,8 +1172,15 @@ fn message_row<'a>(
         &message.username,
         message.display_name.as_deref(),
         message.avatar_url.as_deref(),
-        32,
+        40,
     );
+    let visibility = message_action_visibility(current_user_id, message);
+    let author_label = text(author)
+        .font(Font {
+            weight: font::Weight::Bold,
+            ..Font::default()
+        })
+        .color(design::color::MAIN_TEXT);
 
     if let Some(editing) = actions
         .editing
@@ -957,28 +1190,65 @@ fn message_row<'a>(
         let input = text_input("Edit message", &editing.draft)
             .on_input(AppMessage::EditMessageDraftEdited)
             .padding(8)
-            .width(Fill);
+            .width(Fill)
+            .style(design::text_input_style::composer);
         let save_button = if editing.status.is_saving() {
             button("Saving…")
         } else {
             button("Save edit").on_press(AppMessage::SaveMessageEditPressed)
-        };
-        let cancel_button = button("Cancel").on_press(AppMessage::CancelMessageEditPressed);
+        }
+        .style(design::button_style::primary);
+        let cancel_button = button("Cancel")
+            .on_press(AppMessage::CancelMessageEditPressed)
+            .style(design::button_style::subtle_link);
         let mut content = column![
-            text(format!("{author}:")),
-            row![input, save_button, cancel_button].spacing(8),
+            author_label,
+            row![input, save_button, cancel_button]
+                .spacing(design::spacing::SM)
+                .width(Fill),
         ]
-        .spacing(4);
+        .spacing(design::spacing::SM)
+        .width(Fill);
 
         if let Some(message) = editing.status.message() {
-            content = content.push(text(message));
+            content = content.push(text(message).color(design::color::MAIN_TEXT_MUTED));
         }
 
-        return row![avatar, content].spacing(8).into();
+        return container(
+            row![avatar, content]
+                .spacing(design::spacing::MD)
+                .width(Fill),
+        )
+        .padding([design::spacing::SM, design::spacing::MD])
+        .width(Fill)
+        .style(design::container_style::message_row)
+        .into();
     }
 
-    let mut content = column![message_text(message, author)].spacing(4);
-    let visibility = message_action_visibility(current_user_id, message);
+    let mut meta = row![author_label].spacing(design::spacing::XS);
+    if visibility.has_any_action() {
+        let edit_button = if actions.is_deleting(message.id) {
+            button("Edit")
+        } else {
+            button("Edit").on_press(AppMessage::EditMessagePressed(message.id))
+        }
+        .padding([2, 4])
+        .style(design::button_style::subtle_link);
+        let delete_button = if actions.is_deleting(message.id) {
+            button("Deleting…")
+        } else {
+            button("Delete").on_press(AppMessage::DeleteMessagePressed(message.id))
+        }
+        .padding([2, 4])
+        .style(design::button_style::subtle_link);
+
+        meta = meta.push(text("·").color(design::color::MAIN_TEXT_MUTED));
+        meta = meta.push(edit_button).push(delete_button);
+    }
+
+    let mut content = column![meta, message_text(message)]
+        .spacing(design::spacing::XS)
+        .width(Fill);
 
     if !message.suppress_embeds && !message.embeds.is_empty() {
         content = content.push(message_embeds(
@@ -990,30 +1260,23 @@ fn message_row<'a>(
         ));
     }
 
-    if visibility.has_any_action() {
-        let edit_button = if actions.is_deleting(message.id) {
-            button("Edit")
-        } else {
-            button("Edit").on_press(AppMessage::EditMessagePressed(message.id))
-        };
-        let delete_button = if actions.is_deleting(message.id) {
-            button("Deleting…")
-        } else {
-            button("Delete").on_press(AppMessage::DeleteMessagePressed(message.id))
-        };
-
-        content = content.push(row![edit_button, delete_button].spacing(6));
-    }
-
     if let Some(message) = actions.delete_message(message.id) {
-        content = content.push(text(message));
+        content = content.push(text(message).color(design::color::MAIN_TEXT_MUTED));
     }
 
     if let Some(message) = actions.suppress_embeds_message(message.id) {
-        content = content.push(text(message));
+        content = content.push(text(message).color(design::color::MAIN_TEXT_MUTED));
     }
 
-    row![avatar, content].spacing(8).into()
+    container(
+        row![avatar, content]
+            .spacing(design::spacing::MD)
+            .width(Fill),
+    )
+    .padding([design::spacing::SM, design::spacing::MD])
+    .width(Fill)
+    .style(design::container_style::message_row)
+    .into()
 }
 
 fn message_embeds<'a>(
@@ -1023,7 +1286,9 @@ fn message_embeds<'a>(
     embed_images: &'a EmbedImageCache,
     server_url: &'a str,
 ) -> iced::widget::Column<'a, AppMessage> {
-    let mut embeds = iced::widget::Column::new().spacing(4);
+    let mut embeds = iced::widget::Column::new()
+        .spacing(design::spacing::SM)
+        .width(Fill);
     let is_suppressing = actions.is_suppressing_embeds(message.id);
 
     for embed in &message.embeds {
@@ -1055,11 +1320,16 @@ fn message_embed_card<'a>(
         .filter(|title| !title.trim().is_empty())
         .unwrap_or(&embed.url);
     let mut body = column![
-        text(embed_site_label(embed)).size(12),
-        button(text(title)).on_press(AppMessage::OpenExternalUrlRequested(embed.url.clone())),
+        text(embed_site_label(embed))
+            .size(12)
+            .color(design::color::MAIN_TEXT_MUTED),
+        button(text(title))
+            .on_press(AppMessage::OpenExternalUrlRequested(embed.url.clone()))
+            .padding([2, 0])
+            .style(design::button_style::subtle_link),
     ]
-    .spacing(3)
-    .width(420);
+    .spacing(design::spacing::XS)
+    .width(Fill);
 
     if mode == EmbedRenderMode::ExternalOpenCard {
         body = body
@@ -1068,7 +1338,8 @@ fn message_embed_card<'a>(
             ))
             .push(
                 button("Open externally")
-                    .on_press(AppMessage::OpenExternalUrlRequested(embed.url.clone())),
+                    .on_press(AppMessage::OpenExternalUrlRequested(embed.url.clone()))
+                    .style(design::button_style::subtle_link),
             );
     }
 
@@ -1077,7 +1348,11 @@ fn message_embed_card<'a>(
         .as_deref()
         .filter(|description| !description.trim().is_empty())
     {
-        body = body.push(text(description));
+        body = body.push(
+            text(description)
+                .color(design::color::MAIN_TEXT)
+                .width(Fill),
+        );
     }
 
     if let Some(preview) = embed_preview_image(embed, embed_images, server_url) {
@@ -1087,7 +1362,8 @@ fn message_embed_card<'a>(
     if mode == EmbedRenderMode::NativeImagePreview {
         body = body.push(
             button("Open image source")
-                .on_press(AppMessage::OpenExternalUrlRequested(embed.url.clone())),
+                .on_press(AppMessage::OpenExternalUrlRequested(embed.url.clone()))
+                .style(design::button_style::subtle_link),
         );
     }
 
@@ -1097,12 +1373,18 @@ fn message_embed_card<'a>(
         let suppress_button = if is_suppressing {
             button("Suppressing embeds…")
         } else {
-            button("Suppress embeds").on_press(AppMessage::SuppressEmbedsPressed(message_id))
+            button("Suppress embeds")
+                .on_press(AppMessage::SuppressEmbedsPressed(message_id))
+                .style(design::button_style::subtle_link)
         };
         card = card.push(suppress_button);
     }
 
-    container(card).padding(8).width(440).into()
+    container(card)
+        .padding(design::spacing::MD)
+        .width(480)
+        .style(design::container_style::embed_card)
+        .into()
 }
 
 fn embed_preview_image<'a>(
@@ -1118,7 +1400,7 @@ fn embed_preview_image<'a>(
     if let Some(handle) = embed_images.handle_for(server_url, Some(image_url)) {
         return Some(
             image(handle.clone())
-                .width(420)
+                .width(456)
                 .height(240)
                 .content_fit(ContentFit::Contain)
                 .into(),
@@ -1131,7 +1413,7 @@ fn embed_preview_image<'a>(
         Some(EmbedImageStatus::Loaded { .. }) | None => "Image preview queued…",
     };
 
-    Some(text(label).into())
+    Some(text(label).color(design::color::MAIN_TEXT_MUTED).into())
 }
 
 fn message_author(message: &Message) -> &str {
@@ -1142,18 +1424,20 @@ fn message_author(message: &Message) -> &str {
         .unwrap_or(&message.username)
 }
 
-fn message_text<'a>(message: &Message, author: &str) -> Element<'a, AppMessage> {
+fn message_text<'a>(message: &'a Message) -> Element<'a, AppMessage> {
     let segments = parse_message_text(&message.text);
     let has_links = segments
         .iter()
         .any(|segment| matches!(segment, MessageTextSegment::Link { .. }));
 
     if !has_links {
-        return text(format!("{author}: {}", message.text)).into();
+        return text(&message.text)
+            .color(design::color::MAIN_TEXT)
+            .width(Fill)
+            .into();
     }
 
     let mut spans: Vec<iced::widget::text::Span<'static, String>> = Vec::new();
-    spans.push(span(format!("{author}: ")));
 
     for segment in segments {
         match segment {
@@ -1162,12 +1446,13 @@ fn message_text<'a>(message: &Message, author: &str) -> Element<'a, AppMessage> 
                 span(text)
                     .link(url)
                     .underline(true)
-                    .color(Color::from_rgb8(88, 166, 255)),
+                    .color(design::color::LINK),
             ),
         }
     }
 
     rich_text(spans)
+        .width(Fill)
         .on_link_click(AppMessage::OpenExternalUrlRequested)
         .into()
 }
@@ -1225,24 +1510,30 @@ fn avatar_busy_label(status: &AvatarUpdateStatus) -> &'static str {
 }
 
 fn login_button<'a>(status: &'a AuthStatus) -> iced::widget::Button<'a, AppMessage> {
-    if status.is_submitting() {
+    let button = if status.is_submitting() {
         button("Log in")
     } else {
         button("Log in").on_press(AppMessage::LoginPressed)
-    }
+    };
+
+    button.style(design::button_style::primary)
 }
 
 fn register_button<'a>(status: &'a AuthStatus) -> iced::widget::Button<'a, AppMessage> {
-    if status.is_submitting() {
+    let button = if status.is_submitting() {
         button("Register")
     } else {
         button("Register").on_press(AppMessage::RegisterPressed)
-    }
+    };
+
+    button.style(design::button_style::secondary)
 }
 
 fn save_server_url_button<'a>(status: &'a ServerUrlStatus) -> iced::widget::Button<'a, AppMessage> {
-    match status {
+    let button = match status {
         ServerUrlStatus::Saving => button("Saving server URL…"),
         _ => button("Save server URL").on_press(AppMessage::SaveServerUrlRequested),
-    }
+    };
+
+    button.style(design::button_style::secondary)
 }
