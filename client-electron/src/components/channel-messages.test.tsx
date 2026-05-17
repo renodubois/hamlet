@@ -57,6 +57,77 @@ function mount(messages: Message[], currentUserId: number | null) {
   ));
 }
 
+describe("<ChannelMessages> message text rendering", () => {
+  test("renders stored literal emoji shortcodes without converting them", () => {
+    const legacyShortcode = makeMessage({
+      id: 500,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "legacy :grinning: shortcode",
+      username: "them",
+    });
+
+    mount([legacyShortcode], SELF_ID);
+
+    expect(screen.getByText("legacy :grinning: shortcode")).toBeInTheDocument();
+    expect(screen.queryByText("legacy 😀 shortcode")).toBeNull();
+  });
+
+  test("preserves emoji glyphs while linkifying nearby URLs", () => {
+    const linkedEmoji = makeMessage({
+      id: 501,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "glyph 😀 and literal :grinning: before https://example.com after",
+      username: "them",
+    });
+
+    mount([linkedEmoji], SELF_ID);
+
+    const link = screen.getByRole("link", { name: "https://example.com" });
+    expect(link).toHaveAttribute("href", "https://example.com");
+    expect(assertExists(link.parentElement, "message text")).toHaveTextContent(
+      "glyph 😀 and literal :grinning: before https://example.com after",
+    );
+  });
+
+  test("renders embeds for emoji-containing messages", () => {
+    const embeddedEmoji = makeMessage({
+      id: 502,
+      user_id: SELF_ID,
+      channel_id: 1,
+      text: "emoji 😀 preview https://example.com",
+      username: "me",
+      embeds: [
+        {
+          id: 9500,
+          message_id: 502,
+          url: "https://example.com",
+          title: "Example domain",
+          description: "A description.",
+          image_url: null,
+          site_name: "Example",
+          embed_type: "link",
+          iframe_url: null,
+          iframe_width: null,
+          iframe_height: null,
+        },
+      ],
+    });
+
+    mount([embeddedEmoji], SELF_ID);
+
+    const messageLink = screen.getByRole("link", { name: "https://example.com" });
+    expect(assertExists(messageLink.parentElement, "message text")).toHaveTextContent(
+      "emoji 😀 preview https://example.com",
+    );
+    expect(screen.getByRole("link", { name: /example domain/i })).toHaveAttribute(
+      "href",
+      "https://example.com",
+    );
+  });
+});
+
 describe("<ChannelMessages> hover action toolbar", () => {
   test("renders Edit and Delete buttons on the user's own message", async () => {
     mount([ownMessage], SELF_ID);

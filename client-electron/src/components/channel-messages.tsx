@@ -10,6 +10,7 @@ import { linkifyText } from "../linkify";
 import Avatar from "./avatar";
 import { DeleteIcon, EditIcon } from "./icons";
 import MessageEmbed from "./message-embed";
+import MessageInput from "./message-input";
 import Modal from "./modal";
 
 interface ContextMenuState {
@@ -45,8 +46,8 @@ const ChannelMessages: Component<{
   });
 
   const startEditing = (msg: Message) => {
-    setEditingId(msg.id);
     setDraft(msg.text);
+    setEditingId(msg.id);
     closeMenu();
   };
 
@@ -161,18 +162,21 @@ const ChannelMessages: Component<{
                     void saveEdit(message);
                   }}
                 >
-                  <input
-                    aria-label="Edit message"
-                    class="bg-gray-100 rounded-md px-2 py-1"
+                  <MessageInput
                     value={draft()}
-                    onInput={(e) => setDraft(e.currentTarget.value)}
+                    onChange={setDraft}
+                    ariaLabel="Edit message"
+                    inputRef={(el) => queueMicrotask(() => el.focus())}
                     onKeyDown={(e) => {
                       if (e.key === "Escape") {
                         e.preventDefault();
                         cancelEditing();
                       }
                     }}
-                    ref={(el) => queueMicrotask(() => el.focus())}
+                    class="flex min-w-0 flex-1 items-center gap-2"
+                    inputClass="bg-gray-100 rounded-md px-2 py-1 w-full"
+                    emojiButtonClass="cursor-pointer rounded-md bg-gray-100 px-2 py-1 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    emojiButtonLabel="Open emoji picker for edit"
                   />
                   <button type="submit" class="text-sm text-blue-600">
                     Save

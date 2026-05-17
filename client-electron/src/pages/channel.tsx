@@ -2,8 +2,7 @@ import { useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, onCleanup, onMount } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import ChannelMessages from "../components/channel-messages";
-import EmojiPicker from "../components/emoji-picker";
-import { EmojiIcon } from "../components/icons";
+import MessageInput from "../components/message-input";
 import TypingIndicator from "../components/typing-indicator";
 import { listMessages, sendMessage, sendTyping, type Message } from "../api";
 import { useChannels } from "../contexts/channels";
@@ -18,14 +17,11 @@ export default function ChannelView() {
   const { user } = useAuth();
   const channel = () => channels()?.find((c) => String(c.id) === params.id);
   const [message, setMessage] = createSignal("");
-  const [emojiPickerOpen, setEmojiPickerOpen] = createSignal(false);
   // The Resource owns loading/error state for the initial fetch; the Store
   // owns the reactive list that SSE events mutate granularly. createStore
   // means an embed update on one row only re-renders that row.
   const [resource] = createResource(() => params.id, listMessages);
   const [messages, setMessages] = createStore<Message[]>([]);
-  let messageInputRef: HTMLInputElement | undefined;
-  let emojiButtonRef: HTMLButtonElement | undefined;
   let lastTypingSentAt = 0;
 
   // Reconcile the fetched array into the store on initial load and on every
@@ -54,18 +50,13 @@ export default function ChannelView() {
     );
   });
 
-  const handleInput = (value: string) => {
+  const handleMessageChange = (value: string) => {
     setMessage(value);
     if (value.length === 0) return;
     const now = Date.now();
     if (now - lastTypingSentAt < TYPING_PING_INTERVAL_MS) return;
     lastTypingSentAt = now;
     void sendTyping(params.id);
-  };
-
-  const handleEmojiSelect = (emoji: string) => {
-    handleInput(`${message()}${emoji}`);
-    queueMicrotask(() => messageInputRef?.focus());
   };
 
   onMount(() => {
@@ -127,44 +118,19 @@ export default function ChannelView() {
             e.preventDefault();
             void sendMessage(params.id, message());
             setMessage("");
-            setEmojiPickerOpen(false);
             lastTypingSentAt = 0;
           }}
         >
           <div class="flex items-center gap-2">
-            <input
-              ref={(el) => {
-                messageInputRef = el;
-              }}
-              class="bg-gray-100 rounded-md p-4 w-full"
-              autocorrect="off"
+            <MessageInput
               value={message()}
-              onInput={(e) => handleInput(e.currentTarget.value)}
+              onChange={handleMessageChange}
+              ariaLabel="New message"
               placeholder="Send a new message..."
             />
-            <button
-              ref={(el) => {
-                emojiButtonRef = el;
-              }}
-              type="button"
-              class="cursor-pointer rounded-md bg-gray-100 p-4 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400"
-              aria-label="Open emoji picker"
-              aria-haspopup="dialog"
-              aria-expanded={emojiPickerOpen()}
-              title="Emoji"
-              onClick={() => setEmojiPickerOpen((open) => !open)}
-            >
-              <EmojiIcon size={20} aria-hidden="true" />
-            </button>
             <button class="bg-blue-100 p-4 rounded-md" type="submit">
               Send
             </button>
-            <EmojiPicker
-              open={emojiPickerOpen()}
-              anchor={() => emojiButtonRef}
-              onSelect={handleEmojiSelect}
-              onClose={() => setEmojiPickerOpen(false)}
-            />
           </div>
         </form>
       </section>

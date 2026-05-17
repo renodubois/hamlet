@@ -70,6 +70,42 @@ function nextMessageId(prev: Message[]): number {
   return prev.reduce((max, m) => Math.max(max, m.id), 0) + 1;
 }
 
+function setInputSelection(input: HTMLInputElement, start: number, end = start) {
+  input.focus();
+  input.setSelectionRange(start, end);
+  fireEvent.select(input);
+}
+
+function seedOwnMessage(overrides: Partial<Message> = {}) {
+  const state = resetMswState();
+  state.me = DEV_USER;
+  state.messages["100"] = [
+    {
+      id: 7,
+      user_id: DEV_USER.id,
+      channel_id: 100,
+      text: "original",
+      username: DEV_USER.username,
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      embeds: [],
+      ...overrides,
+    },
+  ];
+  return state;
+}
+
+async function openMessageEdit(messageText: string) {
+  const original = await screen.findByText(messageText);
+  fireEvent.contextMenu(original);
+
+  const editItem = await screen.findByRole("menuitem", { name: /edit message/i });
+  fireEvent.click(editItem);
+
+  return (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+}
+
 describe("Channel view integration", () => {
   test("loads initial messages from the server", async () => {
     seedAuthed();
@@ -79,6 +115,29 @@ describe("Channel view integration", () => {
       expect(screen.getByText("hello")).toBeInTheDocument();
       expect(screen.getByText("world")).toBeInTheDocument();
     });
+  });
+
+  test("renders received literal emoji shortcode text without render-time conversion", async () => {
+    const state = seedAuthed();
+    state.messages["100"] = [
+      {
+        id: 10,
+        user_id: 2,
+        channel_id: 100,
+        text: "stored :grinning: shortcode",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+    ];
+    mountAt("/channel/100");
+
+    await waitFor(() => {
+      expect(screen.getByText("stored :grinning: shortcode")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("stored 😀 shortcode")).toBeNull();
   });
 
   test("appends a message delivered over SSE", async () => {
@@ -103,6 +162,34 @@ describe("Channel view integration", () => {
 
     await waitFor(() => {
       expect(screen.getByText("hot off the wire")).toBeInTheDocument();
+    });
+  });
+
+  test("renders emoji glyph messages delivered over SSE with linkification", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessage({
+      id: 101,
+      user_id: 3,
+      channel_id: 100,
+      text: "realtime 😀 link https://example.com",
+      username: "carol",
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      embeds: [],
+    });
+
+    await waitFor(() => {
+      const link = screen.getByRole("link", { name: "https://example.com" });
+      expect(assertExists(link.parentElement, "message text")).toHaveTextContent(
+        "realtime 😀 link https://example.com",
+      );
     });
   });
 
@@ -135,6 +222,7 @@ describe("Channel view integration", () => {
     mountAt("/channel/100");
 
     const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    expect(screen.getByLabelText(/new message/i)).toBe(input);
     fireEvent.input(input, { target: { value: "typed message" } });
     const form = assertExists(input.closest("form"), "form");
     fireEvent.submit(form);
@@ -145,33 +233,53 @@ describe("Channel view integration", () => {
         text: "typed message",
       });
     });
+    await waitFor(() => expect(input.value).toBe(""));
+  });
+
+  test("submitting closes an open emoji picker", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "typed message" } });
+    fireEvent.click(screen.getByRole("button", { name: /open emoji picker/i }));
+    await screen.findByRole("dialog", { name: /emoji picker/i });
+
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+
+    await waitFor(() => {
+      expect(mswState().sentMessages).toContainEqual({ channel: "100", text: "typed message" });
+      expect(input.value).toBe("");
+      expect(screen.queryByRole("dialog", { name: /emoji picker/i })).toBeNull();
+    });
+  });
+
+  test("converts a completed emoji shortcode in the composer and sends the glyph", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: ":grinning" } });
+    expect(input.value).toBe(":grinning");
+
+    fireEvent.input(input, { target: { value: ":grinning:" } });
+
+    await waitFor(() => {
+      expect(input.value).toBe("😀");
+      expect(input.selectionStart).toBe("😀".length);
+    });
+
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+    await waitFor(() => {
+      expect(mswState().sentMessages).toContainEqual({ channel: "100", text: "😀" });
+    });
   });
 
   test("right-clicking own message and submitting edit PUTs to /message/:id", async () => {
-    const state = resetMswState();
-    state.me = DEV_USER;
-    state.messages["100"] = [
-      {
-        id: 7,
-        user_id: DEV_USER.id,
-        channel_id: 100,
-        text: "original",
-        username: "baipas",
-        display_name: null,
-        avatar_url: null,
-        suppress_embeds: false,
-        embeds: [],
-      },
-    ];
+    seedOwnMessage({ username: "baipas" });
     mountAt("/channel/100");
 
-    const original = await screen.findByText("original");
-    fireEvent.contextMenu(original);
-
-    const editItem = await screen.findByRole("menuitem", { name: /edit message/i });
-    fireEvent.click(editItem);
-
-    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+    const input = await openMessageEdit("original");
     expect(input.value).toBe("original");
     fireEvent.input(input, { target: { value: "edited!" } });
     const form = assertExists(input.closest("form"), "form");
@@ -179,6 +287,73 @@ describe("Channel view integration", () => {
 
     await waitFor(() => {
       expect(mswState().editedMessages).toContainEqual({ id: 7, text: "edited!" });
+    });
+  });
+
+  test("converts a completed emoji shortcode while editing and PUTs the glyph", async () => {
+    seedOwnMessage({ id: 31, text: "plain text" });
+    mountAt("/channel/100");
+
+    const input = await openMessageEdit("plain text");
+    fireEvent.input(input, { target: { value: "looks :grinning:" } });
+
+    await waitFor(() => {
+      expect(input.value).toBe("looks 😀");
+      expect(input.selectionStart).toBe("looks 😀".length);
+    });
+
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+    await waitFor(() => {
+      expect(mswState().editedMessages).toContainEqual({ id: 31, text: "looks 😀" });
+    });
+  });
+
+  test("selecting an emoji inserts it at the edit caret and PUTs the glyph", async () => {
+    seedOwnMessage({ id: 32, text: "hello world" });
+    mountAt("/channel/100");
+
+    const input = await openMessageEdit("hello world");
+    const form = assertExists(input.closest("form"), "form");
+    setInputSelection(input, "hello ".length);
+    fireEvent.click(within(form).getByRole("button", { name: /open emoji picker/i }));
+
+    const dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
+    fireEvent.input(within(dialog).getByRole("combobox", { name: /search and select emoji/i }), {
+      target: { value: ":smile:" },
+    });
+    const smileCell = within(dialog).getByRole("gridcell", { name: /emoji :smile:/i });
+    fireEvent.click(within(smileCell).getByRole("button", { name: /emoji :smile:/i }));
+
+    await waitFor(() => {
+      expect(input.value).toBe("hello 😄world");
+      expect(document.activeElement).toBe(input);
+    });
+
+    fireEvent.submit(form);
+    await waitFor(() => {
+      expect(mswState().editedMessages).toContainEqual({ id: 32, text: "hello 😄world" });
+    });
+  });
+
+  test("selecting an emoji replaces selected edit text", async () => {
+    seedOwnMessage({ id: 33, text: "hello world" });
+    mountAt("/channel/100");
+
+    const input = await openMessageEdit("hello world");
+    const form = assertExists(input.closest("form"), "form");
+    setInputSelection(input, "hello ".length, "hello world".length);
+    fireEvent.click(within(form).getByRole("button", { name: /open emoji picker/i }));
+
+    const dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
+    fireEvent.input(within(dialog).getByRole("combobox", { name: /search and select emoji/i }), {
+      target: { value: "heart" },
+    });
+    const heartCell = within(dialog).getByRole("gridcell", { name: /emoji :heart:/i });
+    fireEvent.click(within(heartCell).getByRole("button", { name: /emoji :heart:/i }));
+
+    await waitFor(() => {
+      expect(input.value).toBe("hello ❤️");
+      expect(document.activeElement).toBe(input);
     });
   });
 
@@ -354,6 +529,35 @@ describe("Channel view integration", () => {
     });
   });
 
+  test("renders emoji glyphs and links from message_updated SSE events", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessageUpdated({
+      id: 1,
+      user_id: 1,
+      channel_id: 100,
+      text: "edited 😀 link https://example.com",
+      username: "alice",
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      embeds: [],
+    });
+
+    await waitFor(() => {
+      const link = screen.getByRole("link", { name: "https://example.com" });
+      expect(assertExists(link.parentElement, "message text")).toHaveTextContent(
+        "edited 😀 link https://example.com",
+      );
+      expect(screen.queryByText("hello")).toBeNull();
+    });
+  });
+
   test("shows a typing indicator when another user's user_typing event arrives", async () => {
     seedAuthed();
     mountAt("/channel/100");
@@ -416,12 +620,13 @@ describe("Channel view integration", () => {
     });
   });
 
-  test("selecting an emoji appends it to the draft, closes the picker, and sends it", async () => {
+  test("selecting an emoji inserts it at the composer caret, closes the picker, and sends it", async () => {
     seedAuthed();
     mountAt("/channel/100");
 
     const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "hello " } });
+    fireEvent.input(input, { target: { value: "hello world" } });
+    setInputSelection(input, "hello ".length);
     fireEvent.click(screen.getByRole("button", { name: /open emoji picker/i }));
 
     const dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
@@ -431,13 +636,35 @@ describe("Channel view integration", () => {
     const smileCell = within(dialog).getByRole("gridcell", { name: /emoji :smile:/i });
     fireEvent.click(within(smileCell).getByRole("button", { name: /emoji :smile:/i }));
 
-    await waitFor(() => expect(input.value).toBe("hello 😄"));
+    await waitFor(() => expect(input.value).toBe("hello 😄world"));
     expect(screen.queryByRole("dialog", { name: /emoji picker/i })).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(input));
 
     fireEvent.submit(assertExists(input.closest("form"), "form"));
     await waitFor(() => {
-      expect(mswState().sentMessages).toContainEqual({ channel: "100", text: "hello 😄" });
+      expect(mswState().sentMessages).toContainEqual({ channel: "100", text: "hello 😄world" });
+    });
+  });
+
+  test("selecting an emoji replaces selected composer text", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "hello world" } });
+    setInputSelection(input, "hello ".length, "hello world".length);
+    fireEvent.click(screen.getByRole("button", { name: /open emoji picker/i }));
+
+    const dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
+    fireEvent.input(within(dialog).getByRole("combobox", { name: /search and select emoji/i }), {
+      target: { value: "heart" },
+    });
+    const heartCell = within(dialog).getByRole("gridcell", { name: /emoji :heart:/i });
+    fireEvent.click(within(heartCell).getByRole("button", { name: /emoji :heart:/i }));
+
+    await waitFor(() => {
+      expect(input.value).toBe("hello ❤️");
+      expect(document.activeElement).toBe(input);
     });
   });
 
@@ -591,7 +818,7 @@ describe("Channel view integration", () => {
         id: 77,
         user_id: 1,
         channel_id: 100,
-        text: "see https://example.com",
+        text: "see 😀 https://example.com",
         username: "alice",
         display_name: null,
         avatar_url: null,
@@ -601,11 +828,12 @@ describe("Channel view integration", () => {
     ];
     mountAt("/channel/100");
 
-    // Message text now renders http(s) URLs as <a> tags, so "see " and the
-    // URL live in separate nodes — assert the link anchor is present.
-    await waitFor(() =>
-      expect(screen.getByRole("link", { name: "https://example.com" })).toBeInTheDocument(),
-    );
+    await waitFor(() => {
+      const link = screen.getByRole("link", { name: "https://example.com" });
+      expect(assertExists(link.parentElement, "message text")).toHaveTextContent(
+        "see 😀 https://example.com",
+      );
+    });
     await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
 
     const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
