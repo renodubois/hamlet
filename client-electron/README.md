@@ -1,12 +1,12 @@
 # Hamlet Electron Alpha
 
-Side-by-side Electron/Solid alpha client for Hamlet. It keeps the renderer on the
-fixed loopback origin `http://127.0.0.1:1422` so auth, cookies, SSE, and LiveKit
-behave like the existing browser/Tauri flow while the team evaluates Electron.
+Electron/Solid desktop client for Hamlet. It keeps the renderer on the fixed
+loopback origin `http://127.0.0.1:1422` so auth, cookies, SSE, and LiveKit behave
+like a normal browser-localhost app.
 
-The alpha is intentionally explicit: **Electron does not bundle, start, stop, or
-supervise the Rust Hamlet server**. Start the server yourself before development,
-manual QA, or most E2E runs.
+The desktop client is intentionally explicit: **Electron does not bundle, start,
+stop, or supervise the Rust Hamlet server**. Start the server yourself before
+development, manual QA, or most E2E runs.
 
 ## Prerequisites and server lifecycle
 
@@ -63,8 +63,8 @@ Run commands from `client-electron/` unless noted.
 From the repository root, repo-level checks can target this client with:
 
 ```bash
-scripts/check.sh client electron
-scripts/check.sh client electron --e2e
+scripts/check.sh client
+scripts/check.sh client --e2e
 ```
 
 ## Fixed origins, server URLs, and port behavior
@@ -152,11 +152,10 @@ The unpacked package deliberately uses a distinct side-by-side identity:
 - macOS application identifier: `com.renodubois.hamlet.electron.alpha`
 - Output directory: `release/Hamlet Electron Alpha-<platform>-<arch>/`
 
-Icons are adapted from the existing Hamlet/Tauri icon set under
-`packaging/icons/`. The package metadata includes macOS microphone and camera
-usage strings for Chromium media permission prompts; the runtime permission
-policy allows microphone/audio for trusted Hamlet voice paths and denies camera
-capture.
+Icons live under `packaging/icons/`. The package metadata includes macOS
+microphone and camera usage strings for Chromium media permission prompts; the
+runtime permission policy allows microphone/audio for trusted Hamlet voice paths
+and denies camera capture.
 
 Optional cross-target package environment variables:
 
@@ -175,11 +174,6 @@ Expected gaps:
   LiveKit stack themselves.
 - No signing, macOS notarization, installers, auto-update, release channels, or
   public distribution. Unsigned-app warnings are expected.
-- No migration from the Tauri client's WebView storage, cookies, sessions, or
-  localStorage. Electron alpha users may need to re-enter the server URL and log
-  in again.
-- The Solid renderer is copied into `client-electron/` for the alpha. Drift from
-  `client/` is possible until a future shared renderer package is justified.
 - Normal app APIs stay in the browser renderer. The preload boundary is
   deliberately empty and raw `ipcRenderer` is not exposed.
 - Packaged mode assumes one fixed renderer port and one normal packaged instance.
@@ -189,9 +183,6 @@ Expected gaps:
   and are not a new Electron guarantee.
 - Voice requires the server's LiveKit configuration to be available. Device and
   OS media-prompt behavior must still be checked manually on each platform.
-- Existing Tauri and native clients remain available. Electron does not replace
-  them until a later product decision covers app identity, storage/session
-  migration, distribution, and renderer duplication cleanup.
 
 Support/product notes:
 
@@ -238,7 +229,7 @@ for the target machine, then complete the platform smoke areas below.
   - After logout, confirm authenticated surfaces stop loading or return to login.
 - **SSE delivery and two-client behavior**
   - Run two isolated Electron profiles, or one Electron profile plus a browser
-    renderer/Tauri client, against the same server.
+    renderer session, against the same server.
   - Send messages from one client and confirm the other updates without reload.
   - Check channel creation/reorder, typing indicators, message edits/deletes, and
     voice participant/speaking updates where the server supports them.
@@ -308,7 +299,7 @@ for the target machine, then complete the platform smoke areas below.
 
 ## Architecture and boundary notes
 
-- `src/` is the copied Solid renderer. It owns auth, channels, messages, avatars,
+- `src/` is the Solid renderer. It owns auth, channels, messages, avatars,
   embeds, typing, SSE, localStorage preferences, and LiveKit/WebRTC calls.
 - `electron/preload.ts` is intentionally empty. Do not expose raw IPC or broad
   system APIs to the renderer.
@@ -326,11 +317,5 @@ for the target machine, then complete the platform smoke areas below.
 
 Future follow-ups, outside this alpha slice:
 
-- Decide whether Electron replaces Tauri, remains an alternate client, or is
-  abandoned after dogfooding evidence.
-- If Electron becomes canonical, plan app identity, storage/session migration,
-  Tauri removal, and user-facing release/distribution separately.
-- Extract a shared renderer package only if duplicate maintenance between
-  `client/` and `client-electron/` becomes worth the added coordination.
 - Define signing/notarization/installers/auto-update and package-size budgets
   when the project moves beyond local unpacked dogfooding.

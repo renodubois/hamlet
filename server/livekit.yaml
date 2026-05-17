@@ -6,7 +6,7 @@ rtc:
   port_range_start: 50000
   port_range_end: 50100
   use_external_ip: false
-  # Advertise loopback as the ICE candidate so the Tauri client on the host
+  # Advertise loopback as the ICE candidate so the Electron client on the host
   # machine can reach LiveKit via the published UDP ports. Without this,
   # LiveKit falls back to the container's internal Docker IP, which isn't
   # routable from outside the Compose network.

@@ -27,7 +27,7 @@ Notes:
 
 - `it create` writes `issues/<id>-<slug>.md` and owns the frontmatter (`id`, `name`, `status`, `tags`, `blocked_by`). Do not duplicate that frontmatter in the body.
 - Omit `--blocked-by` when there are no blockers.
-- Tags are comma-separated. Every issue in a generated set must include the same `project-<slug>` tag. Also include short kebab-case area tags such as `server`, `client`, or `client-iced`, and slice type tags (`afk` or `hitl`). Follow existing tag conventions when they are clear.
+- Tags are comma-separated. Every issue in a generated set must include the same `project-<slug>` tag. Also include short kebab-case area tags such as `server` or `client-electron`, and slice type tags (`afk` or `hitl`). Follow existing tag conventions when they are clear.
 - For multiline bodies, build a shell variable or temporary file, then pass it to `--body`; do not try to manually create the issue file.
 - If `it` is unavailable or errors in a way you cannot resolve, stop and ask the user how to proceed instead of falling back to manual issue files.
 
