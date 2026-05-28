@@ -26,6 +26,7 @@
     "test:watch": "vitest",
     "test:e2e": "npm run test:e2e:renderer && npm run test:e2e:electron",
     "test:e2e:renderer": "playwright test -c playwright.config.ts",
+    "test:e2e:voice:browser": "node scripts/test-browser-voice.mjs",
     "test:e2e:electron": "npm run build && playwright test -c playwright.electron.config.ts",
     "size": "npm run build && size-limit"
   },

@@ -65,7 +65,7 @@ cd server
 docker compose -f docker-compose.yml up --build
 ```
 
-LiveKit listens on `ws://localhost:7880` with dev credentials `devkey` / `devsecretdevsecretdevsecretdevsecret` (see `livekit.yaml`). The server container reaches it at `ws://livekit:7880` via the Compose network. UDP media ports `50000-50100` are published for WebRTC; widen the range in both `livekit.yaml` and `docker-compose.yml` if you hit port exhaustion.
+LiveKit listens on `ws://127.0.0.1:7880` with dev credentials `devkey` / `devsecretdevsecretdevsecretdevsecret` (see `livekit.yaml`). In Compose, the LiveKit container uses host networking so it can auto-advertise a non-loopback ICE address that browsers such as Firefox can use for local WebRTC. UDP media ports `50000-50100` are controlled by `livekit.yaml`; widen that range if you hit port exhaustion.
 
 The server binds to whatever `HAMLET_BIND_ADDR` is set to (default `127.0.0.1:3030` for `cargo run`; Compose sets it to `0.0.0.0:3030` so the port is reachable from the host).
 
