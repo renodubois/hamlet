@@ -86,7 +86,7 @@ export default function Modal(props: {
     });
   });
 
-  const sizeClass = () => (props.size === "lg" ? "w-[640px] max-w-[90vw]" : "w-96");
+  const sizeClass = () => (props.size === "lg" ? "w-4xl" : "w-96");
 
   return (
     <Show when={props.open}>
