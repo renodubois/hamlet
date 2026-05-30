@@ -163,7 +163,9 @@ pub fn session_cookie(token: String) -> Cookie<'static> {
     Cookie::build(SESSION_COOKIE, token)
         .http_only(true)
         .path("/")
-        .same_site(actix_web::cookie::SameSite::Lax)
+        // TODO(reno): setting this to `None` for web support
+        // .same_site(actix_web::cookie::SameSite::Lax)
+        .same_site(actix_web::cookie::SameSite::None)
         .finish()
 }
 
