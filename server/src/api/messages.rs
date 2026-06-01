@@ -5,28 +5,56 @@ use std::collections::HashMap;
 
 use actix_web::{HttpResponse, Responder, delete, get, post, put, web};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set,
+    ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, EntityTrait, QueryFilter,
+    QueryOrder, QuerySelect, Set,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::api::avatars::avatar_url;
+use crate::api::channels::{CHANNEL_TYPE_TEXT, ChannelResponse};
 use crate::auth::AuthUser;
 use crate::broadcast::{
-    BroadcastEvent, Broadcaster, MessageDeletedEvent, MessageEmbedsUpdatedEvent, UserTypingEvent,
+    BroadcastEvent, Broadcaster, MessageDeletedEvent, MessageEmbedsUpdatedEvent,
+    ThreadReplyCreatedEvent, ThreadReplyDeletedEvent, UserTypingEvent,
 };
 use crate::embeds;
 use crate::entity;
 use crate::error::AppError;
-use crate::util::generate_id;
+use crate::util::{generate_id, now_unix_micros};
 
 /// Cap on how many URLs per message we actually fetch. If a message is a wall
 /// of 200 links we still broadcast it instantly — we just don't try to turn
 /// them all into embed cards.
 const MAX_EMBEDS_PER_MESSAGE: usize = 5;
+const DEFAULT_THREAD_REPLY_LIMIT: u64 = 50;
+const MAX_THREAD_REPLY_LIMIT: u64 = 100;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SendMessageRequest {
     pub text: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ThreadResponse {
+    pub root: MessageResponse,
+    pub replies: Vec<MessageResponse>,
+    pub has_more_replies: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ParticipatedThreadPreview {
+    pub channel: ChannelResponse,
+    pub root: MessageResponse,
+    pub reply_count: u64,
+    pub last_reply_created_at: i64,
+    pub recent_replies: Vec<MessageResponse>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ThreadPageQuery {
+    pub limit: Option<u64>,
+    pub before_created_at: Option<i64>,
+    pub before_id: Option<i64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -39,12 +67,24 @@ pub struct MessageResponse {
     pub id: i64,
     pub user_id: i64,
     pub channel_id: i64,
+    pub parent_id: Option<i64>,
+    pub created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<i64>,
     pub text: String,
     pub username: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
     pub suppress_embeds: bool,
     pub embeds: Vec<EmbedResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_summary: Option<ThreadSummary>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ThreadSummary {
+    pub reply_count: u64,
+    pub last_reply_created_at: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -106,12 +146,16 @@ async fn get_messages(
 
     let rows = entity::message::Entity::find()
         .filter(entity::message::Column::ChannelId.eq(channel_id))
+        .filter(entity::message::Column::ParentId.is_null())
+        .order_by_asc(entity::message::Column::CreatedAt)
+        .order_by_asc(entity::message::Column::Id)
         .find_also_related(entity::user::Entity)
         .all(db.get_ref())
         .await?;
 
     let message_ids: Vec<i64> = rows.iter().map(|(m, _)| m.id).collect();
     let embeds_by_message = load_embeds_for_messages(db.get_ref(), &message_ids).await?;
+    let summaries_by_message = load_thread_summaries_for_roots(db.get_ref(), &message_ids).await?;
 
     let messages: Vec<MessageResponse> = rows
         .into_iter()
@@ -129,12 +173,16 @@ async fn get_messages(
                 id: m.id,
                 user_id: m.user_id,
                 channel_id: m.channel_id,
+                parent_id: m.parent_id,
+                created_at: m.created_at,
+                deleted_at: m.deleted_at,
                 text: m.text,
                 username,
                 display_name,
                 avatar_url,
                 suppress_embeds: m.suppress_embeds,
                 embeds,
+                thread_summary: summaries_by_message.get(&m.id).cloned(),
             }
         })
         .collect();
@@ -164,6 +212,37 @@ async fn load_embeds_for_messages(
     Ok(out)
 }
 
+/// Compute compact thread summaries for root messages that currently have at
+/// least one persisted reply.
+async fn load_thread_summaries_for_roots(
+    db: &DatabaseConnection,
+    root_ids: &[i64],
+) -> Result<HashMap<i64, ThreadSummary>, AppError> {
+    if root_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let replies = entity::message::Entity::find()
+        .filter(entity::message::Column::ParentId.is_in(root_ids.iter().copied()))
+        .all(db)
+        .await?;
+
+    let mut summaries: HashMap<i64, ThreadSummary> = HashMap::new();
+    for reply in replies {
+        let Some(root_id) = reply.parent_id else {
+            continue;
+        };
+        let summary = summaries.entry(root_id).or_insert(ThreadSummary {
+            reply_count: 0,
+            last_reply_created_at: reply.created_at,
+        });
+        summary.reply_count += 1;
+        summary.last_reply_created_at = summary.last_reply_created_at.max(reply.created_at);
+    }
+
+    Ok(summaries)
+}
+
 #[post("/message/{channel_id}")]
 async fn create_message(
     db: web::Data<DatabaseConnection>,
@@ -186,6 +265,9 @@ async fn create_message(
         id: Set(generate_id()),
         user_id: Set(user.id),
         channel_id: Set(channel_id),
+        parent_id: Set(None),
+        created_at: Set(now_unix_micros()),
+        deleted_at: Set(None),
         text: Set(body.text.clone()),
         suppress_embeds: Set(false),
     };
@@ -195,12 +277,16 @@ async fn create_message(
         id: inserted.id,
         user_id: inserted.user_id,
         channel_id: inserted.channel_id,
+        parent_id: inserted.parent_id,
+        created_at: inserted.created_at,
+        deleted_at: inserted.deleted_at,
         text: inserted.text.clone(),
         username: user.username.clone(),
         display_name: user.display_name.clone(),
         avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
         suppress_embeds: inserted.suppress_embeds,
         embeds: Vec::new(),
+        thread_summary: None,
     };
     broadcaster
         .publish(&BroadcastEvent::Message(resp.clone()))
@@ -217,6 +303,325 @@ async fn create_message(
     );
 
     Ok(web::Json(resp))
+}
+
+#[get("/threads/participated")]
+async fn get_participated_threads(
+    db: web::Data<DatabaseConnection>,
+    user: AuthUser,
+) -> Result<impl Responder, AppError> {
+    let reply_rows = entity::message::Entity::find()
+        .filter(entity::message::Column::ParentId.is_not_null())
+        .filter(entity::message::Column::DeletedAt.is_null())
+        .order_by_asc(entity::message::Column::ParentId)
+        .order_by_asc(entity::message::Column::CreatedAt)
+        .order_by_asc(entity::message::Column::Id)
+        .find_also_related(entity::user::Entity)
+        .all(db.get_ref())
+        .await?;
+
+    let mut replies_by_root: HashMap<
+        i64,
+        Vec<(entity::message::Model, Option<entity::user::Model>)>,
+    > = HashMap::new();
+    for (reply, reply_user) in reply_rows {
+        if let Some(root_id) = reply.parent_id {
+            replies_by_root
+                .entry(root_id)
+                .or_default()
+                .push((reply, reply_user));
+        }
+    }
+
+    if replies_by_root.is_empty() {
+        return Ok(web::Json(Vec::<ParticipatedThreadPreview>::new()));
+    }
+
+    let root_ids: Vec<i64> = replies_by_root.keys().copied().collect();
+    let root_rows = entity::message::Entity::find()
+        .filter(entity::message::Column::Id.is_in(root_ids))
+        .filter(entity::message::Column::ParentId.is_null())
+        .find_also_related(entity::user::Entity)
+        .all(db.get_ref())
+        .await?;
+
+    let channel_ids: Vec<i64> = root_rows.iter().map(|(root, _)| root.channel_id).collect();
+    let channels = entity::channel::Entity::find()
+        .filter(entity::channel::Column::Id.is_in(channel_ids))
+        .all(db.get_ref())
+        .await?;
+    let channels_by_id: HashMap<i64, entity::channel::Model> = channels
+        .into_iter()
+        .map(|channel| (channel.id, channel))
+        .collect();
+
+    let mut preview_message_ids = Vec::new();
+    for (root, _) in &root_rows {
+        preview_message_ids.push(root.id);
+        if let Some(replies) = replies_by_root.get(&root.id) {
+            let start = replies.len().saturating_sub(3);
+            preview_message_ids.extend(replies[start..].iter().map(|(reply, _)| reply.id));
+        }
+    }
+    let embeds_by_message = load_embeds_for_messages(db.get_ref(), &preview_message_ids).await?;
+
+    let mut previews_with_sort_key = Vec::new();
+    for (root, root_user) in root_rows {
+        let Some(channel) = channels_by_id.get(&root.channel_id) else {
+            continue;
+        };
+        if channel.channel_type != CHANNEL_TYPE_TEXT {
+            continue;
+        }
+
+        let Some(replies) = replies_by_root.get(&root.id) else {
+            continue;
+        };
+        if replies.is_empty() {
+            continue;
+        }
+
+        let participated =
+            root.user_id == user.id || replies.iter().any(|(reply, _)| reply.user_id == user.id);
+        if !participated {
+            continue;
+        }
+
+        let Some((last_reply, _)) = replies.last() else {
+            continue;
+        };
+        let recent_start = replies.len().saturating_sub(3);
+        let recent_replies = replies[recent_start..]
+            .iter()
+            .map(|(reply, reply_user)| {
+                let embeds = embeds_by_message
+                    .get(&reply.id)
+                    .cloned()
+                    .unwrap_or_default();
+                message_response_from_model(reply.clone(), reply_user.clone(), embeds)
+            })
+            .collect();
+        let root_embeds = embeds_by_message.get(&root.id).cloned().unwrap_or_default();
+        let preview = ParticipatedThreadPreview {
+            channel: ChannelResponse::from(channel.clone()),
+            root: message_response_from_model(root, root_user, root_embeds),
+            reply_count: replies.len() as u64,
+            last_reply_created_at: last_reply.created_at,
+            recent_replies,
+        };
+        previews_with_sort_key.push((preview, last_reply.id));
+    }
+
+    previews_with_sort_key.sort_by(|(left, left_last_id), (right, right_last_id)| {
+        right
+            .last_reply_created_at
+            .cmp(&left.last_reply_created_at)
+            .then_with(|| right_last_id.cmp(left_last_id))
+            .then_with(|| right.root.id.cmp(&left.root.id))
+    });
+
+    let previews: Vec<ParticipatedThreadPreview> = previews_with_sort_key
+        .into_iter()
+        .map(|(preview, _)| preview)
+        .collect();
+    Ok(web::Json(previews))
+}
+
+#[get("/thread/{root_message_id}")]
+async fn get_thread(
+    db: web::Data<DatabaseConnection>,
+    path: web::Path<i64>,
+    query: web::Query<ThreadPageQuery>,
+) -> Result<impl Responder, AppError> {
+    let root_message_id = path.into_inner();
+    let root = validated_thread_root(db.get_ref(), root_message_id).await?;
+    let reply_limit = query
+        .limit
+        .unwrap_or(DEFAULT_THREAD_REPLY_LIMIT)
+        .clamp(1, MAX_THREAD_REPLY_LIMIT);
+
+    let before_cursor = match (query.before_created_at, query.before_id) {
+        (Some(created_at), Some(id)) => Some((created_at, id)),
+        (None, None) => None,
+        _ => return Err(AppError::InvalidRequest),
+    };
+
+    let mut reply_query = entity::message::Entity::find()
+        .filter(entity::message::Column::ParentId.eq(root_message_id))
+        .find_also_related(entity::user::Entity);
+
+    if let Some((before_created_at, before_id)) = before_cursor {
+        reply_query = reply_query.filter(
+            Condition::any()
+                .add(entity::message::Column::CreatedAt.lt(before_created_at))
+                .add(
+                    Condition::all()
+                        .add(entity::message::Column::CreatedAt.eq(before_created_at))
+                        .add(entity::message::Column::Id.lt(before_id)),
+                ),
+        );
+    }
+
+    let mut rows = reply_query
+        .order_by_desc(entity::message::Column::CreatedAt)
+        .order_by_desc(entity::message::Column::Id)
+        .limit(reply_limit + 1)
+        .all(db.get_ref())
+        .await?;
+    let has_more_replies = rows.len() > reply_limit as usize;
+    rows.truncate(reply_limit as usize);
+    rows.reverse();
+
+    let mut message_ids: Vec<i64> = rows.iter().map(|(m, _)| m.id).collect();
+    message_ids.push(root.id);
+    let embeds_by_message = load_embeds_for_messages(db.get_ref(), &message_ids).await?;
+
+    let root_user = entity::user::Entity::find_by_id(root.user_id)
+        .one(db.get_ref())
+        .await?;
+    let root_response = message_response_from_model(
+        root,
+        root_user,
+        embeds_by_message
+            .get(&root_message_id)
+            .cloned()
+            .unwrap_or_default(),
+    );
+    let replies = rows
+        .into_iter()
+        .map(|(m, u)| {
+            let embeds = embeds_by_message.get(&m.id).cloned().unwrap_or_default();
+            message_response_from_model(m, u, embeds)
+        })
+        .collect();
+
+    Ok(web::Json(ThreadResponse {
+        root: root_response,
+        replies,
+        has_more_replies,
+    }))
+}
+
+#[post("/thread/{root_message_id}/reply")]
+async fn create_thread_reply(
+    db: web::Data<DatabaseConnection>,
+    embed_fetcher: web::Data<EmbedFetcher>,
+    broadcaster: web::Data<Broadcaster>,
+    path: web::Path<i64>,
+    body: web::Json<SendMessageRequest>,
+    user: AuthUser,
+) -> Result<impl Responder, AppError> {
+    let root_message_id = path.into_inner();
+    let root = validated_thread_root(db.get_ref(), root_message_id).await?;
+
+    let new_message = entity::message::ActiveModel {
+        id: Set(generate_id()),
+        user_id: Set(user.id),
+        channel_id: Set(root.channel_id),
+        parent_id: Set(Some(root_message_id)),
+        created_at: Set(now_unix_micros()),
+        deleted_at: Set(None),
+        text: Set(body.text.clone()),
+        suppress_embeds: Set(false),
+    };
+    let inserted = new_message.insert(db.get_ref()).await?;
+
+    let resp = MessageResponse {
+        id: inserted.id,
+        user_id: inserted.user_id,
+        channel_id: inserted.channel_id,
+        parent_id: inserted.parent_id,
+        created_at: inserted.created_at,
+        deleted_at: inserted.deleted_at,
+        text: inserted.text.clone(),
+        username: user.username.clone(),
+        display_name: user.display_name.clone(),
+        avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
+        suppress_embeds: inserted.suppress_embeds,
+        embeds: Vec::new(),
+        thread_summary: None,
+    };
+    let thread_summary = load_thread_summaries_for_roots(db.get_ref(), &[root_message_id])
+        .await?
+        .remove(&root_message_id)
+        .unwrap_or(ThreadSummary {
+            reply_count: 1,
+            last_reply_created_at: inserted.created_at,
+        });
+    broadcaster
+        .publish(&BroadcastEvent::ThreadReplyCreated(
+            ThreadReplyCreatedEvent {
+                channel_id: root.channel_id,
+                root_message_id,
+                reply: resp.clone(),
+                thread_summary,
+            },
+        ))
+        .await?;
+
+    spawn_embed_refresh(
+        embed_fetcher.clone(),
+        db.clone(),
+        broadcaster.clone(),
+        inserted.id,
+        inserted.channel_id,
+        inserted.text,
+    );
+
+    Ok(web::Json(resp))
+}
+
+async fn validated_thread_root(
+    db: &DatabaseConnection,
+    root_message_id: i64,
+) -> Result<entity::message::Model, AppError> {
+    let root = entity::message::Entity::find_by_id(root_message_id)
+        .one(db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    if root.parent_id.is_some() {
+        return Err(AppError::InvalidRequest);
+    }
+
+    let channel = entity::channel::Entity::find_by_id(root.channel_id)
+        .one(db)
+        .await?
+        .ok_or(AppError::NoChannelFound)?;
+    if channel.channel_type != CHANNEL_TYPE_TEXT {
+        return Err(AppError::InvalidRequest);
+    }
+
+    Ok(root)
+}
+
+fn message_response_from_model(
+    message: entity::message::Model,
+    user: Option<entity::user::Model>,
+    embeds: Vec<EmbedResponse>,
+) -> MessageResponse {
+    let (username, display_name, avatar_url) = match user {
+        Some(u) => (
+            u.username,
+            u.display_name,
+            avatar_url(u.avatar_path.as_deref(), u.avatar_updated_at),
+        ),
+        None => ("[deleted]".into(), None, None),
+    };
+    MessageResponse {
+        id: message.id,
+        user_id: message.user_id,
+        channel_id: message.channel_id,
+        parent_id: message.parent_id,
+        created_at: message.created_at,
+        deleted_at: message.deleted_at,
+        text: message.text,
+        username,
+        display_name,
+        avatar_url,
+        suppress_embeds: message.suppress_embeds,
+        embeds,
+        thread_summary: None,
+    }
 }
 
 #[put("/message/{message_id}")]
@@ -238,6 +643,9 @@ async fn update_message(
     if existing.user_id != user.id {
         return Err(AppError::Forbidden);
     }
+    if existing.deleted_at.is_some() {
+        return Err(AppError::NotFound);
+    }
 
     let channel_id = existing.channel_id;
     let previous_text = existing.text.clone();
@@ -249,17 +657,28 @@ async fn update_message(
         .await?
         .remove(&updated.id)
         .unwrap_or_default();
+    let thread_summary = if updated.parent_id.is_none() {
+        load_thread_summaries_for_roots(db.get_ref(), &[updated.id])
+            .await?
+            .remove(&updated.id)
+    } else {
+        None
+    };
 
     let resp = MessageResponse {
         id: updated.id,
         user_id: updated.user_id,
         channel_id,
+        parent_id: updated.parent_id,
+        created_at: updated.created_at,
+        deleted_at: updated.deleted_at,
         text: updated.text.clone(),
         username: user.username.clone(),
         display_name: user.display_name.clone(),
         avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
         suppress_embeds: updated.suppress_embeds,
         embeds: existing_embeds,
+        thread_summary,
     };
     broadcaster
         .publish(&BroadcastEvent::MessageUpdated(resp.clone()))
@@ -299,6 +718,9 @@ async fn suppress_message_embeds(
     // of the message mutation endpoints.
     if existing.user_id != user.id {
         return Err(AppError::Forbidden);
+    }
+    if existing.deleted_at.is_some() {
+        return Err(AppError::NotFound);
     }
 
     let channel_id = existing.channel_id;
@@ -347,17 +769,76 @@ async fn delete_message(
     if existing.user_id != user.id {
         return Err(AppError::Forbidden);
     }
+    if existing.deleted_at.is_some() {
+        return Err(AppError::NotFound);
+    }
 
     let channel_id = existing.channel_id;
-    let active: entity::message::ActiveModel = existing.into();
-    active.delete(db.get_ref()).await?;
+    let parent_id = existing.parent_id;
+    let root_summary = if parent_id.is_none() {
+        load_thread_summaries_for_roots(db.get_ref(), &[message_id])
+            .await?
+            .remove(&message_id)
+    } else {
+        None
+    };
 
-    broadcaster
-        .publish(&BroadcastEvent::MessageDeleted(MessageDeletedEvent {
-            id: message_id,
-            channel_id,
-        }))
+    entity::embed::Entity::delete_many()
+        .filter(entity::embed::Column::MessageId.eq(message_id))
+        .exec(db.get_ref())
         .await?;
+
+    if parent_id.is_none() && root_summary.is_some() {
+        let mut active: entity::message::ActiveModel = existing.into();
+        active.text = Set(String::new());
+        active.deleted_at = Set(Some(now_unix_micros()));
+        active.suppress_embeds = Set(true);
+        let updated = active.update(db.get_ref()).await?;
+
+        broadcaster
+            .publish(&BroadcastEvent::MessageUpdated(MessageResponse {
+                id: updated.id,
+                user_id: updated.user_id,
+                channel_id,
+                parent_id: updated.parent_id,
+                created_at: updated.created_at,
+                deleted_at: updated.deleted_at,
+                text: updated.text,
+                username: user.username.clone(),
+                display_name: user.display_name.clone(),
+                avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
+                suppress_embeds: updated.suppress_embeds,
+                embeds: Vec::new(),
+                thread_summary: root_summary,
+            }))
+            .await?;
+    } else {
+        let active: entity::message::ActiveModel = existing.into();
+        active.delete(db.get_ref()).await?;
+
+        if let Some(root_message_id) = parent_id {
+            let thread_summary = load_thread_summaries_for_roots(db.get_ref(), &[root_message_id])
+                .await?
+                .remove(&root_message_id);
+            broadcaster
+                .publish(&BroadcastEvent::ThreadReplyDeleted(
+                    ThreadReplyDeletedEvent {
+                        channel_id,
+                        root_message_id,
+                        reply_id: message_id,
+                        thread_summary,
+                    },
+                ))
+                .await?;
+        } else {
+            broadcaster
+                .publish(&BroadcastEvent::MessageDeleted(MessageDeletedEvent {
+                    id: message_id,
+                    channel_id,
+                }))
+                .await?;
+        }
+    }
 
     Ok(HttpResponse::NoContent().finish())
 }
@@ -448,6 +929,9 @@ async fn apply_fetched_embeds(
     else {
         return Ok(());
     };
+    if msg.deleted_at.is_some() {
+        return Ok(());
+    }
 
     let mut inserted: Vec<EmbedResponse> = Vec::new();
     for f in fetched {
@@ -487,6 +971,9 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(subscribe)
         .service(get_messages)
         .service(create_message)
+        .service(get_participated_threads)
+        .service(get_thread)
+        .service(create_thread_reply)
         .service(update_message)
         .service(delete_message)
         .service(suppress_message_embeds)
@@ -595,6 +1082,128 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn test_thread_reply_create_broadcasts_to_clients() {
+        let (db, chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+
+        let root_id = generate_id();
+        entity::message::ActiveModel {
+            id: Set(root_id),
+            user_id: Set(user.id),
+            channel_id: Set(chan_id),
+            parent_id: Set(None),
+            created_at: Set(now_unix_micros()),
+            deleted_at: Set(None),
+            text: Set("root".into()),
+            suppress_embeds: Set(false),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let app_deps = deps(db, broadcaster);
+        let app =
+            test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
+                .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::post()
+            .uri(&format!("/thread/{root_id}/reply"))
+            .insert_header(ContentType::json())
+            .insert_header((name, value))
+            .set_payload(
+                serde_json::to_string(&SendMessageRequest {
+                    text: "reply over sse".into(),
+                })
+                .unwrap(),
+            )
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out — broadcast was never sent")
+            .expect("channel closed");
+
+        let event_str = format!("{:?}", event);
+        assert!(event_str.contains("kind\\\":\\\"thread_reply_created\\\""));
+        assert!(event_str.contains("reply over sse"));
+        assert!(event_str.contains(&format!("\\\"channel_id\\\":{}", chan_id)));
+        assert!(event_str.contains(&format!("\\\"root_message_id\\\":{}", root_id)));
+        assert!(event_str.contains(&format!("\\\"parent_id\\\":{}", root_id)));
+        assert!(event_str.contains("\\\"reply_count\\\":1"));
+    }
+
+    #[actix_web::test]
+    async fn test_thread_reply_delete_broadcasts_summary_recalculation() {
+        let (db, chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+
+        let root_id = generate_id();
+        entity::message::ActiveModel {
+            id: Set(root_id),
+            user_id: Set(user.id),
+            channel_id: Set(chan_id),
+            parent_id: Set(None),
+            created_at: Set(now_unix_micros()),
+            deleted_at: Set(None),
+            text: Set("root".into()),
+            suppress_embeds: Set(false),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+        let reply_id = generate_id();
+        entity::message::ActiveModel {
+            id: Set(reply_id),
+            user_id: Set(user.id),
+            channel_id: Set(chan_id),
+            parent_id: Set(Some(root_id)),
+            created_at: Set(now_unix_micros()),
+            deleted_at: Set(None),
+            text: Set("reply".into()),
+            suppress_embeds: Set(false),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let app_deps = deps(db, broadcaster);
+        let app =
+            test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
+                .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::delete()
+            .uri(&format!("/message/{reply_id}"))
+            .insert_header((name, value))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out — broadcast was never sent")
+            .expect("channel closed");
+
+        let event_str = format!("{:?}", event);
+        assert!(event_str.contains("kind\\\":\\\"thread_reply_deleted\\\""));
+        assert!(event_str.contains(&format!("\\\"root_message_id\\\":{}", root_id)));
+        assert!(event_str.contains(&format!("\\\"reply_id\\\":{}", reply_id)));
+    }
+
+    #[actix_web::test]
     async fn test_post_typing_broadcasts_to_clients() {
         let (db, chan_id) = setup_db().await;
         let user = auth::register_user(&db, "alice", "hunter2", None)
@@ -664,6 +1273,9 @@ mod tests {
             id: Set(msg_id),
             user_id: Set(user.id),
             channel_id: Set(chan_id),
+            parent_id: Set(None),
+            created_at: Set(now_unix_micros()),
+            deleted_at: Set(None),
             text: Set("bye".into()),
             suppress_embeds: Set(false),
         }

@@ -19,11 +19,26 @@ export {
   deleteCustomEmoji,
   restoreCustomEmoji,
 } from "./emojis";
-export type { Embed, EmbedType, Message, MessageDeleted, MessageEmbedsUpdated } from "./messages";
+export type {
+  Embed,
+  EmbedType,
+  Message,
+  MessageDeleted,
+  MessageEmbedsUpdated,
+  Thread,
+  ParticipatedThreadPreview,
+  ThreadPageOptions,
+  ThreadReplyCreated,
+  ThreadReplyDeleted,
+  ThreadSummary,
+} from "./messages";
 export {
   messageDisplayName,
   listMessages,
   sendMessage,
+  listParticipatedThreads,
+  getThread,
+  sendThreadReply,
   editMessage,
   deleteMessage,
   setMessageEmbedsSuppressed,

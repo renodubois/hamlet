@@ -10,6 +10,7 @@ export function makeMessage(
   return {
     display_name: null,
     avatar_url: null,
+    parent_id: null,
     suppress_embeds: false,
     embeds: [],
     ...partial,

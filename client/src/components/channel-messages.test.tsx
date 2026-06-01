@@ -59,13 +59,18 @@ const otherMessage: Message = makeMessage({
   avatar_url: null,
 });
 
-function mount(messages: Message[], currentUserId: number | null) {
+function mount(
+  messages: Message[],
+  currentUserId: number | null,
+  onOpenThread?: (message: Message, options?: { focusComposer?: boolean }) => void,
+) {
   return render(() => (
     <ChannelMessages
       messages={messages}
       loading={false}
       error={null}
       currentUserId={currentUserId}
+      onOpenThread={onOpenThread}
     />
   ));
 }
@@ -266,6 +271,64 @@ describe("<ChannelMessages> hover action toolbar", () => {
   test("does not render the toolbar when currentUserId is null", async () => {
     mount([ownMessage], null);
     expect(screen.queryByRole("toolbar", { name: /message actions/i })).toBeNull();
+  });
+
+  test("renders an accessible reply-in-thread action when provided", async () => {
+    const onOpenThread = vi.fn();
+    mount([otherMessage], SELF_ID, onOpenThread);
+    fireEvent.click(screen.getByRole("button", { name: /reply in thread to message by them/i }));
+    expect(onOpenThread).toHaveBeenCalledWith(otherMessage, { focusComposer: true });
+  });
+
+  test("reply-in-thread action is keyboard focusable", async () => {
+    mount([otherMessage], SELF_ID, vi.fn());
+    const button = screen.getByRole("button", { name: /reply in thread to message by them/i });
+
+    button.focus();
+
+    expect(document.activeElement).toBe(button);
+  });
+
+  test("does not render a reply-in-thread action for thread replies", async () => {
+    const onOpenThread = vi.fn();
+    mount([{ ...otherMessage, parent_id: ownMessage.id }], SELF_ID, onOpenThread);
+    expect(screen.queryByRole("button", { name: /reply in thread/i })).toBeNull();
+  });
+
+  test("renders a thread summary button only when a root has replies", async () => {
+    mount(
+      [
+        {
+          ...otherMessage,
+          thread_summary: { reply_count: 2, last_reply_created_at: 1_700_000_000_000_000 },
+        },
+        {
+          ...ownMessage,
+          thread_summary: { reply_count: 0, last_reply_created_at: 1_700_000_100_000_000 },
+        },
+      ],
+      SELF_ID,
+    );
+
+    expect(
+      screen.getByRole("button", {
+        name: /open thread with 2 replies, last reply 2023-11-14 22:13 UTC/i,
+      }),
+    ).toHaveTextContent("2 replies · Last reply 2023-11-14 22:13 UTC");
+    expect(screen.queryByText(/0 replies/i)).toBeNull();
+  });
+
+  test("clicking a thread summary opens that message's thread", async () => {
+    const onOpenThread = vi.fn();
+    const messageWithReplies: Message = {
+      ...otherMessage,
+      thread_summary: { reply_count: 1, last_reply_created_at: 1_700_000_000_000_000 },
+    };
+    mount([messageWithReplies], SELF_ID, onOpenThread);
+
+    fireEvent.click(screen.getByRole("button", { name: /open thread with 1 reply/i }));
+
+    expect(onOpenThread).toHaveBeenCalledWith(messageWithReplies, { focusComposer: false });
   });
 
   test("clicking Edit swaps the row into edit mode", async () => {

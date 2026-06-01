@@ -8,13 +8,14 @@ use actix_web::{App, HttpServer, middleware::from_fn, web, web::Data};
 use sea_orm::DatabaseConnection;
 use tracing_actix_web::TracingLogger;
 
+use crate::api;
 use crate::api::avatars::AvatarStorage;
+use crate::api::emoji::EmojiStorage;
 use crate::api::messages::EmbedFetcher;
 use crate::broadcast::Broadcaster;
 use crate::config::Config;
 use crate::middleware;
 use crate::voice::{VoiceConfig, VoiceState};
-use crate::{EmojiStorage, api};
 
 /// Bag of `web::Data` that every sub-router needs. Constructed once in
 /// `start_server` (or in tests) and cloned into the closure that builds
@@ -132,6 +133,7 @@ pub async fn start_server(
             .wrap(TracingLogger::default())
             .wrap(cors)
             .app_data(avatar_storage.clone())
+            .app_data(emoji_storage.clone())
             .service(actix_files::Files::new("/uploads", uploads_dir.clone()))
             .configure(|cfg| configure_app(cfg, deps.clone()))
     })

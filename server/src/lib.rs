@@ -27,4 +27,4 @@ pub use database::connect_database;
 pub use error::AppError;
 pub use seed::seed_development_data;
 pub use startup::{AppDeps, configure_app, deps_for_tests, start_server};
-pub use util::generate_id;
+pub use util::{generate_id, now_unix_micros};

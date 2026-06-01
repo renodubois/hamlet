@@ -7,6 +7,8 @@ import {
   type MessageDeleted,
   type MessageEmbedsUpdated,
   type SSEEvent,
+  type ThreadReplyCreated,
+  type ThreadReplyDeleted,
   type UserTyping,
   type VoiceParticipant,
   type VoiceParticipantLeft,
@@ -32,6 +34,8 @@ export interface EventsContextValue {
   onVoiceParticipantLeft: (cb: Listener<VoiceParticipantLeft>) => () => void;
   onVoiceParticipantSpeakingChanged: (cb: Listener<VoiceParticipantSpeaking>) => () => void;
   onUserTyping: (cb: Listener<UserTyping>) => () => void;
+  onThreadReplyCreated: (cb: Listener<ThreadReplyCreated>) => () => void;
+  onThreadReplyDeleted: (cb: Listener<ThreadReplyDeleted>) => () => void;
 }
 
 const EventsContext = createContext<EventsContextValue>();
@@ -96,6 +100,8 @@ export function EventsProvider(props: { children: JSX.Element }) {
     onVoiceParticipantLeft: (cb) => subscribe("voice_participant_left", cb),
     onVoiceParticipantSpeakingChanged: (cb) => subscribe("voice_participant_speaking_changed", cb),
     onUserTyping: (cb) => subscribe("user_typing", cb),
+    onThreadReplyCreated: (cb) => subscribe("thread_reply_created", cb),
+    onThreadReplyDeleted: (cb) => subscribe("thread_reply_deleted", cb),
   };
 
   return <EventsContext.Provider value={value}>{props.children}</EventsContext.Provider>;

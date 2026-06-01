@@ -25,7 +25,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::api::channels::ChannelResponse;
 use crate::api::emoji::EmojiResponse;
-use crate::api::messages::{EmbedResponse, MessageResponse};
+use crate::api::messages::{EmbedResponse, MessageResponse, ThreadSummary};
 use crate::error::AppError;
 use crate::voice::VoiceParticipant;
 
@@ -156,6 +156,23 @@ pub struct UserTypingEvent {
     pub username: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct ThreadReplyCreatedEvent {
+    pub channel_id: i64,
+    pub root_message_id: i64,
+    pub reply: MessageResponse,
+    pub thread_summary: ThreadSummary,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ThreadReplyDeletedEvent {
+    pub channel_id: i64,
+    pub root_message_id: i64,
+    pub reply_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_summary: Option<ThreadSummary>,
+}
+
 /// One discriminated-union of every SSE event the server publishes. The
 /// `kind` tag is what the client switches on to dispatch.
 #[derive(Clone, Debug, Serialize)]
@@ -174,4 +191,6 @@ pub enum BroadcastEvent {
     VoiceParticipantLeft(VoiceParticipantLeftEvent),
     VoiceParticipantSpeakingChanged(VoiceParticipantSpeakingEvent),
     UserTyping(UserTypingEvent),
+    ThreadReplyCreated(ThreadReplyCreatedEvent),
+    ThreadReplyDeleted(ThreadReplyDeletedEvent),
 }

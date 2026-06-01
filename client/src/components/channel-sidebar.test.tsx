@@ -101,6 +101,17 @@ describe("<ChannelSidebar>", () => {
     expect(general).toHaveAttribute("href", "/channel/10");
   });
 
+  test("renders a persistent Threads navigation link", () => {
+    channelsResource.mockReturnValue({
+      channels: fakeChannels([]),
+      refetch: () => {},
+      reorder: async () => {},
+    });
+    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
+
+    expect(screen.getByRole("link", { name: /^threads$/i })).toHaveAttribute("href", "/threads");
+  });
+
   test("shows the current user's name", () => {
     channelsResource.mockReturnValue({
       channels: fakeChannels([]),

@@ -8,6 +8,7 @@ import { EventsProvider } from "../contexts/events";
 import { FakeEventSource, latestFakeEventSource } from "../test/msw/sse";
 import { mswState, resetMswState } from "../test/msw/server";
 import { DEV_USER } from "../test/msw/handlers";
+import { expectNoA11yViolations } from "../test/a11y";
 import { assertExists } from "../test/render";
 import ChannelView from "./channel";
 import type { Message } from "../api";
@@ -24,7 +25,7 @@ function mountAt(path: string) {
   const history = createMemoryHistory();
   history.set({ value: path });
 
-  return render(() => (
+  const result = render(() => (
     <AuthProvider>
       <EventsProvider>
         <CustomEmojisProvider>
@@ -37,6 +38,8 @@ function mountAt(path: string) {
       </EventsProvider>
     </AuthProvider>
   ));
+
+  return { ...result, history };
 }
 
 function seedAuthed() {
@@ -117,6 +120,251 @@ describe("Channel view integration", () => {
     await waitFor(() => {
       expect(screen.getByText("hello")).toBeInTheDocument();
       expect(screen.getByText("world")).toBeInTheDocument();
+    });
+  });
+
+  test("opens a thread side panel from the reply action, focuses the composer, and sends a reply", async () => {
+    const state = seedAuthed();
+    const { history } = mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /reply in thread to message by alice/i }));
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
+    expect(history.get()).toBe("/channel/100?thread=1");
+
+    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    fireEvent.input(input, { target: { value: "reply from panel" } });
+    fireEvent.click(within(panel).getByRole("button", { name: /^send$/i }));
+
+    await waitFor(() => {
+      expect(within(panel).getByText("reply from panel")).toBeInTheDocument();
+    });
+    expect(state.sentThreadReplies).toEqual([{ rootId: 1, text: "reply from panel" }]);
+    expect(state.sentMessages).toEqual([]);
+  });
+
+  test("opens a deep-linked thread without stealing focus", async () => {
+    const state = seedAuthed();
+    state.threadReplies["1"] = [
+      {
+        id: 10,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 1,
+        text: "linked reply",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+    ];
+    const { container, history } = mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => {
+      expect(within(panel).getByText("hello")).toBeInTheDocument();
+      expect(within(panel).getByText("linked reply")).toBeInTheDocument();
+    });
+
+    const input = await within(panel).findByLabelText(/thread reply/i);
+    expect(document.activeElement).not.toBe(input);
+    expect(history.get()).toBe("/channel/100?thread=1");
+    await expectNoA11yViolations(container, "deep-linked thread panel");
+  });
+
+  test("loads a long thread newest-first page and prepends older replies on demand", async () => {
+    const state = seedAuthed();
+    state.threadReplies["1"] = Array.from({ length: 55 }, (_, index) => {
+      const replyNumber = index + 1;
+      return {
+        id: 1_000 + replyNumber,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_000_000_000 + replyNumber,
+        text: `reply ${replyNumber}`,
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      } satisfies Message;
+    });
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => {
+      expect(within(panel).getByText("reply 6")).toBeInTheDocument();
+      expect(within(panel).getByText("reply 55")).toBeInTheDocument();
+    });
+    expect(within(panel).queryByText("reply 5")).toBeNull();
+    expect(state.threadRequests[0]).toEqual({
+      rootId: 1,
+      limit: 50,
+      beforeCreatedAt: null,
+      beforeId: null,
+    });
+
+    fireEvent.click(within(panel).getByRole("button", { name: /load older replies/i }));
+
+    await waitFor(() => {
+      expect(within(panel).getByText("reply 1")).toBeInTheDocument();
+      expect(within(panel).getByText("reply 5")).toBeInTheDocument();
+      expect(within(panel).queryByRole("button", { name: /load older replies/i })).toBeNull();
+    });
+    expect(state.threadRequests[1]).toEqual({
+      rootId: 1,
+      limit: 50,
+      beforeCreatedAt: 1_700_000_000_000_006,
+      beforeId: 1_006,
+    });
+    const text = panel.textContent ?? "";
+    expect(text.indexOf("reply 5")).toBeLessThan(text.indexOf("reply 6"));
+  });
+
+  test("opens the correct thread from a channel summary without focusing the composer", async () => {
+    const state = seedAuthed();
+    state.messages["100"] = [
+      {
+        id: 1,
+        user_id: 1,
+        channel_id: 100,
+        text: "quiet root",
+        username: "alice",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+      {
+        id: 2,
+        user_id: 2,
+        channel_id: 100,
+        text: "busy root",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+        thread_summary: { reply_count: 2, last_reply_created_at: 1_700_000_000_000_000 },
+      },
+    ];
+    state.threadReplies["2"] = [
+      {
+        id: 20,
+        user_id: 1,
+        channel_id: 100,
+        parent_id: 2,
+        text: "reply in busy thread",
+        username: "alice",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+    ];
+    const { history } = mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("busy root")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /open thread with 2 replies/i }));
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => {
+      expect(within(panel).getByText("busy root")).toBeInTheDocument();
+      expect(within(panel).getByText("reply in busy thread")).toBeInTheDocument();
+    });
+    expect(history.get()).toBe("/channel/100?thread=2");
+    expect(document.activeElement).not.toBe(within(panel).getByLabelText(/thread reply/i));
+    expect(within(panel).queryByText("quiet root")).toBeNull();
+  });
+
+  test("closing, swapping, and back/forward navigation keep thread route state predictable", async () => {
+    seedAuthed();
+    const { history } = mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /reply in thread to message by alice/i }));
+
+    let panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
+    expect(history.get()).toBe("/channel/100?thread=1");
+
+    fireEvent.click(screen.getByRole("button", { name: /reply in thread to message by bob/i }));
+
+    await waitFor(() => {
+      panel = screen.getByRole("complementary", { name: /thread panel/i });
+      expect(within(panel).getByText("world")).toBeInTheDocument();
+      expect(history.get()).toBe("/channel/100?thread=2");
+    });
+
+    fireEvent.click(within(panel).getByRole("button", { name: /close thread/i }));
+    await waitFor(() => {
+      expect(screen.queryByRole("complementary", { name: /thread panel/i })).toBeNull();
+      expect(history.get()).toBe("/channel/100");
+    });
+
+    history.back();
+    panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => {
+      expect(within(panel).getByText("world")).toBeInTheDocument();
+      expect(history.get()).toBe("/channel/100?thread=2");
+    });
+
+    history.back();
+    panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => {
+      expect(within(panel).getByText("hello")).toBeInTheDocument();
+      expect(history.get()).toBe("/channel/100?thread=1");
+    });
+
+    history.forward();
+    panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => {
+      expect(within(panel).getByText("world")).toBeInTheDocument();
+      expect(history.get()).toBe("/channel/100?thread=2");
+    });
+  });
+
+  test("changing channels closes the thread panel", async () => {
+    const state = seedAuthed();
+    state.channels.push({ id: 200, name: "random", position: 1, type: "text" });
+    state.messages["200"] = [
+      {
+        id: 2001,
+        user_id: 2,
+        channel_id: 200,
+        text: "different channel",
+        username: "carol",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+    ];
+    const { history } = mountAt("/channel/100?thread=1");
+
+    await screen.findByRole("complementary", { name: /thread panel/i });
+
+    history.set({ value: "/channel/200" });
+
+    await waitFor(() => {
+      expect(screen.getByText("different channel")).toBeInTheDocument();
+      expect(screen.queryByRole("complementary", { name: /thread panel/i })).toBeNull();
+    });
+  });
+
+  test("invalid thread route state is removed for the current channel", async () => {
+    seedAuthed();
+    const { history } = mountAt("/channel/100?thread=999");
+
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+    await waitFor(() => {
+      expect(screen.queryByRole("complementary", { name: /thread panel/i })).toBeNull();
+      expect(history.get()).toBe("/channel/100");
     });
   });
 
@@ -218,6 +466,333 @@ describe("Channel view integration", () => {
     // Give reactivity a tick to flush; then assert nothing appeared.
     await new Promise((r) => setTimeout(r, 10));
     expect(screen.queryByText("do not show")).toBeNull();
+  });
+
+  test("appends matching thread_reply_created events to the open panel without refetching", async () => {
+    const state = seedAuthed();
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
+    await waitFor(() => expect(state.threadFetches).toEqual([1]));
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushThreadReplyCreated({
+      channel_id: 999,
+      root_message_id: 1,
+      reply: {
+        id: 49,
+        user_id: 2,
+        channel_id: 999,
+        parent_id: 1,
+        created_at: 1_700_000_020_000_000,
+        text: "wrong channel reply",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+      thread_summary: { reply_count: 9, last_reply_created_at: 1_700_000_020_000_000 },
+    });
+    es.pushThreadReplyCreated({
+      channel_id: 100,
+      root_message_id: 2,
+      reply: {
+        id: 50,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 2,
+        created_at: 1_700_000_025_000_000,
+        text: "other thread reply",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+      thread_summary: { reply_count: 4, last_reply_created_at: 1_700_000_025_000_000 },
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(within(panel).queryByText("wrong channel reply")).toBeNull();
+    expect(within(panel).queryByText("other thread reply")).toBeNull();
+
+    es.pushThreadReplyCreated({
+      channel_id: 100,
+      root_message_id: 1,
+      reply: {
+        id: 51,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_030_000_000,
+        text: "live thread reply",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+      thread_summary: { reply_count: 1, last_reply_created_at: 1_700_000_030_000_000 },
+    });
+
+    await waitFor(() => {
+      expect(within(panel).getByText("live thread reply")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /open thread with 1 reply/i })).toBeInTheDocument();
+      expect(state.threadFetches).toEqual([1]);
+    });
+  });
+
+  test("updates channel thread summaries from thread_reply_created events", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+
+    es.pushThreadReplyCreated({
+      channel_id: 999,
+      root_message_id: 1,
+      reply: {
+        id: 60,
+        user_id: 2,
+        channel_id: 999,
+        parent_id: 1,
+        created_at: 1_700_000_030_000_000,
+        text: "wrong channel summary reply",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+      thread_summary: { reply_count: 3, last_reply_created_at: 1_700_000_030_000_000 },
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(screen.queryByRole("button", { name: /open thread with 3 replies/i })).toBeNull();
+
+    es.pushThreadReplyCreated({
+      channel_id: 100,
+      root_message_id: 1,
+      reply: {
+        id: 61,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_040_000_000,
+        text: "summary reply",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+      thread_summary: { reply_count: 2, last_reply_created_at: 1_700_000_040_000_000 },
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", {
+          name: /open thread with 2 replies, last reply 2023-11-14 22:14 UTC/i,
+        }),
+      ).toBeInTheDocument();
+    });
+    expect(screen.queryByText("summary reply")).toBeNull();
+  });
+
+  test("edits, deletes, and suppresses embeds on own thread replies", async () => {
+    const state = seedAuthed();
+    state.messages["100"][0] = {
+      ...state.messages["100"][0],
+      thread_summary: { reply_count: 1, last_reply_created_at: 1_700_000_010_000_000 },
+    };
+    state.threadReplies["1"] = [
+      {
+        id: 70,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_010_000_000,
+        text: "own reply https://example.com",
+        username: DEV_USER.username,
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [
+          {
+            id: 700,
+            message_id: 70,
+            url: "https://example.com",
+            title: "Example",
+            description: null,
+            image_url: null,
+            site_name: "Example Site",
+            embed_type: "link",
+            iframe_url: null,
+            iframe_width: null,
+            iframe_height: null,
+          },
+        ],
+      },
+      {
+        id: 71,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_011_000_000,
+        text: "other user's reply",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+    ];
+
+    mountAt("/channel/100?thread=1");
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("own reply")).toBeInTheDocument());
+    expect(within(panel).getByRole("link", { name: "https://example.com" })).toBeInTheDocument();
+    expect(within(panel).getByText("Example")).toBeInTheDocument();
+    expect(within(panel).queryAllByRole("button", { name: /edit reply/i })).toHaveLength(1);
+
+    fireEvent.click(within(panel).getByRole("button", { name: /edit reply/i }));
+    const editInput = (await within(panel).findByLabelText(/edit reply/i)) as HTMLInputElement;
+    fireEvent.input(editInput, { target: { value: "edited thread reply https://example.com" } });
+    fireEvent.click(within(panel).getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(mswState().editedMessages).toContainEqual({
+        id: 70,
+        text: "edited thread reply https://example.com",
+      });
+      expect(within(panel).getByText("edited thread reply")).toBeInTheDocument();
+      expect(within(panel).getByRole("link", { name: "https://example.com" })).toBeInTheDocument();
+    });
+
+    fireEvent.click(within(panel).getByRole("button", { name: /remove embed/i }));
+    await waitFor(() => {
+      expect(mswState().suppressedEmbeds).toContainEqual({ id: 70, suppress: true });
+      expect(within(panel).queryByText("Example")).toBeNull();
+    });
+
+    fireEvent.click(within(panel).getByRole("button", { name: /delete reply/i }));
+    const dialog = await screen.findByRole("dialog", { name: /delete reply/i });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^delete$/i }));
+
+    await waitFor(() => {
+      expect(mswState().deletedMessageIds).toContain(70);
+      expect(within(panel).queryByText("edited thread reply")).toBeNull();
+      expect(within(panel).getByText("other user's reply")).toBeInTheDocument();
+    });
+  });
+
+  test("renders tombstoned roots in the channel and thread panel", async () => {
+    const state = seedAuthed();
+    state.messages["100"][0] = {
+      ...state.messages["100"][0],
+      text: "",
+      deleted_at: 1_700_000_050_000_000,
+      suppress_embeds: true,
+      thread_summary: { reply_count: 1, last_reply_created_at: 1_700_000_060_000_000 },
+    };
+    state.threadReplies["1"] = [
+      {
+        id: 80,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_060_000_000,
+        text: "reply under tombstone",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+    ];
+
+    mountAt("/channel/100");
+    await waitFor(() =>
+      expect(screen.getByLabelText(/original message deleted/i)).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /open thread with 1 reply/i }));
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => {
+      expect(within(panel).getByLabelText(/original message deleted/i)).toBeInTheDocument();
+      expect(within(panel).getByText("reply under tombstone")).toBeInTheDocument();
+    });
+  });
+
+  test("thread reply delete events remove replies and recalculate channel summaries", async () => {
+    const state = seedAuthed();
+    state.messages["100"][0] = {
+      ...state.messages["100"][0],
+      thread_summary: { reply_count: 2, last_reply_created_at: 1_700_000_020_000_000 },
+    };
+    state.threadReplies["1"] = [
+      {
+        id: 90,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_010_000_000,
+        text: "older live reply",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+      {
+        id: 91,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_020_000_000,
+        text: "newer live reply",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+    ];
+
+    mountAt("/channel/100?thread=1");
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("newer live reply")).toBeInTheDocument());
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+
+    es.pushThreadReplyDeleted({
+      channel_id: 100,
+      root_message_id: 1,
+      reply_id: 91,
+      thread_summary: { reply_count: 1, last_reply_created_at: 1_700_000_010_000_000 },
+    });
+
+    await waitFor(() => {
+      expect(within(panel).queryByText("newer live reply")).toBeNull();
+      expect(screen.getByRole("button", { name: /open thread with 1 reply/i })).toBeInTheDocument();
+    });
+
+    es.pushThreadReplyDeleted({
+      channel_id: 100,
+      root_message_id: 1,
+      reply_id: 90,
+      thread_summary: null,
+    });
+
+    await waitFor(() => {
+      expect(within(panel).queryByText("older live reply")).toBeNull();
+      expect(screen.queryByRole("button", { name: /open thread with/i })).toBeNull();
+    });
   });
 
   test("POSTs to /message/:id when the form is submitted", async () => {
@@ -785,7 +1360,7 @@ describe("Channel view integration", () => {
     });
   });
 
-  test("does not render the hover toolbar on another user's message", async () => {
+  test("renders only the thread action on another user's message", async () => {
     const state = resetMswState();
     state.me = DEV_USER;
     state.messages["100"] = [
@@ -806,7 +1381,9 @@ describe("Channel view integration", () => {
     await screen.findByText("not mine");
     // Wait a tick for the auth resource to resolve so currentUserId is known.
     await waitFor(() => {
-      expect(screen.queryByRole("toolbar", { name: /message actions/i })).toBeNull();
+      expect(screen.getByRole("button", { name: /reply in thread/i })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^edit$/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^delete$/i })).toBeNull();
     });
   });
 

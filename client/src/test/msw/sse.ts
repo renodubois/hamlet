@@ -4,6 +4,8 @@ import type {
   MessageDeleted,
   MessageEmbedsUpdated,
   SSEEvent,
+  ThreadReplyCreated,
+  ThreadReplyDeleted,
   UserTyping,
 } from "../../api";
 
@@ -48,6 +50,14 @@ export class FakeEventSource {
 
   pushUserTyping(data: UserTyping) {
     this.push({ kind: "user_typing", data });
+  }
+
+  pushThreadReplyCreated(data: ThreadReplyCreated) {
+    this.push({ kind: "thread_reply_created", data });
+  }
+
+  pushThreadReplyDeleted(data: ThreadReplyDeleted) {
+    this.push({ kind: "thread_reply_deleted", data });
   }
 
   close() {

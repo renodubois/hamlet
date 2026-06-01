@@ -6,6 +6,9 @@ import {
   listChannels,
   reorderChannels,
   sendMessage,
+  listParticipatedThreads,
+  getThread,
+  sendThreadReply,
   editMessage,
   deleteMessage,
   messageDisplayName,
@@ -280,6 +283,111 @@ describe("apiFetch behavior", () => {
     expect(url).toBe(`${DEFAULT_SERVER}/message/42`);
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body)).toEqual({ text: "hi" });
+  });
+
+  test("listParticipatedThreads fetches the global participation endpoint", async () => {
+    const previews = [
+      {
+        channel: { id: 100, name: "general", position: 0, type: "text" },
+        root: {
+          id: 7,
+          user_id: 1,
+          channel_id: 100,
+          parent_id: null,
+          text: "root",
+          username: "alice",
+          display_name: null,
+          avatar_url: null,
+          suppress_embeds: false,
+          embeds: [],
+        },
+        reply_count: 2,
+        last_reply_created_at: 1_700_000_000_000_000,
+        recent_replies: [],
+      },
+    ];
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(previews), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(listParticipatedThreads()).resolves.toEqual(previews);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${DEFAULT_SERVER}/threads/participated`);
+  });
+
+  test("getThread fetches the root-specific thread endpoint", async () => {
+    const thread = {
+      root: {
+        id: 7,
+        user_id: 1,
+        channel_id: 100,
+        parent_id: null,
+        text: "root",
+        username: "alice",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+      replies: [],
+      has_more_replies: false,
+    };
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(thread), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(getThread(7)).resolves.toEqual(thread);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${DEFAULT_SERVER}/thread/7`);
+  });
+
+  test("getThread can request an older bounded replies page", async () => {
+    const thread = { root: {}, replies: [], has_more_replies: false };
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(thread), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(
+      getThread(7, { limit: 25, beforeCreatedAt: 1_700_000_000_000_000, beforeId: 42 }),
+    ).resolves.toEqual(thread);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      `${DEFAULT_SERVER}/thread/7?limit=25&before_created_at=1700000000000000&before_id=42`,
+    );
+  });
+
+  test("sendThreadReply posts text and parses the created reply", async () => {
+    const reply = {
+      id: 8,
+      user_id: 1,
+      channel_id: 100,
+      parent_id: 7,
+      text: "reply",
+      username: "alice",
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      embeds: [],
+    };
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(reply), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(sendThreadReply(7, "reply")).resolves.toEqual(reply);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/thread/7/reply`);
+    expect(init.method).toBe("POST");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(JSON.parse(init.body)).toEqual({ text: "reply" });
   });
 
   test("editMessage sends PUT with text body and parses message response", async () => {

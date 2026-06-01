@@ -54,11 +54,28 @@ function renderTextWithCustomEmojis(
   });
 }
 
+function formatThreadTimestamp(timestampMicros: number): string {
+  const date = new Date(Math.trunc(timestampMicros / 1000));
+  if (Number.isNaN(date.getTime())) return "unknown time";
+  return `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+function formatThreadTimestampTitle(timestampMicros: number): string {
+  const date = new Date(Math.trunc(timestampMicros / 1000));
+  if (Number.isNaN(date.getTime())) return "unknown time";
+  return `${date.toISOString().slice(0, 19).replace("T", " ")} UTC`;
+}
+
+function replyCountLabel(count: number): string {
+  return count === 1 ? "1 reply" : `${count} replies`;
+}
+
 const ChannelMessages: Component<{
   messages: readonly Message[];
   loading: boolean;
   error: unknown;
   currentUserId: number | null;
+  onOpenThread?: (message: Message, options?: { focusComposer?: boolean }) => void;
 }> = (props) => {
   const customEmojis = useOptionalCustomEmojis();
   const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
@@ -140,13 +157,14 @@ const ChannelMessages: Component<{
     cancelEditing();
   };
 
-  const isOwnMessage = (msg: Message) =>
-    props.currentUserId !== null && msg.user_id === props.currentUserId;
+  const isDeletedMessage = (msg: Message) => msg.deleted_at != null;
 
-  // Whether any hover-toolbar action applies to this message. Today only
-  // owner-gated actions (Edit, Delete) exist; non-owner actions (react,
-  // reply, quote, …) will OR into this check when they land.
-  const hasAnyAction = (msg: Message) => isOwnMessage(msg);
+  const isOwnMessage = (msg: Message) =>
+    !isDeletedMessage(msg) && props.currentUserId !== null && msg.user_id === props.currentUserId;
+
+  const canOpenThread = (msg: Message) => msg.parent_id == null && props.onOpenThread !== undefined;
+
+  const hasAnyAction = (msg: Message) => isOwnMessage(msg) || canOpenThread(msg);
 
   const handleContextMenu = (e: MouseEvent, msg: Message) => {
     if (!isOwnMessage(msg)) return;
@@ -168,66 +186,103 @@ const ChannelMessages: Component<{
             class="group relative flex items-start gap-3 px-2 py-1 -mx-2 rounded-md hover:bg-gray-50 focus-within:bg-gray-50"
             onContextMenu={(e) => handleContextMenu(e, message)}
           >
-            <Avatar url={message.avatar_url} username={messageDisplayName(message)} size={32} />
+            <Avatar
+              url={isDeletedMessage(message) ? null : message.avatar_url}
+              username={isDeletedMessage(message) ? "Deleted message" : messageDisplayName(message)}
+              size={32}
+            />
             <div class="min-w-0 flex-1">
-              <div class="font-bold">{messageDisplayName(message)}</div>
               <Show
-                when={editingId() === message.id}
+                when={!isDeletedMessage(message)}
                 fallback={
-                  <div class="whitespace-pre-wrap break-words">
-                    {linkifyText(message.text).map((tok) =>
-                      tok.type === "link" ? (
-                        <a
-                          href={tok.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          class="text-blue-700 hover:underline break-all"
-                        >
-                          {tok.url}
-                        </a>
-                      ) : (
-                        renderTextWithCustomEmojis(tok.value, customEmojiById)
-                      ),
-                    )}
-                  </div>
+                  <p class="italic text-gray-500" aria-label="Original message deleted">
+                    Original message deleted
+                  </p>
                 }
               >
-                <form
-                  class="flex gap-2 items-center"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void saveEdit(message);
-                  }}
+                <div class="font-bold">{messageDisplayName(message)}</div>
+                <Show
+                  when={editingId() === message.id}
+                  fallback={
+                    <div class="whitespace-pre-wrap break-words">
+                      {linkifyText(message.text).map((tok) =>
+                        tok.type === "link" ? (
+                          <a
+                            href={tok.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="text-blue-700 hover:underline break-all"
+                          >
+                            {tok.url}
+                          </a>
+                        ) : (
+                          renderTextWithCustomEmojis(tok.value, customEmojiById)
+                        ),
+                      )}
+                    </div>
+                  }
                 >
-                  <MessageInput
-                    value={draft()}
-                    onChange={setDraft}
-                    ariaLabel="Edit message"
-                    inputRef={(el) =>
-                      queueMicrotask(() => {
-                        if (el.isConnected) el.focus();
-                      })
-                    }
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape") {
-                        e.preventDefault();
-                        cancelEditing();
-                      }
+                  <form
+                    class="flex gap-2 items-center"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void saveEdit(message);
                     }}
-                    class="flex min-w-0 flex-1 items-center gap-2"
-                    inputClass="bg-gray-100 rounded-md px-2 py-1 w-full"
-                    emojiButtonClass="cursor-pointer rounded-md bg-gray-100 px-2 py-1 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400"
-                    emojiButtonLabel="Open emoji picker for edit"
-                  />
-                  <button type="submit" class="text-sm text-blue-600">
-                    Save
-                  </button>
-                  <button type="button" class="text-sm text-gray-500" onClick={cancelEditing}>
-                    Cancel
-                  </button>
-                </form>
+                  >
+                    <MessageInput
+                      value={draft()}
+                      onChange={setDraft}
+                      ariaLabel="Edit message"
+                      inputRef={(el) =>
+                        queueMicrotask(() => {
+                          if (el.isConnected) el.focus();
+                        })
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          cancelEditing();
+                        }
+                      }}
+                      class="flex min-w-0 flex-1 items-center gap-2"
+                      inputClass="bg-gray-100 rounded-md px-2 py-1 w-full"
+                      emojiButtonClass="cursor-pointer rounded-md bg-gray-100 px-2 py-1 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      emojiButtonLabel="Open emoji picker for edit"
+                    />
+                    <button type="submit" class="text-sm text-blue-600">
+                      Save
+                    </button>
+                    <button type="button" class="text-sm text-gray-500" onClick={cancelEditing}>
+                      Cancel
+                    </button>
+                  </form>
+                </Show>
               </Show>
-              <Show when={!message.suppress_embeds && message.embeds.length > 0}>
+              <Show when={message.thread_summary?.reply_count ? message.thread_summary : null}>
+                {(summary) => {
+                  const countText = () => replyCountLabel(summary().reply_count);
+                  const lastReplyText = () =>
+                    formatThreadTimestamp(summary().last_reply_created_at);
+                  return (
+                    <button
+                      type="button"
+                      class="mt-1 text-sm font-medium text-blue-700 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-400 rounded"
+                      title={`Last reply ${formatThreadTimestampTitle(summary().last_reply_created_at)}`}
+                      aria-label={`Open thread with ${countText()}, last reply ${lastReplyText()}`}
+                      onClick={() => props.onOpenThread?.(message, { focusComposer: false })}
+                    >
+                      {countText()} · Last reply {lastReplyText()}
+                    </button>
+                  );
+                }}
+              </Show>
+              <Show
+                when={
+                  !isDeletedMessage(message) &&
+                  !message.suppress_embeds &&
+                  message.embeds.length > 0
+                }
+              >
                 <div class="flex flex-col gap-1">
                   <For each={message.embeds}>
                     {(embed) => (
@@ -248,6 +303,17 @@ const ChannelMessages: Component<{
                 aria-label="Message actions"
                 class="absolute -top-3 right-2 flex gap-1 rounded-md border border-gray-200 bg-white shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
               >
+                <Show when={canOpenThread(message)}>
+                  <button
+                    type="button"
+                    aria-label={`Reply in thread to message by ${messageDisplayName(message)}`}
+                    title="Reply in thread"
+                    class="p-1.5 rounded-md text-xs hover:bg-gray-100"
+                    onClick={() => props.onOpenThread?.(message, { focusComposer: true })}
+                  >
+                    Reply
+                  </button>
+                </Show>
                 <Show when={isOwnMessage(message)}>
                   <button
                     type="button"

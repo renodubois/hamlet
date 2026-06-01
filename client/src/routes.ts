@@ -11,6 +11,10 @@ export const routes: RouteDefinition[] = [
     component: lazy(() => import("./pages/channel")),
   },
   {
+    path: "/threads",
+    component: lazy(() => import("./pages/threads")),
+  },
+  {
     path: "/",
     component: () => null,
   },

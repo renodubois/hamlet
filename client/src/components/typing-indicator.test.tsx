@@ -33,6 +33,8 @@ function fakeEvents(): {
       emit = cb;
       return () => {};
     },
+    onThreadReplyCreated: () => () => {},
+    onThreadReplyDeleted: () => () => {},
   };
   return { events, emit: (t) => emit(t), emitMessage: (m) => emitMessage(m) };
 }
@@ -215,6 +217,8 @@ describe("<TypingIndicator>", () => {
       onVoiceParticipantLeft: () => () => {},
       onVoiceParticipantSpeakingChanged: () => () => {},
       onUserTyping: () => unsub,
+      onThreadReplyCreated: () => () => {},
+      onThreadReplyDeleted: () => () => {},
     };
     const { unmount } = render(() => (
       <TypingIndicator channelId={100} currentUserId={1} events={events} />

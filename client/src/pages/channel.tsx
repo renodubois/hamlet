@@ -1,8 +1,16 @@
-import { useParams } from "@solidjs/router";
-import { createEffect, createResource, createSignal, onCleanup, onMount } from "solid-js";
+import { useLocation, useNavigate, useParams } from "@solidjs/router";
+import {
+  createEffect,
+  createMemo,
+  createResource,
+  createSignal,
+  onCleanup,
+  onMount,
+} from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import ChannelMessages from "../components/channel-messages";
 import MessageInput from "../components/message-input";
+import ThreadPanel from "../components/thread-panel";
 import TypingIndicator from "../components/typing-indicator";
 import { listMessages, sendMessage, sendTyping, type Message } from "../api";
 import { useChannels } from "../contexts/channels";
@@ -10,13 +18,24 @@ import { useEvents } from "../contexts/events";
 import { useAuth } from "../contexts/auth";
 import { TYPING_PING_INTERVAL_MS } from "../constants";
 
+function parseThreadId(value: string | string[] | undefined): number | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (!raw) return null;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
 export default function ChannelView() {
   const params = useParams<{ id: string }>();
+  const location = useLocation();
+  const navigate = useNavigate();
   const { channels } = useChannels();
   const events = useEvents();
   const { user } = useAuth();
   const channel = () => channels()?.find((c) => String(c.id) === params.id);
   const [message, setMessage] = createSignal("");
+  const [focusComposerRootId, setFocusComposerRootId] = createSignal<number | null>(null);
+  const openThreadRootId = createMemo(() => parseThreadId(location.query.thread));
   // The Resource owns loading/error state for the initial fetch; the Store
   // owns the reactive list that SSE events mutate granularly. createStore
   // means an embed update on one row only re-renders that row.
@@ -50,6 +69,34 @@ export default function ChannelView() {
     );
   });
 
+  const channelPath = () => `/channel/${params.id}`;
+
+  const threadPath = (rootMessageId: number) => `${channelPath()}?thread=${rootMessageId}`;
+
+  const openThread = (root: Message, options?: { focusComposer?: boolean }) => {
+    setFocusComposerRootId(options?.focusComposer ? root.id : null);
+    navigate(threadPath(root.id), { scroll: false });
+  };
+
+  const closeThread = () => {
+    setFocusComposerRootId(null);
+    navigate(channelPath(), { scroll: false });
+  };
+
+  createEffect(() => {
+    const rootId = openThreadRootId();
+    if (rootId === null) {
+      setFocusComposerRootId(null);
+      return;
+    }
+    if (resource.loading) return;
+    const rootInChannel = messages.some((m) => m.id === rootId && m.parent_id == null);
+    if (!rootInChannel) {
+      setFocusComposerRootId(null);
+      navigate(channelPath(), { replace: true, scroll: false });
+    }
+  });
+
   const handleMessageChange = (value: string) => {
     setMessage(value);
     if (value.length === 0) return;
@@ -59,33 +106,46 @@ export default function ChannelView() {
     void sendTyping(params.id);
   };
 
-  const eventUnsubscribers: Array<() => void> = [];
   onMount(() => {
-    eventUnsubscribers.push(
-      events.onMessage((m) => {
-        if (String(m.channel_id) !== params.id) return;
-        setMessages(messages.length, m);
-      }),
-      events.onMessageUpdated((m) => {
-        if (String(m.channel_id) !== params.id) return;
-        setMessages((existing) => existing.id === m.id, m);
-      }),
-      events.onMessageDeleted((d) => {
-        if (String(d.channel_id) !== params.id) return;
-        setMessages((arr) => arr.filter((existing) => existing.id !== d.id));
-      }),
-      events.onMessageEmbedsUpdated((e) => {
-        if (String(e.channel_id) !== params.id) return;
-        setMessages((existing) => existing.id === e.id, {
-          suppress_embeds: e.suppress_embeds,
-          embeds: e.embeds,
-        });
-      }),
-    );
-  });
-  onCleanup(() => {
-    eventUnsubscribers.forEach((unsubscribe) => unsubscribe());
-    eventUnsubscribers.length = 0;
+    const unsubCreated = events.onMessage((m) => {
+      if (String(m.channel_id) !== params.id) return;
+      setMessages(messages.length, m);
+    });
+    const unsubUpdated = events.onMessageUpdated((m) => {
+      if (String(m.channel_id) !== params.id) return;
+      setMessages((existing) => existing.id === m.id, m);
+    });
+    const unsubDeleted = events.onMessageDeleted((d) => {
+      if (String(d.channel_id) !== params.id) return;
+      setMessages((arr) => arr.filter((existing) => existing.id !== d.id));
+    });
+    const unsubEmbeds = events.onMessageEmbedsUpdated((e) => {
+      if (String(e.channel_id) !== params.id) return;
+      setMessages((existing) => existing.id === e.id, {
+        suppress_embeds: e.suppress_embeds,
+        embeds: e.embeds,
+      });
+    });
+    const unsubThreadReply = events.onThreadReplyCreated((e) => {
+      if (String(e.channel_id) !== params.id) return;
+      setMessages((existing) => existing.id === e.root_message_id && existing.parent_id == null, {
+        thread_summary: e.thread_summary,
+      });
+    });
+    const unsubThreadReplyDeleted = events.onThreadReplyDeleted((e) => {
+      if (String(e.channel_id) !== params.id) return;
+      setMessages((existing) => existing.id === e.root_message_id && existing.parent_id == null, {
+        thread_summary: e.thread_summary ?? undefined,
+      });
+    });
+    onCleanup(() => {
+      unsubCreated();
+      unsubUpdated();
+      unsubDeleted();
+      unsubEmbeds();
+      unsubThreadReply();
+      unsubThreadReplyDeleted();
+    });
   });
 
   // TODO(reno): Can the router ensure this parameter exists?
@@ -99,13 +159,26 @@ export default function ChannelView() {
         <h1 class="text-2xl font-bold"># {channel()?.name ?? params.id}</h1>
       </section>
 
-      <div class="flex-1 overflow-y-auto">
-        <ChannelMessages
-          messages={messages}
-          loading={resource.loading}
-          error={resource.error}
-          currentUserId={user()?.id ?? null}
-        />
+      <div class="flex-1 min-h-0 flex">
+        <div class="min-w-0 flex-1 overflow-y-auto">
+          <ChannelMessages
+            messages={messages}
+            loading={resource.loading}
+            error={resource.error}
+            currentUserId={user()?.id ?? null}
+            onOpenThread={openThread}
+          />
+        </div>
+        {openThreadRootId() !== null && (
+          <ThreadPanel
+            rootMessageId={openThreadRootId() as number}
+            channelId={Number(params.id)}
+            currentUserId={user()?.id ?? null}
+            focusComposer={focusComposerRootId() === openThreadRootId()}
+            onComposerFocusConsumed={() => setFocusComposerRootId(null)}
+            onClose={closeThread}
+          />
+        )}
       </div>
 
       <section class="flex-shrink-0 p-4 border-t border-gray-200">

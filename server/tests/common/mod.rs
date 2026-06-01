@@ -9,7 +9,7 @@ use sea_orm::{ActiveModelTrait, Database, DatabaseConnection, Set};
 use hamlet::voice::{VoiceConfig, VoiceState};
 use hamlet::{
     AppDeps, AvatarStorage, EmbedFetcher, EmojiStorage, auth, broadcast::Broadcaster, entity,
-    generate_id,
+    generate_id, now_unix_micros,
 };
 
 /// Bag of state every integration test needs: the DB, a seeded text channel,
@@ -159,6 +159,9 @@ pub async fn insert_message(
         id: Set(id),
         user_id: Set(user_id),
         channel_id: Set(channel_id),
+        parent_id: Set(None),
+        created_at: Set(now_unix_micros()),
+        deleted_at: Set(None),
         text: Set(text.to_owned()),
         suppress_embeds: Set(false),
     }

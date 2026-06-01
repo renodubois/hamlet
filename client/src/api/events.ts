@@ -1,7 +1,13 @@
 import { getServerUrl } from "./client";
 import type { Channel } from "./channels";
 import type { CustomEmoji } from "./emojis";
-import type { Message, MessageDeleted, MessageEmbedsUpdated } from "./messages";
+import type {
+  Message,
+  MessageDeleted,
+  MessageEmbedsUpdated,
+  ThreadReplyCreated,
+  ThreadReplyDeleted,
+} from "./messages";
 import type { VoiceParticipant, VoiceParticipantLeft, VoiceParticipantSpeaking } from "./voice";
 import type { UserTyping } from "./typing";
 
@@ -18,7 +24,9 @@ export type SSEEvent =
   | { kind: "voice_participant_joined"; data: VoiceParticipant }
   | { kind: "voice_participant_left"; data: VoiceParticipantLeft }
   | { kind: "voice_participant_speaking_changed"; data: VoiceParticipantSpeaking }
-  | { kind: "user_typing"; data: UserTyping };
+  | { kind: "user_typing"; data: UserTyping }
+  | { kind: "thread_reply_created"; data: ThreadReplyCreated }
+  | { kind: "thread_reply_deleted"; data: ThreadReplyDeleted };
 
 export function messagesEventSource(): EventSource {
   return new EventSource(`${getServerUrl()}/messages/subscribe`, {

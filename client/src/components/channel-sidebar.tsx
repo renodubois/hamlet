@@ -61,6 +61,17 @@ export default function ChannelSidebar(props: {
     <div class="flex flex-col h-full">
       <div class="p-4 font-bold text-lg border-b border-gray-700">Hamlet</div>
 
+      <nav class="px-2 py-2 border-b border-gray-700" aria-label="Primary">
+        <A
+          href="/threads"
+          activeClass="bg-gray-700 text-white font-medium"
+          inactiveClass="text-gray-400 hover:bg-gray-700 hover:text-gray-200"
+          class="block px-3 py-1.5 rounded text-sm cursor-pointer"
+        >
+          Threads
+        </A>
+      </nav>
+
       <Show when={channels.loading}>
         <p class="px-3 py-2 text-gray-400 text-sm">Loading...</p>
       </Show>
