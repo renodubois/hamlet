@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 
 // The server seeds a dev user (baipas / password) and a 'general' channel on
 // every start. These E2E tests rely on that seed data. Because the server's
@@ -22,6 +22,18 @@ test("logs in as the dev user and lands in a channel", async ({ page }) => {
     page.getByRole("navigation", { name: /channels/i }).getByText("# general"),
   ).toBeVisible();
 });
+
+async function expectEditorValue(input: Locator, expected: string) {
+  await expect
+    .poll(() =>
+      input.evaluate((element) =>
+        "value" in element && typeof element.value === "string"
+          ? element.value
+          : element.textContent,
+      ),
+    )
+    .toBe(expected);
+}
 
 async function loginAndOpenGeneral(page: Page) {
   await page.goto("/");
@@ -87,7 +99,7 @@ test("selects an emoji from the picker and sends it", async ({ page }) => {
 
   await search.press("Enter");
   await expect(picker).toBeHidden();
-  await expect(input).toHaveValue(expected);
+  await expectEditorValue(input, expected);
   await input.press("Enter");
 
   await expect(page.getByText(expected)).toBeVisible({ timeout: 10_000 });

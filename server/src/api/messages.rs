@@ -547,6 +547,9 @@ mod tests {
             voice_cfg: web::Data::new(None::<VoiceConfig>),
             voice_state: web::Data::new(VoiceState::new()),
             embed_fetcher: web::Data::new(EmbedFetcher::Disabled),
+            emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
+                dir: std::env::temp_dir(),
+            }),
         }
     }
 

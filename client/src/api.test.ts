@@ -10,7 +10,13 @@ import {
   deleteMessage,
   messageDisplayName,
   updateDisplayName,
+  listCustomEmojis,
+  uploadCustomEmoji,
+  renameCustomEmoji,
+  deleteCustomEmoji,
+  restoreCustomEmoji,
   type Channel,
+  type CustomEmoji,
 } from "./api";
 
 const DEFAULT_SERVER = "http://127.0.0.1:3030";
@@ -91,6 +97,179 @@ describe("apiFetch behavior", () => {
   test("reorderChannels throws on non-2xx", async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 400 }));
     await expect(reorderChannels([2, 1])).rejects.toThrow(/400/);
+  });
+
+  test("listCustomEmojis parses the registry array", async () => {
+    const emojis: CustomEmoji[] = [
+      {
+        id: 1,
+        name: "party",
+        image_url: "/uploads/emojis/1.webp?v=10",
+        animated: false,
+        created_by_user_id: 1,
+        created_at: 10,
+        updated_at: 10,
+        deleted_at: null,
+      },
+    ];
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(emojis), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(listCustomEmojis()).resolves.toEqual(emojis);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${DEFAULT_SERVER}/emojis`);
+  });
+
+  test("listCustomEmojis throws on non-2xx", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 500 }));
+    await expect(listCustomEmojis()).rejects.toThrow(/500/);
+  });
+
+  test("uploadCustomEmoji posts multipart form data and parses response", async () => {
+    const created: CustomEmoji = {
+      id: 9,
+      name: "party",
+      image_url: "/uploads/emojis/9.webp?v=10",
+      animated: false,
+      created_by_user_id: 1,
+      created_at: 10,
+      updated_at: 10,
+      deleted_at: null,
+    };
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(created), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    const file = new File([new Uint8Array([1, 2, 3])], "party.png", { type: "image/png" });
+    await expect(uploadCustomEmoji("party", file)).resolves.toEqual(created);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/emojis`);
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("include");
+    expect(init.body).toBeInstanceOf(FormData);
+    const body = init.body as FormData;
+    expect(body.get("name")).toBe("party");
+    expect(body.get("file")).toBe(file);
+  });
+
+  test("uploadCustomEmoji surfaces server validation messages", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: { kind: "emoji_name_taken", message: "custom emoji name already exists" },
+        }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const file = new File([new Uint8Array([1])], "party.png", { type: "image/png" });
+    await expect(uploadCustomEmoji("party", file)).rejects.toThrow(
+      /custom emoji name already exists/i,
+    );
+  });
+
+  test("renameCustomEmoji patches a new name and parses response", async () => {
+    const updated: CustomEmoji = {
+      id: 9,
+      name: "renamed_party",
+      image_url: "/uploads/emojis/9.webp?v=11",
+      animated: false,
+      created_by_user_id: 1,
+      created_at: 10,
+      updated_at: 11,
+      deleted_at: null,
+    };
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(updated), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(renameCustomEmoji(9, "renamed_party")).resolves.toEqual(updated);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/emojis/9`);
+    expect(init.method).toBe("PATCH");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(JSON.parse(init.body)).toEqual({ name: "renamed_party" });
+  });
+
+  test("renameCustomEmoji surfaces server validation messages", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: { kind: "emoji_name_taken", message: "custom emoji name already exists" },
+        }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await expect(renameCustomEmoji(9, "party")).rejects.toThrow(
+      /custom emoji name already exists/i,
+    );
+  });
+
+  test("deleteCustomEmoji soft-deletes and parses response", async () => {
+    const deleted: CustomEmoji = {
+      id: 9,
+      name: "party",
+      image_url: "/uploads/emojis/9.webp?v=12",
+      animated: false,
+      created_by_user_id: 1,
+      created_at: 10,
+      updated_at: 12,
+      deleted_at: 12,
+    };
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(deleted), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(deleteCustomEmoji(9)).resolves.toEqual(deleted);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/emojis/9`);
+    expect(init.method).toBe("DELETE");
+  });
+
+  test("restoreCustomEmoji restores and surfaces conflicts", async () => {
+    const restored: CustomEmoji = {
+      id: 9,
+      name: "party",
+      image_url: "/uploads/emojis/9.webp?v=13",
+      animated: false,
+      created_by_user_id: 1,
+      created_at: 10,
+      updated_at: 13,
+      deleted_at: null,
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(restored), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await expect(restoreCustomEmoji(9)).resolves.toEqual(restored);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${DEFAULT_SERVER}/emojis/9/restore`);
+    expect(fetchMock.mock.calls[0][1].method).toBe("POST");
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: { kind: "emoji_name_taken", message: "custom emoji name already exists" },
+        }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    await expect(restoreCustomEmoji(9)).rejects.toThrow(/custom emoji name already exists/i);
   });
 
   test("sendMessage targets the channel-specific endpoint", async () => {

@@ -3,6 +3,7 @@ import { useLocation, useNavigate, type RouteSectionProps } from "@solidjs/route
 import ChannelSidebar from "./components/channel-sidebar";
 import { useAuth } from "./contexts/auth";
 import { ChannelsProvider, useChannels } from "./contexts/channels";
+import { CustomEmojisProvider } from "./contexts/custom-emojis";
 import { EventsProvider } from "./contexts/events";
 import { type User } from "./api";
 import { VoiceChatProvider } from "./contexts/voice-chat";
@@ -86,11 +87,13 @@ const App: Component<RouteSectionProps> = (props) => {
         }
       >
         <EventsProvider>
-          <ChannelsProvider>
-            <VoiceChatProvider>
-              <AppShell user={auth.user() as User}>{props.children}</AppShell>
-            </VoiceChatProvider>
-          </ChannelsProvider>
+          <CustomEmojisProvider>
+            <ChannelsProvider>
+              <VoiceChatProvider>
+                <AppShell user={auth.user() as User}>{props.children}</AppShell>
+              </VoiceChatProvider>
+            </ChannelsProvider>
+          </CustomEmojisProvider>
         </EventsProvider>
       </Show>
     </Show>

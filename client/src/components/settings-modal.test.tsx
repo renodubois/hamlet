@@ -1,9 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
+import { delay, http, HttpResponse } from "msw";
 import { describe, expect, test, vi } from "vitest";
 import { type User } from "../api";
+import { AuthProvider } from "../contexts/auth";
+import { CustomEmojisProvider } from "../contexts/custom-emojis";
 import { expectNoA11yViolations } from "../test/a11y";
 import { DEV_USER } from "../test/msw/handlers";
-import { mswState, resetMswState } from "../test/msw/server";
+import { mswState, resetMswState, server } from "../test/msw/server";
 import SettingsModal from "./settings-modal";
 
 const USER: User = {
@@ -44,6 +47,22 @@ vi.mock("cropperjs", () => {
   };
 });
 
+function modalProps(
+  opts: {
+    onLogout?: () => Promise<void>;
+    onClose?: () => void;
+    user?: User | null;
+    onAvatarChange?: () => void;
+  } = {},
+) {
+  return {
+    onClose: opts.onClose ?? vi.fn(),
+    onAvatarChange: opts.onAvatarChange ?? vi.fn(),
+    onLogout: opts.onLogout ?? (async () => {}),
+    user: opts.user ?? USER,
+  };
+}
+
 function mount(
   open: boolean,
   opts: {
@@ -53,18 +72,35 @@ function mount(
     onAvatarChange?: () => void;
   } = {},
 ) {
-  const onClose = opts.onClose ?? vi.fn();
-  const onAvatarChange = opts.onAvatarChange ?? vi.fn();
+  const props = modalProps(opts);
   const result = render(() => (
     <SettingsModal
       open={open}
-      onClose={onClose}
-      onLogout={opts.onLogout ?? (async () => {})}
-      user={opts.user ?? USER}
-      onAvatarChange={onAvatarChange}
+      onClose={props.onClose}
+      onLogout={props.onLogout}
+      user={props.user}
+      onAvatarChange={props.onAvatarChange}
     />
   ));
-  return { ...result, onClose, onAvatarChange };
+  return { ...result, onClose: props.onClose, onAvatarChange: props.onAvatarChange };
+}
+
+function mountWithCustomEmojiProvider(open = true) {
+  const props = modalProps();
+  const result = render(() => (
+    <AuthProvider>
+      <CustomEmojisProvider>
+        <SettingsModal
+          open={open}
+          onClose={props.onClose}
+          onLogout={props.onLogout}
+          user={props.user}
+          onAvatarChange={props.onAvatarChange}
+        />
+      </CustomEmojisProvider>
+    </AuthProvider>
+  ));
+  return { ...result, onClose: props.onClose, onAvatarChange: props.onAvatarChange };
 }
 
 describe("<SettingsModal>", () => {
@@ -212,6 +248,308 @@ describe("<SettingsModal>", () => {
     expect(screen.getByRole("heading", { name: /settings/i })).toBeInTheDocument();
     expect(screen.getByText("Ally")).toBeInTheDocument();
     expect(screen.getByText("@alice")).toBeInTheDocument();
+  });
+
+  test("Custom Emojis tab shows a loading state from the registry", async () => {
+    resetMswState({ me: DEV_USER });
+    server.use(
+      http.get("http://127.0.0.1:3030/emojis", async () => {
+        await delay("infinite");
+        return HttpResponse.json([]);
+      }),
+    );
+    mountWithCustomEmojiProvider();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Emojis" }));
+
+    expect(await screen.findByText(/loading custom emojis/i)).toBeInTheDocument();
+  });
+
+  test("Custom Emojis tab shows an empty state from the registry", async () => {
+    resetMswState({ me: DEV_USER, customEmojis: [] });
+    mountWithCustomEmojiProvider();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Emojis" }));
+
+    expect(await screen.findByText(/no custom emojis yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/uploaded emojis will be listed here/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/emoji name/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/image file/i)).toHaveAttribute(
+      "accept",
+      "image/png,image/jpeg,image/webp,image/gif",
+    );
+  });
+
+  test("Custom Emojis tab uploads a static emoji and updates the list", async () => {
+    resetMswState({ me: DEV_USER, customEmojis: [] });
+    mountWithCustomEmojiProvider();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Emojis" }));
+    await screen.findByText(/no custom emojis yet/i);
+
+    fireEvent.input(screen.getByLabelText(/emoji name/i), { target: { value: "party" } });
+    const file = new File([new Uint8Array([1, 2, 3])], "party.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText(/image file/i), { target: { files: [file] } });
+    fireEvent.click(screen.getByRole("button", { name: /upload emoji/i }));
+
+    await waitFor(() => {
+      expect(mswState().uploadedCustomEmojis).toContainEqual({
+        name: "party",
+        size: 3,
+        type: "image/png",
+      });
+    });
+    expect(await screen.findByText(":party:")).toBeInTheDocument();
+    expect(screen.getByText(/ID \d+/)).toBeInTheDocument();
+    expect(screen.getByText("static")).toBeInTheDocument();
+  });
+
+  test("Custom Emojis tab accepts animated GIF uploads and previews the selected file", async () => {
+    resetMswState({ me: DEV_USER, customEmojis: [] });
+    const originalCreateObjectURL = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
+    const originalRevokeObjectURL = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
+    const createObjectURL = vi.fn(() => "blob:animated-gif");
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectURL });
+    mountWithCustomEmojiProvider();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Emojis" }));
+    await screen.findByText(/no custom emojis yet/i);
+
+    fireEvent.input(screen.getByLabelText(/emoji name/i), { target: { value: "dance" } });
+    const file = new File([new Uint8Array([71, 73, 70])], "dance.gif", { type: "image/gif" });
+    fireEvent.change(screen.getByLabelText(/image file/i), { target: { files: [file] } });
+
+    const preview = await screen.findByRole("img", { name: /selected custom emoji preview/i });
+    expect(preview).toHaveAttribute("src", "blob:animated-gif");
+
+    fireEvent.click(screen.getByRole("button", { name: /upload emoji/i }));
+
+    await waitFor(() => {
+      expect(mswState().uploadedCustomEmojis).toContainEqual({
+        name: "dance",
+        size: 3,
+        type: "image/gif",
+      });
+    });
+    expect(await screen.findByText(":dance:")).toBeInTheDocument();
+    expect(screen.getByText("animated")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: ":dance:" })).toHaveAttribute(
+      "src",
+      expect.stringContaining("http://127.0.0.1:3030/uploads/emojis/dance.gif"),
+    );
+
+    if (originalCreateObjectURL) {
+      Object.defineProperty(URL, "createObjectURL", originalCreateObjectURL);
+    } else {
+      delete (URL as unknown as { createObjectURL?: unknown }).createObjectURL;
+    }
+    if (originalRevokeObjectURL) {
+      Object.defineProperty(URL, "revokeObjectURL", originalRevokeObjectURL);
+    } else {
+      delete (URL as unknown as { revokeObjectURL?: unknown }).revokeObjectURL;
+    }
+  });
+
+  test("Custom Emojis upload validates names and file types before submit", async () => {
+    resetMswState({ me: DEV_USER, customEmojis: [] });
+    mountWithCustomEmojiProvider();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Emojis" }));
+    await screen.findByText(/no custom emojis yet/i);
+
+    fireEvent.input(screen.getByLabelText(/emoji name/i), { target: { value: "bad-name" } });
+    const file = new File([new Uint8Array([1])], "bad.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByLabelText(/image file/i), { target: { files: [file] } });
+
+    expect(screen.getByRole("button", { name: /upload emoji/i })).toBeDisabled();
+    expect(
+      screen.getByText(/choose a PNG, JPEG, static WebP, animated GIF, or animated WebP image/i),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText(/letters, numbers, or underscores/i).length).toBeGreaterThan(1);
+  });
+
+  test("Custom Emojis upload shows server validation errors", async () => {
+    resetMswState({ me: DEV_USER, customEmojis: [] });
+    server.use(
+      http.post("http://127.0.0.1:3030/emojis", () =>
+        HttpResponse.json(
+          { error: { kind: "emoji_name_taken", message: "custom emoji name already exists" } },
+          { status: 409 },
+        ),
+      ),
+    );
+    mountWithCustomEmojiProvider();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Emojis" }));
+    await screen.findByText(/no custom emojis yet/i);
+
+    fireEvent.input(screen.getByLabelText(/emoji name/i), { target: { value: "party" } });
+    const file = new File([new Uint8Array([1])], "party.webp", { type: "image/webp" });
+    fireEvent.change(screen.getByLabelText(/image file/i), { target: { files: [file] } });
+    fireEvent.click(screen.getByRole("button", { name: /upload emoji/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/custom emoji name already exists/i);
+  });
+
+  test("Custom Emojis tab renames an existing emoji and updates the list", async () => {
+    resetMswState({
+      me: DEV_USER,
+      customEmojis: [
+        {
+          id: 123,
+          name: "party",
+          image_url: "/uploads/emojis/123.webp?v=10",
+          animated: false,
+          created_by_user_id: 1,
+          created_at: 10,
+          updated_at: 10,
+          deleted_at: null,
+        },
+      ],
+    });
+    mountWithCustomEmojiProvider();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Emojis" }));
+    await screen.findByText(":party:");
+
+    fireEvent.input(screen.getByLabelText(/rename :party:/i), {
+      target: { value: "renamed_party" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /save rename/i }));
+
+    await waitFor(() => {
+      expect(mswState().renamedCustomEmojis).toContainEqual({ id: 123, name: "renamed_party" });
+    });
+    expect(await screen.findByText(":renamed_party:")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/renamed to :renamed_party:/i);
+  });
+
+  test("Custom Emojis tab soft-deletes after confirmation and moves to deleted view", async () => {
+    const originalConfirm = window.confirm;
+    Object.defineProperty(window, "confirm", { configurable: true, value: vi.fn(() => true) });
+    resetMswState({
+      me: DEV_USER,
+      customEmojis: [
+        {
+          id: 123,
+          name: "party",
+          image_url: "/uploads/emojis/123.webp?v=10",
+          animated: false,
+          created_by_user_id: 1,
+          created_at: 10,
+          updated_at: 10,
+          deleted_at: null,
+        },
+      ],
+    });
+    mountWithCustomEmojiProvider();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Emojis" }));
+    await screen.findByText(":party:");
+    fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+
+    await waitFor(() => expect(mswState().deletedCustomEmojiIds).toContain(123));
+    expect(screen.getByText(/no active custom emojis/i)).toBeInTheDocument();
+    const deletedSection = screen.getByText(/deleted emojis/i).parentElement;
+    expect(deletedSection).not.toBeNull();
+    expect(within(deletedSection as HTMLElement).getByText(":party:")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^restore$/i })).toBeInTheDocument();
+    Object.defineProperty(window, "confirm", { configurable: true, value: originalConfirm });
+  });
+
+  test("Custom Emojis tab restores deleted emojis and shows conflicts", async () => {
+    resetMswState({
+      me: DEV_USER,
+      customEmojis: [
+        {
+          id: 123,
+          name: "party",
+          image_url: "/uploads/emojis/123.webp?v=10",
+          animated: false,
+          created_by_user_id: 1,
+          created_at: 10,
+          updated_at: 10,
+          deleted_at: 20,
+        },
+        {
+          id: 124,
+          name: "party",
+          image_url: "/uploads/emojis/124.webp?v=10",
+          animated: false,
+          created_by_user_id: 1,
+          created_at: 10,
+          updated_at: 10,
+          deleted_at: null,
+        },
+      ],
+    });
+    mountWithCustomEmojiProvider();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Emojis" }));
+    await screen.findAllByText(":party:");
+    fireEvent.click(screen.getByRole("button", { name: /^restore$/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/custom emoji name already exists/i);
+
+    const originalConfirm = window.confirm;
+    Object.defineProperty(window, "confirm", { configurable: true, value: vi.fn(() => true) });
+    fireEvent.click(screen.getAllByRole("button", { name: /^delete$/i })[0]);
+    await waitFor(() => expect(mswState().deletedCustomEmojiIds).toContain(124));
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^restore$/i })[0]);
+    await waitFor(() => expect(mswState().restoredCustomEmojiIds).toContain(123));
+    Object.defineProperty(window, "confirm", { configurable: true, value: originalConfirm });
+  });
+
+  test("Custom Emojis tab shows rename conflicts", async () => {
+    resetMswState({
+      me: DEV_USER,
+      customEmojis: [
+        {
+          id: 123,
+          name: "party",
+          image_url: "/uploads/emojis/123.webp?v=10",
+          animated: false,
+          created_by_user_id: 1,
+          created_at: 10,
+          updated_at: 10,
+          deleted_at: null,
+        },
+        {
+          id: 124,
+          name: "KEKW",
+          image_url: "/uploads/emojis/124.webp?v=10",
+          animated: false,
+          created_by_user_id: 1,
+          created_at: 10,
+          updated_at: 10,
+          deleted_at: null,
+        },
+      ],
+    });
+    mountWithCustomEmojiProvider();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Emojis" }));
+    await screen.findByText(":party:");
+
+    fireEvent.input(screen.getByLabelText(/rename :party:/i), { target: { value: "kekW" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /save rename/i })[0]);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/custom emoji name already exists/i);
+    expect(screen.getByText(":party:")).toBeInTheDocument();
+  });
+
+  test("Custom Emojis tab shows an error state from the registry", async () => {
+    resetMswState({ me: DEV_USER });
+    server.use(
+      http.get("http://127.0.0.1:3030/emojis", () => new HttpResponse(null, { status: 500 })),
+    );
+    mountWithCustomEmojiProvider();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Emojis" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not load custom emojis/i);
   });
 
   test("has no axe violations when open on the Profile tab", async () => {

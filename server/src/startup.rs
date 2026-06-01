@@ -8,13 +8,13 @@ use actix_web::{App, HttpServer, middleware::from_fn, web, web::Data};
 use sea_orm::DatabaseConnection;
 use tracing_actix_web::TracingLogger;
 
-use crate::api;
 use crate::api::avatars::AvatarStorage;
 use crate::api::messages::EmbedFetcher;
 use crate::broadcast::Broadcaster;
 use crate::config::Config;
 use crate::middleware;
 use crate::voice::{VoiceConfig, VoiceState};
+use crate::{EmojiStorage, api};
 
 /// Bag of `web::Data` that every sub-router needs. Constructed once in
 /// `start_server` (or in tests) and cloned into the closure that builds
@@ -26,6 +26,7 @@ pub struct AppDeps {
     pub voice_cfg: Data<Option<VoiceConfig>>,
     pub voice_state: Data<VoiceState>,
     pub embed_fetcher: Data<EmbedFetcher>,
+    pub emoji_storage: Data<EmojiStorage>,
 }
 
 /// Default-flavoured deps for tests/hosts that don't need voice. Voice
@@ -38,6 +39,9 @@ pub fn deps_for_tests(db: DatabaseConnection, broadcaster: Arc<Broadcaster>) -> 
         voice_cfg: Data::new(None::<VoiceConfig>),
         voice_state: Data::new(VoiceState::new()),
         embed_fetcher: Data::new(EmbedFetcher::Disabled),
+        emoji_storage: Data::new(EmojiStorage {
+            dir: std::env::temp_dir(),
+        }),
     }
 }
 
@@ -50,6 +54,7 @@ pub fn configure_app(cfg: &mut web::ServiceConfig, deps: AppDeps) {
         .app_data(deps.voice_cfg.clone())
         .app_data(deps.voice_state.clone())
         .app_data(deps.embed_fetcher.clone())
+        .app_data(deps.emoji_storage.clone())
         // Public auth surface
         .configure(api::auth::configure_public)
         // LiveKit webhooks authenticate via signed JWT in the body, not a
@@ -63,7 +68,8 @@ pub fn configure_app(cfg: &mut web::ServiceConfig, deps: AppDeps) {
                 .configure(api::channels::configure)
                 .configure(api::voice::configure_authed)
                 .configure(api::auth::configure_authed)
-                .configure(api::avatars::configure),
+                .configure(api::avatars::configure)
+                .configure(api::emoji::configure),
         );
 }
 
@@ -75,8 +81,13 @@ pub async fn start_server(
     broadcaster: Arc<Broadcaster>,
 ) -> std::io::Result<()> {
     let avatars_dir = config.uploads_dir.join(crate::api::avatars::AVATARS_SUBDIR);
+    let emojis_dir = config.uploads_dir.join(crate::api::emoji::EMOJIS_SUBDIR);
     std::fs::create_dir_all(&avatars_dir)?;
+    std::fs::create_dir_all(&emojis_dir)?;
     let avatar_storage = Data::new(AvatarStorage {
+        dir: config.uploads_dir.clone(),
+    });
+    let emoji_storage = Data::new(EmojiStorage {
         dir: config.uploads_dir.clone(),
     });
 
@@ -96,6 +107,7 @@ pub async fn start_server(
         } else {
             EmbedFetcher::Disabled
         }),
+        emoji_storage: emoji_storage.clone(),
     };
 
     let bind_addr = config.bind_addr.clone();

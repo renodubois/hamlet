@@ -28,6 +28,18 @@ const EMOJIS: readonly EmojiEntry[] = [
     shortcodes: [":white_check_mark:"],
     category: "Symbols",
   },
+  {
+    kind: "custom",
+    emoji: "<:party_parrot:123>",
+    shortcodes: [":party_parrot:"],
+    category: "Custom",
+    id: 123,
+    name: "party_parrot",
+    marker: "<:party_parrot:123>",
+    imageUrl: "/uploads/emojis/123.webp?v=1",
+    animated: false,
+    deletedAt: null,
+  },
 ];
 
 const emojiGlyphs = (emojis: readonly EmojiEntry[]) => emojis.map((emoji) => emoji.emoji);
@@ -60,6 +72,11 @@ describe("emoji search", () => {
   test("matches partial shortcodes", () => {
     expect(emojiGlyphs(searchEmojis("smi", EMOJIS))).toEqual(["😄"]);
     expect(emojiGlyphs(searchEmojis("thumb", EMOJIS))).toEqual(["👍", "👎"]);
+  });
+
+  test("matches custom emoji shortcodes with the native search normalization", () => {
+    expect(emojiGlyphs(searchEmojis("party parrot", EMOJIS))).toEqual(["<:party_parrot:123>"]);
+    expect(emojiGlyphs(searchEmojis(":PARTY-PARROT:", EMOJIS))).toEqual(["<:party_parrot:123>"]);
   });
 
   test("matches symbolic shortcodes without collapsing signs", () => {

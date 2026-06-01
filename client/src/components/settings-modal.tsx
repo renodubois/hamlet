@@ -1,5 +1,13 @@
 import { createEffect, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
-import { deleteAvatar, updateDisplayName, uploadAvatar, type User } from "../api";
+import {
+  deleteAvatar,
+  getServerUrl,
+  updateDisplayName,
+  uploadAvatar,
+  type CustomEmoji,
+  type User,
+} from "../api";
+import { useCustomEmojis } from "../contexts/custom-emojis";
 import { DISPLAY_NAME_MAX_LEN } from "../constants";
 import Avatar from "./avatar";
 import CropperDialog from "./cropper-dialog";
@@ -7,13 +15,18 @@ import { LogOutIcon } from "./icons";
 import Modal from "./modal";
 import VoiceSettings from "./voice-settings";
 
-type SectionId = "profile" | "voice";
+type SectionId = "profile" | "voice" | "emojis";
 
 interface Section {
   id: SectionId;
   label: string;
   tabId: string;
   panelId: string;
+}
+
+function resolveImageUrl(url: string): string {
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  return `${getServerUrl()}${url}`;
 }
 
 const SECTIONS: Section[] = [
@@ -29,7 +42,443 @@ const SECTIONS: Section[] = [
     tabId: "settings-tab-voice",
     panelId: "settings-panel-voice",
   },
+  {
+    id: "emojis",
+    label: "Custom Emojis",
+    tabId: "settings-tab-emojis",
+    panelId: "settings-panel-emojis",
+  },
 ];
+
+function CustomEmojiRow(props: {
+  emoji: CustomEmoji;
+  onRename: (id: number, name: string) => Promise<CustomEmoji>;
+  onDelete: (id: number) => Promise<CustomEmoji>;
+  onRestore: (id: number) => Promise<CustomEmoji>;
+  status?: string | null;
+}) {
+  const [draft, setDraft] = createSignal(props.emoji.name);
+  const [saving, setSaving] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
+  const [success, setSuccess] = createSignal<string | null>(null);
+  const [actionBusy, setActionBusy] = createSignal(false);
+  const [actionError, setActionError] = createSignal<string | null>(null);
+  const trimmedDraft = () => draft().trim();
+  const draftValid = () => /^[A-Za-z0-9_]{2,32}$/.test(trimmedDraft());
+  const changed = () => trimmedDraft() !== props.emoji.name;
+  const canSave = () => changed() && draftValid() && !saving();
+
+  createEffect(() => {
+    setDraft(props.emoji.name);
+  });
+
+  const save = async (ev: SubmitEvent) => {
+    ev.preventDefault();
+    if (!canSave()) return;
+    setSaving(true);
+    setError(null);
+    setSuccess(null);
+    setActionError(null);
+    try {
+      const updated = await props.onRename(props.emoji.id, trimmedDraft());
+      setSuccess(`Renamed to :${updated.name}:`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Emoji rename failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const requestDelete = async () => {
+    const ok = window.confirm(`Delete :${props.emoji.name}:? Old messages will still render it.`);
+    if (!ok) return;
+    setActionBusy(true);
+    setActionError(null);
+    setSuccess(null);
+    try {
+      await props.onDelete(props.emoji.id);
+      setSuccess(`Deleted :${props.emoji.name}:`);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Emoji delete failed");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const restore = async () => {
+    setActionBusy(true);
+    setActionError(null);
+    setSuccess(null);
+    try {
+      const restored = await props.onRestore(props.emoji.id);
+      setSuccess(`Restored :${restored.name}:`);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Emoji restore failed");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  return (
+    <div
+      role="group"
+      aria-label={`Custom emoji :${props.emoji.name}: ${props.emoji.deleted_at === null ? "active" : "deleted"}`}
+      class="flex items-center gap-3 px-3 py-2"
+    >
+      <img
+        src={resolveImageUrl(props.emoji.image_url)}
+        alt={`:${props.emoji.name}:`}
+        class="h-8 w-8 rounded object-contain bg-gray-900"
+      />
+      <div class="min-w-0 flex-1">
+        <p class="font-medium text-gray-100 truncate">:{props.emoji.name}:</p>
+        <p class="text-xs text-gray-500">ID {props.emoji.id}</p>
+        <form class="mt-2 flex flex-wrap items-center gap-2" onSubmit={save}>
+          <label for={`custom-emoji-rename-${props.emoji.id}`} class="sr-only">
+            Rename :{props.emoji.name}:
+          </label>
+          <input
+            id={`custom-emoji-rename-${props.emoji.id}`}
+            type="text"
+            class="w-40 rounded-md border border-gray-600 bg-gray-700 px-2 py-1 text-xs text-gray-100 focus:border-blue-500 focus:outline-none"
+            value={draft()}
+            onInput={(e) => {
+              setError(null);
+              setSuccess(null);
+              setDraft(e.currentTarget.value);
+            }}
+            aria-label={`Rename :${props.emoji.name}:`}
+            disabled={saving()}
+          />
+          <button
+            type="submit"
+            class="rounded bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            disabled={!canSave()}
+          >
+            {saving() ? "Renaming..." : "Save rename"}
+          </button>
+        </form>
+        <Show when={trimmedDraft().length > 0 && !draftValid()}>
+          <p class="mt-1 text-xs text-red-300">Use 2–32 letters, numbers, or underscores.</p>
+        </Show>
+        <Show when={error()}>
+          {(msg) => (
+            <p role="alert" class="mt-1 text-xs text-red-300">
+              {msg()}
+            </p>
+          )}
+        </Show>
+        <Show when={actionError()}>
+          {(msg) => (
+            <p role="alert" class="mt-1 text-xs text-red-300">
+              {msg()}
+            </p>
+          )}
+        </Show>
+        <Show when={success() ?? props.status}>
+          {(msg) => (
+            <p role="status" class="mt-1 text-xs text-green-300">
+              {msg()}
+            </p>
+          )}
+        </Show>
+      </div>
+      <div class="ml-auto flex flex-col items-end gap-2">
+        <div class="flex gap-2">
+          <span class="rounded bg-gray-700 px-2 py-0.5 text-xs text-gray-300">
+            {props.emoji.animated ? "animated" : "static"}
+          </span>
+          <Show when={props.emoji.deleted_at}>
+            <span class="rounded bg-red-950 px-2 py-0.5 text-xs text-red-200">deleted</span>
+          </Show>
+        </div>
+        <Show
+          when={props.emoji.deleted_at !== null}
+          fallback={
+            <button
+              type="button"
+              class="rounded bg-red-900 px-2 py-1 text-xs font-medium text-red-100 hover:bg-red-800 disabled:opacity-50"
+              onClick={() => void requestDelete()}
+              disabled={actionBusy()}
+            >
+              {actionBusy() ? "Deleting..." : "Delete"}
+            </button>
+          }
+        >
+          <button
+            type="button"
+            class="rounded bg-green-700 px-2 py-1 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50"
+            onClick={() => void restore()}
+            disabled={actionBusy()}
+          >
+            {actionBusy() ? "Restoring..." : "Restore"}
+          </button>
+        </Show>
+      </div>
+    </div>
+  );
+}
+
+function CustomEmojiSettings() {
+  const registry = useCustomEmojis();
+  const all = () => registry.allEmojis() ?? [];
+  const active = registry.activeEmojis;
+  const deleted = () => all().filter((emoji) => emoji.deleted_at !== null);
+  const deletedCount = () => deleted().length;
+  const [name, setName] = createSignal("");
+  const [file, setFile] = createSignal<File | null>(null);
+  const [previewUrl, setPreviewUrl] = createSignal<string | null>(null);
+  const [uploading, setUploading] = createSignal(false);
+  const [uploadError, setUploadError] = createSignal<string | null>(null);
+  const [rowStatuses, setRowStatuses] = createSignal<Record<number, string>>({});
+  const nameHelpId = "custom-emoji-name-help";
+  const fileHelpId = "custom-emoji-file-help";
+  const allowedTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+  const trimmedName = () => name().trim();
+  const nameLooksValid = () => /^[A-Za-z0-9_]{2,32}$/.test(trimmedName());
+  const fileLooksValid = () => {
+    const selected = file();
+    return !!selected && allowedTypes.includes(selected.type);
+  };
+  const canSubmit = () => nameLooksValid() && fileLooksValid() && !uploading();
+
+  let currentPreviewUrl: string | null = null;
+  createEffect(() => {
+    const selected = file();
+    if (currentPreviewUrl) {
+      URL.revokeObjectURL?.(currentPreviewUrl);
+      currentPreviewUrl = null;
+    }
+
+    if (selected && typeof URL.createObjectURL === "function") {
+      currentPreviewUrl = URL.createObjectURL(selected);
+      setPreviewUrl(currentPreviewUrl);
+    } else {
+      setPreviewUrl(null);
+    }
+  });
+  onCleanup(() => {
+    if (currentPreviewUrl) URL.revokeObjectURL?.(currentPreviewUrl);
+  });
+
+  const setRowStatus = (id: number, message: string) => {
+    setRowStatuses((current) => ({ ...current, [id]: message }));
+  };
+
+  const renameEmoji = async (id: number, nextName: string) => {
+    const emoji = await registry.rename(id, nextName);
+    setRowStatus(id, `Renamed to :${emoji.name}:`);
+    return emoji;
+  };
+
+  const deleteEmoji = async (id: number) => {
+    const emoji = await registry.remove(id);
+    setRowStatus(id, `Deleted :${emoji.name}:`);
+    return emoji;
+  };
+
+  const restoreEmoji = async (id: number) => {
+    const emoji = await registry.restore(id);
+    setRowStatus(id, `Restored :${emoji.name}:`);
+    return emoji;
+  };
+
+  const handleFilePicked = (ev: Event & { currentTarget: HTMLInputElement }) => {
+    setUploadError(null);
+    setFile(ev.currentTarget.files?.[0] ?? null);
+  };
+
+  const submit = async (ev: SubmitEvent) => {
+    ev.preventDefault();
+    if (!canSubmit()) return;
+    const selected = file();
+    if (!selected) return;
+
+    setUploading(true);
+    setUploadError(null);
+    try {
+      await registry.create(trimmedName(), selected);
+      setName("");
+      setFile(null);
+      const input = document.getElementById("custom-emoji-file") as HTMLInputElement | null;
+      if (input) input.value = "";
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Emoji upload failed");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div class="flex flex-col gap-4" aria-live="polite">
+      <div>
+        <h3 class="text-base font-semibold text-gray-100">Custom Emojis</h3>
+        <p class="text-xs text-gray-400">
+          Upload PNG, JPEG, static WebP, animated GIF, or animated WebP files. Static uploads are
+          normalized to 256×256 WebP; animated uploads keep their original animation.
+        </p>
+      </div>
+
+      <form
+        class="rounded-md border border-gray-700 bg-gray-800/40 p-3 flex flex-col gap-3"
+        onSubmit={submit}
+      >
+        <div>
+          <label for="custom-emoji-name" class="text-sm font-medium text-gray-200">
+            Emoji name
+          </label>
+          <input
+            id="custom-emoji-name"
+            type="text"
+            class="mt-1 w-full bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:border-blue-500 focus:outline-none"
+            value={name()}
+            onInput={(e) => {
+              setUploadError(null);
+              setName(e.currentTarget.value);
+            }}
+            aria-describedby={nameHelpId}
+            disabled={uploading()}
+          />
+          <p id={nameHelpId} class="mt-1 text-xs text-gray-400">
+            2–32 letters, numbers, or underscores.
+          </p>
+          <Show when={trimmedName().length > 0 && !nameLooksValid()}>
+            <p class="mt-1 text-xs text-red-300">Use 2–32 letters, numbers, or underscores.</p>
+          </Show>
+        </div>
+
+        <div>
+          <label for="custom-emoji-file" class="text-sm font-medium text-gray-200">
+            Image file
+          </label>
+          <input
+            id="custom-emoji-file"
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            class="mt-1 block w-full text-sm text-gray-200 file:mr-3 file:rounded-md file:border-0 file:bg-blue-600 file:px-3 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-blue-700"
+            aria-describedby={fileHelpId}
+            onChange={handleFilePicked}
+            disabled={uploading()}
+          />
+          <p id={fileHelpId} class="mt-1 text-xs text-gray-400">
+            PNG, JPEG, static WebP, animated GIF, or animated WebP. Maximum upload size is 2 MiB.
+          </p>
+          <Show when={file() && !fileLooksValid()}>
+            <p class="mt-1 text-xs text-red-300">
+              Choose a PNG, JPEG, static WebP, animated GIF, or animated WebP image.
+            </p>
+          </Show>
+          <Show when={file() && previewUrl()}>
+            {(url) => (
+              <div class="mt-2 flex items-center gap-2 rounded border border-gray-700 bg-gray-900/60 p-2">
+                <img
+                  src={url()}
+                  alt="Selected custom emoji preview"
+                  class="h-10 w-10 rounded object-contain bg-gray-950"
+                />
+                <p class="text-xs text-gray-400">Preview uses the original selected file.</p>
+              </div>
+            )}
+          </Show>
+        </div>
+
+        <Show when={uploadError()}>
+          {(msg) => (
+            <p role="alert" class="text-sm text-red-300">
+              {msg()}
+            </p>
+          )}
+        </Show>
+
+        <button
+          type="submit"
+          class="self-start bg-blue-600 hover:bg-blue-700 text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
+          disabled={!canSubmit()}
+        >
+          {uploading() ? "Uploading..." : "Upload emoji"}
+        </button>
+      </form>
+
+      <Show when={registry.allEmojis.loading}>
+        <p class="text-gray-400">Loading custom emojis...</p>
+      </Show>
+
+      <Show when={registry.error()}>
+        <div role="alert" class="rounded-md border border-red-900 bg-red-950/40 p-3 text-red-200">
+          <p class="font-medium">Could not load custom emojis.</p>
+          <button
+            type="button"
+            class="mt-2 text-sm text-red-100 underline hover:text-white"
+            onClick={registry.refresh}
+          >
+            Try again
+          </button>
+        </div>
+      </Show>
+
+      <Show when={!registry.allEmojis.loading && !registry.error()}>
+        <Show
+          when={all().length > 0}
+          fallback={
+            <div class="rounded-md border border-dashed border-gray-600 bg-gray-800/50 p-4">
+              <p class="font-medium text-gray-100">No custom emojis yet</p>
+              <p class="mt-1 text-gray-400">
+                Uploaded emojis will be listed here for picker use and message rendering.
+              </p>
+            </div>
+          }
+        >
+          <div class="flex flex-col gap-4">
+            <section class="rounded-md border border-gray-700 divide-y divide-gray-700">
+              <div class="px-3 py-2 text-xs text-gray-400">
+                Active emojis: {active().length} / {all().length} total
+                <Show when={deletedCount() > 0}> ({deletedCount()} deleted)</Show>
+              </div>
+              <Show
+                when={active().length > 0}
+                fallback={<p class="px-3 py-3 text-sm text-gray-400">No active custom emojis.</p>}
+              >
+                <For each={active()}>
+                  {(emoji) => (
+                    <CustomEmojiRow
+                      emoji={emoji}
+                      onRename={renameEmoji}
+                      onDelete={deleteEmoji}
+                      onRestore={restoreEmoji}
+                      status={rowStatuses()[emoji.id] ?? null}
+                    />
+                  )}
+                </For>
+              </Show>
+            </section>
+
+            <section class="rounded-md border border-gray-700 divide-y divide-gray-700">
+              <div class="px-3 py-2 text-xs font-medium uppercase tracking-wide text-gray-400">
+                Deleted emojis
+              </div>
+              <Show
+                when={deleted().length > 0}
+                fallback={<p class="px-3 py-3 text-sm text-gray-400">No deleted custom emojis.</p>}
+              >
+                <For each={deleted()}>
+                  {(emoji) => (
+                    <CustomEmojiRow
+                      emoji={emoji}
+                      onRename={renameEmoji}
+                      onDelete={deleteEmoji}
+                      onRestore={restoreEmoji}
+                      status={rowStatuses()[emoji.id] ?? null}
+                    />
+                  )}
+                </For>
+              </Show>
+            </section>
+          </div>
+        </Show>
+      </Show>
+    </div>
+  );
+}
 
 export default function SettingsModal(props: {
   open: boolean;
@@ -291,6 +740,9 @@ export default function SettingsModal(props: {
               </Match>
               <Match when={section() === "voice"}>
                 <VoiceSettings />
+              </Match>
+              <Match when={section() === "emojis"}>
+                <CustomEmojiSettings />
               </Match>
             </Switch>
           </div>

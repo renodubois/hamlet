@@ -102,7 +102,7 @@ export default function Modal(props: {
           aria-modal="true"
           aria-labelledby={titleId}
           tabindex="-1"
-          class={`bg-gray-800 text-gray-100 rounded-lg p-6 shadow-xl outline-none ${sizeClass()}`}
+          class={`max-h-[90vh] overflow-y-auto bg-gray-800 text-gray-100 rounded-lg p-6 shadow-xl outline-none ${sizeClass()}`}
         >
           <div class="flex items-center justify-between mb-4">
             <h2 id={titleId} class="text-lg font-semibold">

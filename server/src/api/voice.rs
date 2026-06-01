@@ -405,6 +405,9 @@ mod tests {
             voice_cfg: web::Data::new(Some(voice_cfg)),
             voice_state: web::Data::new(VoiceState::new()),
             embed_fetcher: web::Data::new(EmbedFetcher::Disabled),
+            emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
+                dir: std::env::temp_dir(),
+            }),
         };
         let app =
             test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
@@ -449,6 +452,9 @@ mod tests {
             voice_cfg: web::Data::new(Some(voice_cfg.clone())),
             voice_state: web::Data::new(VoiceState::new()),
             embed_fetcher: web::Data::new(EmbedFetcher::Disabled),
+            emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
+                dir: std::env::temp_dir(),
+            }),
         };
         let app =
             test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
@@ -500,6 +506,9 @@ mod tests {
             voice_cfg: web::Data::new(None),
             voice_state: web::Data::new(VoiceState::new()),
             embed_fetcher: web::Data::new(EmbedFetcher::Disabled),
+            emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
+                dir: std::env::temp_dir(),
+            }),
         };
         let app =
             test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
@@ -538,6 +547,9 @@ mod tests {
             voice_cfg: web::Data::new(None),
             voice_state: web::Data::new(voice_state),
             embed_fetcher: web::Data::new(EmbedFetcher::Disabled),
+            emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
+                dir: std::env::temp_dir(),
+            }),
         };
         let app =
             test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
@@ -575,6 +587,9 @@ mod tests {
             voice_cfg: web::Data::new(None),
             voice_state: web::Data::new(VoiceState::new()),
             embed_fetcher: web::Data::new(EmbedFetcher::Disabled),
+            emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
+                dir: std::env::temp_dir(),
+            }),
         };
         let app =
             test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))

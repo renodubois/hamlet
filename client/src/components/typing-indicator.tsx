@@ -59,25 +59,31 @@ export default function TypingIndicator(props: Props) {
     });
   };
 
+  const unsubscribers: Array<() => void> = [];
+  let timer: number | undefined;
+
   onMount(() => {
-    const unsubTyping = props.events.onUserTyping((t: UserTyping) => {
-      if (t.channel_id !== props.channelId) return;
-      if (props.currentUserId !== null && t.user_id === props.currentUserId) return;
-      setEntries((prev) => ({
-        ...prev,
-        [t.user_id]: { username: t.username, lastSeen: now() },
-      }));
-    });
-    const unsubMessage = props.events.onMessage((m: Message) => {
-      if (m.channel_id !== props.channelId) return;
-      clearUser(m.user_id);
-    });
-    const timer = window.setInterval(prune, TYPING_SWEEP_MS);
-    onCleanup(() => {
-      unsubTyping();
-      unsubMessage();
-      window.clearInterval(timer);
-    });
+    unsubscribers.push(
+      props.events.onUserTyping((t: UserTyping) => {
+        if (t.channel_id !== props.channelId) return;
+        if (props.currentUserId !== null && t.user_id === props.currentUserId) return;
+        setEntries((prev) => ({
+          ...prev,
+          [t.user_id]: { username: t.username, lastSeen: now() },
+        }));
+      }),
+      props.events.onMessage((m: Message) => {
+        if (m.channel_id !== props.channelId) return;
+        clearUser(m.user_id);
+      }),
+    );
+    timer = window.setInterval(prune, TYPING_SWEEP_MS);
+  });
+
+  onCleanup(() => {
+    unsubscribers.forEach((unsubscribe) => unsubscribe());
+    unsubscribers.length = 0;
+    if (timer !== undefined) window.clearInterval(timer);
   });
 
   const usernames = () =>

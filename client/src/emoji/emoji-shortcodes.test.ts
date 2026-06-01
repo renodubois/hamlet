@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
+import type { EmojiEntry } from "./emoji-data";
 import {
+  createEmojiShortcodeLookup,
   lookupEmojiShortcode,
   replaceCompletedEmojiShortcodeBeforeCaret,
 } from "./emoji-shortcodes";
@@ -7,6 +9,21 @@ import {
 function replaceAtEnd(value: string) {
   return replaceCompletedEmojiShortcodeBeforeCaret(value, value.length);
 }
+
+const CUSTOM_EMOJIS: readonly EmojiEntry[] = [
+  {
+    kind: "custom",
+    emoji: "<:party:123>",
+    shortcodes: [":party:"],
+    category: "Custom",
+    id: 123,
+    name: "party",
+    marker: "<:party:123>",
+    imageUrl: "/uploads/emojis/123.webp?v=1",
+    animated: false,
+    deletedAt: null,
+  },
+];
 
 describe("emoji shortcode replacement", () => {
   test("looks up exact built-in aliases case-insensitively", () => {
@@ -49,6 +66,24 @@ describe("emoji shortcode replacement", () => {
       replaced: true,
     });
     expect(replaceAtEnd("ship it :+1::white_check_mark:").value).toBe("ship it 👍✅");
+  });
+
+  test("maps active custom emoji shortcodes to durable markers", () => {
+    const lookup = createEmojiShortcodeLookup(CUSTOM_EMOJIS);
+
+    expect(lookupEmojiShortcode(":PARTY:", lookup)).toBe("<:party:123>");
+    expect(replaceCompletedEmojiShortcodeBeforeCaret("hello :party:", undefined, lookup)).toEqual({
+      value: "hello <:party:123>",
+      caretIndex: "hello <:party:123>".length,
+      replaced: true,
+    });
+    expect(
+      replaceCompletedEmojiShortcodeBeforeCaret("<:party:123>:party:", undefined, lookup),
+    ).toEqual({
+      value: "<:party:123><:party:123>",
+      caretIndex: "<:party:123><:party:123>".length,
+      replaced: true,
+    });
   });
 
   test("supports start, whitespace, opening-punctuation, and emoji boundaries", () => {

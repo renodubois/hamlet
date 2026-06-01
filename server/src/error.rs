@@ -25,6 +25,18 @@ pub enum AppError {
     InvalidCredentials,
     #[error("username already taken")]
     UsernameTaken,
+    #[error("custom emoji name already exists")]
+    EmojiNameTaken,
+    #[error("emoji name is required")]
+    EmojiNameRequired,
+    #[error(
+        "emoji name must be 2 to 32 characters and contain only letters, numbers, or underscores"
+    )]
+    InvalidEmojiName,
+    #[error("emoji image file is required")]
+    EmojiFileRequired,
+    #[error("emoji image must be a PNG, JPEG, static WebP, animated GIF, or animated WebP")]
+    UnsupportedEmojiFile,
     #[error("forbidden")]
     Forbidden,
     #[error("payload too large")]
@@ -51,6 +63,11 @@ impl AppError {
             AppError::Unauthorized => "unauthorized",
             AppError::InvalidCredentials => "invalid_credentials",
             AppError::UsernameTaken => "username_taken",
+            AppError::EmojiNameTaken => "emoji_name_taken",
+            AppError::EmojiNameRequired => "emoji_name_required",
+            AppError::InvalidEmojiName => "invalid_emoji_name",
+            AppError::EmojiFileRequired => "emoji_file_required",
+            AppError::UnsupportedEmojiFile => "unsupported_emoji_file",
             AppError::Forbidden => "forbidden",
             AppError::PayloadTooLarge => "payload_too_large",
             AppError::ServiceUnavailable => "service_unavailable",
@@ -86,11 +103,16 @@ struct ErrorDetails<'a> {
 impl ResponseError for AppError {
     fn status_code(&self) -> StatusCode {
         match self {
-            AppError::NoChannelFound | AppError::InvalidRequest => StatusCode::BAD_REQUEST,
+            AppError::NoChannelFound
+            | AppError::InvalidRequest
+            | AppError::EmojiNameRequired
+            | AppError::InvalidEmojiName
+            | AppError::EmojiFileRequired
+            | AppError::UnsupportedEmojiFile => StatusCode::BAD_REQUEST,
             AppError::Unauthorized | AppError::InvalidCredentials => StatusCode::UNAUTHORIZED,
             AppError::Forbidden => StatusCode::FORBIDDEN,
             AppError::NotFound => StatusCode::NOT_FOUND,
-            AppError::UsernameTaken => StatusCode::CONFLICT,
+            AppError::UsernameTaken | AppError::EmojiNameTaken => StatusCode::CONFLICT,
             AppError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             AppError::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Db(_) | AppError::Json(_) | AppError::Io(_) | AppError::Internal(_) => {

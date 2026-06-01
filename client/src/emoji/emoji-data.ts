@@ -6,12 +6,20 @@ export type EmojiCategory =
   | "Travel & Places"
   | "Activities"
   | "Objects"
-  | "Symbols";
+  | "Symbols"
+  | "Custom";
 
 export interface EmojiEntry {
+  kind?: "native" | "custom";
   emoji: string;
   shortcodes: string[];
   category: EmojiCategory;
+  id?: number;
+  name?: string;
+  marker?: string;
+  imageUrl?: string;
+  animated?: boolean;
+  deletedAt?: number | null;
 }
 
 const CATEGORY_BY_CODE = {

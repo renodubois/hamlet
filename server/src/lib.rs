@@ -20,6 +20,7 @@ pub mod voice;
 
 // Stable surface for binaries and integration tests.
 pub use api::avatars::AvatarStorage;
+pub use api::emoji::EmojiStorage;
 pub use api::messages::EmbedFetcher;
 pub use config::Config;
 pub use database::connect_database;

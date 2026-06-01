@@ -8,7 +8,8 @@ use sea_orm::{ActiveModelTrait, Database, DatabaseConnection, Set};
 
 use hamlet::voice::{VoiceConfig, VoiceState};
 use hamlet::{
-    AppDeps, AvatarStorage, EmbedFetcher, auth, broadcast::Broadcaster, entity, generate_id,
+    AppDeps, AvatarStorage, EmbedFetcher, EmojiStorage, auth, broadcast::Broadcaster, entity,
+    generate_id,
 };
 
 /// Bag of state every integration test needs: the DB, a seeded text channel,
@@ -65,6 +66,9 @@ impl TestCtx {
             voice_cfg: web::Data::new(self.voice_cfg.clone()),
             voice_state: web::Data::from(self.voice_state.clone()),
             embed_fetcher: web::Data::new(EmbedFetcher::Disabled),
+            emoji_storage: web::Data::new(EmojiStorage {
+                dir: self.uploads_dir.clone().unwrap_or_else(std::env::temp_dir),
+            }),
         }
     }
 

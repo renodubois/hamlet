@@ -59,32 +59,33 @@ export default function ChannelView() {
     void sendTyping(params.id);
   };
 
+  const eventUnsubscribers: Array<() => void> = [];
   onMount(() => {
-    const unsubCreated = events.onMessage((m) => {
-      if (String(m.channel_id) !== params.id) return;
-      setMessages(messages.length, m);
-    });
-    const unsubUpdated = events.onMessageUpdated((m) => {
-      if (String(m.channel_id) !== params.id) return;
-      setMessages((existing) => existing.id === m.id, m);
-    });
-    const unsubDeleted = events.onMessageDeleted((d) => {
-      if (String(d.channel_id) !== params.id) return;
-      setMessages((arr) => arr.filter((existing) => existing.id !== d.id));
-    });
-    const unsubEmbeds = events.onMessageEmbedsUpdated((e) => {
-      if (String(e.channel_id) !== params.id) return;
-      setMessages((existing) => existing.id === e.id, {
-        suppress_embeds: e.suppress_embeds,
-        embeds: e.embeds,
-      });
-    });
-    onCleanup(() => {
-      unsubCreated();
-      unsubUpdated();
-      unsubDeleted();
-      unsubEmbeds();
-    });
+    eventUnsubscribers.push(
+      events.onMessage((m) => {
+        if (String(m.channel_id) !== params.id) return;
+        setMessages(messages.length, m);
+      }),
+      events.onMessageUpdated((m) => {
+        if (String(m.channel_id) !== params.id) return;
+        setMessages((existing) => existing.id === m.id, m);
+      }),
+      events.onMessageDeleted((d) => {
+        if (String(d.channel_id) !== params.id) return;
+        setMessages((arr) => arr.filter((existing) => existing.id !== d.id));
+      }),
+      events.onMessageEmbedsUpdated((e) => {
+        if (String(e.channel_id) !== params.id) return;
+        setMessages((existing) => existing.id === e.id, {
+          suppress_embeds: e.suppress_embeds,
+          embeds: e.embeds,
+        });
+      }),
+    );
+  });
+  onCleanup(() => {
+    eventUnsubscribers.forEach((unsubscribe) => unsubscribe());
+    eventUnsubscribers.length = 0;
   });
 
   // TODO(reno): Can the router ensure this parameter exists?

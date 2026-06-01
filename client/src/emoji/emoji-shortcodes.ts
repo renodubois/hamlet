@@ -9,6 +9,7 @@ export interface EmojiShortcodeReplacement {
 const OPENING_PUNCTUATION_BOUNDARIES = new Set(["(", "[", "{", "<", '"', "'", "`", "“", "‘"]);
 const TRAILING_EMOJI_MODIFIERS = /(?:[\uFE0E\uFE0F]|\p{Emoji_Modifier})+$/u;
 const TRAILING_EMOJI_VARIATION_SELECTOR = /\uFE0F(?:\p{Emoji_Modifier})*$/u;
+const TRAILING_CUSTOM_EMOJI_MARKER = /<(?:a?):[A-Za-z0-9_]{2,32}:\d{1,15}>$/;
 const EMOJI_PRESENTATION_CHARACTER = /\p{Emoji_Presentation}/u;
 const EXTENDED_PICTOGRAPHIC_CHARACTER = /\p{Extended_Pictographic}/u;
 
@@ -37,7 +38,8 @@ function hasValidShortcodeBoundary(value: string, tokenStart: number): boolean {
   return (
     /\s/.test(previousCharacter) ||
     OPENING_PUNCTUATION_BOUNDARIES.has(previousCharacter) ||
-    hasEmojiBoundary(value, tokenStart)
+    hasEmojiBoundary(value, tokenStart) ||
+    TRAILING_CUSTOM_EMOJI_MARKER.test(value.slice(0, tokenStart))
   );
 }
 
@@ -48,7 +50,8 @@ export function createEmojiShortcodeLookup(
 
   for (const entry of emojis) {
     for (const shortcode of entry.shortcodes) {
-      lookup.set(shortcode.toLowerCase(), entry.emoji);
+      const key = shortcode.toLowerCase();
+      if (!lookup.has(key)) lookup.set(key, entry.emoji);
     }
   }
 

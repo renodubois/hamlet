@@ -1,4 +1,10 @@
-import { expect, test as base, type ElectronApplication, type Page } from "@playwright/test";
+import {
+  expect,
+  test as base,
+  type ElectronApplication,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 import {
   externalUrls,
   firstHamletWindow,
@@ -13,6 +19,18 @@ type ElectronFixtures = {
   electronApp: ElectronApplication;
   appWindow: Page;
 };
+
+async function expectEditorValue(input: Locator, expected: string) {
+  await expect
+    .poll(() =>
+      input.evaluate((element) =>
+        "value" in element && typeof element.value === "string"
+          ? element.value
+          : element.textContent,
+      ),
+    )
+    .toBe(expected);
+}
 
 const test = base.extend<ElectronFixtures>({
   electronApp: async ({ browserName: _browserName }, use, testInfo) => {
@@ -44,7 +62,7 @@ test("logs in, auto-navigates, sends a message, clears the composer, and reloads
 
   const marker = `electron smoke ${Date.now()}`;
   await sendMessage(appWindow, marker);
-  await expect(appWindow.getByPlaceholder(/send a new message/i)).toHaveValue("");
+  await expectEditorValue(appWindow.getByPlaceholder(/send a new message/i), "");
 
   const deepRoute = appWindow.url();
   await appWindow.reload();

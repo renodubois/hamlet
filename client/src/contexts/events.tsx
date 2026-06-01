@@ -2,6 +2,7 @@ import { createContext, onCleanup, onMount, useContext, type JSX } from "solid-j
 import {
   messagesEventSource,
   type Channel,
+  type CustomEmoji,
   type Message,
   type MessageDeleted,
   type MessageEmbedsUpdated,
@@ -24,6 +25,9 @@ export interface EventsContextValue {
   onMessageEmbedsUpdated: (cb: Listener<MessageEmbedsUpdated>) => () => void;
   onChannelCreated: (cb: Listener<Channel>) => () => void;
   onChannelsReordered: (cb: Listener<Channel[]>) => () => void;
+  onEmojiCreated: (cb: Listener<CustomEmoji>) => () => void;
+  onEmojiUpdated: (cb: Listener<CustomEmoji>) => () => void;
+  onEmojiDeleted: (cb: Listener<CustomEmoji>) => () => void;
   onVoiceParticipantJoined: (cb: Listener<VoiceParticipant>) => () => void;
   onVoiceParticipantLeft: (cb: Listener<VoiceParticipantLeft>) => () => void;
   onVoiceParticipantSpeakingChanged: (cb: Listener<VoiceParticipantSpeaking>) => () => void;
@@ -85,6 +89,9 @@ export function EventsProvider(props: { children: JSX.Element }) {
     onMessageEmbedsUpdated: (cb) => subscribe("message_embeds_updated", cb),
     onChannelCreated: (cb) => subscribe("channel_created", cb),
     onChannelsReordered: (cb) => subscribe("channels_reordered", cb),
+    onEmojiCreated: (cb) => subscribe("emoji_created", cb),
+    onEmojiUpdated: (cb) => subscribe("emoji_updated", cb),
+    onEmojiDeleted: (cb) => subscribe("emoji_deleted", cb),
     onVoiceParticipantJoined: (cb) => subscribe("voice_participant_joined", cb),
     onVoiceParticipantLeft: (cb) => subscribe("voice_participant_left", cb),
     onVoiceParticipantSpeakingChanged: (cb) => subscribe("voice_participant_speaking_changed", cb),
@@ -94,8 +101,12 @@ export function EventsProvider(props: { children: JSX.Element }) {
   return <EventsContext.Provider value={value}>{props.children}</EventsContext.Provider>;
 }
 
+export function useOptionalEvents() {
+  return useContext(EventsContext);
+}
+
 export function useEvents() {
-  const ctx = useContext(EventsContext);
+  const ctx = useOptionalEvents();
   if (!ctx) throw new Error("useEvents must be used inside EventsProvider");
   return ctx;
 }

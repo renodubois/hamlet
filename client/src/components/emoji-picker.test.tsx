@@ -51,6 +51,30 @@ const EMOJIS: readonly EmojiEntry[] = [
     shortcodes: [":rocket:"],
     category: "Travel & Places",
   },
+  {
+    kind: "custom",
+    emoji: "<:party:123>",
+    shortcodes: [":party:"],
+    category: "Custom",
+    id: 123,
+    name: "party",
+    marker: "<:party:123>",
+    imageUrl: "/uploads/emojis/123.webp?v=1",
+    animated: false,
+    deletedAt: null,
+  },
+  {
+    kind: "custom",
+    emoji: "<a:dance:456>",
+    shortcodes: [":dance:"],
+    category: "Custom",
+    id: 456,
+    name: "dance",
+    marker: "<a:dance:456>",
+    imageUrl: "/uploads/emojis/456.gif?v=1",
+    animated: true,
+    deletedAt: null,
+  },
 ];
 
 const searchName = /search and select emoji/i;
@@ -226,6 +250,38 @@ describe("<EmojiPicker>", () => {
     expect(onSelect).toHaveBeenCalledWith("❤️");
     expect(onClose).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.queryByRole("dialog", { name: pickerName })).toBeNull());
+  });
+
+  test("renders custom emoji image results and selects their marker", async () => {
+    const onSelect = vi.fn();
+    renderHarness(true, onSelect);
+
+    const search = await screen.findByRole("combobox", { name: searchName });
+    fireEvent.input(search, { target: { value: "party" } });
+    const partyCell = getEmojiGridcell(":party:");
+    const image = partyCell.querySelector("img");
+
+    expect(image?.getAttribute("src")).toContain("/uploads/emojis/123.webp?v=1");
+    fireEvent.click(within(partyCell).getByRole("button", { name: /emoji :party:/i }));
+
+    expect(onSelect).toHaveBeenCalledWith("<:party:123>");
+  });
+
+  test("renders animated custom emoji affordance and selects its animated marker", async () => {
+    const onSelect = vi.fn();
+    renderHarness(true, onSelect);
+
+    const search = await screen.findByRole("combobox", { name: searchName });
+    fireEvent.input(search, { target: { value: "dance" } });
+    const danceCell = getEmojiGridcell(/animated emoji :dance:/i);
+    const image = danceCell.querySelector("img");
+
+    expect(image?.getAttribute("src")).toContain("/uploads/emojis/456.gif?v=1");
+    expect(danceCell).toHaveTextContent("A");
+    expect(getFooter()).toHaveTextContent("animated");
+    fireEvent.click(within(danceCell).getByRole("button", { name: /animated emoji :dance:/i }));
+
+    expect(onSelect).toHaveBeenCalledWith("<a:dance:456>");
   });
 
   test("arrows navigate the active emoji", async () => {

@@ -24,6 +24,7 @@ use tokio::{sync::mpsc, time::interval};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::api::channels::ChannelResponse;
+use crate::api::emoji::EmojiResponse;
 use crate::api::messages::{EmbedResponse, MessageResponse};
 use crate::error::AppError;
 use crate::voice::VoiceParticipant;
@@ -110,7 +111,6 @@ impl Broadcaster {
         future::join_all(send_futures).await;
     }
 
-    #[cfg(test)]
     pub fn test_client(&self) -> tokio::sync::mpsc::Receiver<actix_sse::Event> {
         let (tx, rx) = tokio::sync::mpsc::channel(10);
         if let Ok(mut g) = self.inner.lock() {
@@ -167,6 +167,9 @@ pub enum BroadcastEvent {
     MessageEmbedsUpdated(MessageEmbedsUpdatedEvent),
     ChannelCreated(ChannelResponse),
     ChannelsReordered(Vec<ChannelResponse>),
+    EmojiCreated(EmojiResponse),
+    EmojiUpdated(EmojiResponse),
+    EmojiDeleted(EmojiResponse),
     VoiceParticipantJoined(VoiceParticipant),
     VoiceParticipantLeft(VoiceParticipantLeftEvent),
     VoiceParticipantSpeakingChanged(VoiceParticipantSpeakingEvent),

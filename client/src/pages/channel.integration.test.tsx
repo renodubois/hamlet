@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, within } from "@solidjs/testing-lib
 import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
 import { AuthProvider } from "../contexts/auth";
 import { ChannelsProvider } from "../contexts/channels";
+import { CustomEmojisProvider } from "../contexts/custom-emojis";
 import { EventsProvider } from "../contexts/events";
 import { FakeEventSource, latestFakeEventSource } from "../test/msw/sse";
 import { mswState, resetMswState } from "../test/msw/server";
@@ -26,11 +27,13 @@ function mountAt(path: string) {
   return render(() => (
     <AuthProvider>
       <EventsProvider>
-        <ChannelsProvider>
-          <MemoryRouter history={history}>
-            <Route path="/channel/:id" component={ChannelView} />
-          </MemoryRouter>
-        </ChannelsProvider>
+        <CustomEmojisProvider>
+          <ChannelsProvider>
+            <MemoryRouter history={history}>
+              <Route path="/channel/:id" component={ChannelView} />
+            </MemoryRouter>
+          </ChannelsProvider>
+        </CustomEmojisProvider>
       </EventsProvider>
     </AuthProvider>
   ));
@@ -234,6 +237,42 @@ describe("Channel view integration", () => {
       });
     });
     await waitFor(() => expect(input.value).toBe(""));
+  });
+
+  test("sends selected custom emoji markers unchanged through the message API", async () => {
+    const state = seedAuthed();
+    state.customEmojis = [
+      {
+        id: 123,
+        name: "party",
+        image_url: "/uploads/emojis/123.webp?v=1",
+        animated: false,
+        created_by_user_id: DEV_USER.id,
+        created_at: 1,
+        updated_at: 1,
+        deleted_at: null,
+      },
+    ];
+    mountAt("/channel/100");
+
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "hello " } });
+    fireEvent.click(screen.getByRole("button", { name: /open emoji picker/i }));
+    const dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
+    fireEvent.input(within(dialog).getByRole("combobox", { name: /search and select emoji/i }), {
+      target: { value: "party" },
+    });
+    const partyCell = await within(dialog).findByRole("gridcell", { name: /emoji :party:/i });
+    fireEvent.click(within(partyCell).getByRole("button", { name: /emoji :party:/i }));
+    await waitFor(() => expect(input.value).toBe("hello <:party:123>"));
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+
+    await waitFor(() => {
+      expect(mswState().sentMessages).toContainEqual({
+        channel: "100",
+        text: "hello <:party:123>",
+      });
+    });
   });
 
   test("submitting closes an open emoji picker", async () => {
@@ -592,13 +631,10 @@ describe("Channel view integration", () => {
     ];
     mountAt("/channel/100");
 
-    const ownMessage = await screen.findByText("mine");
+    await screen.findByText("mine");
     await waitFor(() => {
-      fireEvent.contextMenu(ownMessage);
-      expect(screen.queryByRole("menuitem", { name: /edit message/i })).not.toBeNull();
+      expect(screen.getByRole("toolbar", { name: /message actions/i })).toBeInTheDocument();
     });
-    // Dismiss the menu.
-    fireEvent.keyDown(document, { key: "Escape" });
 
     await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
     const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");

@@ -1,11 +1,15 @@
-import { Component, For, Show, createSignal, onCleanup, onMount } from "solid-js";
+import { Component, For, Show, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import {
   deleteMessage,
   editMessage,
+  getServerUrl,
   messageDisplayName,
   setMessageEmbedsSuppressed,
+  type CustomEmoji,
   type Message,
 } from "../api";
+import { useOptionalCustomEmojis } from "../contexts/custom-emojis";
+import { parseCustomEmojiMarkers } from "../emoji/custom-emojis";
 import { linkifyText } from "../linkify";
 import Avatar from "./avatar";
 import { DeleteIcon, EditIcon } from "./icons";
@@ -19,12 +23,45 @@ interface ContextMenuState {
   y: number;
 }
 
+function resolveImageUrl(url: string): string {
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  return `${getServerUrl()}${url}`;
+}
+
+function renderTextWithCustomEmojis(
+  text: string,
+  byId: (id: number) => CustomEmoji | null,
+): JSX.Element[] {
+  return parseCustomEmojiMarkers(text).map((token) => {
+    if (token.type === "text") return token.value;
+
+    const emoji = byId(token.id);
+    if (!emoji) {
+      return (
+        <span title={`Custom emoji ${token.marker} is unavailable`}>:{token.storedName}:</span>
+      );
+    }
+
+    const label = `:${emoji.name}:`;
+    return (
+      <img
+        src={resolveImageUrl(emoji.image_url)}
+        alt={label}
+        title={emoji.deleted_at === null ? label : `${label} (deleted)`}
+        class="inline-block h-6 w-6 align-text-bottom object-contain"
+      />
+    );
+  });
+}
+
 const ChannelMessages: Component<{
   messages: readonly Message[];
   loading: boolean;
   error: unknown;
   currentUserId: number | null;
 }> = (props) => {
+  const customEmojis = useOptionalCustomEmojis();
+  const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
   const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null);
   const [editingId, setEditingId] = createSignal<number | null>(null);
   const [draft, setDraft] = createSignal("");
@@ -149,7 +186,7 @@ const ChannelMessages: Component<{
                           {tok.url}
                         </a>
                       ) : (
-                        tok.value
+                        renderTextWithCustomEmojis(tok.value, customEmojiById)
                       ),
                     )}
                   </div>
@@ -166,7 +203,11 @@ const ChannelMessages: Component<{
                     value={draft()}
                     onChange={setDraft}
                     ariaLabel="Edit message"
-                    inputRef={(el) => queueMicrotask(() => el.focus())}
+                    inputRef={(el) =>
+                      queueMicrotask(() => {
+                        if (el.isConnected) el.focus();
+                      })
+                    }
                     onKeyDown={(e) => {
                       if (e.key === "Escape") {
                         e.preventDefault();

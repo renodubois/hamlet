@@ -9,6 +9,7 @@ import {
   type JSX,
 } from "solid-js";
 import { Portal } from "solid-js/web";
+import { getServerUrl } from "../api";
 import { CONSERVATIVE_EMOJIS, type EmojiEntry } from "../emoji/emoji-data";
 import { searchEmojis } from "../emoji/emoji-search";
 
@@ -62,7 +63,16 @@ function chunkEmojis(emojis: readonly EmojiEntry[]): EmojiEntry[][] {
 
 function emojiLabel(entry: EmojiEntry): string {
   const shortcodes = entry.shortcodes.length > 0 ? entry.shortcodes.join(", ") : entry.emoji;
-  return `Emoji ${shortcodes}`;
+  return `${entry.animated ? "Animated emoji" : "Emoji"} ${shortcodes}`;
+}
+
+function resolveImageUrl(url: string): string {
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  return `${getServerUrl()}${url}`;
+}
+
+function isCustomEmoji(entry: EmojiEntry): boolean {
+  return entry.kind === "custom" && !!entry.imageUrl;
 }
 
 function emojiGridcellId(entry: EmojiEntry): string {
@@ -316,7 +326,7 @@ export default function EmojiPicker(props: {
                               <button
                                 type="button"
                                 tabIndex={-1}
-                                class={`flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-xl leading-none focus:outline-none ${
+                                class={`relative flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-xl leading-none focus:outline-none ${
                                   isActive()
                                     ? "bg-blue-600 text-white shadow-inner ring-2 ring-blue-300"
                                     : "text-gray-100 hover:bg-gray-700 focus:bg-gray-700 focus:ring-2 focus:ring-blue-400"
@@ -326,7 +336,29 @@ export default function EmojiPicker(props: {
                                 onMouseDown={(event) => event.preventDefault()}
                                 onClick={() => selectEntry(entry)}
                               >
-                                <span aria-hidden="true">{entry.emoji}</span>
+                                <Show
+                                  when={isCustomEmoji(entry) && entry.imageUrl}
+                                  fallback={<span aria-hidden="true">{entry.emoji}</span>}
+                                >
+                                  {(imageUrl) => (
+                                    <img
+                                      src={resolveImageUrl(imageUrl())}
+                                      alt=""
+                                      class="h-6 w-6 object-contain"
+                                      aria-hidden="true"
+                                    />
+                                  )}
+                                </Show>
+                                <Show when={isCustomEmoji(entry) && entry.animated}>
+                                  <span
+                                    class="absolute bottom-0 right-0 rounded bg-purple-700 px-0.5 text-[8px] font-bold uppercase leading-3 text-white"
+                                    aria-hidden="true"
+                                    title="Animated custom emoji"
+                                  >
+                                    A
+                                  </span>
+                                  <span class="sr-only">Animated custom emoji</span>
+                                </Show>
                               </button>
                             </div>
                           );
@@ -346,10 +378,27 @@ export default function EmojiPicker(props: {
                 aria-label="Emoji shortcodes"
               >
                 <div class="flex items-start gap-3">
-                  <span class="text-2xl leading-none" aria-hidden="true">
-                    {entry.emoji}
-                  </span>
+                  <Show
+                    when={isCustomEmoji(entry) && entry.imageUrl}
+                    fallback={
+                      <span class="text-2xl leading-none" aria-hidden="true">
+                        {entry.emoji}
+                      </span>
+                    }
+                  >
+                    {(imageUrl) => (
+                      <img
+                        src={resolveImageUrl(imageUrl())}
+                        alt=""
+                        class="h-8 w-8 object-contain"
+                        aria-hidden="true"
+                      />
+                    )}
+                  </Show>
                   <div class="flex flex-1 flex-wrap gap-1 text-xs text-gray-200">
+                    <Show when={isCustomEmoji(entry) && entry.animated}>
+                      <span class="rounded bg-purple-700 px-1.5 py-0.5 text-white">animated</span>
+                    </Show>
                     <For each={entry.shortcodes}>
                       {(shortcode) => (
                         <code class="rounded bg-gray-800 px-1.5 py-0.5 text-blue-100">

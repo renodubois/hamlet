@@ -1,5 +1,5 @@
 import { http, HttpResponse } from "msw";
-import type { Channel, Message, User, VoiceParticipant } from "../../api";
+import type { Channel, CustomEmoji, Message, User, VoiceParticipant } from "../../api";
 
 const BASE = "http://127.0.0.1:3030";
 
@@ -31,6 +31,11 @@ export interface HandlerState {
   displayNameUpdates: (string | null)[];
   voiceParticipants: Record<string, VoiceParticipant[]>;
   voiceTokensMinted: number[];
+  customEmojis: CustomEmoji[];
+  uploadedCustomEmojis: { name: string; size: number; type: string }[];
+  renamedCustomEmojis: { id: number; name: string }[];
+  deletedCustomEmojiIds: number[];
+  restoredCustomEmojiIds: number[];
   typingPings: string[];
   suppressedEmbeds: { id: number; suppress: boolean }[];
 }
@@ -51,6 +56,11 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     displayNameUpdates: [],
     voiceParticipants: {},
     voiceTokensMinted: [],
+    customEmojis: [],
+    uploadedCustomEmojis: [],
+    renamedCustomEmojis: [],
+    deletedCustomEmojiIds: [],
+    restoredCustomEmojiIds: [],
     typingPings: [],
     suppressedEmbeds: [],
     ...overrides,
@@ -100,6 +110,120 @@ export function createHandlers(state: HandlerState) {
     }),
 
     http.get(`${BASE}/channels`, () => HttpResponse.json(state.channels)),
+
+    http.get(`${BASE}/emojis`, () => HttpResponse.json(state.customEmojis)),
+
+    http.post(`${BASE}/emojis`, async ({ request }) => {
+      if (!state.me) return new HttpResponse(null, { status: 401 });
+      const form = await request.formData();
+      const rawName = form.get("name");
+      const name = typeof rawName === "string" ? rawName : "";
+      const file = form.get("file");
+      if (!/^[A-Za-z0-9_]{2,32}$/.test(name)) {
+        return HttpResponse.json(
+          { error: { kind: "invalid_emoji_name", message: "invalid emoji name" } },
+          { status: 400 },
+        );
+      }
+      if (!(file instanceof Blob)) {
+        return HttpResponse.json(
+          { error: { kind: "emoji_file_required", message: "emoji image file is required" } },
+          { status: 400 },
+        );
+      }
+      state.uploadedCustomEmojis.push({ name, size: file.size, type: file.type });
+      const ts = Math.floor(Date.now() / 1000);
+      const animated = file.type === "image/gif" || file.type === "image/webp+animated";
+      const extension = animated && file.type === "image/gif" ? "gif" : "webp";
+      const created: CustomEmoji = {
+        id: Math.floor(Math.random() * 1000) + 500,
+        name,
+        image_url: `/uploads/emojis/${name}.${extension}?v=${ts}`,
+        animated,
+        created_by_user_id: state.me.id,
+        created_at: ts,
+        updated_at: ts,
+        deleted_at: null,
+      };
+      state.customEmojis = [created, ...state.customEmojis];
+      return HttpResponse.json(created, { status: 201 });
+    }),
+
+    http.patch(`${BASE}/emojis/:id`, async ({ request, params }) => {
+      if (!state.me) return new HttpResponse(null, { status: 401 });
+      const id = Number(params.id);
+      const body = (await request.json()) as { name?: string };
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      if (!/^[A-Za-z0-9_]{2,32}$/.test(name)) {
+        return HttpResponse.json(
+          { error: { kind: "invalid_emoji_name", message: "invalid emoji name" } },
+          { status: 400 },
+        );
+      }
+      const existing = state.customEmojis.find((emoji) => emoji.id === id);
+      if (!existing) return new HttpResponse(null, { status: 404 });
+      if (
+        state.customEmojis.some(
+          (emoji) =>
+            emoji.id !== id &&
+            emoji.deleted_at === null &&
+            emoji.name.toLocaleLowerCase() === name.toLocaleLowerCase(),
+        )
+      ) {
+        return HttpResponse.json(
+          { error: { kind: "emoji_name_taken", message: "custom emoji name already exists" } },
+          { status: 409 },
+        );
+      }
+      state.renamedCustomEmojis.push({ id, name });
+      const updated: CustomEmoji = {
+        ...existing,
+        name,
+        image_url: existing.image_url.replace(/\?v=\d+$/, `?v=${existing.updated_at + 1}`),
+        updated_at: existing.updated_at + 1,
+      };
+      state.customEmojis = state.customEmojis.map((emoji) => (emoji.id === id ? updated : emoji));
+      return HttpResponse.json(updated);
+    }),
+
+    http.delete(`${BASE}/emojis/:id`, ({ params }) => {
+      if (!state.me) return new HttpResponse(null, { status: 401 });
+      const id = Number(params.id);
+      const existing = state.customEmojis.find((emoji) => emoji.id === id);
+      if (!existing) return new HttpResponse(null, { status: 404 });
+      const ts = Math.floor(Date.now() / 1000);
+      const deleted: CustomEmoji = { ...existing, updated_at: ts, deleted_at: ts };
+      state.customEmojis = state.customEmojis.map((emoji) => (emoji.id === id ? deleted : emoji));
+      state.deletedCustomEmojiIds.push(id);
+      return HttpResponse.json(deleted);
+    }),
+
+    http.post(`${BASE}/emojis/:id/restore`, ({ params }) => {
+      if (!state.me) return new HttpResponse(null, { status: 401 });
+      const id = Number(params.id);
+      const existing = state.customEmojis.find((emoji) => emoji.id === id);
+      if (!existing) return new HttpResponse(null, { status: 404 });
+      const conflict = state.customEmojis.some(
+        (emoji) =>
+          emoji.id !== id &&
+          emoji.deleted_at === null &&
+          emoji.name.toLocaleLowerCase() === existing.name.toLocaleLowerCase(),
+      );
+      if (conflict) {
+        return HttpResponse.json(
+          { error: { kind: "emoji_name_taken", message: "custom emoji name already exists" } },
+          { status: 409 },
+        );
+      }
+      const restored: CustomEmoji = {
+        ...existing,
+        updated_at: Math.floor(Date.now() / 1000),
+        deleted_at: null,
+      };
+      state.customEmojis = state.customEmojis.map((emoji) => (emoji.id === id ? restored : emoji));
+      state.restoredCustomEmojiIds.push(id);
+      return HttpResponse.json(restored);
+    }),
 
     http.get(`${BASE}/messages/:id`, ({ params }) => {
       const id = String(params.id);

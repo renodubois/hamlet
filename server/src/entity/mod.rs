@@ -5,6 +5,7 @@ pub mod prelude;
 pub mod channel;
 pub mod credential;
 pub mod embed;
+pub mod emoji;
 pub mod message;
 pub mod session;
 pub mod user;

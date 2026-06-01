@@ -1,9 +1,18 @@
-import { describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@solidjs/testing-library";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import type { Message } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
 import { makeMessage } from "../test/fixtures";
 import { assertExists } from "../test/render";
+
+const customEmojiContext = vi.hoisted(() => ({
+  current: undefined as
+    | {
+        byId: (id: number) => import("../api").CustomEmoji | null;
+        activeEmojis?: () => import("../api").CustomEmoji[];
+      }
+    | undefined,
+}));
 
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
@@ -19,6 +28,10 @@ vi.mock("../api", async () => {
     }),
   };
 });
+
+vi.mock("../contexts/custom-emojis", () => ({
+  useOptionalCustomEmojis: () => customEmojiContext.current,
+}));
 
 import ChannelMessages from "./channel-messages";
 import { deleteMessage, editMessage, setMessageEmbedsSuppressed } from "../api";
@@ -56,6 +69,11 @@ function mount(messages: Message[], currentUserId: number | null) {
     />
   ));
 }
+
+beforeEach(() => {
+  customEmojiContext.current = undefined;
+  vi.clearAllMocks();
+});
 
 describe("<ChannelMessages> message text rendering", () => {
   test("renders stored literal emoji shortcodes without converting them", () => {
@@ -126,6 +144,108 @@ describe("<ChannelMessages> message text rendering", () => {
       "https://example.com",
     );
   });
+
+  test("renders known static and animated custom emoji markers as images by id", () => {
+    customEmojiContext.current = {
+      byId: (id) => {
+        if (id === 123) {
+          return {
+            id: 123,
+            name: "renamed_party",
+            image_url: "/uploads/emojis/123.webp?v=2",
+            animated: false,
+            created_by_user_id: 1,
+            created_at: 1,
+            updated_at: 2,
+            deleted_at: null,
+          };
+        }
+        if (id === 456) {
+          return {
+            id: 456,
+            name: "dance",
+            image_url: "/uploads/emojis/456.gif?v=3",
+            animated: true,
+            created_by_user_id: 1,
+            created_at: 1,
+            updated_at: 3,
+            deleted_at: null,
+          };
+        }
+        return null;
+      },
+    };
+    const customEmojiMessage = makeMessage({
+      id: 503,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "old name <:party:123> and animated <a:dance:456> stay by id",
+      username: "them",
+    });
+
+    mount([customEmojiMessage], SELF_ID);
+
+    const image = screen.getByRole("img", { name: ":renamed_party:" });
+    expect(image).toHaveAttribute("title", ":renamed_party:");
+    expect(image.getAttribute("src")).toContain("/uploads/emojis/123.webp?v=2");
+
+    const animatedImage = screen.getByRole("img", { name: ":dance:" });
+    expect(animatedImage).toHaveAttribute("title", ":dance:");
+    expect(animatedImage.getAttribute("src")).toContain("/uploads/emojis/456.gif?v=3");
+  });
+
+  test("renders soft-deleted custom emoji markers in old messages", () => {
+    customEmojiContext.current = {
+      byId: (id) =>
+        id === 123
+          ? {
+              id: 123,
+              name: "party",
+              image_url: "/uploads/emojis/123.webp?v=3",
+              animated: false,
+              created_by_user_id: 1,
+              created_at: 1,
+              updated_at: 3,
+              deleted_at: 4,
+            }
+          : null,
+    };
+    const customEmojiMessage = makeMessage({
+      id: 505,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "old <:party:123> still renders",
+      username: "them",
+    });
+
+    mount([customEmojiMessage], SELF_ID);
+
+    const image = screen.getByRole("img", { name: ":party:" });
+    expect(image).toHaveAttribute("title", ":party: (deleted)");
+    expect(image.getAttribute("src")).toContain("/uploads/emojis/123.webp?v=3");
+  });
+
+  test("does not parse custom emoji markers inside link tokens and falls back for unknown ids", () => {
+    customEmojiContext.current = { byId: () => null };
+    const customEmojiMessage = makeMessage({
+      id: 504,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "missing <:ghost:999> link https://example.com/%3C:party:123%3E",
+      username: "them",
+    });
+
+    mount([customEmojiMessage], SELF_ID);
+
+    expect(screen.getByText(":ghost:")).toHaveAttribute(
+      "title",
+      "Custom emoji <:ghost:999> is unavailable",
+    );
+    expect(screen.queryByRole("img", { name: /party/i })).toBeNull();
+    expect(
+      screen.getByRole("link", { name: "https://example.com/%3C:party:123%3E" }),
+    ).toHaveAttribute("href", "https://example.com/%3C:party:123%3E");
+  });
 });
 
 describe("<ChannelMessages> hover action toolbar", () => {
@@ -161,7 +281,41 @@ describe("<ChannelMessages> hover action toolbar", () => {
     const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
     fireEvent.input(input, { target: { value: "edited text" } });
     fireEvent.submit(assertExists(input.closest("form"), "form"));
-    expect(editMessage).toHaveBeenCalledWith(ownMessage.id, "edited text");
+    await waitFor(() => expect(editMessage).toHaveBeenCalledWith(ownMessage.id, "edited text"));
+  });
+
+  test("editing a message displays custom emoji markers as chips and preserves PUT text", async () => {
+    const party = {
+      id: 123,
+      name: "party",
+      image_url: "/uploads/emojis/123.webp?v=1",
+      animated: false,
+      created_by_user_id: SELF_ID,
+      created_at: 1,
+      updated_at: 1,
+      deleted_at: null,
+    };
+    customEmojiContext.current = {
+      byId: (id) => (id === 123 ? party : null),
+      activeEmojis: () => [party],
+    };
+    const message = makeMessage({ ...ownMessage, text: "hello <:party:123>" });
+
+    mount([message], SELF_ID);
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+    expect(input.value).toBe("hello <:party:123>");
+    expect(screen.getByRole("img", { name: /custom emoji :party:/i })).toBeInTheDocument();
+    expect(screen.queryByText("<:party:123>")).toBeNull();
+
+    expect(editMessage).not.toHaveBeenCalled();
+
+    fireEvent.input(input, { target: { value: "hello <:party:123>!" } });
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+    await waitFor(() =>
+      expect(editMessage).toHaveBeenCalledWith(message.id, "hello <:party:123>!"),
+    );
   });
 
   test("clicking Delete opens the confirm dialog and confirming calls deleteMessage", async () => {

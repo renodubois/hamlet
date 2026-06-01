@@ -6,5 +6,6 @@
 pub mod auth;
 pub mod avatars;
 pub mod channels;
+pub mod emoji;
 pub mod messages;
 pub mod voice;

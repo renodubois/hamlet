@@ -11,6 +11,14 @@ export {
 } from "./auth";
 export type { Channel, ChannelType } from "./channels";
 export { listChannels, createChannel, reorderChannels } from "./channels";
+export type { CustomEmoji } from "./emojis";
+export {
+  listCustomEmojis,
+  uploadCustomEmoji,
+  renameCustomEmoji,
+  deleteCustomEmoji,
+  restoreCustomEmoji,
+} from "./emojis";
 export type { Embed, EmbedType, Message, MessageDeleted, MessageEmbedsUpdated } from "./messages";
 export {
   messageDisplayName,

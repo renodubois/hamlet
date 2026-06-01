@@ -1,7 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
+import userEvent from "@testing-library/user-event";
 import { createSignal } from "solid-js";
 import { describe, expect, test } from "vitest";
+import { AuthProvider } from "../contexts/auth";
+import { CustomEmojisProvider } from "../contexts/custom-emojis";
 import { expectNoA11yViolations } from "../test/a11y";
+import { DEV_USER } from "../test/msw/handlers";
+import { resetMswState } from "../test/msw/server";
 import MessageInput from "./message-input";
 
 const searchName = /search and select emoji/i;
@@ -29,6 +34,67 @@ function renderHarness(initialValue = "") {
   });
 
   return { ...result, changes, setExternalValue };
+}
+
+function renderHarnessWithCustomEmojis(initialValue = "") {
+  const changes: string[] = [];
+  resetMswState({
+    me: DEV_USER,
+    customEmojis: [
+      {
+        id: 123,
+        name: "party",
+        image_url: "/uploads/emojis/123.webp?v=1",
+        animated: false,
+        created_by_user_id: 1,
+        created_at: 1,
+        updated_at: 1,
+        deleted_at: null,
+      },
+      {
+        id: 456,
+        name: "dance",
+        image_url: "/uploads/emojis/456.gif?v=1",
+        animated: true,
+        created_by_user_id: 1,
+        created_at: 1,
+        updated_at: 1,
+        deleted_at: null,
+      },
+      {
+        id: 789,
+        name: "retired",
+        image_url: "/uploads/emojis/789.webp?v=1",
+        animated: false,
+        created_by_user_id: 1,
+        created_at: 1,
+        updated_at: 1,
+        deleted_at: 2,
+      },
+    ],
+  });
+
+  const result = render(() => {
+    const [value, setValue] = createSignal(initialValue);
+
+    return (
+      <AuthProvider>
+        <CustomEmojisProvider>
+          <MessageInput
+            value={value()}
+            onChange={(nextValue) => {
+              changes.push(nextValue);
+              setValue(nextValue);
+            }}
+            ariaLabel="Compose message"
+            placeholder="Send a new message..."
+          />
+        </CustomEmojisProvider>
+      </AuthProvider>
+    );
+  });
+
+  return { ...result, changes };
 }
 
 async function openPicker() {
@@ -150,6 +216,111 @@ describe("<MessageInput>", () => {
       expect(document.activeElement).toBe(input);
     });
     expect(screen.queryByRole("dialog", { name: pickerName })).toBeNull();
+  });
+
+  test("renders controlled custom emoji markers as accessible image-only chips", async () => {
+    renderHarnessWithCustomEmojis("hello <:party:123>");
+
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    expect(input.value).toBe("hello <:party:123>");
+    await screen.findByRole("img", { name: /custom emoji :party:/i });
+    let chip: HTMLElement | null = null;
+    await waitFor(() => {
+      chip = screen.getByRole("img", { name: /custom emoji :party:/i });
+      const image = chip.querySelector("img");
+      expect(image).not.toBeNull();
+      expect(image?.getAttribute("src")).toContain("/uploads/emojis/123.webp?v=1");
+    });
+    expect(chip).toHaveTextContent("");
+    expect(screen.queryByText(":party:")).toBeNull();
+    expect(screen.queryByText("<:party:123>")).toBeNull();
+  });
+
+  test("keeps a custom-emoji-only draft editable from the caret boundaries", async () => {
+    const { changes } = renderHarnessWithCustomEmojis("<:party:123>");
+
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    await screen.findByRole("img", { name: /custom emoji :party:/i });
+
+    expect(input.value).toBe("<:party:123>");
+    expect(input.firstChild).toBe(screen.getByRole("img", { name: /custom emoji :party:/i }));
+    expect(input.lastChild?.textContent).toBe("\u200B");
+
+    setInputSelection(input, 0);
+    fireEvent.keyDown(input, { key: "ArrowRight" });
+    await waitFor(() => {
+      expect(input.selectionStart).toBe(input.value.length);
+    });
+
+    fireEvent.keyDown(input, { key: "ArrowLeft" });
+    await waitFor(() => {
+      expect(input.selectionStart).toBe(0);
+    });
+
+    setInputSelection(input, input.value.length);
+    fireEvent.keyDown(input, { key: "Backspace" });
+
+    await waitFor(() => {
+      expect(input.value).toBe("");
+    });
+    expect(changes).toContain("");
+  });
+
+  test("keeps the composer stable while typing a custom emoji shortcode prefix", async () => {
+    const user = userEvent.setup();
+    const { changes } = renderHarnessWithCustomEmojis();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    await user.click(input);
+    await user.keyboard(":taco");
+
+    await waitFor(() => {
+      expect(input.value).toBe(":taco");
+      expect(input.selectionStart).toBe(":taco".length);
+    });
+    expect(changes).toContain(":t");
+    expect(changes.at(-1)).toBe(":taco");
+  });
+
+  test("inserts active custom emoji markers from autocomplete and picker", async () => {
+    const { changes } = renderHarnessWithCustomEmojis("hello world");
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    const dialog = await openPicker();
+    fireEvent.input(within(dialog).getByRole("combobox", { name: searchName }), {
+      target: { value: "party" },
+    });
+    await waitFor(() =>
+      expect(within(dialog).getByRole("gridcell", { name: /emoji :party:/i })).toBeInTheDocument(),
+    );
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: pickerName })).toBeNull());
+
+    inputFromUser(input, "hello :party:");
+    await waitFor(() => {
+      expect(input.value).toBe("hello <:party:123>");
+      expect(screen.getByRole("img", { name: /custom emoji :party:/i })).toBeInTheDocument();
+    });
+    expect(screen.queryByText("<:party:123>")).toBeNull();
+    expect(changes).toContain("hello <:party:123>");
+
+    inputFromUser(input, "hello :retired:");
+    await waitFor(() => {
+      expect(input.value).toBe("hello :retired:");
+    });
+
+    inputFromUser(input, "hello :dance:");
+    await waitFor(() => {
+      expect(input.value).toBe("hello <a:dance:456>");
+    });
+    expect(changes).toContain("hello <a:dance:456>");
+
+    setInputSelection(input, "hello ".length);
+    await selectEmoji("party", /emoji :party:/i);
+
+    await waitFor(() => {
+      expect(input.value).toBe("hello <:party:123><a:dance:456>");
+    });
   });
 
   test("replaces the selected text with a selected emoji", async () => {
