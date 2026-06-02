@@ -5,27 +5,30 @@ description: Break a plan, spec, or PRD into a project-tagged set of independent
 
 # To Issues
 
-Break a plan into a project-tagged set of independently-grabbable issues using vertical slices (tracer bullets), then create the approved issues with the repository's `it` issue tracker.
+Break a plan into a project-tagged set of independently-grabbable issues using vertical slices (tracer bullets), then create the approved issues with Hamlet's central `it` issue tracker.
 
 `it` is a tiny markdown-backed tracker. Use it as the source of truth for issue files; do not hand-write, rename, move, or archive issue Markdown files unless the user explicitly asks.
+
+Issue tracking is intentionally outside every git worktree. The single source of truth for Hamlet tracker issues is `$HOME/.issues/hamlet`. At the start of the workflow, set `TRACKER_DIR="$HOME/.issues/hamlet"` and confirm it exists. Never create or use a repo-local `issues/` directory for this workflow.
 
 A "project" is represented by one shared tag on every issue in the set. Use a short kebab-case project tag prefixed with `project-`, for example `project-native-notifications`. All issues created from the same plan must include this shared project tag.
 
 ## `it` commands
 
-Use these commands from the repository root unless the user specifies another issue directory:
+Use these commands with the central tracker directory:
 
 ```bash
-it list --dir issues
-it list --dir issues --tag project-example
-it show <id> --dir issues
-it create "<name>" --dir issues --tags "project-example,tag-a,tag-b" --blocked-by "1,2" --body "$body"
-it status <id> completed --dir issues
+TRACKER_DIR="$HOME/.issues/hamlet"
+it list --dir "$TRACKER_DIR"
+it list --dir "$TRACKER_DIR" --tag project-example
+it show <id> --dir "$TRACKER_DIR"
+it create "<name>" --dir "$TRACKER_DIR" --tags "project-example,tag-a,tag-b" --blocked-by "1,2" --body "$body"
+it status <id> completed --dir "$TRACKER_DIR"
 ```
 
 Notes:
 
-- `it create` writes `issues/<id>-<slug>.md` and owns the frontmatter (`id`, `name`, `status`, `tags`, `blocked_by`). Do not duplicate that frontmatter in the body.
+- `it create` writes `$HOME/.issues/hamlet/<id>-<slug>.md` and owns the frontmatter (`id`, `name`, `status`, `tags`, `blocked_by`). Do not duplicate that frontmatter in the body.
 - Omit `--blocked-by` when there are no blockers.
 - Tags are comma-separated. Every issue in a generated set must include the same `project-<slug>` tag. Also include short kebab-case area tags such as `server` or `client`, and slice type tags (`afk` or `hitl`). Follow existing tag conventions when they are clear.
 - For multiline bodies, build a shell variable or temporary file, then pass it to `--body`; do not try to manually create the issue file.
@@ -37,7 +40,7 @@ Notes:
 
 Work from whatever is already in the conversation context. If the user passes a source reference (issue ID, URL, or path) as an argument, read its full body and comments when accessible.
 
-For existing tracked issues, use `it show <id> --dir issues`. For the issue queue and tag conventions, use `it list --dir issues` before drafting. If the work belongs to an existing project, identify its `project-<slug>` tag and inspect it with `it list --dir issues --tag <project-tag>`. If the source cannot be fetched directly, ask the user to provide the missing content.
+For existing tracked issues, use `it show <id> --dir "$TRACKER_DIR"`. For the issue queue and tag conventions, use `it list --dir "$TRACKER_DIR"` before drafting. If the work belongs to an existing project, identify its `project-<slug>` tag and inspect it with `it list --dir "$TRACKER_DIR" --tag <project-tag>`. If the source cannot be fetched directly, ask the user to provide the missing content.
 
 ### 2. Explore the codebase (optional)
 
@@ -47,7 +50,7 @@ If you have not already explored the codebase, do so to understand the current s
 
 Derive a concise project tag from the plan/source title, unless the user provides one. Use `project-<short-kebab-case-topic>`; avoid generic tags such as `project-feature` or `project-refactor`.
 
-Check whether that tag already exists with `it list --dir issues --tag <project-tag>`. If it exists, decide whether the new issues should join that project or use a more specific tag. Include the proposed project tag when asking the user to approve the breakdown.
+Check whether that tag already exists with `it list --dir "$TRACKER_DIR" --tag <project-tag>`. If it exists, decide whether the new issues should join that project or use a more specific tag. Include the proposed project tag when asking the user to approve the breakdown.
 
 ### 4. Draft vertical slices
 
@@ -88,7 +91,7 @@ Iterate until the user approves the breakdown. Do not create issues before appro
 
 ### 6. Create approved issues with `it`
 
-Create one tracker issue per approved slice using `it create`. Every created issue must include the approved shared project tag. Do not write the issue set as a single combined document. Do not place issue files in `docs/`. Do not manually write files into `issues/`.
+Create one tracker issue per approved slice using `it create`. Every created issue must include the approved shared project tag. Do not write the issue set as a single combined document. Do not place issue files in `docs/`. Do not manually write files into repo-local `issues/` directories.
 
 Create issues in dependency order (blockers first). Let `it` assign real IDs, then maintain a mapping from provisional labels to created tracker IDs. When creating a later issue, translate its blockers to real IDs and pass them with `--blocked-by "1,2"`.
 
@@ -129,6 +132,8 @@ Or "None - can start immediately" if no blockers.
 Example creation pattern:
 
 ```bash
+TRACKER_DIR="$HOME/.issues/hamlet"
+
 body=$(cat <<'EOF'
 # Short descriptive title
 
@@ -151,10 +156,10 @@ None - can start immediately
 EOF
 )
 
-it create "Short descriptive title" --dir issues --tags "project-short-topic,afk,client" --body "$body"
+it create "Short descriptive title" --dir "$TRACKER_DIR" --tags "project-short-topic,afk,client" --body "$body"
 ```
 
-After creating all issues, run `it list --dir issues` or `it show <id> --dir issues` as needed to verify the IDs, tags, statuses, and blockers.
+After creating all issues, run `it list --dir "$TRACKER_DIR"` or `it show <id> --dir "$TRACKER_DIR"` as needed to verify the IDs, tags, statuses, and blockers.
 
 ### 7. Report the created issues
 
@@ -164,4 +169,4 @@ Project: `project-<slug>`
 
 - `#<id>` — title — tags — blocked by
 
-If the user asks to mark an issue complete, use `it status <id> completed --dir issues`; do not move files between directories.
+If the user asks to mark an issue complete, use `it status <id> completed --dir "$TRACKER_DIR"`; do not move files between directories.
