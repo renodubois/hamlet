@@ -1,10 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
-
-const SERVER_URL = "http://127.0.0.1:3030";
+import { livekitUrl, serverUrl } from "./test-config";
 
 async function logInAsDevUser(page: Page) {
   await page.goto("/");
-  await page.getByPlaceholder("Server URL").fill(SERVER_URL);
+  await page.getByPlaceholder("Server URL").fill(serverUrl);
   await page.getByPlaceholder("Username").fill("baipas");
   await page.getByPlaceholder("Password").fill("password");
   await page.getByRole("button", { name: /^sign in$/i }).click();
@@ -49,7 +48,7 @@ test("browser dev user can join the seeded voice channel via LiveKit", async ({ 
     );
   });
   page.on("response", (response) => {
-    if (response.url().includes("/voice/") || response.url().includes(":7880")) {
+    if (response.url().includes("/voice/") || response.url().startsWith(livekitUrl)) {
       diagnostics.push(`response: ${response.status()} ${response.url()}`);
     }
   });
@@ -75,7 +74,7 @@ test("browser dev user can join the seeded voice channel via LiveKit", async ({ 
   expect(
     tokenPayload.url,
     "LiveKit signaling URL must use the browser-repro 127.0.0.1 loopback host",
-  ).toBe("ws://127.0.0.1:7880");
+  ).toBe(livekitUrl);
 
   try {
     await expect(page.getByRole("group", { name: /^Voice controls$/i })).toBeVisible({

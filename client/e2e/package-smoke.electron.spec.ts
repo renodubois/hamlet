@@ -6,20 +6,21 @@ import {
   firstHamletWindow,
   launchPackagedElectronApp,
 } from "./electron-helpers";
+import { rendererOriginPattern } from "./test-config";
 
 interface LastUnpackedManifest {
   packagePath?: string;
   executableCandidates?: string[];
 }
 
-test("launches the last unpacked package on the fixed renderer origin", async () => {
+test("launches the last unpacked package on the configured renderer origin", async () => {
   const manifest = await readLastUnpackedManifest();
   const executablePath = await resolvePackagedExecutable(manifest);
   const launched = await launchPackagedElectronApp(executablePath);
 
   try {
     const page = await firstHamletWindow(launched.app);
-    await expect(page).toHaveURL(/^http:\/\/127\.0\.0\.1:1422(?:\/.*)?$/);
+    await expect(page).toHaveURL(rendererOriginPattern());
     await expect(
       page
         .getByRole("heading", { name: /sign in/i })

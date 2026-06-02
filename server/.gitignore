@@ -1,2 +1,6 @@
 /target
 /uploads
+.env
+.env.*
+!.env.example
+livekit.local*.yaml

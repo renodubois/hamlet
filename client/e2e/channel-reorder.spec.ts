@@ -35,7 +35,7 @@ test("rearranges channels by drag-and-drop and persists the new order on reload"
   // against Playwright's default 30s budget on a loaded dev server.
   test.setTimeout(60_000);
   await page.goto("/");
-  await page.getByPlaceholder("Server URL").fill("http://127.0.0.1:3030");
+  await page.getByPlaceholder("Server URL").fill(serverUrl);
   await page.getByPlaceholder("Username").fill("baipas");
   await page.getByPlaceholder("Password").fill("password");
   await page.getByRole("button", { name: /sign in/i }).click();

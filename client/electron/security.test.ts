@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_RENDERER_DEV_ORIGIN, ELECTRON_WINDOW_TITLE } from "./constants";
+import {
+  DEFAULT_RENDERER_DEV_ORIGIN,
+  ELECTRON_WINDOW_TITLE,
+  resolveConfiguredRendererOrigin,
+} from "./constants";
 import {
   createMainWindowOptions,
   createSecureWebPreferences,
@@ -13,13 +17,18 @@ import {
   type SessionPermissionPolicy,
 } from "./security";
 
+const TRUSTED_RENDERER_ORIGIN = resolveConfiguredRendererOrigin();
+const TRUSTED_RENDERER_PORT = new URL(TRUSTED_RENDERER_ORIGIN).port;
+const UNTRUSTED_RENDERER_PORT = TRUSTED_RENDERER_PORT === "1420" ? "1421" : "1420";
+const UNTRUSTED_RENDERER_ORIGIN = `http://127.0.0.1:${UNTRUSTED_RENDERER_PORT}`;
+
 describe("Electron renderer loading", () => {
   it("loads the fixed Electron renderer dev origin by default", () => {
     expect(resolveRendererUrl({}).href).toBe(`${DEFAULT_RENDERER_DEV_ORIGIN}/`);
   });
 
   it("accepts paths on the trusted renderer origin", () => {
-    expect(isTrustedRendererUrl(`${DEFAULT_RENDERER_DEV_ORIGIN}/channels/1`)).toBe(true);
+    expect(isTrustedRendererUrl(`${TRUSTED_RENDERER_ORIGIN}/channels/1`)).toBe(true);
   });
 
   it("treats blank renderer URL overrides as the fixed packaged origin", () => {
@@ -33,9 +42,11 @@ describe("Electron renderer loading", () => {
   });
 
   it("rejects origin-spoofing renderer URLs", () => {
-    expect(isTrustedRendererUrl(`${DEFAULT_RENDERER_DEV_ORIGIN}.evil.test/channels/1`)).toBe(false);
-    expect(isTrustedRendererUrl("http://127.0.0.1.evil.test:1422/")).toBe(false);
-    expect(isTrustedRendererUrl("http://127.0.0.1:14220/")).toBe(false);
+    expect(isTrustedRendererUrl(`${TRUSTED_RENDERER_ORIGIN}.evil.test/channels/1`)).toBe(false);
+    expect(isTrustedRendererUrl(`http://127.0.0.1.evil.test:${TRUSTED_RENDERER_PORT}/`)).toBe(
+      false,
+    );
+    expect(isTrustedRendererUrl(`${UNTRUSTED_RENDERER_ORIGIN}/`)).toBe(false);
   });
 
   it("rejects untrusted renderer origins", () => {
@@ -53,7 +64,7 @@ describe("Electron renderer loading", () => {
 
 describe("Electron shell URL policy", () => {
   it("allows top-level navigation within the trusted renderer origin", () => {
-    expect(decideTopLevelNavigation(`${DEFAULT_RENDERER_DEV_ORIGIN}/channels/1`)).toEqual({
+    expect(decideTopLevelNavigation(`${TRUSTED_RENDERER_ORIGIN}/channels/1`)).toEqual({
       action: "allow",
     });
   });
@@ -83,7 +94,7 @@ describe("Electron shell URL policy", () => {
   });
 
   it("denies popups while still opening validated external links externally", () => {
-    expect(decideWindowOpen(`${DEFAULT_RENDERER_DEV_ORIGIN}/channels/1`)).toEqual({
+    expect(decideWindowOpen(`${TRUSTED_RENDERER_ORIGIN}/channels/1`)).toEqual({
       action: "block",
     });
     expect(decideWindowOpen("https://example.com/invite")).toEqual({
@@ -96,8 +107,8 @@ describe("Electron shell URL policy", () => {
 
 describe("Electron permission policy", () => {
   const trustedRequest = {
-    requestingUrl: `${DEFAULT_RENDERER_DEV_ORIGIN}/channels/voice`,
-    securityOrigin: DEFAULT_RENDERER_DEV_ORIGIN,
+    requestingUrl: `${TRUSTED_RENDERER_ORIGIN}/channels/voice`,
+    securityOrigin: TRUSTED_RENDERER_ORIGIN,
   };
 
   it("allows only trusted audio media requests needed by voice", () => {
@@ -135,21 +146,21 @@ describe("Electron permission policy", () => {
     expect(
       shouldAllowPermissionCheck({
         permission: "media",
-        requestingOrigin: DEFAULT_RENDERER_DEV_ORIGIN,
+        requestingOrigin: TRUSTED_RENDERER_ORIGIN,
         mediaType: "audio",
       }),
     ).toBe(true);
     expect(
       shouldAllowPermissionCheck({
         permission: "media",
-        requestingOrigin: DEFAULT_RENDERER_DEV_ORIGIN,
+        requestingOrigin: TRUSTED_RENDERER_ORIGIN,
         mediaType: "unknown",
       }),
     ).toBe(true);
     expect(
       shouldAllowPermissionCheck({
         permission: "media",
-        requestingOrigin: DEFAULT_RENDERER_DEV_ORIGIN,
+        requestingOrigin: TRUSTED_RENDERER_ORIGIN,
         mediaType: "video",
       }),
     ).toBe(false);
@@ -165,7 +176,7 @@ describe("Electron permission policy", () => {
     expect(
       shouldAllowPermissionCheck({
         permission: "speaker-selection",
-        requestingOrigin: DEFAULT_RENDERER_DEV_ORIGIN,
+        requestingOrigin: TRUSTED_RENDERER_ORIGIN,
       }),
     ).toBe(true);
   });
@@ -190,7 +201,7 @@ describe("Electron permission policy", () => {
       expect(
         shouldAllowPermissionCheck({
           permission,
-          requestingOrigin: DEFAULT_RENDERER_DEV_ORIGIN,
+          requestingOrigin: TRUSTED_RENDERER_ORIGIN,
           mediaType: "audio",
         }),
       ).toBe(false);
@@ -219,7 +230,7 @@ describe("Electron permission policy", () => {
     expect(
       shouldAllowPermissionRequest({
         permission: "media",
-        requestingUrl: `${DEFAULT_RENDERER_DEV_ORIGIN}/channels/voice`,
+        requestingUrl: `${TRUSTED_RENDERER_ORIGIN}/channels/voice`,
         securityOrigin: "https://evil.example",
         mediaTypes: ["audio"],
       }),
@@ -227,7 +238,7 @@ describe("Electron permission policy", () => {
     expect(
       shouldAllowPermissionCheck({
         permission: "media",
-        requestingOrigin: DEFAULT_RENDERER_DEV_ORIGIN,
+        requestingOrigin: TRUSTED_RENDERER_ORIGIN,
         securityOrigin: "https://evil.example",
         mediaType: "audio",
       }),
@@ -272,7 +283,7 @@ describe("Electron permission policy", () => {
         handler?.(
           {
             frame: null,
-            securityOrigin: DEFAULT_RENDERER_DEV_ORIGIN,
+            securityOrigin: TRUSTED_RENDERER_ORIGIN,
             videoRequested: true,
             audioRequested: true,
             userGesture: true,
@@ -295,15 +306,15 @@ describe("Electron permission policy", () => {
       },
       {
         isMainFrame: true,
-        requestingUrl: `${DEFAULT_RENDERER_DEV_ORIGIN}/channels/voice`,
-        securityOrigin: DEFAULT_RENDERER_DEV_ORIGIN,
+        requestingUrl: `${TRUSTED_RENDERER_ORIGIN}/channels/voice`,
+        securityOrigin: TRUSTED_RENDERER_ORIGIN,
         mediaTypes: ["audio"],
       },
     );
 
     expect(microphoneDecision).toBe(true);
     expect(
-      checkHandler?.(null, "geolocation", DEFAULT_RENDERER_DEV_ORIGIN, { isMainFrame: true }),
+      checkHandler?.(null, "geolocation", TRUSTED_RENDERER_ORIGIN, { isMainFrame: true }),
     ).toBe(false);
     expect(deviceDecision).toBe(false);
     expect(displayDecision).toEqual({});

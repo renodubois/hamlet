@@ -1,13 +1,21 @@
 import { defineConfig } from "@playwright/test";
+import { hamletEnv } from "./playwright.env";
+
+const serverUrl =
+  hamletEnv.HAMLET_SERVER_URL ??
+  hamletEnv.VITE_HAMLET_DEFAULT_SERVER_URL ??
+  "http://127.0.0.1:3030";
+const serverPort = new URL(serverUrl).port || "3030";
+const serverBindAddr = hamletEnv.HAMLET_BIND_ADDR ?? `127.0.0.1:${serverPort}`;
 
 export default defineConfig({
   testDir: "./e2e",
   testMatch: "**/electron-smoke.electron.spec.ts",
   fullyParallel: false,
-  forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
+  forbidOnly: !!hamletEnv.CI,
+  retries: hamletEnv.CI ? 2 : 0,
   workers: 1,
-  reporter: process.env.CI ? [["html", { open: "never" }], ["list"]] : "list",
+  reporter: hamletEnv.CI ? [["html", { open: "never" }], ["list"]] : "list",
   timeout: 90_000,
 
   use: {
@@ -18,10 +26,14 @@ export default defineConfig({
   webServer: {
     command: "cargo run",
     cwd: "../server",
-    url: "http://127.0.0.1:3030/channels",
-    reuseExistingServer: !process.env.CI,
+    url: `${serverUrl}/channels`,
+    reuseExistingServer: !hamletEnv.CI,
     timeout: 180_000,
     stdout: "pipe",
     stderr: "pipe",
+    env: {
+      ...hamletEnv,
+      HAMLET_BIND_ADDR: serverBindAddr,
+    },
   },
 });

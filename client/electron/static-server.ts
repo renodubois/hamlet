@@ -2,7 +2,13 @@ import fs from "node:fs";
 import { access, stat } from "node:fs/promises";
 import http, { type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import path from "node:path";
-import { STATIC_RENDERER_HOST, STATIC_RENDERER_ORIGIN, STATIC_RENDERER_PORT } from "./constants";
+import {
+  DEFAULT_STATIC_RENDERER_HOST,
+  DEFAULT_STATIC_RENDERER_PORT,
+  STATIC_RENDERER_ORIGIN,
+  resolveConfiguredRendererHost,
+  resolveConfiguredRendererPort,
+} from "./constants";
 
 const INDEX_FILE = "index.html";
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -75,6 +81,8 @@ const MIME_TYPES = new Map<string, string>([
 
 export interface StaticRendererEnvironment {
   HAMLET_RENDERER_URL?: string;
+  HAMLET_RENDERER_HOST?: string;
+  HAMLET_RENDERER_PORT?: string;
 }
 
 export interface StaticRendererServerOptions {
@@ -120,8 +128,8 @@ export function staticRendererContentType(filePath: string): string {
 export async function startStaticRendererServer(
   options: StaticRendererServerOptions,
 ): Promise<StaticRendererServer> {
-  const host = options.host ?? STATIC_RENDERER_HOST;
-  const port = options.port ?? STATIC_RENDERER_PORT;
+  const host = options.host ?? resolveConfiguredRendererHost();
+  const port = options.port ?? resolveConfiguredRendererPort();
   const rootDir = path.resolve(options.rootDir);
 
   assertLoopbackHost(host);
@@ -450,7 +458,9 @@ function closeServer(server: Server): Promise<void> {
 }
 
 function originFor(host: string, port: number): string {
-  if (host === STATIC_RENDERER_HOST && port === STATIC_RENDERER_PORT) return STATIC_RENDERER_ORIGIN;
+  if (host === DEFAULT_STATIC_RENDERER_HOST && port === DEFAULT_STATIC_RENDERER_PORT) {
+    return STATIC_RENDERER_ORIGIN;
+  }
   return `http://${hostForOrigin(host)}:${port}`;
 }
 

@@ -1,15 +1,24 @@
 import { defineConfig, devices } from "@playwright/test";
+import { hamletEnv } from "./playwright.env";
 
-const rendererUrl = "http://127.0.0.1:1422";
+const serverUrl =
+  hamletEnv.HAMLET_SERVER_URL ??
+  hamletEnv.VITE_HAMLET_DEFAULT_SERVER_URL ??
+  "http://127.0.0.1:3030";
+const rendererHost = hamletEnv.HAMLET_RENDERER_HOST ?? "127.0.0.1";
+const rendererPort = hamletEnv.HAMLET_RENDERER_PORT ?? "1422";
+const rendererUrl = hamletEnv.HAMLET_RENDERER_URL ?? `http://${rendererHost}:${rendererPort}`;
+const serverBindAddr =
+  hamletEnv.HAMLET_BIND_ADDR ?? `127.0.0.1:${new URL(serverUrl).port || "3030"}`;
 
 export default defineConfig({
   testDir: "./e2e",
   testIgnore: "**/*.electron.spec.ts",
   fullyParallel: false,
-  forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
+  forbidOnly: !!hamletEnv.CI,
+  retries: hamletEnv.CI ? 2 : 0,
   workers: 1,
-  reporter: process.env.CI ? [["html", { open: "never" }], ["list"]] : "list",
+  reporter: hamletEnv.CI ? [["html", { open: "never" }], ["list"]] : "list",
 
   use: {
     baseURL: rendererUrl,
@@ -27,7 +36,7 @@ export default defineConfig({
         // blocks the normal download from cdn.playwright.dev). Unset → use
         // Playwright's regular download-and-cache behavior.
         launchOptions: {
-          executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+          executablePath: hamletEnv.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
         },
       },
     },
@@ -37,17 +46,27 @@ export default defineConfig({
     {
       command: "cargo run",
       cwd: "../server",
-      url: "http://127.0.0.1:3030/channels",
-      reuseExistingServer: !process.env.CI,
+      url: `${serverUrl}/channels`,
+      reuseExistingServer: !hamletEnv.CI,
       timeout: 180_000,
       stdout: "pipe",
       stderr: "pipe",
+      env: {
+        ...hamletEnv,
+        HAMLET_BIND_ADDR: serverBindAddr,
+      },
     },
     {
       command: "npm run dev",
       url: rendererUrl,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: !hamletEnv.CI,
       timeout: 60_000,
+      env: {
+        ...hamletEnv,
+        HAMLET_RENDERER_HOST: rendererHost,
+        HAMLET_RENDERER_PORT: rendererPort,
+        VITE_HAMLET_DEFAULT_SERVER_URL: serverUrl,
+      },
     },
   ],
 });

@@ -1,7 +1,11 @@
 import type { BrowserWindowConstructorOptions, Session, WebPreferences } from "electron";
-import { ELECTRON_WINDOW_TITLE, STATIC_RENDERER_ORIGIN } from "./constants";
+import {
+  ELECTRON_WINDOW_TITLE,
+  resolveConfiguredRendererOrigin,
+  type RendererPortEnvironment,
+} from "./constants";
 
-export interface RendererEnvironment {
+export interface RendererEnvironment extends RendererPortEnvironment {
   HAMLET_RENDERER_URL?: string;
 }
 
@@ -34,24 +38,28 @@ export type SessionPermissionPolicy = Pick<
 >;
 
 export function resolveRendererUrl(env: RendererEnvironment = process.env): URL {
+  const trustedOrigin = resolveConfiguredRendererOrigin(env);
   const rendererUrlOverride = env.HAMLET_RENDERER_URL?.trim();
   const url = parseRendererUrl(
     rendererUrlOverride === "" || rendererUrlOverride === undefined
-      ? STATIC_RENDERER_ORIGIN
+      ? trustedOrigin
       : rendererUrlOverride,
   );
-  if (!isTrustedRendererUrl(url)) {
+  if (!isTrustedRendererUrl(url, env)) {
     throw new Error(
-      `Refusing to load untrusted renderer origin "${url.origin}". Expected "${STATIC_RENDERER_ORIGIN}".`,
+      `Refusing to load untrusted renderer origin "${url.origin}". Expected "${trustedOrigin}".`,
     );
   }
   return url;
 }
 
-export function isTrustedRendererUrl(input: string | URL): boolean {
+export function isTrustedRendererUrl(
+  input: string | URL,
+  env: RendererPortEnvironment = process.env,
+): boolean {
   try {
     const url = typeof input === "string" ? new URL(input) : input;
-    return url.origin === STATIC_RENDERER_ORIGIN;
+    return url.origin === resolveConfiguredRendererOrigin(env);
   } catch {
     return false;
   }

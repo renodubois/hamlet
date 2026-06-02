@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { test, expect, type Locator, type Page } from "@playwright/test";
+import { serverUrl } from "./test-config";
 
 // Small checked-in PNG. The server normalizes static uploads to 256x256 WebP.
 const STATIC_PNG = readFileSync(new URL("../packaging/icons/32x32.png", import.meta.url));
@@ -15,7 +16,7 @@ const ANIMATED_GIF = Buffer.from([
 
 async function loginAndOpenGeneral(page: Page) {
   await page.goto("/");
-  await page.getByPlaceholder("Server URL").fill("http://127.0.0.1:3030");
+  await page.getByPlaceholder("Server URL").fill(serverUrl);
   await page.getByPlaceholder("Username").fill("baipas");
   await page.getByPlaceholder("Password").fill("password");
   await page.getByRole("button", { name: /sign in/i }).click();

@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { serverUrl } from "./test-config";
 
 test("rejects incorrect credentials and stays on the login screen", async ({ page }) => {
   // Argon2 verification is deliberately slow (~500ms on a quiet machine,
@@ -9,7 +10,7 @@ test("rejects incorrect credentials and stays on the login screen", async ({ pag
 
   await page.goto("/");
 
-  await page.getByPlaceholder("Server URL").fill("http://127.0.0.1:3030");
+  await page.getByPlaceholder("Server URL").fill(serverUrl);
   await page.getByPlaceholder("Username").fill("baipas");
   await page.getByPlaceholder("Password").fill("definitely-wrong");
   await page.getByRole("button", { name: /sign in/i }).click();

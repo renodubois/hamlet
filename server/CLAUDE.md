@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is the Rust/Actix-web backend for **Hamlet**, a Discord-like chat app. It is a standalone git repo; the Electron/Solid.js frontend lives in a sibling `client/` directory (see `../CLAUDE.md` for the combined workspace view). The server binds `127.0.0.1:3030` and the frontend expects it there.
+This is the Rust/Actix-web backend for **Hamlet**, a Discord-like chat app. It is a standalone git repo; the Electron/Solid.js frontend lives in a sibling `client/` directory (see `../CLAUDE.md` for the combined workspace view). The server defaults to `127.0.0.1:3030`; worktrees can override `HAMLET_BIND_ADDR` / `HAMLET_SERVER_PORT`.
 
 ## Commands
 
@@ -15,7 +15,7 @@ cargo test                                        # run all tests
 cargo test test_message_create                    # run a single test by name
 cargo test -- --nocapture                         # show println!/dbg! output during tests
 RUST_LOG=debug cargo run                          # raise log verbosity (default is `info`)
-HAMLET_BIND_ADDR=0.0.0.0:3030 cargo run           # override bind address (used by docker-compose)
+HAMLET_BIND_ADDR=127.0.0.1:3130 cargo run         # override bind address for a worktree
 ```
 
 ### Docker
@@ -25,7 +25,7 @@ The server also runs under Docker Compose alongside a self-hosted LiveKit contai
 - `Dockerfile` — multi-stage production build using `cargo-chef` for dependency caching.
 - `Dockerfile.dev` — dev image with `cargo-watch`; the override bind-mounts `server/` into the container so code changes trigger incremental rebuilds.
 
-The bind address is controlled by `HAMLET_BIND_ADDR` (defaults to `127.0.0.1:3030` to preserve the local `cargo run` behavior; containers set it to `0.0.0.0:3030`).
+The bind address is controlled by `HAMLET_BIND_ADDR` (defaults to `127.0.0.1:3030` to preserve the local `cargo run` behavior; containers bind `0.0.0.0:3030` internally and expose `${HAMLET_SERVER_PORT:-3030}` on the host). Generate per-worktree LiveKit configs with `server/scripts/write-livekit-config.sh` after setting `HAMLET_SERVER_PORT`, `HAMLET_LIVEKIT_PORT`, `HAMLET_LIVEKIT_TCP_PORT`, and the UDP range variables.
 
 ### Code quality (run before committing)
 

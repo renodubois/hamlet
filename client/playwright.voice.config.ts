@@ -1,15 +1,18 @@
 import { defineConfig, devices } from "@playwright/test";
+import { hamletEnv } from "./playwright.env";
 
-const rendererUrl = "http://127.0.0.1:1422";
+const rendererHost = hamletEnv.HAMLET_RENDERER_HOST ?? "127.0.0.1";
+const rendererPort = hamletEnv.HAMLET_RENDERER_PORT ?? "1422";
+const rendererUrl = hamletEnv.HAMLET_RENDERER_URL ?? `http://${rendererHost}:${rendererPort}`;
 
 export default defineConfig({
   testDir: "./e2e",
   testMatch: "voice-browser.spec.ts",
   fullyParallel: false,
-  forbidOnly: !!process.env.CI,
+  forbidOnly: !!hamletEnv.CI,
   retries: 0,
   workers: 1,
-  reporter: process.env.CI ? [["html", { open: "never" }], ["list"]] : "list",
+  reporter: hamletEnv.CI ? [["html", { open: "never" }], ["list"]] : "list",
 
   use: {
     baseURL: rendererUrl,
@@ -24,7 +27,7 @@ export default defineConfig({
         ...devices["Desktop Chrome"],
         permissions: ["microphone"],
         launchOptions: {
-          executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+          executablePath: hamletEnv.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
           args: [
             "--use-fake-device-for-media-stream",
             "--use-fake-ui-for-media-stream",
@@ -54,7 +57,12 @@ export default defineConfig({
   webServer: {
     command: "npm run dev",
     url: rendererUrl,
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: !hamletEnv.CI,
     timeout: 60_000,
+    env: {
+      ...hamletEnv,
+      HAMLET_RENDERER_HOST: rendererHost,
+      HAMLET_RENDERER_PORT: rendererPort,
+    },
   },
 });

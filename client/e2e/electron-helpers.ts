@@ -7,11 +7,12 @@ import {
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { rendererOriginPattern, serverUrl } from "./test-config";
 
 export const clientElectronRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const builtAppPath = clientElectronRoot;
-const rendererOriginPattern = /^http:\/\/127\.0\.0\.1:1422(?:\/|$)/;
+const rendererUrlPattern = rendererOriginPattern();
 const electronMediaSwitches = [
   "--use-fake-device-for-media-stream",
   "--use-fake-ui-for-media-stream",
@@ -69,7 +70,7 @@ export async function launchPackagedElectronApp(
 export async function firstHamletWindow(app: ElectronApplication): Promise<Page> {
   const page = await app.firstWindow();
   await page.waitForLoadState("domcontentloaded");
-  await expect(page).toHaveURL(rendererOriginPattern, { timeout: 30_000 });
+  await expect(page).toHaveURL(rendererUrlPattern, { timeout: 30_000 });
   return page;
 }
 
@@ -78,7 +79,7 @@ export async function loginAsSeededUser(page: Page): Promise<void> {
     timeout: 30_000,
   });
 
-  await page.getByPlaceholder("Server URL").fill("http://127.0.0.1:3030");
+  await page.getByPlaceholder("Server URL").fill(serverUrl);
   await page.getByPlaceholder("Username").fill("baipas");
   await page.getByPlaceholder("Password").fill("password");
   await page.getByRole("button", { name: /sign in/i }).click();

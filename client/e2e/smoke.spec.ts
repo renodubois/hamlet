@@ -1,4 +1,5 @@
 import { test, expect, type Locator, type Page } from "@playwright/test";
+import { serverUrl } from "./test-config";
 
 // The server seeds a dev user (baipas / password) and a 'general' channel on
 // every start. These E2E tests rely on that seed data. Because the server's
@@ -8,7 +9,7 @@ import { test, expect, type Locator, type Page } from "@playwright/test";
 test("logs in as the dev user and lands in a channel", async ({ page }) => {
   await page.goto("/");
 
-  await page.getByPlaceholder("Server URL").fill("http://127.0.0.1:3030");
+  await page.getByPlaceholder("Server URL").fill(serverUrl);
   await page.getByPlaceholder("Username").fill("baipas");
   await page.getByPlaceholder("Password").fill("password");
   await page.getByRole("button", { name: /sign in/i }).click();
@@ -37,7 +38,7 @@ async function expectEditorValue(input: Locator, expected: string) {
 
 async function loginAndOpenGeneral(page: Page) {
   await page.goto("/");
-  await page.getByPlaceholder("Server URL").fill("http://127.0.0.1:3030");
+  await page.getByPlaceholder("Server URL").fill(serverUrl);
   await page.getByPlaceholder("Username").fill("baipas");
   await page.getByPlaceholder("Password").fill("password");
   await page.getByRole("button", { name: /sign in/i }).click();

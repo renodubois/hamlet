@@ -1,2 +1,6 @@
 docs/
 issues/
+.env
+.env.*
+!.env.example
+.hamlet-worktree.env

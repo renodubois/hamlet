@@ -1,4 +1,4 @@
-const DEFAULT_SERVER = "http://127.0.0.1:3030";
+const DEFAULT_SERVER = import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL ?? "http://127.0.0.1:3030";
 
 export function getServerUrl(): string {
   return localStorage.getItem("hamlet.serverUrl") ?? DEFAULT_SERVER;

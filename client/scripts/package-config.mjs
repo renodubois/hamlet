@@ -62,6 +62,7 @@ export const PACKAGER_IGNORE_PATTERNS = Object.freeze([
   /^\/\.size-limit\.json$/,
   /^\/oxlint\.config\.ts$/,
   /^\/playwright(?:\.[^.]+)?\.config\.ts$/,
+  /^\/playwright\.env\.ts$/,
   /^\/postcss\.config\.js$/,
   /^\/tsconfig(?:\.[^.]+)?\.json$/,
   /^\/vite\.config\.ts$/,

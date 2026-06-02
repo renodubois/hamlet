@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import net from "node:net";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
@@ -7,8 +8,17 @@ import { setTimeout as delay } from "node:timers/promises";
 const repoRoot = new URL("../..", import.meta.url);
 const clientDir = new URL("..", import.meta.url);
 const serverDir = new URL("../../server/", import.meta.url);
+loadLocalEnv();
 const composeProjectName = process.env.HAMLET_VOICE_COMPOSE_PROJECT ?? "hamlet_voice_e2e";
 const keepCompose = process.env.HAMLET_VOICE_KEEP_COMPOSE === "1";
+const serverUrl =
+  process.env.HAMLET_SERVER_URL ??
+  process.env.VITE_HAMLET_DEFAULT_SERVER_URL ??
+  "http://127.0.0.1:3030";
+const livekitUrl = process.env.LIVEKIT_URL ?? "ws://127.0.0.1:7880";
+const livekitTcp = new URL(livekitUrl);
+const livekitHost = livekitTcp.hostname;
+const livekitPort = Number(livekitTcp.port || "7880");
 let composeStopped = false;
 
 function run(command, args, options = {}) {
@@ -81,10 +91,10 @@ async function main() {
   await compose(["up", "-d", "--build", "--remove-orphans"]);
 
   try {
-    console.log("[voice-e2e] waiting for Hamlet server on 127.0.0.1:3030");
-    await waitForHttp("http://127.0.0.1:3030/channels", 180_000);
-    console.log("[voice-e2e] waiting for LiveKit on 127.0.0.1:7880");
-    await waitForTcp("127.0.0.1", 7880, 60_000);
+    console.log(`[voice-e2e] waiting for Hamlet server on ${serverUrl}`);
+    await waitForHttp(`${serverUrl}/channels`, 180_000);
+    console.log(`[voice-e2e] waiting for LiveKit on ${livekitHost}:${livekitPort}`);
+    await waitForTcp(livekitHost, livekitPort, 60_000);
     console.log("[voice-e2e] running Playwright browser voice test");
     await run("npx", ["playwright", "test", "-c", "playwright.voice.config.ts"], {
       cwd: clientDir,
@@ -98,6 +108,39 @@ async function main() {
       composeStopped = true;
     }
   }
+}
+
+function loadLocalEnv() {
+  for (const fileUrl of [
+    new URL("../../.hamlet-worktree.env", import.meta.url),
+    new URL("../.env", import.meta.url),
+    new URL("../.env.local", import.meta.url),
+  ]) {
+    let contents;
+    try {
+      contents = readFileSync(fileUrl, "utf8");
+    } catch {
+      continue;
+    }
+
+    for (const line of contents.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (trimmed === "" || trimmed.startsWith("#")) continue;
+      const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(trimmed);
+      if (match === null) continue;
+      const [, key, rawValue] = match;
+      if (process.env[key] !== undefined) continue;
+      process.env[key] = unquoteEnvValue(rawValue.trim());
+    }
+  }
+}
+
+function unquoteEnvValue(value) {
+  if (value.length < 2) return value;
+  const quote = value[0];
+  if ((quote !== '"' && quote !== "'") || value.at(-1) !== quote) return value;
+  const inner = value.slice(1, -1);
+  return quote === '"' ? inner.replaceAll('\\"', '"').replaceAll("\\\\", "\\") : inner;
 }
 
 main().catch(async (error) => {

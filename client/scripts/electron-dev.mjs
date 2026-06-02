@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const rendererUrl = process.env.HAMLET_RENDERER_URL ?? "http://127.0.0.1:1422";
+loadLocalEnv(rootDir);
+const rendererUrl = process.env.HAMLET_RENDERER_URL ?? defaultRendererUrl();
 const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
 const electronBin = path.join(
   rootDir,
@@ -110,4 +112,43 @@ function stopChildren() {
   for (const child of children) {
     if (!child.killed) child.kill();
   }
+}
+
+function defaultRendererUrl() {
+  const host = process.env.HAMLET_RENDERER_HOST?.trim() || "127.0.0.1";
+  const port = process.env.HAMLET_RENDERER_PORT?.trim() || "1422";
+  return `http://${host}:${port}`;
+}
+
+function loadLocalEnv(directory) {
+  for (const filePath of [
+    path.resolve(directory, "..", ".hamlet-worktree.env"),
+    path.join(directory, ".env"),
+    path.join(directory, ".env.local"),
+  ]) {
+    let contents;
+    try {
+      contents = readFileSync(filePath, "utf8");
+    } catch {
+      continue;
+    }
+
+    for (const line of contents.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (trimmed === "" || trimmed.startsWith("#")) continue;
+      const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(trimmed);
+      if (match === null) continue;
+      const [, key, rawValue] = match;
+      if (process.env[key] !== undefined) continue;
+      process.env[key] = unquoteEnvValue(rawValue.trim());
+    }
+  }
+}
+
+function unquoteEnvValue(value) {
+  if (value.length < 2) return value;
+  const quote = value[0];
+  if ((quote !== '"' && quote !== "'") || value.at(-1) !== quote) return value;
+  const inner = value.slice(1, -1);
+  return quote === '"' ? inner.replaceAll('\\"', '"').replaceAll("\\\\", "\\") : inner;
 }

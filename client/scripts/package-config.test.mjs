@@ -116,6 +116,7 @@ describe("Electron alpha package inputs", () => {
     expect(isIgnored("playwright.config.ts")).toBe(true);
     expect(isIgnored("playwright.electron.config.ts")).toBe(true);
     expect(isIgnored("playwright.package.config.ts")).toBe(true);
+    expect(isIgnored("playwright.env.ts")).toBe(true);
 
     expect(isIgnored("package.json")).toBe(false);
     expect(isIgnored("dist/index.html")).toBe(false);

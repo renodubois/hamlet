@@ -1,8 +1,8 @@
 # Hamlet Electron Alpha
 
-Electron/Solid desktop client for Hamlet. It keeps the renderer on the fixed
-loopback origin `http://127.0.0.1:1422` so auth, cookies, SSE, and LiveKit behave
-like a normal browser-localhost app.
+Electron/Solid desktop client for Hamlet. By default it keeps the renderer on
+`http://127.0.0.1:1422`; worktrees can override the loopback renderer port with
+`HAMLET_RENDERER_PORT` so multiple app instances can run side by side.
 
 The desktop client is intentionally explicit: **Electron does not bundle, start,
 stop, or supervise the Rust Hamlet server**. Start the server yourself before
@@ -40,26 +40,26 @@ shell does not proxy application APIs through Electron IPC.
 
 Run commands from `client/` unless noted.
 
-| Goal                             | Command                                   | Notes                                                                                                                                                             |
-| -------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Renderer-only browser dev        | `npm run dev`                             | Starts Vite on `http://127.0.0.1:1422` with `--strictPort`. Open that URL in a normal browser.                                                                    |
-| Renderer-only built preview      | `npm run build:renderer && npm run serve` | Serves built renderer assets on the same fixed origin for browser-only checks.                                                                                    |
-| Electron dev launch              | `npm run electron:dev`                    | Builds main/preload, starts Vite, waits for `127.0.0.1:1422`, then launches Electron with `HAMLET_RENDERER_URL` pointing at Vite. Server must already be running. |
-| Build everything                 | `npm run build`                           | Builds renderer output in `dist/` and Electron main/preload output in `dist-electron/`.                                                                           |
-| Electron-only build              | `npm run electron:build`                  | Builds only main/preload. Useful before launching multiple dev profiles against an already-running Vite server.                                                   |
-| Local unpacked package           | `npm run package:unpacked`                | Runs `npm run build`, then writes `release/Hamlet Electron Alpha-<platform>-<arch>/`.                                                                             |
-| Launch unpacked package          | `npm run package:launch`                  | Rebuilds/repackages, clears `HAMLET_RENDERER_URL`, and launches the unpacked app against the packaged fixed-loopback static renderer.                             |
-| Package smoke                    | `npm run package:smoke`                   | Rebuilds/repackages, then Playwright launches the unpacked package and verifies the fixed renderer origin.                                                        |
-| Full public package              | `npm run package:full`                    | Intentionally fails with a deferral message. Signing, notarization, installers, auto-update, and public distribution are not configured for the alpha.            |
-| Format                           | `npm run fmt` / `npm run fmt:check`       | Formatter check/fix for the Electron client tree.                                                                                                                 |
-| Lint                             | `npm run lint`                            | Oxlint.                                                                                                                                                           |
-| Typecheck                        | `npm run typecheck`                       | Renderer TypeScript plus `tsconfig.electron.json` for main/preload.                                                                                               |
-| Unit/component/integration tests | `npm run test`                            | Vitest, MSW, fake SSE, axe/component coverage.                                                                                                                    |
-| Browser E2E                      | `npm run test:e2e:renderer`               | Playwright Chromium against renderer-only Vite. The config starts `server` with `cargo run`.                                                                      |
-| Browser voice E2E                | `npm run test:e2e:voice:browser`          | Playwright Chromium + Firefox against renderer-only Vite and the server-side Docker Compose LiveKit stack.                                                        |
-| Electron E2E                     | `npm run test:e2e:electron`               | Builds, starts `server` with `cargo run`, then launches Electron through Playwright.                                                                              |
-| All E2E                          | `npm run test:e2e`                        | Runs browser renderer E2E, then Electron shell E2E.                                                                                                               |
-| Size budget                      | `npm run size`                            | Builds, then checks gzip JS/CSS renderer budgets in `.size-limit.json`. Electron package/artifact size is not budgeted yet.                                       |
+| Goal                             | Command                                   | Notes                                                                                                                                                                        |
+| -------------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Renderer-only browser dev        | `npm run dev`                             | Starts Vite on `http://127.0.0.1:${HAMLET_RENDERER_PORT:-1422}` with `strictPort`. Open that URL in a normal browser.                                                        |
+| Renderer-only built preview      | `npm run build:renderer && npm run serve` | Serves built renderer assets on the same configured loopback origin for browser-only checks.                                                                                 |
+| Electron dev launch              | `npm run electron:dev`                    | Builds main/preload, starts Vite, waits for the configured renderer URL, then launches Electron with `HAMLET_RENDERER_URL` pointing at Vite. Server must already be running. |
+| Build everything                 | `npm run build`                           | Builds renderer output in `dist/` and Electron main/preload output in `dist-electron/`.                                                                                      |
+| Electron-only build              | `npm run electron:build`                  | Builds only main/preload. Useful before launching multiple dev profiles against an already-running Vite server.                                                              |
+| Local unpacked package           | `npm run package:unpacked`                | Runs `npm run build`, then writes `release/Hamlet Electron Alpha-<platform>-<arch>/`.                                                                                        |
+| Launch unpacked package          | `npm run package:launch`                  | Rebuilds/repackages, clears `HAMLET_RENDERER_URL`, and launches the unpacked app against the packaged loopback static renderer.                                              |
+| Package smoke                    | `npm run package:smoke`                   | Rebuilds/repackages, then Playwright launches the unpacked package and verifies the configured renderer origin.                                                              |
+| Full public package              | `npm run package:full`                    | Intentionally fails with a deferral message. Signing, notarization, installers, auto-update, and public distribution are not configured for the alpha.                       |
+| Format                           | `npm run fmt` / `npm run fmt:check`       | Formatter check/fix for the Electron client tree.                                                                                                                            |
+| Lint                             | `npm run lint`                            | Oxlint.                                                                                                                                                                      |
+| Typecheck                        | `npm run typecheck`                       | Renderer TypeScript plus `tsconfig.electron.json` for main/preload.                                                                                                          |
+| Unit/component/integration tests | `npm run test`                            | Vitest, MSW, fake SSE, axe/component coverage.                                                                                                                               |
+| Browser E2E                      | `npm run test:e2e:renderer`               | Playwright Chromium against renderer-only Vite. The config starts `server` with `cargo run`.                                                                                 |
+| Browser voice E2E                | `npm run test:e2e:voice:browser`          | Playwright Chromium + Firefox against renderer-only Vite and the server-side Docker Compose LiveKit stack.                                                                   |
+| Electron E2E                     | `npm run test:e2e:electron`               | Builds, starts `server` with `cargo run`, then launches Electron through Playwright.                                                                                         |
+| All E2E                          | `npm run test:e2e`                        | Runs browser renderer E2E, then Electron shell E2E.                                                                                                                          |
+| Size budget                      | `npm run size`                            | Builds, then checks gzip JS/CSS renderer budgets in `.size-limit.json`. Electron package/artifact size is not budgeted yet.                                                  |
 
 From the repository root, repo-level checks can target this client with:
 
@@ -72,31 +72,35 @@ scripts/check.sh client --e2e
 
 There are two different URLs to keep straight:
 
-- **Renderer origin:** always `http://127.0.0.1:1422` by default in dev and
-  packaged modes. Chromium localStorage for the app is keyed to this origin.
+- **Renderer origin:** `http://127.0.0.1:1422` by default in dev and packaged
+  modes. Set `HAMLET_RENDERER_PORT` (and optionally `HAMLET_RENDERER_HOST`) for
+  isolated worktrees. Chromium localStorage for the app is keyed to this origin.
 - **Hamlet server URL:** entered on the login screen and stored as
   `hamlet.serverUrl` in renderer localStorage. The default is
-  `http://127.0.0.1:3030`.
+  `http://127.0.0.1:3030`; set `VITE_HAMLET_DEFAULT_SERVER_URL` or
+  `HAMLET_SERVER_URL` to change the default shown by a worktree.
 
 Keep the server URL spelling stable while testing. The `localhost` and
 `127.0.0.1` spellings are different cookie hosts, so switching between them can
 look like a lost session even though the renderer origin did not change.
 
 `HAMLET_RENDERER_URL` is a developer/test override for the renderer URL. The
-security policy still requires the origin to be `http://127.0.0.1:1422`; random
-ports, `file://`, custom protocols, or remote renderer origins are rejected. When
-`HAMLET_RENDERER_URL` is unset or empty, Electron starts the packaged static
-renderer server from `dist/`.
+security policy still requires the origin to match the configured loopback
+renderer origin; `file://`, custom protocols, remote renderer origins, and
+unexpected ports are rejected. When `HAMLET_RENDERER_URL` is unset or empty,
+Electron starts the packaged static renderer server from `dist/` on the
+configured host/port.
 
-Port `127.0.0.1:1422` is fixed on purpose:
+The renderer port is strict:
 
-- `npm run dev` and `npm run serve` use Vite `--strictPort`; they fail fast if
-  another process already owns the port.
-- Packaged/static-renderer Electron also binds `127.0.0.1:1422`. If the port is
-  occupied, startup fails with a clear "already in use" message/dialog. Close the
-  other Hamlet Electron instance or free the port, then relaunch.
+- `npm run dev` and `npm run serve` fail fast if another process already owns the
+  configured port.
+- Packaged/static-renderer Electron also binds the configured renderer port. If
+  the port is occupied, startup fails with a clear "already in use"
+  message/dialog. Close the other Hamlet Electron instance or free the port, then
+  relaunch.
 - Normal packaged launches are single-instance. A second packaged launch should
-  focus the existing window instead of racing for the fixed port.
+  focus the existing window instead of racing for the configured port.
 
 ## Data directories and profile isolation
 
@@ -177,7 +181,7 @@ Expected gaps:
   public distribution. Unsigned-app warnings are expected.
 - Normal app APIs stay in the browser renderer. The preload boundary is
   deliberately empty and raw `ipcRenderer` is not exposed.
-- Packaged mode assumes one fixed renderer port and one normal packaged instance.
+- Packaged mode assumes one configured renderer port and one normal packaged instance.
   Multiple packaged instances with separate profiles are not supported.
 - Localhost-style Hamlet servers are the supported alpha path. Arbitrary remote
   or insecure HTTP servers depend on the existing server CORS/cookie behavior
@@ -187,9 +191,9 @@ Expected gaps:
 
 Support/product notes:
 
-- A failed app launch with `127.0.0.1:1422 is already in use` is usually a stale
-  Vite server, a running packaged Electron instance, or another local process on
-  the fixed renderer port.
+- A failed app launch with `127.0.0.1:<renderer-port> is already in use` is usually
+  a stale Vite server, a running packaged Electron instance, or another local
+  process on the configured renderer port.
 - A login that works in one run but not another is often server lifecycle or host
   spelling (`localhost` vs `127.0.0.1`) rather than Electron storage loss.
 - Server data may reset when the current development server restarts; do not
@@ -257,7 +261,7 @@ for the target machine, then complete the platform smoke areas below.
 - **Unpacked package launch**
   - Run `npm run package:unpacked`, then launch the platform executable directly
     and with `npm run package:launch`.
-  - Confirm the app URL is `http://127.0.0.1:1422`, deep-route reload works, and
+  - Confirm the app URL uses the configured renderer origin, deep-route reload works, and
     a second packaged launch focuses the existing window.
   - Confirm `npm run package:full` fails with the expected deferral message.
 
@@ -308,7 +312,7 @@ for the target machine, then complete the platform smoke areas below.
   `BrowserWindow` options, top-level navigation policy, popup/external-link
   policy, and default-deny media/permission decisions.
 - `electron/static-server.ts` owns packaged renderer serving: loopback-only bind,
-  fixed origin, SPA fallback, path-traversal rejection, MIME types, security
+  configured origin, SPA fallback, path-traversal rejection, MIME types, security
   headers/CSP, and clear startup errors such as `EADDRINUSE`.
 - `electron/lifecycle.ts` owns development data-directory overrides, packaged
   single-instance behavior, focus-on-second-launch behavior, and clean shutdown
