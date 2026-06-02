@@ -111,11 +111,23 @@ test("custom emoji upload, use, rename, delete, restore, and animated smoke", as
 
   await expect(page.locator("main").getByRole("img", { name: `:${renamed}:` })).toHaveCount(1);
 
-  await input.fill("autocomplete ");
+  await input.fill("completed shortcode ");
   await input.pressSequentially(`:${renamed}:`);
-  await expectEditorValue(input, new RegExp(`autocomplete <:${renamed}:\\d+>`));
+  await expectEditorValue(input, new RegExp(`completed shortcode <:${renamed}:\\d+>`));
   await input.press("Enter");
   await expect(page.locator("main").getByRole("img", { name: `:${renamed}:` })).toHaveCount(2, {
+    timeout: 10_000,
+  });
+
+  await expectEditorValue(input, "");
+  await input.click();
+  await input.pressSequentially(`autocomplete :${renamed}`);
+  await expect(page.getByRole("option", { name: `Emoji :${renamed}:` })).toBeVisible();
+  await input.press("Enter");
+  await expectEditorValue(input, new RegExp(`autocomplete <:${renamed}:\\d+>`));
+  await expect(input.getByRole("img", { name: `Custom emoji :${renamed}:` })).toBeVisible();
+  await input.press("Enter");
+  await expect(page.locator("main").getByRole("img", { name: `:${renamed}:` })).toHaveCount(3, {
     timeout: 10_000,
   });
 
@@ -128,7 +140,7 @@ test("custom emoji upload, use, rename, delete, restore, and animated smoke", as
   ).toBeVisible();
   await closeSettings(page, settings);
 
-  await expect(page.locator("main").getByRole("img", { name: `:${renamed}:` })).toHaveCount(2);
+  await expect(page.locator("main").getByRole("img", { name: `:${renamed}:` })).toHaveCount(3);
 
   await input.fill(`deleted :${renamed}:`);
   await expectEditorValue(input, `deleted :${renamed}:`);
@@ -149,7 +161,7 @@ test("custom emoji upload, use, rename, delete, restore, and animated smoke", as
   await input.pressSequentially(`:${renamed}:`);
   await expectEditorValue(input, new RegExp(`after restore <:${renamed}:\\d+>`));
   await input.press("Enter");
-  await expect(page.locator("main").getByRole("img", { name: `:${renamed}:` })).toHaveCount(3, {
+  await expect(page.locator("main").getByRole("img", { name: `:${renamed}:` })).toHaveCount(4, {
     timeout: 10_000,
   });
 

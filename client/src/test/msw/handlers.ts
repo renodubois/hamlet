@@ -9,7 +9,7 @@ import type {
   VoiceParticipant,
 } from "../../api";
 
-const BASE = "http://127.0.0.1:3030";
+const BASE = import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL ?? "http://127.0.0.1:3030";
 
 export const DEV_USER: User = {
   id: 1,

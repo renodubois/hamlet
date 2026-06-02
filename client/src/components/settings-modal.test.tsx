@@ -9,6 +9,8 @@ import { DEV_USER } from "../test/msw/handlers";
 import { mswState, resetMswState, server } from "../test/msw/server";
 import SettingsModal from "./settings-modal";
 
+const TEST_SERVER = import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL ?? "http://127.0.0.1:3030";
+
 const USER: User = {
   id: 1,
   username: "alice",
@@ -253,7 +255,7 @@ describe("<SettingsModal>", () => {
   test("Custom Emojis tab shows a loading state from the registry", async () => {
     resetMswState({ me: DEV_USER });
     server.use(
-      http.get("http://127.0.0.1:3030/emojis", async () => {
+      http.get(`${TEST_SERVER}/emojis`, async () => {
         await delay("infinite");
         return HttpResponse.json([]);
       }),
@@ -337,7 +339,7 @@ describe("<SettingsModal>", () => {
     expect(screen.getByText("animated")).toBeInTheDocument();
     expect(screen.getByRole("img", { name: ":dance:" })).toHaveAttribute(
       "src",
-      expect.stringContaining("http://127.0.0.1:3030/uploads/emojis/dance.gif"),
+      expect.stringContaining(`${TEST_SERVER}/uploads/emojis/dance.gif`),
     );
 
     if (originalCreateObjectURL) {
@@ -373,7 +375,7 @@ describe("<SettingsModal>", () => {
   test("Custom Emojis upload shows server validation errors", async () => {
     resetMswState({ me: DEV_USER, customEmojis: [] });
     server.use(
-      http.post("http://127.0.0.1:3030/emojis", () =>
+      http.post(`${TEST_SERVER}/emojis`, () =>
         HttpResponse.json(
           { error: { kind: "emoji_name_taken", message: "custom emoji name already exists" } },
           { status: 409 },
@@ -542,9 +544,7 @@ describe("<SettingsModal>", () => {
 
   test("Custom Emojis tab shows an error state from the registry", async () => {
     resetMswState({ me: DEV_USER });
-    server.use(
-      http.get("http://127.0.0.1:3030/emojis", () => new HttpResponse(null, { status: 500 })),
-    );
+    server.use(http.get(`${TEST_SERVER}/emojis`, () => new HttpResponse(null, { status: 500 })));
     mountWithCustomEmojiProvider();
 
     fireEvent.click(screen.getByRole("tab", { name: "Custom Emojis" }));

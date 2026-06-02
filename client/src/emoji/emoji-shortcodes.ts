@@ -31,7 +31,7 @@ function hasEmojiBoundary(value: string, boundaryIndex: number): boolean {
   );
 }
 
-function hasValidShortcodeBoundary(value: string, tokenStart: number): boolean {
+export function hasValidShortcodeBoundary(value: string, tokenStart: number): boolean {
   if (tokenStart === 0) return true;
 
   const previousCharacter = value[tokenStart - 1];

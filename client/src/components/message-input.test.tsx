@@ -1,16 +1,51 @@
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
+import { HttpResponse, http } from "msw";
 import { createSignal } from "solid-js";
 import { describe, expect, test, vi } from "vitest";
 import { AuthProvider } from "../contexts/auth";
 import { CustomEmojisProvider } from "../contexts/custom-emojis";
 import { expectNoA11yViolations } from "../test/a11y";
-import { DEV_USER } from "../test/msw/handlers";
-import { resetMswState } from "../test/msw/server";
+import { DEV_USER, type HandlerState } from "../test/msw/handlers";
+import { resetMswState, server } from "../test/msw/server";
 import MessageInput from "./message-input";
 
 const searchName = /search and select emoji/i;
 const pickerName = /emoji picker/i;
+const TEST_SERVER = import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL ?? "http://127.0.0.1:3030";
+
+const CUSTOM_EMOJI_FIXTURES: HandlerState["customEmojis"] = [
+  {
+    id: 123,
+    name: "party",
+    image_url: "/uploads/emojis/123.webp?v=1",
+    animated: false,
+    created_by_user_id: 1,
+    created_at: 1,
+    updated_at: 1,
+    deleted_at: null,
+  },
+  {
+    id: 456,
+    name: "dance",
+    image_url: "/uploads/emojis/456.gif?v=1",
+    animated: true,
+    created_by_user_id: 1,
+    created_at: 1,
+    updated_at: 1,
+    deleted_at: null,
+  },
+  {
+    id: 789,
+    name: "retired",
+    image_url: "/uploads/emojis/789.webp?v=1",
+    animated: false,
+    created_by_user_id: 1,
+    created_at: 1,
+    updated_at: 1,
+    deleted_at: 2,
+  },
+];
 
 function renderHarness(initialValue = "") {
   const changes: string[] = [];
@@ -36,42 +71,14 @@ function renderHarness(initialValue = "") {
   return { ...result, changes, setExternalValue };
 }
 
-function renderHarnessWithCustomEmojis(initialValue = "") {
+function renderHarnessWithCustomEmojis(
+  initialValue = "",
+  customEmojis: HandlerState["customEmojis"] = CUSTOM_EMOJI_FIXTURES,
+) {
   const changes: string[] = [];
   resetMswState({
     me: DEV_USER,
-    customEmojis: [
-      {
-        id: 123,
-        name: "party",
-        image_url: "/uploads/emojis/123.webp?v=1",
-        animated: false,
-        created_by_user_id: 1,
-        created_at: 1,
-        updated_at: 1,
-        deleted_at: null,
-      },
-      {
-        id: 456,
-        name: "dance",
-        image_url: "/uploads/emojis/456.gif?v=1",
-        animated: true,
-        created_by_user_id: 1,
-        created_at: 1,
-        updated_at: 1,
-        deleted_at: null,
-      },
-      {
-        id: 789,
-        name: "retired",
-        image_url: "/uploads/emojis/789.webp?v=1",
-        animated: false,
-        created_by_user_id: 1,
-        created_at: 1,
-        updated_at: 1,
-        deleted_at: 2,
-      },
-    ],
+    customEmojis,
   });
 
   const result = render(() => {
@@ -126,6 +133,17 @@ function inputFromUser(
   input.value = value;
   input.setSelectionRange(caretIndex, caretIndex);
   fireEvent.input(input, eventInit);
+}
+
+async function expectEmojiAutocompleteOpen() {
+  const listbox = await screen.findByRole("listbox", { name: /emoji suggestions/i });
+  return within(listbox).getAllByRole("option");
+}
+
+async function expectEmojiAutocompleteClosed() {
+  await waitFor(() => {
+    expect(screen.queryByRole("listbox", { name: /emoji suggestions/i })).toBeNull();
+  });
 }
 
 function setDomSelection(container: Node, offset: number) {
@@ -358,6 +376,426 @@ describe("<MessageInput>", () => {
     expect(event.defaultPrevented).toBe(true);
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(input.value).toBe("draft");
+  });
+
+  test("shows native emoji autocomplete suggestions for a boundary-valid prefix", async () => {
+    const { container } = renderHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, ":sm");
+
+    const listbox = await screen.findByRole("listbox", { name: /emoji suggestions/i });
+    const options = within(listbox).getAllByRole("option");
+    expect(options.length).toBeGreaterThan(0);
+    expect(options.length).toBeLessThanOrEqual(8);
+    expect(options[0]).toHaveAttribute("aria-selected", "true");
+    expect(options[0]).toHaveAccessibleName(/:smiley:/i);
+    expect(input).toHaveAttribute("aria-autocomplete", "list");
+    expect(input).toHaveAttribute("aria-controls", listbox.id);
+    expect(input).toHaveAttribute("aria-activedescendant", options[0].id);
+    await expectNoA11yViolations(container, "message input emoji autocomplete");
+  });
+
+  test("renders prominent shortcode rows with fixed previews and muted matched aliases", async () => {
+    renderHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, ":satisfied");
+
+    const option = await screen.findByRole("option", {
+      name: /emoji :laughing:, also matches :satisfied:/i,
+    });
+    expect(within(option).getByText(":laughing:")).toHaveClass("font-semibold");
+    expect(within(option).getByText(/also matches :satisfied:/i)).toHaveClass("text-gray-500");
+    expect(option.querySelector("[aria-hidden='true']")).toHaveClass("h-9", "w-9", "bg-gray-50");
+  });
+
+  test("shows active custom emoji autocomplete suggestions with image previews and excludes deleted emojis", async () => {
+    const { container } = renderHarnessWithCustomEmojis();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, ":pa");
+
+    const partyOption = await screen.findByRole("option", { name: /emoji :party:/i });
+    const listbox = screen.getByRole("listbox", { name: /emoji suggestions/i });
+    const image = partyOption.querySelector("img");
+    expect(image?.getAttribute("src")).toContain("/uploads/emojis/123.webp?v=1");
+    expect(within(partyOption).getByText(":party:")).toHaveClass("font-semibold");
+    expect(partyOption).toHaveAttribute("aria-selected", "true");
+    expect(input).toHaveAttribute("aria-autocomplete", "list");
+    expect(input).toHaveAttribute("aria-controls", listbox.id);
+    expect(input).toHaveAttribute("aria-activedescendant", partyOption.id);
+    await expectNoA11yViolations(container, "message input custom emoji autocomplete");
+
+    inputFromUser(input, ":ret");
+
+    await waitFor(() => {
+      expect(screen.queryByRole("option", { name: /emoji :retired:/i })).toBeNull();
+      expect(screen.queryByRole("listbox", { name: /emoji suggestions/i })).toBeNull();
+    });
+  });
+
+  test("commits custom emoji autocomplete suggestions as durable marker chips", async () => {
+    const { changes } = renderHarnessWithCustomEmojis();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, "hello :pa world", "hello :pa".length);
+    const partyOption = await screen.findByRole("option", { name: /emoji :party:/i });
+    expect(partyOption).toHaveAttribute("aria-selected", "true");
+
+    const event = keyDown(input, { key: "Enter" });
+
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => {
+      expect(input.value).toBe("hello <:party:123> world");
+      expect(input.selectionStart).toBe("hello <:party:123>".length);
+      expect(screen.getByRole("img", { name: /custom emoji :party:/i })).toBeInTheDocument();
+    });
+    expect(screen.queryByText("<:party:123>")).toBeNull();
+    expect(changes.at(-1)).toBe("hello <:party:123> world");
+  });
+
+  test("prioritizes custom emoji over native emoji for autocomplete exact and prefix ties", async () => {
+    renderHarnessWithCustomEmojis("", [
+      ...CUSTOM_EMOJI_FIXTURES,
+      {
+        id: 321,
+        name: "panda_face",
+        image_url: "/uploads/emojis/321.webp?v=1",
+        animated: false,
+        created_by_user_id: 1,
+        created_at: 1,
+        updated_at: 1,
+        deleted_at: null,
+      },
+    ]);
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, ":panda");
+
+    await waitFor(() => {
+      const options = within(
+        screen.getByRole("listbox", { name: /emoji suggestions/i }),
+      ).getAllByRole("option");
+      expect(options[0]).toHaveAccessibleName(/emoji :panda_face:/i);
+      expect(options[0].querySelector("img")?.getAttribute("src")).toContain(
+        "/uploads/emojis/321.webp?v=1",
+      );
+    });
+  });
+
+  test("keeps native autocomplete available while custom emojis load and shows custom emojis after update", async () => {
+    resetMswState({ me: DEV_USER, customEmojis: CUSTOM_EMOJI_FIXTURES });
+    let resolveEmojis: () => void = () => {};
+    const emojisLoaded = new Promise<void>((resolve) => {
+      resolveEmojis = resolve;
+    });
+    server.use(
+      http.get(`${TEST_SERVER}/emojis`, async () => {
+        await emojisLoaded;
+        return HttpResponse.json(CUSTOM_EMOJI_FIXTURES);
+      }),
+    );
+    render(() => {
+      const [value, setValue] = createSignal("");
+
+      return (
+        <AuthProvider>
+          <CustomEmojisProvider>
+            <MessageInput
+              value={value()}
+              onChange={setValue}
+              ariaLabel="Compose message"
+              placeholder="Send a new message..."
+            />
+          </CustomEmojisProvider>
+        </AuthProvider>
+      );
+    });
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, ":sm");
+    expect(await screen.findByRole("option", { name: /emoji :smiley:/i })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /emoji :party:/i })).toBeNull();
+
+    resolveEmojis();
+    inputFromUser(input, ":pa");
+
+    expect(await screen.findByRole("option", { name: /emoji :party:/i })).toBeInTheDocument();
+  });
+
+  test("hides emoji autocomplete when a boundary-valid query has zero matches", async () => {
+    renderHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, ":qq");
+    await Promise.resolve();
+
+    expect(screen.queryByRole("listbox", { name: /emoji suggestions/i })).toBeNull();
+    expect(screen.queryByRole("option")).toBeNull();
+    expect(screen.queryByText(/no results|loading|error/i)).toBeNull();
+  });
+
+  test("opening the emoji picker closes the active emoji autocomplete menu", async () => {
+    renderHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, ":sm");
+    await expectEmojiAutocompleteOpen();
+
+    fireEvent.click(screen.getByRole("button", { name: /open emoji picker/i }));
+
+    await screen.findByRole("dialog", { name: pickerName });
+    await expectEmojiAutocompleteClosed();
+  });
+
+  test("opening emoji autocomplete closes the emoji picker", async () => {
+    renderHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    await openPicker();
+
+    inputFromUser(input, ":sm");
+
+    await expectEmojiAutocompleteOpen();
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: pickerName })).toBeNull();
+    });
+  });
+
+  test.each([
+    ["after whitespace", "hello :sm", "hello :sm".length],
+    ["after opening punctuation", "(:sm", "(:sm".length],
+    ["after another emoji", "😄:sm", "😄:sm".length],
+  ])("opens emoji autocomplete %s", async (_, value, caretIndex) => {
+    renderHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, value, caretIndex);
+
+    const options = await expectEmojiAutocompleteOpen();
+    expect(options[0]).toHaveAccessibleName(/:smiley:/i);
+  });
+
+  test("opens emoji autocomplete after a custom emoji chip", async () => {
+    renderHarnessWithCustomEmojis("<:party:123>:sm");
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    await screen.findByRole("img", { name: /custom emoji :party:/i });
+    setInputSelection(input, "<:party:123>:sm".length);
+
+    const options = await expectEmojiAutocompleteOpen();
+    expect(options[0]).toHaveAccessibleName(/:smiley:/i);
+  });
+
+  test.each([
+    ["selected text", ":sm", 0, ":sm".length],
+    ["completed shortcode", ":smile:", ":sm".length, ":sm".length],
+    ["word-attached colon", "abc:sm", "abc:sm".length, "abc:sm".length],
+    [
+      "URL-like text",
+      "https://example.com/:sm",
+      "https://example.com/:sm".length,
+      "https://example.com/:sm".length,
+    ],
+    ["time-like text", "12:30", "12:30".length, "12:30".length],
+    ["one-character prefix", ":s", ":s".length, ":s".length],
+  ])("does not show emoji autocomplete for %s", async (_, value, selectionStart, selectionEnd) => {
+    renderHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, value, selectionEnd);
+    setInputSelection(input, selectionStart, selectionEnd);
+
+    await expectEmojiAutocompleteClosed();
+  });
+
+  test("Escape dismisses only the current emoji autocomplete token session", async () => {
+    renderHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, ":sm");
+    await expectEmojiAutocompleteOpen();
+
+    const dismissEvent = keyDown(input, { key: "Escape" });
+
+    expect(dismissEvent.defaultPrevented).toBe(true);
+    await expectEmojiAutocompleteClosed();
+
+    inputFromUser(input, ":smi");
+    await expectEmojiAutocompleteClosed();
+
+    inputFromUser(input, ":smi :he");
+    await expectEmojiAutocompleteOpen();
+    expect(screen.getByRole("option", { name: /:heart:/i })).toBeInTheDocument();
+
+    inputFromUser(input, "");
+    await expectEmojiAutocompleteClosed();
+    inputFromUser(input, ":sm");
+    await expectEmojiAutocompleteOpen();
+  });
+
+  test("Enter commits the selected native emoji autocomplete suggestion without submitting", async () => {
+    const { changes, onSubmit } = renderFormHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, "hello :sm world", "hello :sm".length);
+    await screen.findByRole("listbox", { name: /emoji suggestions/i });
+
+    const event = keyDown(input, { key: "Enter" });
+
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => {
+      expect(input.value).toBe("hello 😃 world");
+      expect(input.selectionStart).toBe("hello 😃".length);
+      expect(input.selectionEnd).toBe("hello 😃".length);
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(changes.at(-1)).toBe("hello 😃 world");
+    expect(screen.queryByRole("listbox", { name: /emoji suggestions/i })).toBeNull();
+  });
+
+  test("Tab commits the selected native emoji autocomplete suggestion without moving focus", async () => {
+    const { changes, onSubmit } = renderFormHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, "hello :sm world", "hello :sm".length);
+    await screen.findByRole("listbox", { name: /emoji suggestions/i });
+
+    const event = keyDown(input, { key: "Tab" });
+
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => {
+      expect(input.value).toBe("hello 😃 world");
+      expect(input.selectionStart).toBe("hello 😃".length);
+      expect(document.activeElement).toBe(input);
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(changes.at(-1)).toBe("hello 😃 world");
+    expect(screen.queryByRole("listbox", { name: /emoji suggestions/i })).toBeNull();
+  });
+
+  test("Arrow keys wrap autocomplete selection and query changes reset it", async () => {
+    renderHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, ":sm");
+    const listbox = await screen.findByRole("listbox", { name: /emoji suggestions/i });
+    let options = within(listbox).getAllByRole("option");
+    expect(options[0]).toHaveAttribute("aria-selected", "true");
+
+    let event = keyDown(input, { key: "ArrowDown" });
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(options[1]).toHaveAttribute("aria-selected", "true"));
+    expect(input).toHaveAttribute("aria-activedescendant", options[1].id);
+
+    event = keyDown(input, { key: "ArrowUp" });
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(options[0]).toHaveAttribute("aria-selected", "true"));
+
+    event = keyDown(input, { key: "ArrowUp" });
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(options.at(-1)).toHaveAttribute("aria-selected", "true"));
+
+    inputFromUser(input, ":he");
+    await waitFor(() => {
+      options = within(listbox).getAllByRole("option");
+      expect(options[0]).toHaveAttribute("aria-selected", "true");
+      expect(input).toHaveAttribute("aria-activedescendant", options[0].id);
+    });
+  });
+
+  test("Enter submits normally after Escape dismisses autocomplete", async () => {
+    const { changes, onSubmit } = renderFormHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, "hello :sm world", "hello :sm".length);
+    await screen.findByRole("listbox", { name: /emoji suggestions/i });
+
+    const escapeEvent = keyDown(input, { key: "Escape" });
+
+    expect(escapeEvent.defaultPrevented).toBe(true);
+    await waitFor(() =>
+      expect(screen.queryByRole("listbox", { name: /emoji suggestions/i })).toBeNull(),
+    );
+
+    const enterEvent = keyDown(input, { key: "Enter" });
+
+    expect(enterEvent.defaultPrevented).toBe(true);
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(input.value).toBe("hello :sm world");
+    expect(changes).toEqual(["hello :sm world"]);
+  });
+
+  test("Shift+Enter does not commit autocomplete suggestions", async () => {
+    const { changes, onSubmit } = renderFormHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, "hello :sm world", "hello :sm".length);
+    await screen.findByRole("listbox", { name: /emoji suggestions/i });
+
+    const event = keyDown(input, { key: "Enter", shiftKey: true });
+
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => {
+      expect(input.value).toBe("hello :sm\n world");
+      expect(input.selectionStart).toBe("hello :sm\n".length);
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(changes.at(-1)).toBe("hello :sm\n world");
+  });
+
+  test("autocomplete shortcuts take priority over owner keyboard handlers while open", async () => {
+    const ownerKeyDown = vi.fn((event: KeyboardEvent) => {
+      if (event.key === "Enter" || event.key === "Escape") event.preventDefault();
+    });
+
+    const changes: string[] = [];
+    render(() => {
+      const [value, setValue] = createSignal(":sm");
+
+      return (
+        <MessageInput
+          value={value()}
+          onChange={(nextValue) => {
+            changes.push(nextValue);
+            setValue(nextValue);
+          }}
+          ariaLabel="Compose message"
+          onKeyDown={ownerKeyDown}
+        />
+      );
+    });
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    setInputSelection(input, ":sm".length);
+    await screen.findByRole("listbox", { name: /emoji suggestions/i });
+
+    const event = keyDown(input, { key: "Enter" });
+
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(input.value).toBe("😃"));
+    expect(changes.at(-1)).toBe("😃");
+    expect(ownerKeyDown).not.toHaveBeenCalled();
+  });
+
+  test("clicking a native emoji autocomplete suggestion replaces only the active token", async () => {
+    const { changes } = renderHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, "before :sm after", "before :sm".length);
+    const option = await screen.findByRole("option", { name: /:smile:/i });
+
+    const mouseDown = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    option.dispatchEvent(mouseDown);
+    expect(mouseDown.defaultPrevented).toBe(true);
+    fireEvent.click(option);
+
+    await waitFor(() => {
+      expect(input.value).toBe("before 😄 after");
+      expect(input.selectionStart).toBe("before 😄".length);
+      expect(input.selectionEnd).toBe("before 😄".length);
+      expect(document.activeElement).toBe(input);
+    });
+    expect(changes.at(-1)).toBe("before 😄 after");
   });
 
   test("converts completed emoji shortcodes before the caret", async () => {

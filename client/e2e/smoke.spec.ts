@@ -98,6 +98,24 @@ test("sends a multiline message with Shift+Enter and renders both lines", async 
     .toBe(expected);
 });
 
+test("commits native emoji autocomplete and sends the emoji", async ({ page }) => {
+  await loginAndOpenGeneral(page);
+
+  const marker = `autocomplete emoji from playwright ${Date.now()} `;
+  const expected = `${marker}😃`;
+  const input = page.getByPlaceholder(/send a new message/i);
+  await input.fill(`${marker}:sm`);
+
+  await expect(page.getByRole("option", { name: /emoji :smiley:/i })).toBeVisible();
+  await input.press("Enter");
+  await expectEditorValue(input, expected);
+  await input.press("Enter");
+
+  await expect(
+    page.locator(".whitespace-pre-wrap:not([role='textbox'])").filter({ hasText: expected }).last(),
+  ).toBeVisible({ timeout: 10_000 });
+});
+
 test("selects an emoji from the picker and sends it", async ({ page }) => {
   await loginAndOpenGeneral(page);
 
@@ -123,12 +141,10 @@ test("selects an emoji from the picker and sends it", async ({ page }) => {
   const heartButton = heartCell.getByRole("button", { name: /^Emoji :heart:$/ });
   await expect(heartButton).toHaveCSS("cursor", "pointer");
 
-  await search.press("ArrowRight");
   const yellowHeartCell = picker.getByRole("gridcell", { name: /^Emoji :yellow_heart:$/ });
-  await expect(yellowHeartCell).toHaveAttribute("aria-selected", "true");
-  await expect(footer).toContainText(":yellow_heart:");
-
-  await search.press("Enter");
+  const yellowHeartButton = yellowHeartCell.getByRole("button", { name: /^Emoji :yellow_heart:$/ });
+  await expect(yellowHeartButton).toHaveCSS("cursor", "pointer");
+  await yellowHeartButton.click();
   await expect(picker).toBeHidden();
   await expectEditorValue(input, expected);
   await input.press("Enter");

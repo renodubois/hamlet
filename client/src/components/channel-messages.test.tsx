@@ -437,6 +437,31 @@ describe("<ChannelMessages> hover action toolbar", () => {
     await waitFor(() => expect(editMessage).toHaveBeenCalledWith(ownMessage.id, multilineText));
   });
 
+  test("Escape dismisses edit autocomplete before a second Escape cancels the edit", async () => {
+    mount([ownMessage], SELF_ID);
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+    const draftWithAutocomplete = `${ownMessage.text} :sm`;
+
+    fireEvent.input(input, { target: { value: draftWithAutocomplete } });
+    input.setSelectionRange(draftWithAutocomplete.length, draftWithAutocomplete.length);
+    await screen.findByRole("listbox", { name: /emoji suggestions/i });
+
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("listbox", { name: /emoji suggestions/i })).toBeNull(),
+    );
+    expect(screen.getByLabelText(/edit message/i)).toBeInTheDocument();
+    expect(editMessage).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByLabelText(/edit message/i)).toBeNull());
+    expect(editMessage).not.toHaveBeenCalled();
+    expect(screen.getByText(ownMessage.text)).toBeInTheDocument();
+  });
+
   test("Escape cancels a multiline edit without saving", async () => {
     mount([ownMessage], SELF_ID);
     fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));

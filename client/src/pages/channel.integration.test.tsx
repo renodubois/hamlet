@@ -14,6 +14,8 @@ import { assertExists } from "../test/render";
 import ChannelView from "./channel";
 import type { Message } from "../api";
 
+const TEST_SERVER = import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL ?? "http://127.0.0.1:3030";
+
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
   return {
@@ -228,6 +230,32 @@ describe("Channel view integration", () => {
     expect(replyText).toHaveClass("whitespace-pre-wrap", "break-words", "[overflow-wrap:anywhere]");
   });
 
+  test("thread reply composer commits emoji autocomplete before submitting", async () => {
+    const state = seedAuthed();
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
+    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
+    const textWithToken = "thread :sm";
+    fireEvent.input(input, { target: { value: textWithToken } });
+    setInputSelection(input, textWithToken.length);
+
+    const listbox = await screen.findByRole("listbox", { name: /emoji suggestions/i });
+    expect(within(listbox).getByRole("option", { name: /:smiley:/i })).toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(input.value).toBe("thread 😃"));
+    expect(state.sentThreadReplies).toEqual([]);
+
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(state.sentThreadReplies).toContainEqual({ rootId: 1, text: "thread 😃" });
+    });
+  });
+
   test("failed thread replies restore the exact multiline draft after clearing", async () => {
     const state = seedAuthed();
     let releaseReply: () => void = () => undefined;
@@ -235,7 +263,7 @@ describe("Channel view integration", () => {
       releaseReply = resolve;
     });
     server.use(
-      http.post("http://127.0.0.1:3030/thread/1/reply", async ({ request }) => {
+      http.post(`${TEST_SERVER}/thread/1/reply`, async ({ request }) => {
         const body = (await request.json()) as { text: string };
         state.sentThreadReplies.push({ rootId: 1, text: body.text });
         await replyPaused;
@@ -374,6 +402,36 @@ describe("Channel view integration", () => {
     const replyText = await findRenderedMessageTextWithin(panel, text);
     expect(replyText.textContent).toBe(text);
     expect(replyText).toHaveClass("whitespace-pre-wrap", "break-words", "[overflow-wrap:anywhere]");
+  });
+
+  test("thread reply edit commits emoji autocomplete before saving", async () => {
+    const state = seedThreadWithOwnReply({ text: "reply body" });
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("reply body")).toBeInTheDocument());
+    const input = await openThreadReplyEdit(panel);
+    const textWithToken = "reply :sm";
+    fireEvent.input(input, { target: { value: textWithToken } });
+    setInputSelection(input, textWithToken.length);
+
+    const listbox = await screen.findByRole("listbox", { name: /emoji suggestions/i });
+    expect(within(listbox).getByRole("option", { name: /:smiley:/i })).toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(input.value).toBe("reply 😃"));
+    expect(state.editedMessages).toEqual([]);
+
+    fireEvent.click(
+      within(assertExists(input.closest("form"), "thread reply edit form")).getByRole("button", {
+        name: /^save$/i,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(state.editedMessages).toContainEqual({ id: 70, text: "reply 😃" });
+    });
   });
 
   test("thread reply edit Save button PUTs exact multiline text", async () => {
@@ -1341,6 +1399,33 @@ describe("Channel view integration", () => {
     await waitFor(() => expect(input.value).toBe(""));
   });
 
+  test("channel composer commits native emoji autocomplete before sending", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    const draftWithToken = "native autocomplete :sm";
+    fireEvent.input(input, { target: { value: draftWithToken } });
+    setInputSelection(input, draftWithToken.length);
+
+    const listbox = await screen.findByRole("listbox", { name: /emoji suggestions/i });
+    expect(within(listbox).getByRole("option", { name: /:smiley:/i })).toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(input.value).toBe("native autocomplete 😃"));
+    expect(mswState().sentMessages).toEqual([]);
+
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(mswState().sentMessages).toContainEqual({
+        channel: "100",
+        text: "native autocomplete 😃",
+      });
+    });
+  });
+
   test("sends selected custom emoji markers unchanged through the message API", async () => {
     const state = seedAuthed();
     state.customEmojis = [
@@ -1375,6 +1460,59 @@ describe("Channel view integration", () => {
         text: "hello <:party:123>",
       });
     });
+  });
+
+  test("sends custom emoji autocomplete markers and renders delivered markers as images", async () => {
+    const state = seedAuthed();
+    state.customEmojis = [
+      {
+        id: 123,
+        name: "party",
+        image_url: "/uploads/emojis/123.webp?v=1",
+        animated: false,
+        created_by_user_id: DEV_USER.id,
+        created_at: 1,
+        updated_at: 1,
+        deleted_at: null,
+      },
+    ];
+    mountAt("/channel/100");
+
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "hello :pa" } });
+    input.setSelectionRange("hello :pa".length, "hello :pa".length);
+    fireEvent.select(input);
+    await screen.findByRole("option", { name: /emoji :party:/i });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => {
+      expect(input.value).toBe("hello <:party:123>");
+      expect(screen.getByRole("img", { name: /custom emoji :party:/i })).toBeInTheDocument();
+    });
+    expect(screen.queryByText("<:party:123>")).toBeNull();
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+
+    await waitFor(() => {
+      expect(mswState().sentMessages).toContainEqual({
+        channel: "100",
+        text: "hello <:party:123>",
+      });
+    });
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessage({
+      id: 99,
+      user_id: DEV_USER.id,
+      channel_id: 100,
+      text: "hello <:party:123>",
+      username: DEV_USER.username,
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      embeds: [],
+    });
+
+    const image = await screen.findByRole("img", { name: /^:party:$/i });
+    expect(image.getAttribute("src")).toContain("/uploads/emojis/123.webp?v=1");
   });
 
   test("submitting closes an open emoji picker", async () => {
@@ -1482,6 +1620,31 @@ describe("Channel view integration", () => {
     expect(screen.getByText("cancel me")).toBeInTheDocument();
   });
 
+  test("Escape dismisses message edit autocomplete before a second Escape cancels edit", async () => {
+    seedOwnMessage({ id: 35, text: "escape edit" });
+    mountAt("/channel/100");
+
+    const input = await openMessageEdit("escape edit");
+    const draftWithToken = "escape edit :sm";
+    fireEvent.input(input, { target: { value: draftWithToken } });
+    setInputSelection(input, draftWithToken.length);
+    await screen.findByRole("listbox", { name: /emoji suggestions/i });
+
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("listbox", { name: /emoji suggestions/i })).toBeNull(),
+    );
+    expect(screen.getByLabelText(/edit message/i)).toBeInTheDocument();
+    expect(mswState().editedMessages).toEqual([]);
+
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByLabelText(/edit message/i)).toBeNull());
+    expect(mswState().editedMessages).toEqual([]);
+    expect(screen.getByText("escape edit")).toBeInTheDocument();
+  });
+
   test("unchanged multiline edits exit edit mode without PUTing", async () => {
     const text = "same first line\nsame second line";
     seedOwnMessage({ username: "baipas", text });
@@ -1512,6 +1675,30 @@ describe("Channel view integration", () => {
     fireEvent.submit(assertExists(input.closest("form"), "form"));
     await waitFor(() => {
       expect(mswState().editedMessages).toContainEqual({ id: 31, text: "looks 😀" });
+    });
+  });
+
+  test("channel message edits commit emoji autocomplete before saving", async () => {
+    seedOwnMessage({ id: 34, text: "plain text" });
+    mountAt("/channel/100");
+
+    const input = await openMessageEdit("plain text");
+    const textWithToken = "edit :sm";
+    fireEvent.input(input, { target: { value: textWithToken } });
+    setInputSelection(input, textWithToken.length);
+
+    const listbox = await screen.findByRole("listbox", { name: /emoji suggestions/i });
+    expect(within(listbox).getByRole("option", { name: /:smiley:/i })).toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(input.value).toBe("edit 😃"));
+    expect(mswState().editedMessages).toEqual([]);
+
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+
+    await waitFor(() => {
+      expect(mswState().editedMessages).toContainEqual({ id: 34, text: "edit 😃" });
     });
   });
 

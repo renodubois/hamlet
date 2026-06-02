@@ -1,10 +1,22 @@
-import { createEffect, createMemo, createSignal, onCleanup, untrack, type JSX } from "solid-js";
+import {
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  createUniqueId,
+  onCleanup,
+  untrack,
+  type JSX,
+} from "solid-js";
 import { getServerUrl, type CustomEmoji } from "../api";
 import { useOptionalCustomEmojis } from "../contexts/custom-emojis";
 import { parseCustomEmojiMarkers, customEmojisToEntries } from "../emoji/custom-emojis";
 import { CONSERVATIVE_EMOJIS } from "../emoji/emoji-data";
+import { searchEmojiResults, type EmojiSearchResult } from "../emoji/emoji-search";
 import {
   createEmojiShortcodeLookup,
+  hasValidShortcodeBoundary,
   replaceCompletedEmojiShortcodeBeforeCaret,
 } from "../emoji/emoji-shortcodes";
 import EmojiPicker from "./emoji-picker";
@@ -14,6 +26,12 @@ interface SelectionRange {
   start: number;
   end: number;
 }
+
+interface EmojiAutocompleteSession extends SelectionRange {
+  query: string;
+}
+
+type EmojiAutocompleteToken = EmojiAutocompleteSession;
 
 type MessageEditorElement = HTMLDivElement & {
   value?: string;
@@ -41,6 +59,9 @@ const MULTILINE_INPUT_BEHAVIOR_CLASS =
 const DEFAULT_INPUT_CLASS = `${MULTILINE_INPUT_BEHAVIOR_CLASS} w-full rounded-md bg-gray-100 p-4 focus:outline-none focus:ring-2 focus:ring-blue-400 empty:before:content-[attr(data-placeholder)] empty:before:text-gray-500`;
 const DEFAULT_EMOJI_BUTTON_CLASS =
   "cursor-pointer rounded-md bg-gray-100 p-4 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400";
+const EMOJI_AUTOCOMPLETE_SESSION_QUERY_PATTERN = /^[A-Za-z0-9_+-]{0,32}$/;
+const EMOJI_AUTOCOMPLETE_QUERY_PATTERN = /^[A-Za-z0-9_+-]{2,32}$/;
+const MAX_EMOJI_AUTOCOMPLETE_RESULTS = 8;
 // Browsers struggle to place a caret after a contenteditable=false chip when
 // it has no editable text after it. Keep an invisible editable text boundary in
 // the DOM only where needed, then strip it from serialized text and offsets.
@@ -59,6 +80,53 @@ function normalizeSelection(selection: SelectionRange, value: string): Selection
   const end = clampIndex(selection.end, value);
 
   return start <= end ? { start, end } : { start: end, end: start };
+}
+
+function hasCompletedShortcodeAhead(value: string, tokenStart: number, tokenEnd: number): boolean {
+  const closingColon = value.indexOf(":", tokenEnd);
+  if (closingColon < 0) return false;
+
+  const shortcodeBody = value.slice(tokenStart + 1, closingColon);
+  return EMOJI_AUTOCOMPLETE_QUERY_PATTERN.test(shortcodeBody);
+}
+
+function findEmojiAutocompleteSession(
+  value: string,
+  currentSelection: SelectionRange,
+): EmojiAutocompleteSession | null {
+  const normalizedSelection = normalizeSelection(currentSelection, value);
+  if (normalizedSelection.start !== normalizedSelection.end) return null;
+
+  const tokenEnd = normalizedSelection.start;
+  const tokenStart = value.lastIndexOf(":", tokenEnd - 1);
+  if (tokenStart < 0) return null;
+
+  const query = value.slice(tokenStart + 1, tokenEnd);
+  if (!EMOJI_AUTOCOMPLETE_SESSION_QUERY_PATTERN.test(query)) return null;
+  if (!hasValidShortcodeBoundary(value, tokenStart)) return null;
+  if (hasCompletedShortcodeAhead(value, tokenStart, tokenEnd)) return null;
+
+  return { start: tokenStart, end: tokenEnd, query };
+}
+
+function findEmojiAutocompleteToken(
+  value: string,
+  currentSelection: SelectionRange,
+): EmojiAutocompleteToken | null {
+  const session = findEmojiAutocompleteSession(value, currentSelection);
+  if (!session || !EMOJI_AUTOCOMPLETE_QUERY_PATTERN.test(session.query)) return null;
+
+  return session;
+}
+
+function emojiAutocompleteTokenKey(token: EmojiAutocompleteToken | null): string | null {
+  return token ? `${token.start}:${token.end}:${token.query}` : null;
+}
+
+function emojiAutocompleteOptionLabel(result: EmojiSearchResult): string {
+  return result.matchedAlias
+    ? `Emoji ${result.canonicalShortcode}, also matches ${result.matchedAlias}`
+    : `Emoji ${result.canonicalShortcode}`;
 }
 
 function resolveImageUrl(url: string): string {
@@ -378,6 +446,7 @@ function renderEditorValue(
 }
 
 export default function MessageInput(props: MessageInputProps) {
+  const autocompleteListboxId = createUniqueId();
   const customEmojis = useOptionalCustomEmojis();
   const allCustomEmojis = () => customEmojis?.allEmojis?.() ?? [];
   const activeCustomEmojis = () => customEmojis?.activeEmojis?.() ?? [];
@@ -395,18 +464,79 @@ export default function MessageInput(props: MessageInputProps) {
   );
   const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
   const [emojiPickerOpen, setEmojiPickerOpen] = createSignal(false);
+  const [selectedAutocompleteIndex, setSelectedAutocompleteIndex] = createSignal(0);
+  const [dismissedAutocompleteSessionStart, setDismissedAutocompleteSessionStart] = createSignal<
+    number | null
+  >(null);
   const [selection, setSelection] = createSignal<SelectionRange>({
     start: props.value.length,
     end: props.value.length,
   });
+  const autocompleteSession = createMemo(() =>
+    findEmojiAutocompleteSession(props.value, selection()),
+  );
+  const autocompleteToken = createMemo(() => {
+    const session = findEmojiAutocompleteToken(props.value, selection());
+    const dismissedSessionStart = dismissedAutocompleteSessionStart();
+    if (session && dismissedSessionStart !== null && session.start === dismissedSessionStart) {
+      return null;
+    }
+
+    return session;
+  });
+  const autocompleteTokenKey = createMemo(() => emojiAutocompleteTokenKey(autocompleteToken()));
+  const autocompleteSuggestions = createMemo(() => {
+    const token = autocompleteToken();
+    if (!token) return [];
+
+    return searchEmojiResults(token.query, emojiEntries()).slice(0, MAX_EMOJI_AUTOCOMPLETE_RESULTS);
+  });
+  const autocompleteOpen = createMemo(() => autocompleteSuggestions().length > 0);
+  const selectedAutocompleteSuggestion = () =>
+    autocompleteSuggestions()[selectedAutocompleteIndex()] ?? autocompleteSuggestions()[0];
+  const selectedAutocompleteOptionId = () =>
+    autocompleteOpen()
+      ? `${autocompleteListboxId}-option-${selectedAutocompleteIndex()}`
+      : undefined;
   let inputRef: MessageEditorElement | undefined;
   let emojiButtonRef: HTMLButtonElement | undefined;
   let previousValue = props.value;
+  let previousAutocompleteTokenKey: string | null = null;
   let stagedEditorValue: string | null = null;
   let disposed = false;
 
   onCleanup(() => {
     disposed = true;
+  });
+
+  createEffect(() => {
+    const tokenKey = autocompleteTokenKey();
+
+    if (tokenKey !== previousAutocompleteTokenKey) {
+      previousAutocompleteTokenKey = tokenKey;
+      setSelectedAutocompleteIndex(0);
+    }
+
+    const dismissedSessionStart = untrack(dismissedAutocompleteSessionStart);
+    if (dismissedSessionStart === null) return;
+
+    const session = autocompleteSession();
+    if (!session || session.start !== dismissedSessionStart) {
+      setDismissedAutocompleteSessionStart(null);
+    }
+  });
+
+  createEffect(() => {
+    const suggestionCount = autocompleteSuggestions().length;
+    const selectedIndex = untrack(selectedAutocompleteIndex);
+
+    if (suggestionCount === 0 || selectedIndex >= suggestionCount) {
+      setSelectedAutocompleteIndex(0);
+    }
+  });
+
+  createEffect(() => {
+    if (autocompleteOpen()) setEmojiPickerOpen(false);
   });
 
   const readInputSelection = (): SelectionRange => {
@@ -489,7 +619,79 @@ export default function MessageInput(props: MessageInputProps) {
     updateValue(nextValue, { start: caretIndex, end: caretIndex }, { focusInput: true });
   };
 
+  const commitAutocompleteSuggestion = (suggestion = selectedAutocompleteSuggestion()): boolean => {
+    const token = autocompleteToken();
+    if (!token || !suggestion) return false;
+
+    const emoji = suggestion.emoji.emoji;
+    const nextValue = `${props.value.slice(0, token.start)}${emoji}${props.value.slice(token.end)}`;
+    const caretIndex = token.start + emoji.length;
+
+    setSelectedAutocompleteIndex(0);
+    setDismissedAutocompleteSessionStart(null);
+    updateValue(nextValue, { start: caretIndex, end: caretIndex }, { focusInput: true });
+    return true;
+  };
+
+  const moveAutocompleteSelection = (delta: number) => {
+    const suggestionCount = autocompleteSuggestions().length;
+    if (suggestionCount === 0) return;
+
+    setSelectedAutocompleteIndex(
+      (currentIndex) => (currentIndex + delta + suggestionCount) % suggestionCount,
+    );
+  };
+
+  const dismissAutocomplete = () => {
+    const session = autocompleteSession();
+    if (session) setDismissedAutocompleteSessionStart(session.start);
+    setSelectedAutocompleteIndex(0);
+  };
+
   const handleKeyDown: JSX.EventHandler<MessageEditorElement, KeyboardEvent> = (event) => {
+    if (autocompleteOpen()) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        dismissAutocomplete();
+        return;
+      }
+
+      if (!event.altKey && !event.ctrlKey && !event.metaKey) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          event.stopPropagation();
+          moveAutocompleteSelection(1);
+          return;
+        }
+
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          event.stopPropagation();
+          moveAutocompleteSelection(-1);
+          return;
+        }
+
+        if (event.key === "Tab" && !event.shiftKey) {
+          rememberSelection();
+          if (commitAutocompleteSuggestion()) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
+        }
+
+        if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+          rememberSelection();
+          if (commitAutocompleteSuggestion()) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
+        }
+      }
+    }
+
     props.onKeyDown?.(event);
     if (event.defaultPrevented) return;
 
@@ -613,32 +815,99 @@ export default function MessageInput(props: MessageInputProps) {
 
   return (
     <div class={props.class ?? DEFAULT_ROOT_CLASS}>
-      <div
-        ref={(el) => {
-          inputRef = el as MessageEditorElement;
-          if (props.placeholder) inputRef.setAttribute("placeholder", props.placeholder);
-          attachCompatibilityProperties(inputRef);
-          props.inputRef?.(inputRef);
-        }}
-        role="textbox"
-        aria-multiline="true"
-        class={
-          props.inputClass
-            ? `${MULTILINE_INPUT_BEHAVIOR_CLASS} ${props.inputClass}`
-            : DEFAULT_INPUT_CLASS
-        }
-        aria-label={props.ariaLabel ?? "Message input"}
-        aria-placeholder={props.placeholder}
-        autocorrect="off"
-        contenteditable="true"
-        data-placeholder={props.placeholder}
-        onInput={handleInput}
-        onKeyDown={handleKeyDown}
-        onSelect={rememberSelection}
-        onKeyUp={rememberSelection}
-        onMouseUp={rememberSelection}
-        onClick={rememberSelection}
-      />
+      <div class="relative min-w-0 flex-1">
+        <Show when={autocompleteOpen()}>
+          <ul
+            id={autocompleteListboxId}
+            role="listbox"
+            aria-label="Emoji suggestions"
+            class="absolute bottom-full left-0 z-40 mb-2 max-h-64 w-full max-w-sm overflow-y-auto rounded-md border border-gray-200 bg-white py-1 text-sm shadow-lg"
+          >
+            <For each={autocompleteSuggestions()}>
+              {(suggestion, index) => {
+                const selected = () => index() === selectedAutocompleteIndex();
+                return (
+                  <li
+                    id={`${autocompleteListboxId}-option-${index()}`}
+                    role="option"
+                    aria-label={emojiAutocompleteOptionLabel(suggestion)}
+                    aria-selected={selected()}
+                    class={`flex cursor-pointer items-center gap-3 px-3 py-2 ${
+                      selected() ? "bg-blue-100 text-blue-900" : "text-gray-900 hover:bg-blue-50"
+                    }`}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      rememberSelection();
+                      commitAutocompleteSuggestion(suggestion);
+                    }}
+                    onClick={() => commitAutocompleteSuggestion(suggestion)}
+                  >
+                    <span
+                      aria-hidden="true"
+                      class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-gray-200 bg-gray-50 text-xl leading-none shadow-sm"
+                    >
+                      <Show
+                        when={suggestion.emoji.kind === "custom" && suggestion.emoji.imageUrl}
+                        fallback={suggestion.emoji.emoji}
+                      >
+                        {(imageUrl) => (
+                          <img
+                            src={resolveImageUrl(imageUrl())}
+                            alt=""
+                            class="h-7 w-7 object-contain"
+                            draggable={false}
+                          />
+                        )}
+                      </Show>
+                    </span>
+                    <span class="min-w-0 flex flex-col">
+                      <span class="truncate font-semibold text-gray-950">
+                        {suggestion.canonicalShortcode}
+                      </span>
+                      <Show when={suggestion.matchedAlias}>
+                        {(matchedAlias) => (
+                          <span class="truncate text-xs text-gray-500">
+                            Also matches {matchedAlias()}
+                          </span>
+                        )}
+                      </Show>
+                    </span>
+                  </li>
+                );
+              }}
+            </For>
+          </ul>
+        </Show>
+        <div
+          ref={(el) => {
+            inputRef = el as MessageEditorElement;
+            if (props.placeholder) inputRef.setAttribute("placeholder", props.placeholder);
+            attachCompatibilityProperties(inputRef);
+            props.inputRef?.(inputRef);
+          }}
+          role="textbox"
+          aria-multiline="true"
+          aria-autocomplete="list"
+          aria-controls={autocompleteOpen() ? autocompleteListboxId : undefined}
+          aria-activedescendant={selectedAutocompleteOptionId()}
+          class={
+            props.inputClass
+              ? `${MULTILINE_INPUT_BEHAVIOR_CLASS} ${props.inputClass}`
+              : DEFAULT_INPUT_CLASS
+          }
+          aria-label={props.ariaLabel ?? "Message input"}
+          aria-placeholder={props.placeholder}
+          autocorrect="off"
+          contenteditable="true"
+          data-placeholder={props.placeholder}
+          onInput={handleInput}
+          onKeyDown={handleKeyDown}
+          onSelect={rememberSelection}
+          onKeyUp={rememberSelection}
+          onMouseUp={rememberSelection}
+          onClick={rememberSelection}
+        />
+      </div>
       <button
         ref={(el) => {
           emojiButtonRef = el;
@@ -655,7 +924,11 @@ export default function MessageInput(props: MessageInputProps) {
         }}
         onClick={() => {
           rememberSelection();
-          setEmojiPickerOpen((open) => !open);
+          setEmojiPickerOpen((open) => {
+            const nextOpen = !open;
+            if (nextOpen) dismissAutocomplete();
+            return nextOpen;
+          });
         }}
       >
         <EmojiIcon size={20} aria-hidden="true" />

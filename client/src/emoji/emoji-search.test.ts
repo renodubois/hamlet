@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { CONSERVATIVE_EMOJIS, type EmojiEntry } from "./emoji-data";
-import { normalizeEmojiQuery, searchEmojis } from "./emoji-search";
+import { normalizeEmojiQuery, searchEmojiResults, searchEmojis } from "./emoji-search";
 
 const EMOJIS: readonly EmojiEntry[] = [
   {
@@ -62,10 +62,69 @@ describe("emoji search", () => {
     expect(emojiGlyphs(searchEmojis("smile:", EMOJIS))).toEqual(["😄"]);
   });
 
-  test("keeps built-in plain and yellow hearts first for bare heart searches", () => {
-    expect(emojiGlyphs(searchEmojis("heart", CONSERVATIVE_EMOJIS)).slice(0, 2)).toEqual([
+  test("ranks exact, prefix, then substring matches with stable ordering inside ties", () => {
+    const rankedEmojis: readonly EmojiEntry[] = [
+      { emoji: "💛", shortcodes: [":yellow_heart:"], category: "Smileys & Emotion" },
+      { emoji: "❤️", shortcodes: [":heart:"], category: "Smileys & Emotion" },
+      { emoji: "😍", shortcodes: [":heart_eyes:"], category: "Smileys & Emotion" },
+      { emoji: "💚", shortcodes: [":green_heart:"], category: "Smileys & Emotion" },
+      { emoji: "💙", shortcodes: [":blue_heart:"], category: "Smileys & Emotion" },
+    ];
+
+    expect(emojiGlyphs(searchEmojis("heart", rankedEmojis))).toEqual([
       "❤️",
+      "😍",
       "💛",
+      "💚",
+      "💙",
+    ]);
+  });
+
+  test("keeps built-in plain heart first for bare heart searches", () => {
+    expect(emojiGlyphs(searchEmojis("heart", CONSERVATIVE_EMOJIS))[0]).toBe("❤️");
+  });
+
+  test("prioritizes custom emoji in exact and prefix ties without changing substring tie order", () => {
+    const tiedEmojis: readonly EmojiEntry[] = [
+      { kind: "native", emoji: "🎉", shortcodes: [":party:"], category: "Activities" },
+      {
+        kind: "custom",
+        emoji: "<:party:123>",
+        shortcodes: [":party:"],
+        category: "Custom",
+        id: 123,
+        name: "party",
+        marker: "<:party:123>",
+        imageUrl: "/uploads/emojis/123.webp?v=1",
+        animated: false,
+        deletedAt: null,
+      },
+      { kind: "native", emoji: "🥳", shortcodes: [":party_face:"], category: "Smileys & Emotion" },
+      {
+        kind: "custom",
+        emoji: "<:after_party:456>",
+        shortcodes: [":after_party:"],
+        category: "Custom",
+        id: 456,
+        name: "after_party",
+        marker: "<:after_party:456>",
+        imageUrl: "/uploads/emojis/456.webp?v=1",
+        animated: false,
+        deletedAt: null,
+      },
+    ];
+
+    expect(emojiGlyphs(searchEmojis("party", tiedEmojis))).toEqual([
+      "<:party:123>",
+      "🎉",
+      "🥳",
+      "<:after_party:456>",
+    ]);
+    expect(emojiGlyphs(searchEmojis("arty", tiedEmojis))).toEqual([
+      "🎉",
+      "<:party:123>",
+      "🥳",
+      "<:after_party:456>",
     ]);
   });
 
@@ -82,6 +141,16 @@ describe("emoji search", () => {
   test("matches symbolic shortcodes without collapsing signs", () => {
     expect(emojiGlyphs(searchEmojis("+1", EMOJIS))).toEqual(["👍"]);
     expect(emojiGlyphs(searchEmojis("-1", EMOJIS))).toEqual(["👎"]);
+  });
+
+  test("returns canonical shortcodes and matched aliases for explaining results", () => {
+    expect(searchEmojiResults("+1", EMOJIS)[0]).toMatchObject({
+      emoji: EMOJIS[2],
+      canonicalShortcode: ":thumbsup:",
+      matchedShortcode: ":+1:",
+      matchedAlias: ":+1:",
+      matchKind: "exact",
+    });
   });
 
   test("normalizes spaces, underscores, and hyphens as equivalent and optional", () => {
