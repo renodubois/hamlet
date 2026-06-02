@@ -6,6 +6,7 @@ import {
   type Message,
   type MessageDeleted,
   type MessageEmbedsUpdated,
+  type MessageReactionsUpdated,
   type SSEEvent,
   type ThreadReplyCreated,
   type ThreadReplyDeleted,
@@ -25,6 +26,7 @@ export interface EventsContextValue {
   onMessageUpdated: (cb: Listener<Message>) => () => void;
   onMessageDeleted: (cb: Listener<MessageDeleted>) => () => void;
   onMessageEmbedsUpdated: (cb: Listener<MessageEmbedsUpdated>) => () => void;
+  onMessageReactionsUpdated: (cb: Listener<MessageReactionsUpdated>) => () => void;
   onChannelCreated: (cb: Listener<Channel>) => () => void;
   onChannelsReordered: (cb: Listener<Channel[]>) => () => void;
   onEmojiCreated: (cb: Listener<CustomEmoji>) => () => void;
@@ -91,6 +93,7 @@ export function EventsProvider(props: { children: JSX.Element }) {
     onMessageUpdated: (cb) => subscribe("message_updated", cb),
     onMessageDeleted: (cb) => subscribe("message_deleted", cb),
     onMessageEmbedsUpdated: (cb) => subscribe("message_embeds_updated", cb),
+    onMessageReactionsUpdated: (cb) => subscribe("message_reactions_updated", cb),
     onChannelCreated: (cb) => subscribe("channel_created", cb),
     onChannelsReordered: (cb) => subscribe("channels_reordered", cb),
     onEmojiCreated: (cb) => subscribe("emoji_created", cb),

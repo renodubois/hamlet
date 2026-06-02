@@ -1,26 +1,39 @@
 import { Component, For, Show, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import {
+  addMessageReaction,
   deleteMessage,
   editMessage,
   getServerUrl,
   messageDisplayName,
+  removeMessageReaction,
   setMessageEmbedsSuppressed,
   type CustomEmoji,
   type Message,
+  type ReactionRequest,
+  type ReactionSummary,
 } from "../api";
 import { useOptionalCustomEmojis } from "../contexts/custom-emojis";
-import { parseCustomEmojiMarkers } from "../emoji/custom-emojis";
+import { CONSERVATIVE_EMOJIS } from "../emoji/emoji-data";
+import { customEmojisToEntries, parseCustomEmojiMarkers } from "../emoji/custom-emojis";
+import { applyOptimisticReaction, reactionSummariesEqual } from "../reactions/reaction-summaries";
 import { linkifyText } from "../linkify";
 import Avatar from "./avatar";
-import { DeleteIcon, EditIcon } from "./icons";
+import EmojiPicker from "./emoji-picker";
+import { DeleteIcon, EditIcon, EmojiIcon } from "./icons";
 import MessageEmbed from "./message-embed";
 import MessageInput from "./message-input";
 import Modal from "./modal";
+import ReactionRow from "./reaction-row";
 
 interface ContextMenuState {
   messageId: number;
   x: number;
   y: number;
+}
+
+interface ReactionPickerState {
+  messageId: number;
+  anchor: HTMLElement;
 }
 
 function resolveImageUrl(url: string): string {
@@ -76,20 +89,31 @@ const ChannelMessages: Component<{
   error: unknown;
   currentUserId: number | null;
   onOpenThread?: (message: Message, options?: { focusComposer?: boolean }) => void;
+  onReactionsChange?: (messageId: number, reactions: ReactionSummary[]) => void;
 }> = (props) => {
   const customEmojis = useOptionalCustomEmojis();
+  const activeCustomEmojis = () => customEmojis?.activeEmojis?.() ?? [];
+  const reactionEmojiEntries = () => [
+    ...CONSERVATIVE_EMOJIS,
+    ...customEmojisToEntries(activeCustomEmojis()),
+  ];
   const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
   const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null);
   const [editingId, setEditingId] = createSignal<number | null>(null);
   const [draft, setDraft] = createSignal("");
   const [pendingDeleteId, setPendingDeleteId] = createSignal<number | null>(null);
+  const [reactionPicker, setReactionPicker] = createSignal<ReactionPickerState | null>(null);
 
   const closeMenu = () => setContextMenu(null);
+  const closeReactionPicker = () => setReactionPicker(null);
 
   onMount(() => {
     const onDocClick = () => closeMenu();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeMenu();
+      if (e.key === "Escape") {
+        closeMenu();
+        closeReactionPicker();
+      }
     };
     document.addEventListener("click", onDocClick);
     document.addEventListener("keydown", onKey);
@@ -157,14 +181,87 @@ const ChannelMessages: Component<{
     cancelEditing();
   };
 
+  const mutateReaction = async (
+    msg: Message,
+    reaction: ReactionRequest,
+    mutation: "add" | "remove",
+  ) => {
+    const previous = msg.reactions ?? [];
+    const optimistic = applyOptimisticReaction(previous, reaction, mutation);
+    const currentReactions = () =>
+      props.messages.find((message) => message.id === msg.id)?.reactions ?? [];
+    const canApplyHttpResult = () => {
+      const current = currentReactions();
+      return (
+        reactionSummariesEqual(current, optimistic) || reactionSummariesEqual(current, previous)
+      );
+    };
+    props.onReactionsChange?.(msg.id, optimistic);
+
+    try {
+      const canonical =
+        mutation === "add"
+          ? await addMessageReaction(msg.id, reaction)
+          : await removeMessageReaction(msg.id, reaction);
+      if (canApplyHttpResult()) {
+        props.onReactionsChange?.(msg.id, canonical);
+      }
+    } catch (e) {
+      if (canApplyHttpResult()) {
+        props.onReactionsChange?.(msg.id, previous);
+      }
+      console.error("failed to update reaction", e);
+    }
+  };
+
+  const addReactionFromPicker = (msg: Message, emoji: string) => {
+    closeReactionPicker();
+    const customToken = parseCustomEmojiMarkers(emoji)[0];
+    if (customToken?.type === "custom-emoji" && customToken.marker === emoji) {
+      const customEmoji = customEmojiById(customToken.id);
+      if (!customEmoji || customEmoji.deleted_at !== null) return;
+      void mutateReaction(
+        msg,
+        {
+          kind: "custom",
+          emoji_id: customEmoji.id,
+          name: customEmoji.name,
+          image_url: customEmoji.image_url,
+          animated: customEmoji.animated,
+        },
+        "add",
+      );
+      return;
+    }
+
+    void mutateReaction(msg, { kind: "native", emoji }, "add");
+  };
+
+  const toggleReaction = (msg: Message, reaction: ReactionSummary) => {
+    const request: ReactionRequest =
+      reaction.kind === "native"
+        ? { kind: "native", emoji: reaction.emoji }
+        : {
+            kind: "custom",
+            emoji_id: reaction.emoji_id,
+            name: reaction.name,
+            image_url: reaction.image_url,
+            animated: reaction.animated,
+          };
+    void mutateReaction(msg, request, reaction.me_reacted ? "remove" : "add");
+  };
+
   const isDeletedMessage = (msg: Message) => msg.deleted_at != null;
 
   const isOwnMessage = (msg: Message) =>
     !isDeletedMessage(msg) && props.currentUserId !== null && msg.user_id === props.currentUserId;
 
-  const canOpenThread = (msg: Message) => msg.parent_id == null && props.onOpenThread !== undefined;
+  const canOpenThread = (msg: Message) =>
+    !isDeletedMessage(msg) && msg.parent_id == null && props.onOpenThread !== undefined;
 
-  const hasAnyAction = (msg: Message) => isOwnMessage(msg) || canOpenThread(msg);
+  const canReact = (msg: Message) => !isDeletedMessage(msg) && props.currentUserId !== null;
+
+  const hasAnyAction = (msg: Message) => canReact(msg) || isOwnMessage(msg) || canOpenThread(msg);
 
   const handleContextMenu = (e: MouseEvent, msg: Message) => {
     if (!isOwnMessage(msg)) return;
@@ -258,24 +355,6 @@ const ChannelMessages: Component<{
                   </form>
                 </Show>
               </Show>
-              <Show when={message.thread_summary?.reply_count ? message.thread_summary : null}>
-                {(summary) => {
-                  const countText = () => replyCountLabel(summary().reply_count);
-                  const lastReplyText = () =>
-                    formatThreadTimestamp(summary().last_reply_created_at);
-                  return (
-                    <button
-                      type="button"
-                      class="mt-1 text-sm font-medium text-blue-700 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-400 rounded"
-                      title={`Last reply ${formatThreadTimestampTitle(summary().last_reply_created_at)}`}
-                      aria-label={`Open thread with ${countText()}, last reply ${lastReplyText()}`}
-                      onClick={() => props.onOpenThread?.(message, { focusComposer: false })}
-                    >
-                      {countText()} · Last reply {lastReplyText()}
-                    </button>
-                  );
-                }}
-              </Show>
               <Show
                 when={
                   !isDeletedMessage(message) &&
@@ -296,6 +375,30 @@ const ChannelMessages: Component<{
                   </For>
                 </div>
               </Show>
+              <Show when={!isDeletedMessage(message)}>
+                <ReactionRow
+                  reactions={message.reactions ?? []}
+                  onToggle={(reaction) => toggleReaction(message, reaction)}
+                />
+              </Show>
+              <Show when={message.thread_summary?.reply_count ? message.thread_summary : null}>
+                {(summary) => {
+                  const countText = () => replyCountLabel(summary().reply_count);
+                  const lastReplyText = () =>
+                    formatThreadTimestamp(summary().last_reply_created_at);
+                  return (
+                    <button
+                      type="button"
+                      class="mt-1 text-sm font-medium text-blue-700 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-400 rounded"
+                      title={`Last reply ${formatThreadTimestampTitle(summary().last_reply_created_at)}`}
+                      aria-label={`Open thread with ${countText()}, last reply ${lastReplyText()}`}
+                      onClick={() => props.onOpenThread?.(message, { focusComposer: false })}
+                    >
+                      {countText()} · Last reply {lastReplyText()}
+                    </button>
+                  );
+                }}
+              </Show>
             </div>
             <Show when={hasAnyAction(message) && editingId() !== message.id}>
               <div
@@ -303,6 +406,20 @@ const ChannelMessages: Component<{
                 aria-label="Message actions"
                 class="absolute -top-3 right-2 flex gap-1 rounded-md border border-gray-200 bg-white shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
               >
+                <Show when={canReact(message)}>
+                  <button
+                    type="button"
+                    aria-label={`Add reaction to message by ${messageDisplayName(message)}`}
+                    title="Add reaction"
+                    class="p-1.5 rounded-md hover:bg-gray-100"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setReactionPicker({ messageId: message.id, anchor: event.currentTarget });
+                    }}
+                  >
+                    <EmojiIcon size={14} />
+                  </button>
+                </Show>
                 <Show when={canOpenThread(message)}>
                   <button
                     type="button"
@@ -339,6 +456,19 @@ const ChannelMessages: Component<{
           </div>
         )}
       </For>
+      <EmojiPicker
+        open={reactionPicker() !== null}
+        anchor={() => reactionPicker()?.anchor}
+        emojis={reactionEmojiEntries()}
+        onSelect={(emoji) => {
+          const state = reactionPicker();
+          const msg = state
+            ? props.messages.find((message) => message.id === state.messageId)
+            : null;
+          if (msg) addReactionFromPicker(msg, emoji);
+        }}
+        onClose={closeReactionPicker}
+      />
       <Show when={contextMenu()}>
         {(menu) => (
           <ul

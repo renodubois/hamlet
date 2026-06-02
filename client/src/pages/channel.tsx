@@ -17,6 +17,7 @@ import { useChannels } from "../contexts/channels";
 import { useEvents } from "../contexts/events";
 import { useAuth } from "../contexts/auth";
 import { TYPING_PING_INTERVAL_MS } from "../constants";
+import { mergeReactionUpdateForViewer } from "../reactions/reaction-summaries";
 
 function parseThreadId(value: string | string[] | undefined): number | null {
   const raw = Array.isArray(value) ? value[0] : value;
@@ -146,6 +147,20 @@ export default function ChannelView() {
         embeds: e.embeds,
       });
     });
+    const unsubReactions = events.onMessageReactionsUpdated((e) => {
+      if (String(e.channel_id) !== params.id) return;
+      setMessages(
+        (existing) => existing.id === e.id,
+        (existing) => ({
+          reactions: mergeReactionUpdateForViewer(
+            existing.reactions ?? [],
+            e.reactions,
+            e.user_id,
+            user()?.id ?? null,
+          ),
+        }),
+      );
+    });
     const unsubThreadReply = events.onThreadReplyCreated((e) => {
       if (String(e.channel_id) !== params.id) return;
       setMessages((existing) => existing.id === e.root_message_id && existing.parent_id == null, {
@@ -163,6 +178,7 @@ export default function ChannelView() {
       unsubUpdated();
       unsubDeleted();
       unsubEmbeds();
+      unsubReactions();
       unsubThreadReply();
       unsubThreadReplyDeleted();
     });
@@ -187,6 +203,9 @@ export default function ChannelView() {
             error={resource.error}
             currentUserId={user()?.id ?? null}
             onOpenThread={openThread}
+            onReactionsChange={(messageId, reactions) => {
+              setMessages((existing) => existing.id === messageId, { reactions });
+            }}
           />
         </div>
         {openThreadRootId() !== null && (

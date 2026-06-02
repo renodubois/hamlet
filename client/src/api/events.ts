@@ -5,6 +5,7 @@ import type {
   Message,
   MessageDeleted,
   MessageEmbedsUpdated,
+  MessageReactionsUpdated,
   ThreadReplyCreated,
   ThreadReplyDeleted,
 } from "./messages";
@@ -16,6 +17,7 @@ export type SSEEvent =
   | { kind: "message_updated"; data: Message }
   | { kind: "message_deleted"; data: MessageDeleted }
   | { kind: "message_embeds_updated"; data: MessageEmbedsUpdated }
+  | { kind: "message_reactions_updated"; data: MessageReactionsUpdated }
   | { kind: "channel_created"; data: Channel }
   | { kind: "channels_reordered"; data: Channel[] }
   | { kind: "emoji_created"; data: CustomEmoji }

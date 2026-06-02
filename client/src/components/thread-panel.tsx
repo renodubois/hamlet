@@ -8,21 +8,40 @@ import {
   onMount,
 } from "solid-js";
 import {
+  addMessageReaction,
   deleteMessage,
   editMessage,
   getThread,
   messageDisplayName,
+  removeMessageReaction,
   sendThreadReply,
   setMessageEmbedsSuppressed,
   type Message,
+  type ReactionRequest,
+  type ReactionSummary,
 } from "../api";
+import { useOptionalCustomEmojis } from "../contexts/custom-emojis";
 import { useEvents } from "../contexts/events";
+import { customEmojisToEntries, parseCustomEmojiMarkers } from "../emoji/custom-emojis";
+import { CONSERVATIVE_EMOJIS } from "../emoji/emoji-data";
 import { linkifyText } from "../linkify";
+import {
+  applyOptimisticReaction,
+  mergeReactionUpdateForViewer,
+  reactionSummariesEqual,
+} from "../reactions/reaction-summaries";
 import Avatar from "./avatar";
-import { DeleteIcon, EditIcon } from "./icons";
+import EmojiPicker from "./emoji-picker";
+import { DeleteIcon, EditIcon, EmojiIcon } from "./icons";
 import MessageEmbed from "./message-embed";
 import MessageInput from "./message-input";
 import Modal from "./modal";
+import ReactionRow from "./reaction-row";
+
+interface ReactionPickerState {
+  messageId: number;
+  anchor: HTMLElement;
+}
 
 function isDeletedMessage(message: Message): boolean {
   return message.deleted_at != null;
@@ -69,7 +88,10 @@ function ThreadMessage(props: {
   onSaveEdit: (message: Message) => void;
   onRequestDelete: (message: Message) => void;
   onSuppressEmbeds: (message: Message) => void;
+  onToggleReaction: (message: Message, reaction: ReactionSummary) => void;
+  onOpenReactionPicker: (message: Message, anchor: HTMLElement) => void;
 }) {
+  const canReact = () => !isDeletedMessage(props.message) && props.currentUserId !== null;
   const isOwnReply = () =>
     !isDeletedMessage(props.message) &&
     props.message.parent_id != null &&
@@ -89,34 +111,7 @@ function ThreadMessage(props: {
         <Show when={!isDeletedMessage(props.message)}>
           <div class="font-bold">{messageDisplayName(props.message)}</div>
         </Show>
-        <Show
-          when={props.editing}
-          fallback={
-            <>
-              <MessageBody message={props.message} />
-              <Show
-                when={
-                  !isDeletedMessage(props.message) &&
-                  !props.message.suppress_embeds &&
-                  props.message.embeds.length > 0
-                }
-              >
-                <div class="mt-1 flex flex-col gap-1">
-                  <For each={props.message.embeds}>
-                    {(embed) => (
-                      <MessageEmbed
-                        embed={embed}
-                        onRemove={
-                          isOwnReply() ? () => props.onSuppressEmbeds(props.message) : undefined
-                        }
-                      />
-                    )}
-                  </For>
-                </div>
-              </Show>
-            </>
-          }
-        >
+        <Show when={props.editing} fallback={<MessageBody message={props.message} />}>
           <form
             class="flex gap-2 items-center"
             onSubmit={(e) => {
@@ -148,31 +143,71 @@ function ThreadMessage(props: {
             </button>
           </form>
         </Show>
+        <Show
+          when={
+            !isDeletedMessage(props.message) &&
+            !props.message.suppress_embeds &&
+            props.message.embeds.length > 0
+          }
+        >
+          <div class="mt-1 flex flex-col gap-1">
+            <For each={props.message.embeds}>
+              {(embed) => (
+                <MessageEmbed
+                  embed={embed}
+                  onRemove={isOwnReply() ? () => props.onSuppressEmbeds(props.message) : undefined}
+                />
+              )}
+            </For>
+          </div>
+        </Show>
+        <Show when={!isDeletedMessage(props.message)}>
+          <ReactionRow
+            reactions={props.message.reactions ?? []}
+            onToggle={(reaction) => props.onToggleReaction(props.message, reaction)}
+          />
+        </Show>
       </div>
-      <Show when={isOwnReply() && !props.editing}>
+      <Show when={(canReact() || isOwnReply()) && !props.editing}>
         <div
           role="toolbar"
-          aria-label="Reply actions"
+          aria-label="Thread message actions"
           class="absolute right-1 top-1 flex gap-1 rounded-md border border-gray-200 bg-white shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
         >
-          <button
-            type="button"
-            aria-label="Edit reply"
-            title="Edit reply"
-            class="p-1.5 rounded-md hover:bg-gray-100"
-            onClick={() => props.onStartEdit(props.message)}
-          >
-            <EditIcon size={14} />
-          </button>
-          <button
-            type="button"
-            aria-label="Delete reply"
-            title="Delete reply"
-            class="p-1.5 rounded-md text-red-600 hover:bg-red-50"
-            onClick={() => props.onRequestDelete(props.message)}
-          >
-            <DeleteIcon size={14} />
-          </button>
+          <Show when={canReact()}>
+            <button
+              type="button"
+              aria-label={`Add reaction to message by ${messageDisplayName(props.message)}`}
+              title="Add reaction"
+              class="p-1.5 rounded-md hover:bg-gray-100"
+              onClick={(event) => {
+                event.stopPropagation();
+                props.onOpenReactionPicker(props.message, event.currentTarget);
+              }}
+            >
+              <EmojiIcon size={14} />
+            </button>
+          </Show>
+          <Show when={isOwnReply()}>
+            <button
+              type="button"
+              aria-label="Edit reply"
+              title="Edit reply"
+              class="p-1.5 rounded-md hover:bg-gray-100"
+              onClick={() => props.onStartEdit(props.message)}
+            >
+              <EditIcon size={14} />
+            </button>
+            <button
+              type="button"
+              aria-label="Delete reply"
+              title="Delete reply"
+              class="p-1.5 rounded-md text-red-600 hover:bg-red-50"
+              onClick={() => props.onRequestDelete(props.message)}
+            >
+              <DeleteIcon size={14} />
+            </button>
+          </Show>
         </div>
       </Show>
     </article>
@@ -187,6 +222,14 @@ export default function ThreadPanel(props: {
   focusComposer?: boolean;
   onComposerFocusConsumed?: () => void;
 }) {
+  const customEmojis = useOptionalCustomEmojis();
+  const activeCustomEmojis = () => customEmojis?.activeEmojis?.() ?? [];
+  const reactionEmojiEntries = () => [
+    ...CONSERVATIVE_EMOJIS,
+    ...customEmojisToEntries(activeCustomEmojis()),
+  ];
+  const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
+
   const [thread, { mutate }] = createResource(
     () => props.rootMessageId,
     (rootMessageId) => getThread(rootMessageId),
@@ -199,6 +242,7 @@ export default function ThreadPanel(props: {
   const [editingId, setEditingId] = createSignal<number | null>(null);
   const [editDraft, setEditDraft] = createSignal("");
   const [pendingDeleteId, setPendingDeleteId] = createSignal<number | null>(null);
+  const [reactionPicker, setReactionPicker] = createSignal<ReactionPickerState | null>(null);
   const events = useEvents();
   let inputRef: (HTMLElement & { value?: string }) | undefined;
   let repliesScrollRef: HTMLDivElement | undefined;
@@ -229,7 +273,103 @@ export default function ThreadPanel(props: {
     });
   };
 
+  const updateMessageReactions = (messageId: number, reactions: ReactionSummary[]) => {
+    mutate((current) => {
+      if (!current) return current;
+      if (current.root.id === messageId) {
+        return { ...current, root: { ...current.root, reactions } };
+      }
+      return {
+        ...current,
+        replies: current.replies.map((reply) =>
+          reply.id === messageId ? { ...reply, reactions } : reply,
+        ),
+      };
+    });
+  };
+
+  const findThreadMessage = (messageId: number): Message | null => {
+    const current = thread();
+    if (!current) return null;
+    if (current.root.id === messageId) return current.root;
+    return current.replies.find((reply) => reply.id === messageId) ?? null;
+  };
+
+  const mutateReaction = async (
+    message: Message,
+    reaction: ReactionRequest,
+    mutation: "add" | "remove",
+  ) => {
+    const previous = message.reactions ?? [];
+    const optimistic = applyOptimisticReaction(previous, reaction, mutation);
+    const currentReactions = () => findThreadMessage(message.id)?.reactions ?? [];
+    const canApplyHttpResult = () => {
+      const current = currentReactions();
+      return (
+        reactionSummariesEqual(current, optimistic) || reactionSummariesEqual(current, previous)
+      );
+    };
+    updateMessageReactions(message.id, optimistic);
+
+    try {
+      const canonical =
+        mutation === "add"
+          ? await addMessageReaction(message.id, reaction)
+          : await removeMessageReaction(message.id, reaction);
+      if (canApplyHttpResult()) {
+        updateMessageReactions(message.id, canonical);
+      }
+    } catch (e) {
+      if (canApplyHttpResult()) {
+        updateMessageReactions(message.id, previous);
+      }
+      console.error("failed to update reaction", e);
+    }
+  };
+
+  const addReactionFromPicker = (message: Message, emoji: string) => {
+    setReactionPicker(null);
+    const customToken = parseCustomEmojiMarkers(emoji)[0];
+    if (customToken?.type === "custom-emoji" && customToken.marker === emoji) {
+      const customEmoji = customEmojiById(customToken.id);
+      if (!customEmoji || customEmoji.deleted_at !== null) return;
+      void mutateReaction(
+        message,
+        {
+          kind: "custom",
+          emoji_id: customEmoji.id,
+          name: customEmoji.name,
+          image_url: customEmoji.image_url,
+          animated: customEmoji.animated,
+        },
+        "add",
+      );
+      return;
+    }
+
+    void mutateReaction(message, { kind: "native", emoji }, "add");
+  };
+
+  const toggleReaction = (message: Message, reaction: ReactionSummary) => {
+    const request: ReactionRequest =
+      reaction.kind === "native"
+        ? { kind: "native", emoji: reaction.emoji }
+        : {
+            kind: "custom",
+            emoji_id: reaction.emoji_id,
+            name: reaction.name,
+            image_url: reaction.image_url,
+            animated: reaction.animated,
+          };
+    void mutateReaction(message, request, reaction.me_reacted ? "remove" : "add");
+  };
+
   onMount(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setReactionPicker(null);
+    };
+    document.addEventListener("keydown", onKey);
+
     const unsubscribeCreated = events.onThreadReplyCreated((event) => {
       if (event.channel_id !== props.channelId || event.root_message_id !== props.rootMessageId) {
         return;
@@ -271,11 +411,51 @@ export default function ThreadPanel(props: {
         };
       });
     });
+    const unsubscribeReactions = events.onMessageReactionsUpdated((event) => {
+      if (event.channel_id !== props.channelId) return;
+      mutate((current) => {
+        if (!current) return current;
+        const eventRootId = event.root_message_id ?? event.parent_id ?? event.id;
+        if (eventRootId !== props.rootMessageId && event.id !== current.root.id) return current;
+        if (current.root.id === event.id) {
+          return {
+            ...current,
+            root: {
+              ...current.root,
+              reactions: mergeReactionUpdateForViewer(
+                current.root.reactions ?? [],
+                event.reactions,
+                event.user_id,
+                props.currentUserId,
+              ),
+            },
+          };
+        }
+        return {
+          ...current,
+          replies: current.replies.map((reply) =>
+            reply.id === event.id
+              ? {
+                  ...reply,
+                  reactions: mergeReactionUpdateForViewer(
+                    reply.reactions ?? [],
+                    event.reactions,
+                    event.user_id,
+                    props.currentUserId,
+                  ),
+                }
+              : reply,
+          ),
+        };
+      });
+    });
     onCleanup(() => {
+      document.removeEventListener("keydown", onKey);
       unsubscribeCreated();
       unsubscribeDeleted();
       unsubscribeUpdated();
       unsubscribeEmbeds();
+      unsubscribeReactions();
     });
   });
 
@@ -454,6 +634,10 @@ export default function ThreadPanel(props: {
                 onSaveEdit={saveEdit}
                 onRequestDelete={(message) => setPendingDeleteId(message.id)}
                 onSuppressEmbeds={suppressEmbeds}
+                onToggleReaction={toggleReaction}
+                onOpenReactionPicker={(message, anchor) =>
+                  setReactionPicker({ messageId: message.id, anchor })
+                }
               />
               <Show when={loaded().replies.length > 0}>
                 <div class="border-t border-gray-100 pt-2">
@@ -489,6 +673,10 @@ export default function ThreadPanel(props: {
                         onSaveEdit={saveEdit}
                         onRequestDelete={(message) => setPendingDeleteId(message.id)}
                         onSuppressEmbeds={suppressEmbeds}
+                        onToggleReaction={toggleReaction}
+                        onOpenReactionPicker={(message, anchor) =>
+                          setReactionPicker({ messageId: message.id, anchor })
+                        }
                       />
                     )}
                   </For>
@@ -533,6 +721,18 @@ export default function ThreadPanel(props: {
           </button>
         </div>
       </form>
+
+      <EmojiPicker
+        open={reactionPicker() !== null}
+        anchor={() => reactionPicker()?.anchor}
+        emojis={reactionEmojiEntries()}
+        onSelect={(emoji) => {
+          const state = reactionPicker();
+          const message = state ? findThreadMessage(state.messageId) : null;
+          if (message) addReactionFromPicker(message, emoji);
+        }}
+        onClose={() => setReactionPicker(null)}
+      />
 
       <Modal
         open={pendingDeleteId() !== null}

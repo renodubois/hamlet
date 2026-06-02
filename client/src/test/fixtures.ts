@@ -13,6 +13,7 @@ export function makeMessage(
     parent_id: null,
     suppress_embeds: false,
     embeds: [],
+    reactions: [],
     ...partial,
   };
 }

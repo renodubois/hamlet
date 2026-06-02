@@ -88,6 +88,18 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
   };
 }
 
+function findMessageById(currentState: HandlerState, id: number): Message | undefined {
+  for (const list of Object.values(currentState.messages)) {
+    const message = list.find((m) => m.id === id);
+    if (message) return message;
+  }
+  for (const list of Object.values(currentState.threadReplies)) {
+    const message = list.find((m) => m.id === id);
+    if (message) return message;
+  }
+  return undefined;
+}
+
 export function createHandlers(state: HandlerState) {
   return [
     http.get(`${BASE}/me`, () => {
@@ -364,6 +376,7 @@ export function createHandlers(state: HandlerState) {
         avatar_url: state.me?.avatar_url ?? null,
         suppress_embeds: false,
         embeds: [],
+        reactions: [],
       };
       state.sentThreadReplies.push({ rootId, text: body.text });
       state.threadReplies[String(rootId)] = [...replies, reply];
@@ -397,6 +410,74 @@ export function createHandlers(state: HandlerState) {
       }
       if (!updated) return new HttpResponse(null, { status: 404 });
       return HttpResponse.json(updated);
+    }),
+
+    http.post(`${BASE}/message/:id/reactions`, async ({ request, params }) => {
+      const id = Number(params.id);
+      const body = (await request.json()) as import("../../api").ReactionRequest;
+      const message = findMessageById(state, id);
+      if (!message || message.deleted_at != null) return new HttpResponse(null, { status: 404 });
+      const existing = (message.reactions ?? []).find((reaction) =>
+        reaction.kind === "native" && body.kind === "native"
+          ? reaction.emoji === body.emoji
+          : reaction.kind === "custom" && body.kind === "custom"
+            ? reaction.emoji_id === body.emoji_id
+            : false,
+      );
+      if (existing) {
+        if (existing.kind === "custom" && existing.deleted_at != null && !existing.me_reacted) {
+          return new HttpResponse(null, { status: 400 });
+        }
+        if (!existing.me_reacted) {
+          existing.count += 1;
+          existing.me_reacted = true;
+        }
+      } else if (body.kind === "native") {
+        message.reactions = [
+          ...(message.reactions ?? []),
+          { kind: "native", emoji: body.emoji, count: 1, me_reacted: true },
+        ];
+      } else {
+        const customEmoji = state.customEmojis.find((emoji) => emoji.id === body.emoji_id);
+        if (!customEmoji || customEmoji.deleted_at !== null) {
+          return new HttpResponse(null, { status: 400 });
+        }
+        message.reactions = [
+          ...(message.reactions ?? []),
+          {
+            kind: "custom",
+            emoji_id: body.emoji_id,
+            name: customEmoji?.name ?? body.name ?? "custom emoji",
+            image_url: customEmoji.image_url,
+            animated: customEmoji.animated,
+            deleted_at: customEmoji.deleted_at,
+            count: 1,
+            me_reacted: true,
+          },
+        ];
+      }
+      return HttpResponse.json(message.reactions);
+    }),
+
+    http.delete(`${BASE}/message/:id/reactions`, async ({ request, params }) => {
+      const id = Number(params.id);
+      const body = (await request.json()) as import("../../api").ReactionRequest;
+      const message = findMessageById(state, id);
+      if (!message || message.deleted_at != null) return new HttpResponse(null, { status: 404 });
+      message.reactions = (message.reactions ?? [])
+        .map((reaction) => {
+          const matches =
+            reaction.kind === "native" && body.kind === "native"
+              ? reaction.emoji === body.emoji
+              : reaction.kind === "custom" && body.kind === "custom"
+                ? reaction.emoji_id === body.emoji_id
+                : false;
+          return matches && reaction.me_reacted
+            ? { ...reaction, count: Math.max(0, reaction.count - 1), me_reacted: false }
+            : reaction;
+        })
+        .filter((reaction) => reaction.count > 0);
+      return HttpResponse.json(message.reactions);
     }),
 
     http.delete(`${BASE}/message/:id`, ({ params }) => {

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
+import userEvent from "@testing-library/user-event";
 import type { Message } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
 import { makeMessage } from "../test/fixtures";
@@ -26,6 +27,12 @@ vi.mock("../api", async () => {
       suppress_embeds: true,
       embeds: [],
     }),
+    addMessageReaction: vi
+      .fn()
+      .mockResolvedValue([
+        { kind: "native", emoji: "👍", count: 1, me_reacted: true, reactors: ["You"] },
+      ]),
+    removeMessageReaction: vi.fn().mockResolvedValue([]),
   };
 });
 
@@ -34,7 +41,13 @@ vi.mock("../contexts/custom-emojis", () => ({
 }));
 
 import ChannelMessages from "./channel-messages";
-import { deleteMessage, editMessage, setMessageEmbedsSuppressed } from "../api";
+import {
+  addMessageReaction,
+  deleteMessage,
+  editMessage,
+  removeMessageReaction,
+  setMessageEmbedsSuppressed,
+} from "../api";
 
 const SELF_ID = 1;
 const OTHER_ID = 2;
@@ -63,6 +76,7 @@ function mount(
   messages: Message[],
   currentUserId: number | null,
   onOpenThread?: (message: Message, options?: { focusComposer?: boolean }) => void,
+  onReactionsChange?: (messageId: number, reactions: import("../api").ReactionSummary[]) => void,
 ) {
   return render(() => (
     <ChannelMessages
@@ -71,6 +85,7 @@ function mount(
       error={null}
       currentUserId={currentUserId}
       onOpenThread={onOpenThread}
+      onReactionsChange={onReactionsChange}
     />
   ));
 }
@@ -310,19 +325,460 @@ describe("<ChannelMessages> message text rendering", () => {
   });
 });
 
+describe("<ChannelMessages> reactions", () => {
+  test("renders native reaction pills with accessible pressed state", () => {
+    mount(
+      [
+        makeMessage({
+          id: 600,
+          user_id: OTHER_ID,
+          channel_id: 1,
+          text: "reacted",
+          username: "them",
+          reactions: [{ kind: "native", emoji: "👍", count: 2, me_reacted: true }],
+        }),
+      ],
+      SELF_ID,
+    );
+
+    const pill = screen.getByRole("button", { name: /👍 2 reactions\. remove your reaction/i });
+    expect(pill).toHaveAttribute("aria-pressed", "true");
+    expect(pill).toHaveTextContent("✓👍2");
+  });
+
+  test("renders custom reaction pills from summary image, label, and animation state", () => {
+    mount(
+      [
+        makeMessage({
+          id: 602,
+          user_id: OTHER_ID,
+          channel_id: 1,
+          text: "custom reacted",
+          username: "them",
+          reactions: [
+            {
+              kind: "custom",
+              emoji_id: 123,
+              name: "dance",
+              image_url: "/uploads/emojis/123.gif?v=2",
+              animated: true,
+              count: 3,
+              me_reacted: false,
+            },
+          ],
+        }),
+      ],
+      SELF_ID,
+    );
+
+    const pill = screen.getByRole("button", {
+      name: /animated :dance: 3 reactions\. add your reaction/i,
+    });
+    expect(pill).toHaveAttribute("aria-pressed", "false");
+    expect(assertExists(pill.querySelector("img")).getAttribute("src")).toContain(
+      "/uploads/emojis/123.gif?v=2",
+    );
+    expect(pill).toHaveTextContent("3");
+    expect(pill).not.toHaveTextContent("✓");
+  });
+
+  test("renders deleted custom reaction pills as visible but not addable", () => {
+    const onReactionsChange = vi.fn();
+    mount(
+      [
+        makeMessage({
+          id: 606,
+          user_id: OTHER_ID,
+          channel_id: 1,
+          text: "deleted custom reacted",
+          username: "them",
+          reactions: [
+            {
+              kind: "custom",
+              emoji_id: 123,
+              name: "ghost",
+              image_url: "/uploads/emojis/123.webp?v=2",
+              animated: false,
+              deleted_at: 1_700_000_100,
+              count: 2,
+              me_reacted: false,
+            },
+          ],
+        }),
+      ],
+      SELF_ID,
+      undefined,
+      onReactionsChange,
+    );
+
+    const pill = screen.getByRole("button", {
+      name: /:ghost: \(deleted\) 2 reactions\. no longer available/i,
+    });
+    expect(pill).toBeDisabled();
+    fireEvent.click(pill);
+    expect(onReactionsChange).not.toHaveBeenCalled();
+  });
+
+  test("allows removing your own reaction to a deleted custom emoji", async () => {
+    const onReactionsChange = vi.fn();
+    mount(
+      [
+        makeMessage({
+          id: 607,
+          user_id: OTHER_ID,
+          channel_id: 1,
+          text: "my deleted custom reaction",
+          username: "them",
+          reactions: [
+            {
+              kind: "custom",
+              emoji_id: 123,
+              name: "ghost",
+              image_url: "/uploads/emojis/123.webp?v=2",
+              animated: false,
+              deleted_at: 1_700_000_100,
+              count: 1,
+              me_reacted: true,
+            },
+          ],
+        }),
+      ],
+      SELF_ID,
+      undefined,
+      onReactionsChange,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /:ghost: \(deleted\) 1 reaction\. remove your reaction/i,
+      }),
+    );
+
+    await waitFor(() =>
+      expect(removeMessageReaction).toHaveBeenCalledWith(607, {
+        kind: "custom",
+        emoji_id: 123,
+        name: "ghost",
+        image_url: "/uploads/emojis/123.webp?v=2",
+        animated: false,
+      }),
+    );
+    expect(onReactionsChange).toHaveBeenNthCalledWith(1, 607, []);
+  });
+
+  test("shows capped reactor preview text on hover and keyboard focus", async () => {
+    mount(
+      [
+        makeMessage({
+          id: 604,
+          user_id: OTHER_ID,
+          channel_id: 1,
+          text: "many reactions",
+          username: "them",
+          reactions: [
+            {
+              kind: "native",
+              emoji: "👍",
+              count: 6,
+              me_reacted: true,
+              reactors: ["You", "Alice", "Bob", "Carol", "Dana"],
+            },
+          ],
+        }),
+      ],
+      SELF_ID,
+    );
+
+    const pill = screen.getByRole("button", {
+      name: /👍 6 reactions\. remove your reaction/i,
+    });
+    expect(pill).toHaveAttribute("aria-describedby");
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    fireEvent.mouseEnter(pill);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "6 reactions: You, Alice, Bob, Carol, Dana and 1 more",
+    );
+
+    fireEvent.mouseLeave(pill);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    fireEvent.focus(pill);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "6 reactions: You, Alice, Bob, Carol, Dana and 1 more",
+    );
+  });
+
+  test("reaction pills pass axe checks with labels, pressed state, and preview descriptions", async () => {
+    const { container } = mount(
+      [
+        makeMessage({
+          id: 605,
+          user_id: OTHER_ID,
+          channel_id: 1,
+          text: "accessible reactions",
+          username: "them",
+          reactions: [
+            {
+              kind: "native",
+              emoji: "👍",
+              count: 2,
+              me_reacted: true,
+              reactors: ["You", "Alice"],
+            },
+            {
+              kind: "native",
+              emoji: "❤️",
+              count: 1,
+              me_reacted: false,
+              reactors: ["Alice"],
+            },
+          ],
+        }),
+      ],
+      SELF_ID,
+    );
+
+    await expectNoA11yViolations(container, "reaction pills");
+  });
+
+  test("opens the reaction picker from a keyboard-focused Add Reaction button", async () => {
+    const user = userEvent.setup();
+    mount([otherMessage], SELF_ID);
+
+    await user.tab();
+    const addReaction = screen.getByRole("button", { name: /add reaction to message by them/i });
+    expect(document.activeElement).toBe(addReaction);
+
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("dialog", { name: /emoji picker/i })).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /emoji picker/i })).toBeNull());
+
+    addReaction.focus();
+    await user.keyboard(" ");
+    expect(await screen.findByRole("dialog", { name: /emoji picker/i })).toBeInTheDocument();
+  });
+
+  test("opens the emoji picker from Add Reaction and applies optimistic add", async () => {
+    const onReactionsChange = vi.fn();
+    mount([otherMessage], SELF_ID, undefined, onReactionsChange);
+
+    fireEvent.click(screen.getByRole("button", { name: /add reaction to message by them/i }));
+    const dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
+    fireEvent.input(within(dialog).getByRole("combobox", { name: /search and select emoji/i }), {
+      target: { value: "thumb" },
+    });
+    const thumbsCell = await within(dialog).findByRole("gridcell", { name: /emoji :thumbsup:/i });
+    fireEvent.click(within(thumbsCell).getByRole("button", { name: /emoji :thumbsup:/i }));
+
+    await waitFor(() =>
+      expect(addMessageReaction).toHaveBeenCalledWith(200, { kind: "native", emoji: "👍" }),
+    );
+    expect(onReactionsChange).toHaveBeenNthCalledWith(1, 200, [
+      { kind: "native", emoji: "👍", count: 1, me_reacted: true, reactors: ["You"] },
+    ]);
+    expect(onReactionsChange).toHaveBeenLastCalledWith(200, [
+      { kind: "native", emoji: "👍", count: 1, me_reacted: true, reactors: ["You"] },
+    ]);
+  });
+
+  test("opens the reaction picker with active custom emojis and posts immutable custom ids", async () => {
+    vi.mocked(addMessageReaction).mockResolvedValueOnce([
+      {
+        kind: "custom",
+        emoji_id: 123,
+        name: "party",
+        image_url: "/uploads/emojis/123.webp?v=2",
+        animated: false,
+        count: 1,
+        me_reacted: true,
+        reactors: ["You"],
+      },
+    ]);
+    customEmojiContext.current = {
+      byId: (id) =>
+        id === 123
+          ? {
+              id: 123,
+              name: "party",
+              image_url: "/uploads/emojis/123.webp?v=1",
+              animated: false,
+              created_by_user_id: SELF_ID,
+              created_at: 1,
+              updated_at: 1,
+              deleted_at: null,
+            }
+          : null,
+      activeEmojis: () => [
+        {
+          id: 123,
+          name: "party",
+          image_url: "/uploads/emojis/123.webp?v=1",
+          animated: false,
+          created_by_user_id: SELF_ID,
+          created_at: 1,
+          updated_at: 1,
+          deleted_at: null,
+        },
+      ],
+    };
+    const onReactionsChange = vi.fn();
+    mount([otherMessage], SELF_ID, undefined, onReactionsChange);
+
+    fireEvent.click(screen.getByRole("button", { name: /add reaction to message by them/i }));
+    const dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
+    fireEvent.input(within(dialog).getByRole("combobox", { name: /search and select emoji/i }), {
+      target: { value: "party" },
+    });
+    const partyCell = await within(dialog).findByRole("gridcell", { name: /emoji :party:/i });
+    fireEvent.click(within(partyCell).getByRole("button", { name: /emoji :party:/i }));
+
+    await waitFor(() =>
+      expect(addMessageReaction).toHaveBeenCalledWith(200, {
+        kind: "custom",
+        emoji_id: 123,
+        name: "party",
+        image_url: "/uploads/emojis/123.webp?v=1",
+        animated: false,
+      }),
+    );
+    expect(onReactionsChange).toHaveBeenNthCalledWith(1, 200, [
+      {
+        kind: "custom",
+        emoji_id: 123,
+        name: "party",
+        image_url: "/uploads/emojis/123.webp?v=1",
+        animated: false,
+        deleted_at: null,
+        count: 1,
+        me_reacted: true,
+        reactors: ["You"],
+      },
+    ]);
+    expect(onReactionsChange).toHaveBeenLastCalledWith(200, [
+      {
+        kind: "custom",
+        emoji_id: 123,
+        name: "party",
+        image_url: "/uploads/emojis/123.webp?v=2",
+        animated: false,
+        count: 1,
+        me_reacted: true,
+        reactors: ["You"],
+      },
+    ]);
+  });
+
+  test("toggles an existing pill and rolls back failed mutations", async () => {
+    vi.mocked(removeMessageReaction).mockRejectedValueOnce(new Error("nope"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const onReactionsChange = vi.fn();
+    const reacted = makeMessage({
+      id: 601,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "reacted",
+      username: "them",
+      reactions: [{ kind: "native", emoji: "👍", count: 1, me_reacted: true }],
+    });
+
+    mount([reacted], SELF_ID, undefined, onReactionsChange);
+    fireEvent.click(screen.getByRole("button", { name: /👍 1 reaction\. remove your reaction/i }));
+
+    await waitFor(() =>
+      expect(removeMessageReaction).toHaveBeenCalledWith(601, { kind: "native", emoji: "👍" }),
+    );
+    expect(onReactionsChange).toHaveBeenNthCalledWith(1, 601, []);
+    expect(onReactionsChange).toHaveBeenLastCalledWith(601, reacted.reactions);
+    expect(errorSpy).toHaveBeenCalledWith("failed to update reaction", expect.any(Error));
+    errorSpy.mockRestore();
+  });
+
+  test("toggles custom pills using the immutable custom id", async () => {
+    const onReactionsChange = vi.fn();
+    const reacted = makeMessage({
+      id: 603,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "custom reacted",
+      username: "them",
+      reactions: [
+        {
+          kind: "custom",
+          emoji_id: 123,
+          name: "dance",
+          image_url: "/uploads/emojis/123.gif?v=2",
+          animated: true,
+          count: 1,
+          me_reacted: true,
+        },
+      ],
+    });
+
+    mount([reacted], SELF_ID, undefined, onReactionsChange);
+    fireEvent.click(
+      screen.getByRole("button", { name: /animated :dance: 1 reaction\. remove your reaction/i }),
+    );
+
+    await waitFor(() =>
+      expect(removeMessageReaction).toHaveBeenCalledWith(603, {
+        kind: "custom",
+        emoji_id: 123,
+        name: "dance",
+        image_url: "/uploads/emojis/123.gif?v=2",
+        animated: true,
+      }),
+    );
+    expect(onReactionsChange).toHaveBeenNthCalledWith(1, 603, []);
+  });
+});
+
 describe("<ChannelMessages> hover action toolbar", () => {
-  test("renders Edit and Delete buttons on the user's own message", async () => {
+  test("renders Add Reaction, Edit, and Delete buttons on the user's own message", async () => {
     mount([ownMessage], SELF_ID);
     expect(screen.getByRole("toolbar", { name: /message actions/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /add reaction to message by me/i }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^edit$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^delete$/i })).toBeInTheDocument();
   });
 
-  test("does not render the toolbar on another user's message", async () => {
+  test("renders Add Reaction but not Edit/Delete on another user's message", async () => {
     mount([otherMessage], SELF_ID);
-    expect(screen.queryByRole("toolbar", { name: /message actions/i })).toBeNull();
+    expect(screen.getByRole("toolbar", { name: /message actions/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /add reaction to message by them/i }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^edit$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^delete$/i })).toBeNull();
+  });
+
+  test("does not render reaction rows or action toolbar for deleted tombstones", async () => {
+    mount(
+      [
+        makeMessage({
+          id: 204,
+          user_id: OTHER_ID,
+          channel_id: 1,
+          text: "",
+          username: "them",
+          deleted_at: 1_700_000_100,
+          reactions: [{ kind: "native", emoji: "👍", count: 2, me_reacted: true }],
+          thread_summary: { reply_count: 1, last_reply_created_at: 1_700_000_200 },
+        }),
+      ],
+      SELF_ID,
+      vi.fn(),
+    );
+
+    expect(screen.getByLabelText(/original message deleted/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /👍/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /add reaction/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /reply in thread/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /open thread with 1 reply/i })).toBeInTheDocument();
   });
 
   test("does not render the toolbar when currentUserId is null", async () => {
@@ -330,9 +786,13 @@ describe("<ChannelMessages> hover action toolbar", () => {
     expect(screen.queryByRole("toolbar", { name: /message actions/i })).toBeNull();
   });
 
-  test("renders an accessible reply-in-thread action when provided", async () => {
+  test("renders Add Reaction alongside a top-level reply-in-thread action", async () => {
     const onOpenThread = vi.fn();
     mount([otherMessage], SELF_ID, onOpenThread);
+    expect(
+      screen.getByRole("button", { name: /add reaction to message by them/i }),
+    ).toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("button", { name: /reply in thread to message by them/i }));
     expect(onOpenThread).toHaveBeenCalledWith(otherMessage, { focusComposer: true });
   });
@@ -386,6 +846,62 @@ describe("<ChannelMessages> hover action toolbar", () => {
     fireEvent.click(screen.getByRole("button", { name: /open thread with 1 reply/i }));
 
     expect(onOpenThread).toHaveBeenCalledWith(messageWithReplies, { focusComposer: false });
+  });
+
+  test("editing keeps reaction rows visible and hides the hover Add Reaction trigger", async () => {
+    const reacted = makeMessage({
+      ...ownMessage,
+      reactions: [{ kind: "native", emoji: "👍", count: 1, me_reacted: false }],
+    });
+    mount([reacted], SELF_ID);
+
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    expect(await screen.findByLabelText(/edit message/i)).toBeInTheDocument();
+
+    expect(
+      screen.getByRole("button", { name: /👍 1 reaction\. add your reaction/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /add reaction to message by me/i })).toBeNull();
+    expect(screen.queryByRole("toolbar", { name: /message actions/i })).toBeNull();
+  });
+
+  test("renders reaction rows after body and embeds but before the thread summary", () => {
+    const placed = makeMessage({
+      id: 610,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "body before embed",
+      username: "them",
+      embeds: [
+        {
+          id: 9001,
+          message_id: 610,
+          url: "https://example.com/post",
+          title: "Example embed",
+          description: "embed description",
+          image_url: null,
+          site_name: "Example",
+          embed_type: "link",
+          iframe_url: null,
+          iframe_width: null,
+          iframe_height: null,
+        },
+      ],
+      reactions: [{ kind: "native", emoji: "👍", count: 1, me_reacted: false }],
+      thread_summary: { reply_count: 1, last_reply_created_at: 1_700_000_000_000_000 },
+    });
+    mount([placed], SELF_ID, vi.fn());
+
+    const body = screen.getByText("body before embed");
+    const embed = screen.getByRole("link", { name: "Example embed" });
+    const reaction = screen.getByRole("button", { name: /👍 1 reaction\. add your reaction/i });
+    const summary = screen.getByRole("button", { name: /open thread with 1 reply/i });
+
+    expect(body.compareDocumentPosition(embed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(embed.compareDocumentPosition(reaction) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      reaction.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   test("clicking Edit swaps the row into edit mode", async () => {

@@ -27,6 +27,7 @@ use crate::api::channels::ChannelResponse;
 use crate::api::emoji::EmojiResponse;
 use crate::api::messages::{EmbedResponse, MessageResponse, ThreadSummary};
 use crate::error::AppError;
+use crate::reactions::ReactionSummary;
 use crate::voice::VoiceParticipant;
 
 #[derive(Debug)]
@@ -137,6 +138,16 @@ pub struct MessageEmbedsUpdatedEvent {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct MessageReactionsUpdatedEvent {
+    pub id: i64,
+    pub channel_id: i64,
+    pub parent_id: Option<i64>,
+    pub root_message_id: i64,
+    pub user_id: i64,
+    pub reactions: Vec<ReactionSummary>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct VoiceParticipantLeftEvent {
     pub channel_id: i64,
     pub user_id: i64,
@@ -182,6 +193,7 @@ pub enum BroadcastEvent {
     MessageUpdated(MessageResponse),
     MessageDeleted(MessageDeletedEvent),
     MessageEmbedsUpdated(MessageEmbedsUpdatedEvent),
+    MessageReactionsUpdated(MessageReactionsUpdatedEvent),
     ChannelCreated(ChannelResponse),
     ChannelsReordered(Vec<ChannelResponse>),
     EmojiCreated(EmojiResponse),

@@ -25,6 +25,9 @@ export type {
   Message,
   MessageDeleted,
   MessageEmbedsUpdated,
+  MessageReactionsUpdated,
+  ReactionRequest,
+  ReactionSummary,
   Thread,
   ParticipatedThreadPreview,
   ThreadPageOptions,
@@ -42,6 +45,8 @@ export {
   editMessage,
   deleteMessage,
   setMessageEmbedsSuppressed,
+  addMessageReaction,
+  removeMessageReaction,
 } from "./messages";
 export type {
   VoiceParticipant,

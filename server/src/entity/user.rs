@@ -24,6 +24,9 @@ pub struct Model {
     pub messages: HasMany<super::message::Entity>,
     #[serde(skip)]
     #[sea_orm(has_many)]
+    pub reactions: HasMany<super::message_reaction::Entity>,
+    #[serde(skip)]
+    #[sea_orm(has_many)]
     pub credentials: HasMany<super::credential::Entity>,
     #[serde(skip)]
     #[sea_orm(has_many)]

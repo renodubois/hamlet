@@ -15,11 +15,15 @@ use crate::api::channels::{CHANNEL_TYPE_TEXT, ChannelResponse};
 use crate::auth::AuthUser;
 use crate::broadcast::{
     BroadcastEvent, Broadcaster, MessageDeletedEvent, MessageEmbedsUpdatedEvent,
-    ThreadReplyCreatedEvent, ThreadReplyDeletedEvent, UserTypingEvent,
+    MessageReactionsUpdatedEvent, ThreadReplyCreatedEvent, ThreadReplyDeletedEvent,
+    UserTypingEvent,
 };
 use crate::embeds;
 use crate::entity;
 use crate::error::AppError;
+use crate::reactions::{
+    ReactionRequest, ReactionSummary, add_reaction, load_reaction_summaries, remove_reaction,
+};
 use crate::util::{generate_id, now_unix_micros};
 
 /// Cap on how many URLs per message we actually fetch. If a message is a wall
@@ -77,6 +81,7 @@ pub struct MessageResponse {
     pub avatar_url: Option<String>,
     pub suppress_embeds: bool,
     pub embeds: Vec<EmbedResponse>,
+    pub reactions: Vec<ReactionSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_summary: Option<ThreadSummary>,
 }
@@ -134,6 +139,7 @@ pub enum EmbedFetcher {
 async fn get_messages(
     db: web::Data<DatabaseConnection>,
     path: web::Path<i64>,
+    user: AuthUser,
 ) -> Result<impl Responder, AppError> {
     let channel_id = path.into_inner();
 
@@ -155,35 +161,17 @@ async fn get_messages(
 
     let message_ids: Vec<i64> = rows.iter().map(|(m, _)| m.id).collect();
     let embeds_by_message = load_embeds_for_messages(db.get_ref(), &message_ids).await?;
+    let reactions_by_message = load_reaction_summaries(db.get_ref(), &message_ids, user.id).await?;
     let summaries_by_message = load_thread_summaries_for_roots(db.get_ref(), &message_ids).await?;
 
     let messages: Vec<MessageResponse> = rows
         .into_iter()
         .map(|(m, u)| {
-            let (username, display_name, avatar_url) = match u {
-                Some(u) => (
-                    u.username,
-                    u.display_name,
-                    avatar_url(u.avatar_path.as_deref(), u.avatar_updated_at),
-                ),
-                None => ("[deleted]".into(), None, None),
-            };
             let embeds = embeds_by_message.get(&m.id).cloned().unwrap_or_default();
-            MessageResponse {
-                id: m.id,
-                user_id: m.user_id,
-                channel_id: m.channel_id,
-                parent_id: m.parent_id,
-                created_at: m.created_at,
-                deleted_at: m.deleted_at,
-                text: m.text,
-                username,
-                display_name,
-                avatar_url,
-                suppress_embeds: m.suppress_embeds,
-                embeds,
-                thread_summary: summaries_by_message.get(&m.id).cloned(),
-            }
+            let reactions = reactions_by_message.get(&m.id).cloned().unwrap_or_default();
+            let mut response = message_response_from_model(m, u, embeds, reactions);
+            response.thread_summary = summaries_by_message.get(&response.id).cloned();
+            response
         })
         .collect();
 
@@ -286,6 +274,7 @@ async fn create_message(
         avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
         suppress_embeds: inserted.suppress_embeds,
         embeds: Vec::new(),
+        reactions: Vec::new(),
         thread_summary: None,
     };
     broadcaster
@@ -364,6 +353,8 @@ async fn get_participated_threads(
         }
     }
     let embeds_by_message = load_embeds_for_messages(db.get_ref(), &preview_message_ids).await?;
+    let reactions_by_message =
+        load_reaction_summaries(db.get_ref(), &preview_message_ids, user.id).await?;
 
     let mut previews_with_sort_key = Vec::new();
     for (root, root_user) in root_rows {
@@ -398,13 +389,21 @@ async fn get_participated_threads(
                     .get(&reply.id)
                     .cloned()
                     .unwrap_or_default();
-                message_response_from_model(reply.clone(), reply_user.clone(), embeds)
+                let reactions = reactions_by_message
+                    .get(&reply.id)
+                    .cloned()
+                    .unwrap_or_default();
+                message_response_from_model(reply.clone(), reply_user.clone(), embeds, reactions)
             })
             .collect();
         let root_embeds = embeds_by_message.get(&root.id).cloned().unwrap_or_default();
+        let root_reactions = reactions_by_message
+            .get(&root.id)
+            .cloned()
+            .unwrap_or_default();
         let preview = ParticipatedThreadPreview {
             channel: ChannelResponse::from(channel.clone()),
-            root: message_response_from_model(root, root_user, root_embeds),
+            root: message_response_from_model(root, root_user, root_embeds, root_reactions),
             reply_count: replies.len() as u64,
             last_reply_created_at: last_reply.created_at,
             recent_replies,
@@ -432,6 +431,7 @@ async fn get_thread(
     db: web::Data<DatabaseConnection>,
     path: web::Path<i64>,
     query: web::Query<ThreadPageQuery>,
+    user: AuthUser,
 ) -> Result<impl Responder, AppError> {
     let root_message_id = path.into_inner();
     let root = validated_thread_root(db.get_ref(), root_message_id).await?;
@@ -475,6 +475,7 @@ async fn get_thread(
     let mut message_ids: Vec<i64> = rows.iter().map(|(m, _)| m.id).collect();
     message_ids.push(root.id);
     let embeds_by_message = load_embeds_for_messages(db.get_ref(), &message_ids).await?;
+    let reactions_by_message = load_reaction_summaries(db.get_ref(), &message_ids, user.id).await?;
 
     let root_user = entity::user::Entity::find_by_id(root.user_id)
         .one(db.get_ref())
@@ -486,12 +487,17 @@ async fn get_thread(
             .get(&root_message_id)
             .cloned()
             .unwrap_or_default(),
+        reactions_by_message
+            .get(&root_message_id)
+            .cloned()
+            .unwrap_or_default(),
     );
     let replies = rows
         .into_iter()
         .map(|(m, u)| {
             let embeds = embeds_by_message.get(&m.id).cloned().unwrap_or_default();
-            message_response_from_model(m, u, embeds)
+            let reactions = reactions_by_message.get(&m.id).cloned().unwrap_or_default();
+            message_response_from_model(m, u, embeds, reactions)
         })
         .collect();
 
@@ -539,6 +545,7 @@ async fn create_thread_reply(
         avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
         suppress_embeds: inserted.suppress_embeds,
         embeds: Vec::new(),
+        reactions: Vec::new(),
         thread_summary: None,
     };
     let thread_summary = load_thread_summaries_for_roots(db.get_ref(), &[root_message_id])
@@ -598,7 +605,9 @@ fn message_response_from_model(
     message: entity::message::Model,
     user: Option<entity::user::Model>,
     embeds: Vec<EmbedResponse>,
+    reactions: Vec<ReactionSummary>,
 ) -> MessageResponse {
+    let is_deleted = message.deleted_at.is_some();
     let (username, display_name, avatar_url) = match user {
         Some(u) => (
             u.username,
@@ -619,7 +628,8 @@ fn message_response_from_model(
         display_name,
         avatar_url,
         suppress_embeds: message.suppress_embeds,
-        embeds,
+        embeds: if is_deleted { Vec::new() } else { embeds },
+        reactions: if is_deleted { Vec::new() } else { reactions },
         thread_summary: None,
     }
 }
@@ -664,6 +674,10 @@ async fn update_message(
     } else {
         None
     };
+    let reactions = load_reaction_summaries(db.get_ref(), &[updated.id], user.id)
+        .await?
+        .remove(&updated.id)
+        .unwrap_or_default();
 
     let resp = MessageResponse {
         id: updated.id,
@@ -678,6 +692,7 @@ async fn update_message(
         avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
         suppress_embeds: updated.suppress_embeds,
         embeds: existing_embeds,
+        reactions,
         thread_summary,
     };
     broadcaster
@@ -752,6 +767,68 @@ async fn suppress_message_embeds(
     }))
 }
 
+#[post("/message/{message_id}/reactions")]
+async fn add_message_reaction(
+    db: web::Data<DatabaseConnection>,
+    broadcaster: web::Data<Broadcaster>,
+    path: web::Path<i64>,
+    body: web::Json<ReactionRequest>,
+    user: AuthUser,
+) -> Result<impl Responder, AppError> {
+    let message_id = path.into_inner();
+    let reactions = add_reaction(db.get_ref(), message_id, user.id, &body).await?;
+    let message = entity::message::Entity::find_by_id(message_id)
+        .one(db.get_ref())
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    broadcaster
+        .publish(&BroadcastEvent::MessageReactionsUpdated(
+            MessageReactionsUpdatedEvent {
+                id: message_id,
+                channel_id: message.channel_id,
+                parent_id: message.parent_id,
+                root_message_id: message.parent_id.unwrap_or(message.id),
+                user_id: user.id,
+                reactions: reactions.clone(),
+            },
+        ))
+        .await?;
+
+    Ok(web::Json(reactions))
+}
+
+#[delete("/message/{message_id}/reactions")]
+async fn remove_message_reaction(
+    db: web::Data<DatabaseConnection>,
+    broadcaster: web::Data<Broadcaster>,
+    path: web::Path<i64>,
+    body: web::Json<ReactionRequest>,
+    user: AuthUser,
+) -> Result<impl Responder, AppError> {
+    let message_id = path.into_inner();
+    let reactions = remove_reaction(db.get_ref(), message_id, user.id, &body).await?;
+    let message = entity::message::Entity::find_by_id(message_id)
+        .one(db.get_ref())
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    broadcaster
+        .publish(&BroadcastEvent::MessageReactionsUpdated(
+            MessageReactionsUpdatedEvent {
+                id: message_id,
+                channel_id: message.channel_id,
+                parent_id: message.parent_id,
+                root_message_id: message.parent_id.unwrap_or(message.id),
+                user_id: user.id,
+                reactions: reactions.clone(),
+            },
+        ))
+        .await?;
+
+    Ok(web::Json(reactions))
+}
+
 #[delete("/message/{message_id}")]
 async fn delete_message(
     db: web::Data<DatabaseConnection>,
@@ -787,6 +864,10 @@ async fn delete_message(
         .filter(entity::embed::Column::MessageId.eq(message_id))
         .exec(db.get_ref())
         .await?;
+    entity::message_reaction::Entity::delete_many()
+        .filter(entity::message_reaction::Column::MessageId.eq(message_id))
+        .exec(db.get_ref())
+        .await?;
 
     if parent_id.is_none() && root_summary.is_some() {
         let mut active: entity::message::ActiveModel = existing.into();
@@ -809,6 +890,7 @@ async fn delete_message(
                 avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
                 suppress_embeds: updated.suppress_embeds,
                 embeds: Vec::new(),
+                reactions: Vec::new(),
                 thread_summary: root_summary,
             }))
             .await?;
@@ -975,6 +1057,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .service(get_thread)
         .service(create_thread_reply)
         .service(update_message)
+        .service(add_message_reaction)
+        .service(remove_message_reaction)
         .service(delete_message)
         .service(suppress_message_embeds)
         .service(post_typing);
@@ -1079,6 +1163,199 @@ mod tests {
         assert!(event_str.contains("hello"));
         assert!(event_str.contains("alice"));
         assert!(event_str.contains("kind\\\":\\\"message\\\""));
+    }
+
+    #[actix_web::test]
+    async fn test_message_reaction_add_broadcasts_update_event_to_clients() {
+        let (db, chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+
+        let msg_id = generate_id();
+        entity::message::ActiveModel {
+            id: Set(msg_id),
+            user_id: Set(user.id),
+            channel_id: Set(chan_id),
+            parent_id: Set(None),
+            created_at: Set(now_unix_micros()),
+            deleted_at: Set(None),
+            text: Set("react here".into()),
+            suppress_embeds: Set(false),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let app_deps = deps(db, broadcaster);
+        let app =
+            test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
+                .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::post()
+            .uri(&format!("/message/{msg_id}/reactions"))
+            .insert_header(ContentType::json())
+            .insert_header((name, value))
+            .set_payload(serde_json::json!({"kind": "native", "emoji": "👍"}).to_string())
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out — broadcast was never sent")
+            .expect("channel closed");
+
+        let event_str = format!("{:?}", event);
+        assert!(event_str.contains("kind\\\":\\\"message_reactions_updated\\\""));
+        assert!(event_str.contains(&format!("\\\"id\\\":{}", msg_id)));
+        assert!(event_str.contains(&format!("\\\"channel_id\\\":{}", chan_id)));
+        assert!(event_str.contains(&format!("\\\"root_message_id\\\":{}", msg_id)));
+        assert!(event_str.contains("\\\"parent_id\\\":null"));
+        assert!(event_str.contains(&format!("\\\"user_id\\\":{}", user.id)));
+        assert!(event_str.contains("👍"));
+        assert!(event_str.contains("\\\"count\\\":1"));
+        assert!(event_str.contains("\\\"me_reacted\\\":true"));
+    }
+
+    #[actix_web::test]
+    async fn test_thread_reply_reaction_broadcast_includes_thread_context() {
+        let (db, chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+
+        let root_id = generate_id();
+        entity::message::ActiveModel {
+            id: Set(root_id),
+            user_id: Set(user.id),
+            channel_id: Set(chan_id),
+            parent_id: Set(None),
+            created_at: Set(now_unix_micros()),
+            deleted_at: Set(None),
+            text: Set("root".into()),
+            suppress_embeds: Set(false),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+        let reply_id = generate_id();
+        entity::message::ActiveModel {
+            id: Set(reply_id),
+            user_id: Set(user.id),
+            channel_id: Set(chan_id),
+            parent_id: Set(Some(root_id)),
+            created_at: Set(now_unix_micros()),
+            deleted_at: Set(None),
+            text: Set("reply".into()),
+            suppress_embeds: Set(false),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let app_deps = deps(db, broadcaster);
+        let app =
+            test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
+                .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::post()
+            .uri(&format!("/message/{reply_id}/reactions"))
+            .insert_header(ContentType::json())
+            .insert_header((name, value))
+            .set_payload(serde_json::json!({"kind": "native", "emoji": "👍"}).to_string())
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out — broadcast was never sent")
+            .expect("channel closed");
+
+        let event_str = format!("{:?}", event);
+        assert!(event_str.contains("kind\\\":\\\"message_reactions_updated\\\""));
+        assert!(event_str.contains(&format!("\\\"id\\\":{}", reply_id)));
+        assert!(event_str.contains(&format!("\\\"channel_id\\\":{}", chan_id)));
+        assert!(event_str.contains(&format!("\\\"parent_id\\\":{}", root_id)));
+        assert!(event_str.contains(&format!("\\\"root_message_id\\\":{}", root_id)));
+        assert!(event_str.contains("👍"));
+    }
+
+    #[actix_web::test]
+    async fn test_message_reaction_remove_broadcasts_update_event_to_clients() {
+        let (db, chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+
+        let msg_id = generate_id();
+        entity::message::ActiveModel {
+            id: Set(msg_id),
+            user_id: Set(user.id),
+            channel_id: Set(chan_id),
+            parent_id: Set(None),
+            created_at: Set(now_unix_micros()),
+            deleted_at: Set(None),
+            text: Set("react here".into()),
+            suppress_embeds: Set(false),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let app_deps = deps(db, broadcaster);
+        let app =
+            test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
+                .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let add_req = test::TestRequest::post()
+            .uri(&format!("/message/{msg_id}/reactions"))
+            .insert_header(ContentType::json())
+            .insert_header((name.clone(), value.clone()))
+            .set_payload(serde_json::json!({"kind": "native", "emoji": "👍"}).to_string())
+            .to_request();
+        let add_resp = test::call_service(&app, add_req).await;
+        assert!(add_resp.status().is_success());
+        let _ = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out — add broadcast was never sent")
+            .expect("channel closed");
+
+        let remove_req = test::TestRequest::delete()
+            .uri(&format!("/message/{msg_id}/reactions"))
+            .insert_header(ContentType::json())
+            .insert_header((name, value))
+            .set_payload(serde_json::json!({"kind": "native", "emoji": "👍"}).to_string())
+            .to_request();
+        let remove_resp = test::call_service(&app, remove_req).await;
+        assert!(remove_resp.status().is_success());
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out — remove broadcast was never sent")
+            .expect("channel closed");
+
+        let event_str = format!("{:?}", event);
+        assert!(event_str.contains("kind\\\":\\\"message_reactions_updated\\\""));
+        assert!(event_str.contains(&format!("\\\"id\\\":{}", msg_id)));
+        assert!(event_str.contains(&format!("\\\"channel_id\\\":{}", chan_id)));
+        assert!(event_str.contains(&format!("\\\"root_message_id\\\":{}", msg_id)));
+        assert!(event_str.contains("\\\"parent_id\\\":null"));
+        assert!(event_str.contains(&format!("\\\"user_id\\\":{}", user.id)));
+        assert!(event_str.contains("\\\"reactions\\\":[]"));
     }
 
     #[actix_web::test]

@@ -3,6 +3,7 @@ import type {
   Message,
   MessageDeleted,
   MessageEmbedsUpdated,
+  MessageReactionsUpdated,
   SSEEvent,
   ThreadReplyCreated,
   ThreadReplyDeleted,
@@ -42,6 +43,10 @@ export class FakeEventSource {
 
   pushMessageEmbedsUpdated(data: MessageEmbedsUpdated) {
     this.push({ kind: "message_embeds_updated", data });
+  }
+
+  pushMessageReactionsUpdated(data: MessageReactionsUpdated) {
+    this.push({ kind: "message_reactions_updated", data });
   }
 
   pushChannelCreated(channel: Channel) {

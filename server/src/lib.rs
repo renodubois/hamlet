@@ -12,6 +12,7 @@ pub mod embeds;
 pub mod entity;
 pub mod error;
 pub mod middleware;
+pub mod reactions;
 pub mod seed;
 pub mod startup;
 pub mod telemetry;

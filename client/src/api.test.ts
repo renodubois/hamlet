@@ -11,6 +11,8 @@ import {
   sendThreadReply,
   editMessage,
   deleteMessage,
+  addMessageReaction,
+  removeMessageReaction,
   messageDisplayName,
   updateDisplayName,
   listCustomEmojis,
@@ -417,6 +419,75 @@ describe("apiFetch behavior", () => {
   test("editMessage throws on non-2xx", async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 403 }));
     await expect(editMessage(7, "nope")).rejects.toThrow(/403/);
+  });
+
+  test("addMessageReaction posts native reaction body and parses summaries", async () => {
+    const summaries = [{ kind: "native", emoji: "👍", count: 1, me_reacted: true }];
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(summaries), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(addMessageReaction(42, { kind: "native", emoji: "👍" })).resolves.toEqual(
+      summaries,
+    );
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/message/42/reactions`);
+    expect(init.method).toBe("POST");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(JSON.parse(init.body)).toEqual({ kind: "native", emoji: "👍" });
+  });
+
+  test("addMessageReaction strips custom display fields and parses custom summaries", async () => {
+    const summaries = [
+      {
+        kind: "custom",
+        emoji_id: 123,
+        name: "party",
+        image_url: "/uploads/emojis/123.webp?v=2",
+        animated: true,
+        count: 2,
+        me_reacted: true,
+      },
+    ];
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(summaries), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(
+      addMessageReaction(42, {
+        kind: "custom",
+        emoji_id: 123,
+        name: "party",
+        image_url: "/uploads/emojis/123.webp?v=1",
+        animated: true,
+      }),
+    ).resolves.toEqual(summaries);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/message/42/reactions`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({ kind: "custom", emoji_id: 123 });
+  });
+
+  test("removeMessageReaction sends DELETE with native reaction body", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(removeMessageReaction(42, { kind: "native", emoji: "👍" })).resolves.toEqual([]);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/message/42/reactions`);
+    expect(init.method).toBe("DELETE");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(JSON.parse(init.body)).toEqual({ kind: "native", emoji: "👍" });
   });
 
   test("deleteMessage sends DELETE with credentials", async () => {

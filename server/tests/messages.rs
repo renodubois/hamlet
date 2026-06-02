@@ -9,7 +9,7 @@ use actix_web::{
 };
 use common::{TestCtx, insert_message};
 use hamlet::{configure_app, entity, generate_id, now_unix_micros};
-use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, Set};
 
 async fn insert_message_with_parent(
     db: &sea_orm::DatabaseConnection,
@@ -34,6 +34,84 @@ async fn insert_message_with_parent(
     .await
     .unwrap();
     id
+}
+
+async fn set_display_name(db: &sea_orm::DatabaseConnection, user_id: i64, display_name: &str) {
+    let mut user = entity::user::Entity::find_by_id(user_id)
+        .one(db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    user.display_name = Set(Some(display_name.to_owned()));
+    user.update(db).await.unwrap();
+}
+
+async fn insert_custom_emoji(
+    db: &sea_orm::DatabaseConnection,
+    user_id: i64,
+    name: &str,
+    animated: bool,
+    deleted_at: Option<i64>,
+) -> entity::emoji::Model {
+    let id = generate_id();
+    entity::emoji::ActiveModel {
+        id: Set(id),
+        image_path: Set(format!(
+            "emojis/{id}.{}",
+            if animated { "gif" } else { "webp" }
+        )),
+        name: Set(name.to_owned()),
+        normalized_name: Set(name.to_ascii_lowercase()),
+        animated: Set(animated),
+        created_by_user_id: Set(user_id),
+        created_at: Set(1_700_000_000),
+        updated_at: Set(1_700_000_001),
+        deleted_at: Set(deleted_at),
+    }
+    .insert(db)
+    .await
+    .unwrap()
+}
+
+async fn insert_native_reaction(
+    db: &sea_orm::DatabaseConnection,
+    message_id: i64,
+    user_id: i64,
+    emoji: &str,
+) {
+    entity::message_reaction::ActiveModel {
+        id: Set(generate_id()),
+        message_id: Set(message_id),
+        user_id: Set(user_id),
+        emoji_kind: Set("native".to_owned()),
+        emoji: Set(emoji.to_owned()),
+        emoji_key: Set(format!("native:{emoji}")),
+        created_at: Set(now_unix_micros()),
+    }
+    .insert(db)
+    .await
+    .unwrap();
+}
+
+async fn insert_custom_reaction(
+    db: &sea_orm::DatabaseConnection,
+    message_id: i64,
+    user_id: i64,
+    emoji_id: i64,
+) {
+    entity::message_reaction::ActiveModel {
+        id: Set(generate_id()),
+        message_id: Set(message_id),
+        user_id: Set(user_id),
+        emoji_kind: Set("custom".to_owned()),
+        emoji: Set(emoji_id.to_string()),
+        emoji_key: Set(format!("custom:{emoji_id}")),
+        created_at: Set(now_unix_micros()),
+    }
+    .insert(db)
+    .await
+    .unwrap();
 }
 
 #[actix_web::test]
@@ -65,6 +143,498 @@ async fn test_message_create() {
         .insert_header(ContentType::json())
         .insert_header(alice.cookie_header())
         .set_payload(serde_json::json!({"text": "test message!"}).to_string())
+        .to_request();
+    assert!(test::call_service(&app, req).await.status().is_success());
+}
+
+#[actix_web::test]
+async fn test_native_message_reactions_are_idempotent_and_included_in_history() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob = ctx.register("bob", "hunter2").await;
+    let message_id = insert_message(&ctx.db, alice.user_id, chan_id, "react here").await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{message_id}/reactions"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"kind": "native", "emoji": "👍"}).to_string())
+        .to_request();
+    let first: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    assert_eq!(first.as_array().unwrap().len(), 1);
+    assert_eq!(first[0]["kind"], "native");
+    assert_eq!(first[0]["emoji"], "👍");
+    assert_eq!(first[0]["count"], 1);
+    assert_eq!(first[0]["me_reacted"], true);
+    assert_eq!(first[0]["reactors"], serde_json::json!(["You"]));
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{message_id}/reactions"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"kind": "native", "emoji": "👍"}).to_string())
+        .to_request();
+    let second: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    assert_eq!(second[0]["count"], 1);
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{message_id}/reactions"))
+        .insert_header(ContentType::json())
+        .insert_header(bob.cookie_header())
+        .set_payload(serde_json::json!({"kind": "native", "emoji": "👍"}).to_string())
+        .to_request();
+    let third: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    assert_eq!(third[0]["count"], 2);
+    assert_eq!(third[0]["me_reacted"], true);
+    assert_eq!(third[0]["reactors"], serde_json::json!(["You", "alice"]));
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    assert_eq!(history[0]["id"], message_id);
+    assert_eq!(history[0]["reactions"][0]["count"], 2);
+    assert_eq!(history[0]["reactions"][0]["me_reacted"], true);
+    assert_eq!(
+        history[0]["reactions"][0]["reactors"],
+        serde_json::json!(["You", "bob"])
+    );
+}
+
+#[actix_web::test]
+async fn test_message_reaction_summaries_cap_reactor_previews_and_prefer_display_names() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob = ctx.register("bob", "hunter2").await;
+    let carol = ctx.register("carol", "hunter2").await;
+    let dave = ctx.register("dave", "hunter2").await;
+    let erin = ctx.register("erin", "hunter2").await;
+    let frank = ctx.register("frank", "hunter2").await;
+    let grace = ctx.register("grace", "hunter2").await;
+    set_display_name(&ctx.db, bob.user_id, "Bobby Tables").await;
+    set_display_name(&ctx.db, carol.user_id, "Carolyn").await;
+    let message_id = insert_message(&ctx.db, alice.user_id, chan_id, "react here").await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    for session in [&bob, &carol, &dave, &erin, &frank, &grace, &alice] {
+        let req = test::TestRequest::post()
+            .uri(&format!("/message/{message_id}/reactions"))
+            .insert_header(ContentType::json())
+            .insert_header(session.cookie_header())
+            .set_payload(serde_json::json!({"kind": "native", "emoji": "👍"}).to_string())
+            .to_request();
+        assert!(test::call_service(&app, req).await.status().is_success());
+    }
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    let summary = &history[0]["reactions"][0];
+    assert_eq!(summary["count"], 7);
+    assert_eq!(summary["me_reacted"], true);
+    assert_eq!(
+        summary["reactors"],
+        serde_json::json!(["You", "Bobby Tables", "Carolyn", "dave", "erin"])
+    );
+}
+
+#[actix_web::test]
+async fn test_native_message_reaction_remove_is_idempotent_and_drops_empty_summary() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let message_id = insert_message(&ctx.db, alice.user_id, chan_id, "react here").await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{message_id}/reactions"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"kind": "native", "emoji": "❤️"}).to_string())
+        .to_request();
+    assert!(test::call_service(&app, req).await.status().is_success());
+
+    for _ in 0..2 {
+        let req = test::TestRequest::delete()
+            .uri(&format!("/message/{message_id}/reactions"))
+            .insert_header(ContentType::json())
+            .insert_header(alice.cookie_header())
+            .set_payload(serde_json::json!({"kind": "native", "emoji": "❤️"}).to_string())
+            .to_request();
+        let body: serde_json::Value =
+            serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+                .unwrap();
+        assert_eq!(body.as_array().unwrap().len(), 0);
+    }
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    assert_eq!(history[0]["reactions"].as_array().unwrap().len(), 0);
+}
+
+#[actix_web::test]
+async fn test_custom_message_reactions_use_immutable_ids_and_current_display_data() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob = ctx.register("bob", "hunter2").await;
+    let emoji = insert_custom_emoji(&ctx.db, alice.user_id, "Party", true, None).await;
+    let message_id = insert_message(&ctx.db, alice.user_id, chan_id, "react here").await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{message_id}/reactions"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"kind": "custom", "emoji_id": emoji.id}).to_string())
+        .to_request();
+    let first: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    assert_eq!(first.as_array().unwrap().len(), 1);
+    assert_eq!(first[0]["kind"], "custom");
+    assert_eq!(first[0]["emoji_id"], emoji.id);
+    assert_eq!(first[0]["name"], "Party");
+    assert_eq!(
+        first[0]["image_url"],
+        format!("/uploads/emojis/{}.gif?v=1700000001", emoji.id)
+    );
+    assert_eq!(first[0]["animated"], true);
+    assert_eq!(first[0]["count"], 1);
+    assert_eq!(first[0]["me_reacted"], true);
+    assert_eq!(first[0]["reactors"], serde_json::json!(["You"]));
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{message_id}/reactions"))
+        .insert_header(ContentType::json())
+        .insert_header(bob.cookie_header())
+        .set_payload(serde_json::json!({"kind": "custom", "emoji_id": emoji.id}).to_string())
+        .to_request();
+    let second: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    assert_eq!(second[0]["count"], 2);
+    assert_eq!(second[0]["me_reacted"], true);
+    assert_eq!(second[0]["reactors"], serde_json::json!(["You", "alice"]));
+
+    let mut active = emoji.into_active_model();
+    active.name = Set("Renamed".to_owned());
+    active.normalized_name = Set("renamed".to_owned());
+    active.updated_at = Set(1_700_000_050);
+    active.update(&ctx.db).await.unwrap();
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    assert_eq!(
+        history[0]["reactions"][0]["emoji_id"],
+        second[0]["emoji_id"]
+    );
+    assert_eq!(history[0]["reactions"][0]["name"], "Renamed");
+    assert_eq!(
+        history[0]["reactions"][0]["image_url"],
+        format!(
+            "/uploads/emojis/{}.gif?v=1700000050",
+            second[0]["emoji_id"].as_i64().unwrap()
+        )
+    );
+    assert_eq!(history[0]["reactions"][0]["count"], 2);
+    assert_eq!(history[0]["reactions"][0]["me_reacted"], true);
+    assert_eq!(
+        history[0]["reactions"][0]["reactors"],
+        serde_json::json!(["You", "bob"])
+    );
+}
+
+#[actix_web::test]
+async fn test_custom_message_reaction_remove_and_deleted_add_rejection() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let emoji = insert_custom_emoji(&ctx.db, alice.user_id, "Static", false, None).await;
+    let deleted = insert_custom_emoji(
+        &ctx.db,
+        alice.user_id,
+        "Deleted",
+        false,
+        Some(1_700_000_010),
+    )
+    .await;
+    let message_id = insert_message(&ctx.db, alice.user_id, chan_id, "react here").await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{message_id}/reactions"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"kind": "custom", "emoji_id": emoji.id}).to_string())
+        .to_request();
+    assert!(test::call_service(&app, req).await.status().is_success());
+
+    let req = test::TestRequest::delete()
+        .uri(&format!("/message/{message_id}/reactions"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"kind": "custom", "emoji_id": emoji.id}).to_string())
+        .to_request();
+    let removed: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    assert_eq!(removed.as_array().unwrap().len(), 0);
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{message_id}/reactions"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"kind": "custom", "emoji_id": deleted.id}).to_string())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{message_id}/reactions"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"kind": "custom", "emoji_id": 987654321}).to_string())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[actix_web::test]
+async fn test_soft_deleted_custom_reaction_stays_visible_removable_but_not_addable() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob = ctx.register("bob", "hunter2").await;
+    let emoji = insert_custom_emoji(&ctx.db, alice.user_id, "Ghost", false, None).await;
+    let emoji_id = emoji.id;
+    let message_id = insert_message(&ctx.db, alice.user_id, chan_id, "react here").await;
+    insert_custom_reaction(&ctx.db, message_id, alice.user_id, emoji_id).await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let mut active = emoji.into_active_model();
+    active.deleted_at = Set(Some(1_700_000_100));
+    active.updated_at = Set(1_700_000_101);
+    active.update(&ctx.db).await.unwrap();
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(history[0]["reactions"][0]["kind"], "custom");
+    assert_eq!(history[0]["reactions"][0]["emoji_id"], emoji_id);
+    assert_eq!(history[0]["reactions"][0]["name"], "Ghost");
+    assert_eq!(history[0]["reactions"][0]["deleted_at"], 1_700_000_100_i64);
+    assert_eq!(history[0]["reactions"][0]["me_reacted"], true);
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{message_id}/reactions"))
+        .insert_header(ContentType::json())
+        .insert_header(bob.cookie_header())
+        .set_payload(serde_json::json!({"kind": "custom", "emoji_id": emoji_id}).to_string())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let req = test::TestRequest::delete()
+        .uri(&format!("/message/{message_id}/reactions"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"kind": "custom", "emoji_id": emoji_id}).to_string())
+        .to_request();
+    let removed: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    assert!(removed.as_array().unwrap().is_empty());
+}
+
+#[actix_web::test]
+async fn test_reactions_reject_deleted_messages_and_hide_tombstone_rows() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let root_id = insert_message(&ctx.db, alice.user_id, chan_id, "deleted root").await;
+    let reply_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(root_id),
+        now_unix_micros(),
+        "deleted reply",
+    )
+    .await;
+    insert_native_reaction(&ctx.db, root_id, alice.user_id, "👍").await;
+    insert_native_reaction(&ctx.db, reply_id, alice.user_id, "❤️").await;
+
+    let mut root = entity::message::Entity::find_by_id(root_id)
+        .one(&ctx.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    root.deleted_at = Set(Some(1_700_000_010_000_000));
+    root.text = Set(String::new());
+    root.suppress_embeds = Set(true);
+    root.update(&ctx.db).await.unwrap();
+
+    let mut reply = entity::message::Entity::find_by_id(reply_id)
+        .one(&ctx.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    reply.deleted_at = Set(Some(1_700_000_020_000_000));
+    reply.text = Set(String::new());
+    reply.suppress_embeds = Set(true);
+    reply.update(&ctx.db).await.unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    for method in ["post", "delete"] {
+        let req = match method {
+            "post" => test::TestRequest::post(),
+            _ => test::TestRequest::delete(),
+        }
+        .uri(&format!("/message/{root_id}/reactions"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"kind": "native", "emoji": "👍"}).to_string())
+        .to_request();
+        assert_eq!(
+            test::call_service(&app, req).await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    let req = test::TestRequest::post()
+        .uri("/message/999999999999999/reactions")
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"kind": "native", "emoji": "👍"}).to_string())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(history[0]["id"], root_id);
+    assert!(history[0]["deleted_at"].as_i64().is_some());
+    assert!(history[0]["reactions"].as_array().unwrap().is_empty());
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/thread/{root_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let thread: serde_json::Value = test::read_body_json(test::call_service(&app, req).await).await;
+    assert!(thread["root"]["reactions"].as_array().unwrap().is_empty());
+    assert!(thread["replies"][0]["deleted_at"].as_i64().is_some());
+    assert!(
+        thread["replies"][0]["reactions"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[actix_web::test]
+async fn test_message_reaction_requests_reject_discriminator_mismatches() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let message_id = insert_message(&ctx.db, alice.user_id, chan_id, "react here").await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    for payload in [
+        serde_json::json!({"kind": "native", "emoji_id": 1}),
+        serde_json::json!({"kind": "custom", "emoji": "👍"}),
+        serde_json::json!({"kind": "custom", "emoji_id": -1}),
+        serde_json::json!({"emoji": "👍"}),
+    ] {
+        let req = test::TestRequest::post()
+            .uri(&format!("/message/{message_id}/reactions"))
+            .insert_header(ContentType::json())
+            .insert_header(alice.cookie_header())
+            .set_payload(payload.to_string())
+            .to_request();
+        assert_eq!(
+            test::call_service(&app, req).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+}
+
+#[actix_web::test]
+async fn test_native_message_reactions_reject_unsupported_and_allow_thread_reply_targets() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let root_id = insert_message(&ctx.db, alice.user_id, chan_id, "root").await;
+    let reply_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(root_id),
+        now_unix_micros(),
+        "reply",
+    )
+    .await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{root_id}/reactions"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"kind": "native", "emoji": "🫠"}).to_string())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{reply_id}/reactions"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"kind": "native", "emoji": "👍"}).to_string())
         .to_request();
     assert!(test::call_service(&app, req).await.status().is_success());
 }
@@ -220,6 +790,189 @@ async fn test_thread_get_honors_reply_limit() {
     assert_eq!(thread["has_more_replies"], true);
     assert_eq!(replies[0]["text"], "reply 3");
     assert_eq!(replies[1]["text"], "reply 4");
+}
+
+#[actix_web::test]
+async fn test_thread_payloads_include_root_and_reply_reactions_without_changing_thread_metadata() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob = ctx.register("bob", "hunter2").await;
+    let root_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        "root message",
+    )
+    .await;
+    let older_reply_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_001_000_000,
+        "older reply",
+    )
+    .await;
+    let newer_reply_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_002_000_000,
+        "newer reply",
+    )
+    .await;
+
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let before_history: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    let before_summary = before_history[0]["thread_summary"].clone();
+    let before_created_at = before_history[0]["created_at"].clone();
+
+    for (message_id, emoji) in [(root_id, "👍"), (older_reply_id, "❤️")] {
+        let req = test::TestRequest::post()
+            .uri(&format!("/message/{message_id}/reactions"))
+            .insert_header(ContentType::json())
+            .insert_header(bob.cookie_header())
+            .set_payload(serde_json::json!({"kind": "native", "emoji": emoji}).to_string())
+            .to_request();
+        assert!(test::call_service(&app, req).await.status().is_success());
+    }
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let after_history: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    assert_eq!(after_history.as_array().unwrap().len(), 1);
+    assert_eq!(after_history[0]["id"], root_id);
+    assert_eq!(after_history[0]["created_at"], before_created_at);
+    assert_eq!(after_history[0]["thread_summary"], before_summary);
+    assert_eq!(after_history[0]["reactions"][0]["emoji"], "👍");
+    assert_eq!(after_history[0]["reactions"][0]["count"], 1);
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/thread/{root_id}?limit=1"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let thread: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    assert_eq!(thread["root"]["reactions"][0]["emoji"], "👍");
+    assert_eq!(thread["replies"].as_array().unwrap().len(), 1);
+    assert_eq!(thread["replies"][0]["id"], newer_reply_id);
+    assert!(
+        thread["replies"][0]["reactions"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(thread["has_more_replies"], true);
+
+    let cursor_created_at = thread["replies"][0]["created_at"].as_i64().unwrap();
+    let req = test::TestRequest::get()
+        .uri(&format!(
+            "/thread/{root_id}?limit=1&before_created_at={cursor_created_at}&before_id={newer_reply_id}"
+        ))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let older_thread: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    assert_eq!(older_thread["replies"].as_array().unwrap().len(), 1);
+    assert_eq!(older_thread["replies"][0]["id"], older_reply_id);
+    assert_eq!(older_thread["replies"][0]["reactions"][0]["emoji"], "❤️");
+    assert_eq!(older_thread["replies"][0]["reactions"][0]["count"], 1);
+}
+
+#[actix_web::test]
+async fn test_reactions_do_not_change_participated_thread_ordering() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob = ctx.register("bob", "hunter2").await;
+    let older_root_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        "older thread",
+    )
+    .await;
+    let older_reply_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(older_root_id),
+        1_700_000_001_000_000,
+        "older reply",
+    )
+    .await;
+    let newer_root_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        None,
+        1_700_000_002_000_000,
+        "newer thread",
+    )
+    .await;
+    insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(newer_root_id),
+        1_700_000_003_000_000,
+        "newer reply",
+    )
+    .await;
+
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::get()
+        .uri("/threads/participated")
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let before: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    assert_eq!(before[0]["root"]["id"], newer_root_id);
+    assert_eq!(before[1]["root"]["id"], older_root_id);
+    let older_last_reply = before[1]["last_reply_created_at"].clone();
+
+    for message_id in [older_root_id, older_reply_id] {
+        let req = test::TestRequest::post()
+            .uri(&format!("/message/{message_id}/reactions"))
+            .insert_header(ContentType::json())
+            .insert_header(bob.cookie_header())
+            .set_payload(serde_json::json!({"kind": "native", "emoji": "👍"}).to_string())
+            .to_request();
+        assert!(test::call_service(&app, req).await.status().is_success());
+    }
+
+    let req = test::TestRequest::get()
+        .uri("/threads/participated")
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let after: serde_json::Value =
+        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
+            .unwrap();
+    assert_eq!(after[0]["root"]["id"], newer_root_id);
+    assert_eq!(after[1]["root"]["id"], older_root_id);
+    assert_eq!(after[1]["reply_count"], 1);
+    assert_eq!(after[1]["last_reply_created_at"], older_last_reply);
 }
 
 #[actix_web::test]
@@ -503,6 +1256,8 @@ async fn test_deleting_root_with_replies_tombstones_root_and_preserves_thread() 
         "second preserved reply",
     )
     .await;
+    insert_native_reaction(&ctx.db, root_id, alice.user_id, "👍").await;
+    insert_native_reaction(&ctx.db, root_id, bob.user_id, "👍").await;
 
     let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
 
@@ -532,6 +1287,12 @@ async fn test_deleting_root_with_replies_tombstones_root_and_preserves_thread() 
     assert!(stored.deleted_at.is_some());
     assert_eq!(stored.text, "");
     assert!(stored.suppress_embeds);
+    let remaining_reactions = entity::message_reaction::Entity::find()
+        .filter(entity::message_reaction::Column::MessageId.eq(root_id))
+        .all(&ctx.db)
+        .await
+        .unwrap();
+    assert!(remaining_reactions.is_empty());
 
     let req = test::TestRequest::get()
         .uri(&format!("/messages/{chan_id}"))
@@ -543,6 +1304,7 @@ async fn test_deleting_root_with_replies_tombstones_root_and_preserves_thread() 
     assert_eq!(history[0]["id"], root_id);
     assert!(history[0]["deleted_at"].as_i64().is_some());
     assert_eq!(history[0]["text"], "");
+    assert!(history[0]["reactions"].as_array().unwrap().is_empty());
     assert_eq!(history[0]["thread_summary"]["reply_count"], 2);
 
     let req = test::TestRequest::get()
@@ -553,6 +1315,7 @@ async fn test_deleting_root_with_replies_tombstones_root_and_preserves_thread() 
     assert_eq!(thread["root"]["id"], root_id);
     assert!(thread["root"]["deleted_at"].as_i64().is_some());
     assert_eq!(thread["root"]["text"], "");
+    assert!(thread["root"]["reactions"].as_array().unwrap().is_empty());
     let replies = thread["replies"].as_array().unwrap();
     assert_eq!(replies.len(), 2);
     assert_eq!(replies[0]["text"], "first preserved reply");

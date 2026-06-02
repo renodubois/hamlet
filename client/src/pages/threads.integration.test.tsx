@@ -88,6 +88,7 @@ function seedParticipatedThreads() {
         avatar_url: null,
         suppress_embeds: false,
         embeds: [],
+        reactions: [{ kind: "native", emoji: "👍", count: 4, me_reacted: true }],
         thread_summary: {
           reply_count: 5,
           last_reply_created_at: 1_700_000_025_000_000,
@@ -176,6 +177,7 @@ function seedParticipatedThreads() {
         avatar_url: null,
         suppress_embeds: false,
         embeds: [],
+        reactions: [{ kind: "native", emoji: "🔥", count: 2, me_reacted: false }],
       },
     ],
     "30": [
@@ -212,6 +214,9 @@ describe("Threads view integration", () => {
     expect(within(articles[0]).getByText("second newest")).toBeInTheDocument();
     expect(within(articles[0]).getByText("newest preview reply")).toBeInTheDocument();
     expect(within(articles[0]).queryByText("old preview reply")).toBeNull();
+    expect(within(articles[0]).queryByRole("button", { name: /reaction/i })).toBeNull();
+    expect(within(articles[0]).queryByText("👍")).toBeNull();
+    expect(within(articles[0]).queryByText("🔥")).toBeNull();
 
     expect(within(articles[1]).getByText("# general")).toBeInTheDocument();
     expect(within(articles[1]).getByText(/original message deleted/i)).toBeInTheDocument();

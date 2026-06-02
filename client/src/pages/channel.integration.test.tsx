@@ -85,6 +85,14 @@ function setInputSelection(input: HTMLInputElement, start: number, end = start) 
   fireEvent.select(input);
 }
 
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 function findRenderedMessageText(text: string) {
   return screen.findByText(
     (_, element) =>
@@ -194,6 +202,290 @@ describe("Channel view integration", () => {
     });
     expect(state.sentThreadReplies).toEqual([{ rootId: 1, text: "reply from panel" }]);
     expect(state.sentMessages).toEqual([]);
+  });
+
+  test("thread panel exposes reaction controls for the root and replies", async () => {
+    const state = seedThreadWithOwnReply({
+      reactions: [{ kind: "native", emoji: "❤️", count: 1, me_reacted: false }],
+    });
+    state.messages["100"][0] = {
+      ...state.messages["100"][0],
+      reactions: [{ kind: "native", emoji: "👍", count: 2, me_reacted: false }],
+    };
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("own reply")).toBeInTheDocument());
+
+    fireEvent.click(
+      within(panel).getByRole("button", { name: /👍 2 reactions\. add your reaction/i }),
+    );
+    await waitFor(() => {
+      expect(
+        within(panel).getByRole("button", { name: /👍 3 reactions\. remove your reaction/i }),
+      ).toHaveAttribute("aria-pressed", "true");
+    });
+    await waitFor(() => {
+      expect(state.messages["100"][0].reactions).toEqual([
+        { kind: "native", emoji: "👍", count: 3, me_reacted: true },
+      ]);
+    });
+
+    fireEvent.click(
+      within(panel).getByRole("button", { name: /add reaction to message by baipas/i }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
+    fireEvent.input(within(dialog).getByRole("combobox", { name: /search and select emoji/i }), {
+      target: { value: "thumb" },
+    });
+    const thumbsCell = await within(dialog).findByRole("gridcell", { name: /emoji :thumbsup:/i });
+    fireEvent.click(within(thumbsCell).getByRole("button", { name: /emoji :thumbsup:/i }));
+
+    await waitFor(() => {
+      expect(
+        within(panel).getByRole("button", { name: /👍 1 reaction\. remove your reaction/i }),
+      ).toHaveAttribute("aria-pressed", "true");
+    });
+    await waitFor(() => {
+      expect(state.threadReplies["1"][0].reactions).toContainEqual({
+        kind: "native",
+        emoji: "👍",
+        count: 1,
+        me_reacted: true,
+      });
+    });
+  });
+
+  test("thread reply reactions stay visible while editing and the Add Reaction trigger hides", async () => {
+    seedThreadWithOwnReply({
+      reactions: [{ kind: "native", emoji: "👍", count: 1, me_reacted: false }],
+    });
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("own reply")).toBeInTheDocument());
+
+    const input = await openThreadReplyEdit(panel);
+    const replyArticle = assertExists(input.closest("article"), "thread reply article");
+
+    expect(
+      within(replyArticle).getByRole("button", { name: /👍 1 reaction\. add your reaction/i }),
+    ).toBeInTheDocument();
+    expect(within(replyArticle).queryByRole("button", { name: /add reaction/i })).toBeNull();
+  });
+
+  test("adds and removes custom reactions in channel and thread picker flows", async () => {
+    const state = seedThreadWithOwnReply();
+    state.customEmojis = [
+      {
+        id: 9001,
+        name: "party",
+        image_url: "/uploads/emojis/party.webp?v=1",
+        animated: true,
+        created_by_user_id: DEV_USER.id,
+        created_at: 1,
+        updated_at: 1,
+        deleted_at: null,
+      },
+    ];
+    mountAt("/channel/100?thread=1");
+
+    await waitFor(() => expect(screen.getByText("world")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /add reaction to message by bob/i }));
+    let dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
+    fireEvent.input(within(dialog).getByRole("combobox", { name: /search and select emoji/i }), {
+      target: { value: "party" },
+    });
+    fireEvent.click(
+      within(await within(dialog).findByRole("gridcell", { name: /emoji :party:/i })).getByRole(
+        "button",
+      ),
+    );
+
+    const channelParty = await screen.findByRole("button", {
+      name: /animated :party: 1 reaction\. remove your reaction/i,
+    });
+    expect(channelParty).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(channelParty);
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", {
+          name: /animated :party: 1 reaction\. remove your reaction/i,
+        }),
+      ).toBeNull();
+    });
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("own reply")).toBeInTheDocument());
+    fireEvent.click(
+      within(panel).getByRole("button", { name: /add reaction to message by baipas/i }),
+    );
+    dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
+    fireEvent.input(within(dialog).getByRole("combobox", { name: /search and select emoji/i }), {
+      target: { value: "party" },
+    });
+    fireEvent.click(
+      within(await within(dialog).findByRole("gridcell", { name: /emoji :party:/i })).getByRole(
+        "button",
+      ),
+    );
+
+    let threadParty: HTMLElement | null = null;
+    await waitFor(() => {
+      threadParty = within(panel).getByRole("button", {
+        name: /animated :party: 1 reaction\. remove your reaction/i,
+      });
+      expect(threadParty).toHaveAttribute("aria-pressed", "true");
+    });
+    const finalThreadParty = within(panel).getByRole("button", {
+      name: /animated :party: 1 reaction\. remove your reaction/i,
+    });
+    fireEvent.click(finalThreadParty);
+    await waitFor(() => {
+      expect(
+        within(panel).queryByRole("button", {
+          name: /animated :party: 1 reaction\. remove your reaction/i,
+        }),
+      ).toBeNull();
+    });
+  });
+
+  test("rolls back failed reaction mutations in channel and thread surfaces", async () => {
+    seedThreadWithOwnReply({
+      reactions: [{ kind: "native", emoji: "👍", count: 1, me_reacted: true }],
+    });
+    const channelFailure = deferred();
+    const threadFailure = deferred();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    server.use(
+      http.post(`${TEST_SERVER}/message/2/reactions`, async () => {
+        await channelFailure.promise;
+        return new HttpResponse(null, { status: 500 });
+      }),
+      http.delete(`${TEST_SERVER}/message/70/reactions`, async () => {
+        await threadFailure.promise;
+        return new HttpResponse(null, { status: 500 });
+      }),
+    );
+    mountAt("/channel/100?thread=1");
+
+    await waitFor(() => expect(screen.getByText("world")).toBeInTheDocument());
+    const worldRow = assertExists(
+      screen.getByText("world").closest(".group"),
+      "world row",
+    ) as HTMLElement;
+    fireEvent.click(screen.getByRole("button", { name: /add reaction to message by bob/i }));
+    const dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
+    fireEvent.input(within(dialog).getByRole("combobox", { name: /search and select emoji/i }), {
+      target: { value: "thumb" },
+    });
+    fireEvent.click(
+      within(await within(dialog).findByRole("gridcell", { name: /emoji :thumbsup:/i })).getByRole(
+        "button",
+      ),
+    );
+
+    await waitFor(() => {
+      expect(
+        within(worldRow).getByRole("button", { name: /👍 1 reaction\. remove your reaction/i }),
+      ).toHaveAttribute("aria-pressed", "true");
+    });
+    channelFailure.resolve();
+    await waitFor(() => {
+      expect(
+        within(worldRow).queryByRole("button", { name: /👍 1 reaction\. remove your reaction/i }),
+      ).toBeNull();
+    });
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    const threadPill = within(panel).getByRole("button", {
+      name: /👍 1 reaction\. remove your reaction/i,
+    });
+    fireEvent.click(threadPill);
+    await waitFor(() => {
+      expect(
+        within(panel).queryByRole("button", { name: /👍 1 reaction\. remove your reaction/i }),
+      ).toBeNull();
+    });
+    threadFailure.resolve();
+    await waitFor(() => {
+      expect(
+        within(panel).getByRole("button", { name: /👍 1 reaction\. remove your reaction/i }),
+      ).toHaveAttribute("aria-pressed", "true");
+    });
+    expect(errorSpy).toHaveBeenCalledWith("failed to update reaction", expect.any(Error));
+    errorSpy.mockRestore();
+  });
+
+  test("reaction picker and focused reactor preview expose accessible labels", async () => {
+    const state = seedAuthed();
+    state.messages["100"][1] = {
+      ...state.messages["100"][1],
+      reactions: [
+        {
+          kind: "native",
+          emoji: "👍",
+          count: 3,
+          me_reacted: false,
+          reactors: ["Alice", "Bob", "Carol"],
+        },
+      ],
+    };
+    const { container } = mountAt("/channel/100");
+
+    const pill = await screen.findByRole("button", {
+      name: /👍 3 reactions\. add your reaction/i,
+    });
+    pill.focus();
+    await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent("Alice"));
+    const describedBy = pill.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(
+      assertExists(document.getElementById(describedBy ?? ""), "reaction preview"),
+    ).toHaveTextContent("3 reactions: Alice, Bob, Carol");
+
+    const addReaction = screen.getByRole("button", { name: /add reaction to message by bob/i });
+    addReaction.focus();
+    expect(document.activeElement).toBe(addReaction);
+    fireEvent.click(addReaction);
+    await screen.findByRole("dialog", { name: /emoji picker/i });
+    expect(screen.getByRole("combobox", { name: /search and select emoji/i })).toBeInTheDocument();
+    await expectNoA11yViolations(container, "reaction picker and reactor preview");
+  });
+
+  test("thread panel patches root and reply reactions from live SSE updates", async () => {
+    seedThreadWithOwnReply();
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("own reply")).toBeInTheDocument());
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+
+    es.pushMessageReactionsUpdated({
+      id: 1,
+      channel_id: 100,
+      parent_id: null,
+      root_message_id: 1,
+      user_id: 2,
+      reactions: [{ kind: "native", emoji: "👍", count: 1, me_reacted: true }],
+    });
+    es.pushMessageReactionsUpdated({
+      id: 70,
+      channel_id: 100,
+      parent_id: 1,
+      root_message_id: 1,
+      user_id: 2,
+      reactions: [{ kind: "native", emoji: "❤️", count: 2, me_reacted: true }],
+    });
+
+    await waitFor(() => {
+      expect(
+        within(panel).getByRole("button", { name: /👍 1 reaction\. add your reaction/i }),
+      ).toHaveAttribute("aria-pressed", "false");
+      expect(
+        within(panel).getByRole("button", { name: /❤️ 2 reactions\. add your reaction/i }),
+      ).toHaveAttribute("aria-pressed", "false");
+    });
   });
 
   test("thread reply Shift+Enter inserts a newline and Enter submits exact multiline text", async () => {
@@ -1199,7 +1491,8 @@ describe("Channel view integration", () => {
       text: "",
       deleted_at: 1_700_000_050_000_000,
       suppress_embeds: true,
-      thread_summary: { reply_count: 1, last_reply_created_at: 1_700_000_060_000_000 },
+      reactions: [{ kind: "native", emoji: "👍", count: 2, me_reacted: true }],
+      thread_summary: { reply_count: 2, last_reply_created_at: 1_700_000_061_000_000 },
     };
     state.threadReplies["1"] = [
       {
@@ -1215,19 +1508,39 @@ describe("Channel view integration", () => {
         suppress_embeds: false,
         embeds: [],
       },
+      {
+        id: 81,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_061_000_000,
+        deleted_at: 1_700_000_062_000_000,
+        text: "",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: true,
+        embeds: [],
+        reactions: [{ kind: "native", emoji: "❤️", count: 1, me_reacted: false }],
+      },
     ];
 
     mountAt("/channel/100");
     await waitFor(() =>
       expect(screen.getByLabelText(/original message deleted/i)).toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByRole("button", { name: /open thread with 1 reply/i }));
+    fireEvent.click(screen.getByRole("button", { name: /open thread with 2 replies/i }));
 
     const panel = await screen.findByRole("complementary", { name: /thread panel/i });
     await waitFor(() => {
-      expect(within(panel).getByLabelText(/original message deleted/i)).toBeInTheDocument();
+      expect(within(panel).getAllByLabelText(/original message deleted/i)).toHaveLength(2);
       expect(within(panel).getByText("reply under tombstone")).toBeInTheDocument();
     });
+    expect(screen.queryByRole("button", { name: /👍 2 reactions/i })).toBeNull();
+    expect(within(panel).queryByRole("button", { name: /❤️ 1 reaction/i })).toBeNull();
+    const tombstones = within(panel).getAllByLabelText(/original message deleted/i);
+    const deletedReplyRow = assertExists(tombstones[1].closest("article"), "deleted reply row");
+    expect(within(deletedReplyRow as HTMLElement).queryByRole("button")).toBeNull();
   });
 
   test("thread reply delete events remove replies and recalculate channel summaries", async () => {
@@ -2284,6 +2597,116 @@ describe("Channel view integration", () => {
 
     await waitFor(() => {
       expect(screen.getByRole("link", { name: /example domain/i })).toBeInTheDocument();
+    });
+  });
+
+  test("applies a message_reactions_updated SSE event to the existing message", async () => {
+    const state = seedAuthed();
+    state.messages["100"] = [
+      {
+        id: 78,
+        user_id: 2,
+        channel_id: 100,
+        text: "react live",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+        reactions: [],
+      },
+    ];
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("react live")).toBeInTheDocument());
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessageReactionsUpdated({
+      id: 78,
+      channel_id: 100,
+      user_id: DEV_USER.id,
+      reactions: [{ kind: "native", emoji: "👍", count: 3, me_reacted: true }],
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /👍 3 reactions\. remove your reaction/i }),
+      ).toHaveAttribute("aria-pressed", "true");
+    });
+  });
+
+  test("reaction SSE patches only the matching visible message without refetching or reordering", async () => {
+    const state = seedAuthed();
+    let messageFetches = 0;
+    server.use(
+      http.get(`${TEST_SERVER}/messages/:id`, ({ params }) => {
+        messageFetches += 1;
+        return HttpResponse.json(state.messages[String(params.id)] ?? []);
+      }),
+    );
+
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+    await waitFor(() => expect(messageFetches).toBe(1));
+    const hello = screen.getByText("hello");
+    const world = screen.getByText("world");
+    expect(hello.compareDocumentPosition(world) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessageReactionsUpdated({
+      id: 2,
+      channel_id: 100,
+      user_id: 2,
+      reactions: [{ kind: "native", emoji: "👍", count: 1, me_reacted: true }],
+    });
+
+    const helloRow = assertExists(hello.closest(".group"), "hello row") as HTMLElement;
+    const worldRow = assertExists(world.closest(".group"), "world row") as HTMLElement;
+    await waitFor(() => {
+      expect(
+        within(worldRow).getByRole("button", { name: /👍 1 reaction\. add your reaction/i }),
+      ).toHaveAttribute("aria-pressed", "false");
+    });
+    expect(within(helloRow).queryByRole("button", { name: /👍/i })).toBeNull();
+    expect(hello.compareDocumentPosition(world) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(messageFetches).toBe(1);
+  });
+
+  test("reaction SSE from another user preserves the viewer's own pressed state", async () => {
+    const state = seedAuthed();
+    state.messages["100"] = [
+      {
+        id: 78,
+        user_id: 2,
+        channel_id: 100,
+        text: "already reacted",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+        reactions: [{ kind: "native", emoji: "👍", count: 2, me_reacted: true }],
+      },
+    ];
+    mountAt("/channel/100");
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /👍 2 reactions\. remove your reaction/i }),
+      ).toHaveAttribute("aria-pressed", "true");
+    });
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessageReactionsUpdated({
+      id: 78,
+      channel_id: 100,
+      user_id: 2,
+      reactions: [{ kind: "native", emoji: "👍", count: 1, me_reacted: false }],
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /👍 1 reaction\. remove your reaction/i }),
+      ).toHaveAttribute("aria-pressed", "true");
     });
   });
 

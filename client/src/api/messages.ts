@@ -22,6 +22,47 @@ export interface ThreadSummary {
   last_reply_created_at: number;
 }
 
+export type ReactionSummary =
+  | {
+      kind: "native";
+      emoji: string;
+      count: number;
+      me_reacted: boolean;
+      reactors?: string[];
+    }
+  | {
+      kind: "custom";
+      emoji_id: number;
+      name: string;
+      image_url: string;
+      animated: boolean;
+      deleted_at?: number | null;
+      count: number;
+      me_reacted: boolean;
+      reactors?: string[];
+    };
+
+export type ReactionRequest =
+  | {
+      kind: "native";
+      emoji: string;
+    }
+  | {
+      kind: "custom";
+      emoji_id: number;
+      name?: string;
+      image_url?: string;
+      animated?: boolean;
+    };
+
+function reactionRequestBody(
+  reaction: ReactionRequest,
+): { kind: "native"; emoji: string } | { kind: "custom"; emoji_id: number } {
+  return reaction.kind === "native"
+    ? { kind: "native", emoji: reaction.emoji }
+    : { kind: "custom", emoji_id: reaction.emoji_id };
+}
+
 export interface Message {
   id: number;
   user_id: number;
@@ -35,6 +76,7 @@ export interface Message {
   avatar_url: string | null;
   suppress_embeds: boolean;
   embeds: Embed[];
+  reactions?: ReactionSummary[];
   thread_summary?: ThreadSummary;
 }
 
@@ -68,6 +110,15 @@ export interface MessageEmbedsUpdated {
   channel_id: number;
   suppress_embeds: boolean;
   embeds: Embed[];
+}
+
+export interface MessageReactionsUpdated {
+  id: number;
+  channel_id: number;
+  parent_id?: number | null;
+  root_message_id?: number;
+  user_id: number;
+  reactions: ReactionSummary[];
 }
 
 export interface ThreadReplyCreated {
@@ -159,4 +210,30 @@ export async function setMessageEmbedsSuppressed(
   });
   if (!res.ok) throw new Error(`Suppress embeds failed (${res.status})`);
   return res.json() as Promise<MessageEmbedsUpdated>;
+}
+
+export async function addMessageReaction(
+  messageId: number,
+  reaction: ReactionRequest,
+): Promise<ReactionSummary[]> {
+  const res = await apiFetch(`/message/${messageId}/reactions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(reactionRequestBody(reaction)),
+  });
+  if (!res.ok) throw new Error(`Add reaction failed (${res.status})`);
+  return res.json() as Promise<ReactionSummary[]>;
+}
+
+export async function removeMessageReaction(
+  messageId: number,
+  reaction: ReactionRequest,
+): Promise<ReactionSummary[]> {
+  const res = await apiFetch(`/message/${messageId}/reactions`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(reactionRequestBody(reaction)),
+  });
+  if (!res.ok) throw new Error(`Remove reaction failed (${res.status})`);
+  return res.json() as Promise<ReactionSummary[]>;
 }
