@@ -64,7 +64,37 @@ test("sends a message and sees it render in the channel", async ({ page }) => {
   await input.fill(marker);
   await input.press("Enter");
 
-  await expect(page.getByText(marker)).toBeVisible({ timeout: 10_000 });
+  await expect(
+    page.locator(".whitespace-pre-wrap:not([role='textbox'])").filter({ hasText: marker }).last(),
+  ).toBeVisible({ timeout: 10_000 });
+});
+
+test("sends a multiline message with Shift+Enter and renders both lines", async ({ page }) => {
+  await loginAndOpenGeneral(page);
+
+  const marker = `multiline from playwright ${Date.now()}`;
+  const firstLine = `${marker} first line`;
+  const secondLine = `${marker} second line`;
+  const expected = `${firstLine}\n${secondLine}`;
+  const input = page.getByPlaceholder(/send a new message/i);
+
+  await input.fill(firstLine);
+  await input.press("Shift+Enter");
+  await expectEditorValue(input, `${firstLine}\n`);
+  await input.pressSequentially(secondLine);
+  await expectEditorValue(input, expected);
+  await input.press("Enter");
+
+  const renderedMessage = page
+    .locator(".whitespace-pre-wrap:not([role='textbox'])")
+    .filter({ hasText: firstLine })
+    .filter({ hasText: secondLine })
+    .last();
+
+  await expect(renderedMessage).toBeVisible({ timeout: 10_000 });
+  await expect
+    .poll(() => renderedMessage.evaluate((element) => element.textContent))
+    .toBe(expected);
 });
 
 test("selects an emoji from the picker and sends it", async ({ page }) => {
@@ -102,5 +132,7 @@ test("selects an emoji from the picker and sends it", async ({ page }) => {
   await expectEditorValue(input, expected);
   await input.press("Enter");
 
-  await expect(page.getByText(expected)).toBeVisible({ timeout: 10_000 });
+  await expect(
+    page.locator(".whitespace-pre-wrap:not([role='textbox'])").filter({ hasText: expected }).last(),
+  ).toBeVisible({ timeout: 10_000 });
 });

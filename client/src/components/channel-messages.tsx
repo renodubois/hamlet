@@ -204,7 +204,7 @@ const ChannelMessages: Component<{
                 <Show
                   when={editingId() === message.id}
                   fallback={
-                    <div class="whitespace-pre-wrap break-words">
+                    <div class="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                       {linkifyText(message.text).map((tok) =>
                         tok.type === "link" ? (
                           <a

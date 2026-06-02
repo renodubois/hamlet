@@ -34,6 +34,7 @@ export default function ChannelView() {
   const { user } = useAuth();
   const channel = () => channels()?.find((c) => String(c.id) === params.id);
   const [message, setMessage] = createSignal("");
+  const [submitting, setSubmitting] = createSignal(false);
   const [focusComposerRootId, setFocusComposerRootId] = createSignal<number | null>(null);
   const openThreadRootId = createMemo(() => parseThreadId(location.query.thread));
   // The Resource owns loading/error state for the initial fetch; the Store
@@ -42,6 +43,7 @@ export default function ChannelView() {
   const [resource] = createResource(() => params.id, listMessages);
   const [messages, setMessages] = createStore<Message[]>([]);
   let lastTypingSentAt = 0;
+  let composerRef: HTMLElement | undefined;
 
   // Reconcile the fetched array into the store on initial load and on every
   // channel switch. The "id" key tells reconcile to diff items rather than
@@ -104,6 +106,24 @@ export default function ChannelView() {
     if (now - lastTypingSentAt < TYPING_PING_INTERVAL_MS) return;
     lastTypingSentAt = now;
     void sendTyping(params.id);
+  };
+
+  const submitMessage = async () => {
+    if (submitting()) return;
+
+    const text = message();
+    setSubmitting(true);
+    try {
+      const response = await sendMessage(params.id, text);
+      if (!response.ok) return;
+      setMessage("");
+      lastTypingSentAt = 0;
+      queueMicrotask(() => composerRef?.focus());
+    } catch (e) {
+      console.error("failed to send message", e);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   onMount(() => {
@@ -190,9 +210,7 @@ export default function ChannelView() {
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            void sendMessage(params.id, message());
-            setMessage("");
-            lastTypingSentAt = 0;
+            void submitMessage();
           }}
         >
           <div class="flex items-center gap-2">
@@ -201,8 +219,15 @@ export default function ChannelView() {
               onChange={handleMessageChange}
               ariaLabel="New message"
               placeholder="Send a new message..."
+              inputRef={(el) => {
+                composerRef = el;
+              }}
             />
-            <button class="bg-blue-100 p-4 rounded-md" type="submit">
+            <button
+              class="bg-blue-100 p-4 rounded-md disabled:opacity-50"
+              type="submit"
+              disabled={submitting()}
+            >
               Send
             </button>
           </div>

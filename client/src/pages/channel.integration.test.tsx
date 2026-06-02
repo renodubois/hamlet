@@ -1,12 +1,13 @@
 import { describe, expect, test, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@solidjs/testing-library";
 import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
+import { http, HttpResponse } from "msw";
 import { AuthProvider } from "../contexts/auth";
 import { ChannelsProvider } from "../contexts/channels";
 import { CustomEmojisProvider } from "../contexts/custom-emojis";
 import { EventsProvider } from "../contexts/events";
 import { FakeEventSource, latestFakeEventSource } from "../test/msw/sse";
-import { mswState, resetMswState } from "../test/msw/server";
+import { mswState, resetMswState, server } from "../test/msw/server";
 import { DEV_USER } from "../test/msw/handlers";
 import { expectNoA11yViolations } from "../test/a11y";
 import { assertExists } from "../test/render";
@@ -82,6 +83,27 @@ function setInputSelection(input: HTMLInputElement, start: number, end = start) 
   fireEvent.select(input);
 }
 
+function findRenderedMessageText(text: string) {
+  return screen.findByText(
+    (_, element) =>
+      element?.textContent === text && element.classList.contains("whitespace-pre-wrap"),
+  );
+}
+
+function findRenderedMessageTextWithin(container: HTMLElement, text: string) {
+  return within(container).findByText(
+    (_, element) =>
+      element?.textContent === text && element.classList.contains("whitespace-pre-wrap"),
+  );
+}
+
+function queryRenderedMessageTextWithin(container: HTMLElement, text: string) {
+  return within(container).queryByText(
+    (_, element) =>
+      element?.textContent === text && element.classList.contains("whitespace-pre-wrap"),
+  );
+}
+
 function seedOwnMessage(overrides: Partial<Message> = {}) {
   const state = resetMswState();
   state.me = DEV_USER;
@@ -100,6 +122,32 @@ function seedOwnMessage(overrides: Partial<Message> = {}) {
     },
   ];
   return state;
+}
+
+function seedThreadWithOwnReply(overrides: Partial<Message> = {}) {
+  const state = seedAuthed();
+  state.threadReplies["1"] = [
+    {
+      id: 70,
+      user_id: DEV_USER.id,
+      channel_id: 100,
+      parent_id: 1,
+      created_at: 1_700_000_010_000_000,
+      text: "own reply",
+      username: DEV_USER.username,
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      embeds: [],
+      ...overrides,
+    },
+  ];
+  return state;
+}
+
+async function openThreadReplyEdit(panel: HTMLElement) {
+  fireEvent.click(within(panel).getByRole("button", { name: /edit reply/i }));
+  return (await within(panel).findByRole("textbox", { name: /edit reply/i })) as HTMLInputElement;
 }
 
 async function openMessageEdit(messageText: string) {
@@ -146,6 +194,314 @@ describe("Channel view integration", () => {
     expect(state.sentMessages).toEqual([]);
   });
 
+  test("thread reply Shift+Enter inserts a newline and Enter submits exact multiline text", async () => {
+    const state = seedAuthed();
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /reply in thread to message by alice/i }));
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "thread first line" } });
+    setInputSelection(input, "thread first line".length);
+
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+
+    await waitFor(() => {
+      expect(input.value).toBe("thread first line\n");
+      expect(input.selectionStart).toBe("thread first line\n".length);
+    });
+
+    const text = "thread first line\nthread second line";
+    fireEvent.input(input, { target: { value: text } });
+    setInputSelection(input, text.length);
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(state.sentThreadReplies).toContainEqual({ rootId: 1, text });
+      expect(input.value).toBe("");
+      expect(document.activeElement).toBe(input);
+    });
+    const replyText = await findRenderedMessageTextWithin(panel, text);
+    expect(replyText.textContent).toBe(text);
+    expect(replyText).toHaveClass("whitespace-pre-wrap", "break-words", "[overflow-wrap:anywhere]");
+  });
+
+  test("failed thread replies restore the exact multiline draft after clearing", async () => {
+    const state = seedAuthed();
+    let releaseReply: () => void = () => undefined;
+    const replyPaused = new Promise<void>((resolve) => {
+      releaseReply = resolve;
+    });
+    server.use(
+      http.post("http://127.0.0.1:3030/thread/1/reply", async ({ request }) => {
+        const body = (await request.json()) as { text: string };
+        state.sentThreadReplies.push({ rootId: 1, text: body.text });
+        await replyPaused;
+        return new HttpResponse(null, { status: 500 });
+      }),
+    );
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /reply in thread to message by alice/i }));
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
+    const text = "restore first line\nrestore second line";
+    fireEvent.input(input, { target: { value: text } });
+    fireEvent.click(within(panel).getByRole("button", { name: /^send$/i }));
+
+    await waitFor(() => {
+      expect(state.sentThreadReplies).toContainEqual({ rootId: 1, text });
+      expect(input.value).toBe("");
+    });
+    releaseReply();
+
+    await waitFor(() => {
+      expect(input.value).toBe(text);
+      expect(within(panel).getByRole("alert")).toHaveTextContent("Thread reply failed (500)");
+    });
+  });
+
+  test("SSE-delivered multiline thread replies render with preserved line breaks", async () => {
+    seedAuthed();
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+
+    const text = "SSE first line\nSSE second line\nSSE third line";
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushThreadReplyCreated({
+      channel_id: 100,
+      root_message_id: 1,
+      reply: {
+        id: 52,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_030_000_000,
+        text,
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+      thread_summary: { reply_count: 1, last_reply_created_at: 1_700_000_030_000_000 },
+    });
+
+    const replyText = await findRenderedMessageTextWithin(panel, text);
+    expect(replyText.textContent).toBe(text);
+    expect(replyText).toHaveClass("whitespace-pre-wrap", "break-words", "[overflow-wrap:anywhere]");
+  });
+
+  test("thread root and reply URLs around newlines stay clickable without losing line breaks", async () => {
+    const state = seedAuthed();
+    const rootText = "root before https://root-before.test\nhttps://root-solo.test root after";
+    const replyText = "reply before\nhttps://reply-solo.test\nreply after https://reply-after.test";
+    state.messages["100"] = [
+      {
+        ...state.messages["100"][0],
+        text: rootText,
+      },
+    ];
+    state.threadReplies["1"] = [
+      {
+        id: 53,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_031_000_000,
+        text: replyText,
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+    ];
+
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    const rootMessageText = await findRenderedMessageTextWithin(panel, rootText);
+    expect(rootMessageText.textContent).toBe(rootText);
+    expect(
+      within(rootMessageText).getByRole("link", { name: "https://root-before.test" }),
+    ).toHaveAttribute("href", "https://root-before.test");
+    expect(
+      within(rootMessageText).getByRole("link", { name: "https://root-solo.test" }),
+    ).toHaveAttribute("href", "https://root-solo.test");
+
+    const replyMessageText = await findRenderedMessageTextWithin(panel, replyText);
+    expect(replyMessageText.textContent).toBe(replyText);
+    expect(
+      within(replyMessageText).getByRole("link", { name: "https://reply-solo.test" }),
+    ).toHaveAttribute("href", "https://reply-solo.test");
+    expect(
+      within(replyMessageText).getByRole("link", { name: "https://reply-after.test" }),
+    ).toHaveAttribute("href", "https://reply-after.test");
+  });
+
+  test("thread reply edit Shift+Enter inserts a newline and Enter PUTs exact multiline text", async () => {
+    const state = seedThreadWithOwnReply({ text: "reply first line" });
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("reply first line")).toBeInTheDocument());
+    const input = await openThreadReplyEdit(panel);
+    setInputSelection(input, "reply first line".length);
+
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+
+    await waitFor(() => {
+      expect(input.value).toBe("reply first line\n");
+      expect(input.selectionStart).toBe("reply first line\n".length);
+    });
+
+    const text = "reply first line\nreply second line";
+    fireEvent.input(input, { target: { value: text } });
+    setInputSelection(input, text.length);
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(state.editedMessages).toContainEqual({ id: 70, text });
+    });
+    const replyText = await findRenderedMessageTextWithin(panel, text);
+    expect(replyText.textContent).toBe(text);
+    expect(replyText).toHaveClass("whitespace-pre-wrap", "break-words", "[overflow-wrap:anywhere]");
+  });
+
+  test("thread reply edit Save button PUTs exact multiline text", async () => {
+    const state = seedThreadWithOwnReply({ text: "button edit" });
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("button edit")).toBeInTheDocument());
+    const input = await openThreadReplyEdit(panel);
+    const text = "button first line\nbutton second line\nbutton third line";
+    fireEvent.input(input, { target: { value: text } });
+    fireEvent.click(within(panel).getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(state.editedMessages).toContainEqual({ id: 70, text });
+    });
+    expect((await findRenderedMessageTextWithin(panel, text)).textContent).toBe(text);
+  });
+
+  test("Escape cancels thread reply multiline edits without PUTing", async () => {
+    const state = seedThreadWithOwnReply({ text: "cancel first line\ncancel second line" });
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    const original = await findRenderedMessageTextWithin(
+      panel,
+      "cancel first line\ncancel second line",
+    );
+    expect(original).toBeInTheDocument();
+    const input = await openThreadReplyEdit(panel);
+    fireEvent.input(input, { target: { value: "cancel first line\ncancel second line\nunsaved" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    await waitFor(() =>
+      expect(within(panel).queryByRole("textbox", { name: /edit reply/i })).toBeNull(),
+    );
+    expect(state.editedMessages).toEqual([]);
+    expect(
+      await findRenderedMessageTextWithin(panel, "cancel first line\ncancel second line"),
+    ).toBeInTheDocument();
+  });
+
+  test("unchanged thread reply multiline edits exit edit mode without PUTing", async () => {
+    const text = "same reply first line\nsame reply second line";
+    const state = seedThreadWithOwnReply({ text });
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await findRenderedMessageTextWithin(panel, text);
+    const input = await openThreadReplyEdit(panel);
+    fireEvent.submit(assertExists(input.closest("form"), "thread reply edit form"));
+
+    await waitFor(() =>
+      expect(within(panel).queryByRole("textbox", { name: /edit reply/i })).toBeNull(),
+    );
+    expect(state.editedMessages).toEqual([]);
+  });
+
+  test("blank thread reply multiline edits prompt for delete instead of PUTing blank text", async () => {
+    const state = seedThreadWithOwnReply({ text: "blank first line\nblank second line" });
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await findRenderedMessageTextWithin(panel, "blank first line\nblank second line");
+    const input = await openThreadReplyEdit(panel);
+    fireEvent.input(input, { target: { value: "" } });
+    fireEvent.submit(assertExists(input.closest("form"), "thread reply edit form"));
+
+    const dialog = await screen.findByRole("dialog", { name: /delete reply/i });
+    expect(state.editedMessages).not.toContainEqual({ id: 70, text: "" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /^delete$/i }));
+
+    await waitFor(() => {
+      expect(state.deletedMessageIds).toContain(70);
+      expect(
+        queryRenderedMessageTextWithin(panel, "blank first line\nblank second line"),
+      ).toBeNull();
+    });
+  });
+
+  test("message_updated SSE events update thread replies with preserved line breaks", async () => {
+    seedThreadWithOwnReply({ text: "before update" });
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("before update")).toBeInTheDocument());
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+
+    const text = "live edit first line\nlive edit second line\nlive edit third line";
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessageUpdated({
+      id: 70,
+      user_id: DEV_USER.id,
+      channel_id: 100,
+      parent_id: 1,
+      created_at: 1_700_000_010_000_000,
+      text,
+      username: DEV_USER.username,
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      embeds: [],
+    });
+
+    const replyText = await findRenderedMessageTextWithin(panel, text);
+    expect(replyText.textContent).toBe(text);
+    expect(replyText).toHaveClass("whitespace-pre-wrap", "break-words", "[overflow-wrap:anywhere]");
+    expect(within(panel).queryByText("before update")).toBeNull();
+  });
+
+  test("thread panel keeps replies scrollable while the reply composer grows", async () => {
+    seedAuthed();
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
+    fireEvent.input(input, {
+      target: { value: "one\ntwo\nthree\nfour\nfive\nsix\nseven" },
+    });
+
+    expect(panel).toHaveClass("min-h-0", "flex", "flex-col");
+    const scrollArea = panel.querySelector(".min-h-0.flex-1.overflow-y-auto");
+    expect(scrollArea).not.toBeNull();
+    expect(input).toHaveClass("max-h-40", "overflow-y-auto", "whitespace-pre-wrap");
+    expect(assertExists(input.closest("form"), "thread reply form")).toHaveClass("flex-shrink-0");
+  });
+
   test("opens a deep-linked thread without stealing focus", async () => {
     const state = seedAuthed();
     state.threadReplies["1"] = [
@@ -174,6 +530,36 @@ describe("Channel view integration", () => {
     expect(document.activeElement).not.toBe(input);
     expect(history.get()).toBe("/channel/100?thread=1");
     await expectNoA11yViolations(container, "deep-linked thread panel");
+  });
+
+  test("channel and thread composers expose accessible multiline textbox semantics", async () => {
+    seedAuthed();
+    const { container } = mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
+
+    const channelComposer = await screen.findByRole("textbox", { name: /new message/i });
+    expect(channelComposer).toHaveAttribute("aria-multiline", "true");
+    expect(channelComposer).toHaveAttribute("aria-placeholder", "Send a new message...");
+    expect(channelComposer).toHaveClass(
+      "max-h-40",
+      "overflow-y-auto",
+      "whitespace-pre-wrap",
+      "break-words",
+    );
+
+    const threadComposer = await within(panel).findByRole("textbox", { name: /thread reply/i });
+    expect(threadComposer).toHaveAttribute("aria-multiline", "true");
+    expect(threadComposer).toHaveAttribute("aria-placeholder", "Reply in thread...");
+    expect(threadComposer).toHaveClass(
+      "max-h-40",
+      "overflow-y-auto",
+      "whitespace-pre-wrap",
+      "break-words",
+    );
+
+    await expectNoA11yViolations(container, "channel and thread multiline composers");
   });
 
   test("loads a long thread newest-first page and prepends older replies on demand", async () => {
@@ -391,6 +777,33 @@ describe("Channel view integration", () => {
     expect(screen.queryByText("stored 😀 shortcode")).toBeNull();
   });
 
+  test("renders fetched multiline channel messages with preserved line breaks", async () => {
+    const state = seedAuthed();
+    const text = "fetched first line\nfetched second line\nfetched third line";
+    state.messages["100"] = [
+      {
+        id: 12,
+        user_id: 2,
+        channel_id: 100,
+        text,
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        embeds: [],
+      },
+    ];
+    mountAt("/channel/100");
+
+    const messageText = await findRenderedMessageText(text);
+    expect(messageText.textContent).toBe(text);
+    expect(messageText).toHaveClass(
+      "whitespace-pre-wrap",
+      "break-words",
+      "[overflow-wrap:anywhere]",
+    );
+  });
+
   test("appends a message delivered over SSE", async () => {
     seedAuthed();
     mountAt("/channel/100");
@@ -414,6 +827,36 @@ describe("Channel view integration", () => {
     await waitFor(() => {
       expect(screen.getByText("hot off the wire")).toBeInTheDocument();
     });
+  });
+
+  test("renders multiline messages delivered over SSE with preserved line breaks", async () => {
+    seedAuthed();
+    const text = "live first line\nlive second line\nlive third line";
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessage({
+      id: 102,
+      user_id: 3,
+      channel_id: 100,
+      text,
+      username: "carol",
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      embeds: [],
+    });
+
+    const messageText = await findRenderedMessageText(text);
+    expect(messageText.textContent).toBe(text);
+    expect(messageText).toHaveClass(
+      "whitespace-pre-wrap",
+      "break-words",
+      "[overflow-wrap:anywhere]",
+    );
   });
 
   test("renders emoji glyph messages delivered over SSE with linkification", async () => {
@@ -795,6 +1238,90 @@ describe("Channel view integration", () => {
     });
   });
 
+  test("Shift+Enter inserts a newline and Enter submits exact multiline text", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "first line" } });
+    setInputSelection(input, "first line".length);
+
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+
+    await waitFor(() => {
+      expect(input.value).toBe("first line\n");
+      expect(input.selectionStart).toBe("first line\n".length);
+    });
+
+    fireEvent.input(input, { target: { value: "first line\nsecond line" } });
+    setInputSelection(input, "first line\nsecond line".length);
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(mswState().sentMessages).toContainEqual({
+        channel: "100",
+        text: "first line\nsecond line",
+      });
+    });
+    await waitFor(() => {
+      expect(input.value).toBe("");
+      expect(document.activeElement).toBe(input);
+    });
+  });
+
+  test("Send button submits the same exact multiline draft and closes the emoji picker", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    const text = "button first line\nbutton second line";
+    fireEvent.input(input, { target: { value: text } });
+    fireEvent.click(screen.getByRole("button", { name: /open emoji picker/i }));
+    await screen.findByRole("dialog", { name: /emoji picker/i });
+
+    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+
+    await waitFor(() => {
+      expect(mswState().sentMessages).toContainEqual({ channel: "100", text });
+      expect(input.value).toBe("");
+      expect(screen.queryByRole("dialog", { name: /emoji picker/i })).toBeNull();
+      expect(document.activeElement).toBe(input);
+    });
+  });
+
+  test("empty channel drafts still submit to the existing API validation path", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+
+    await waitFor(() => {
+      expect(mswState().sentMessages).toContainEqual({ channel: "100", text: "" });
+    });
+  });
+
+  test("typing pings remain throttled while composing multiline drafts", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "first line" } });
+
+    await waitFor(() => {
+      expect(mswState().typingPings).toEqual(["100"]);
+    });
+
+    setInputSelection(input, "first line".length);
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+    await waitFor(() => expect(input.value).toBe("first line\n"));
+
+    fireEvent.input(input, { target: { value: "first line\nsecond line" } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(mswState().typingPings).toEqual(["100"]);
+  });
+
   test("POSTs to /message/:id when the form is submitted", async () => {
     seedAuthed();
     mountAt("/channel/100");
@@ -902,6 +1429,72 @@ describe("Channel view integration", () => {
     await waitFor(() => {
       expect(mswState().editedMessages).toContainEqual({ id: 7, text: "edited!" });
     });
+  });
+
+  test("Shift+Enter inserts an edit newline and Enter PUTs the exact multiline draft", async () => {
+    seedOwnMessage({ username: "baipas", text: "first line" });
+    mountAt("/channel/100");
+
+    const input = await openMessageEdit("first line");
+    setInputSelection(input, "first line".length);
+
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+
+    await waitFor(() => {
+      expect(input.value).toBe("first line\n");
+      expect(input.selectionStart).toBe("first line\n".length);
+    });
+
+    const text = "first line\nsecond line";
+    fireEvent.input(input, { target: { value: text } });
+    setInputSelection(input, text.length);
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(mswState().editedMessages).toContainEqual({ id: 7, text });
+    });
+  });
+
+  test("Save button PUTs exact multiline edit text", async () => {
+    seedOwnMessage({ username: "baipas", text: "button edit" });
+    mountAt("/channel/100");
+
+    const input = await openMessageEdit("button edit");
+    const text = "button first line\nbutton second line\nbutton third line";
+    fireEvent.input(input, { target: { value: text } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(mswState().editedMessages).toContainEqual({ id: 7, text });
+    });
+  });
+
+  test("Escape cancels multiline edits without PUTing", async () => {
+    seedOwnMessage({ username: "baipas", text: "cancel me" });
+    mountAt("/channel/100");
+
+    const input = await openMessageEdit("cancel me");
+    fireEvent.input(input, { target: { value: "cancel me\nunsaved" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByLabelText(/edit message/i)).toBeNull());
+    expect(mswState().editedMessages).toEqual([]);
+    expect(screen.getByText("cancel me")).toBeInTheDocument();
+  });
+
+  test("unchanged multiline edits exit edit mode without PUTing", async () => {
+    const text = "same first line\nsame second line";
+    seedOwnMessage({ username: "baipas", text });
+    mountAt("/channel/100");
+
+    const original = await findRenderedMessageText(text);
+    fireEvent.contextMenu(original);
+    fireEvent.click(await screen.findByRole("menuitem", { name: /edit message/i }));
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+
+    await waitFor(() => expect(screen.queryByLabelText(/edit message/i)).toBeNull());
+    expect(mswState().editedMessages).toEqual([]);
   });
 
   test("converts a completed emoji shortcode while editing and PUTs the glyph", async () => {
@@ -1141,6 +1734,37 @@ describe("Channel view integration", () => {
       expect(screen.getByText("hello (edited)")).toBeInTheDocument();
       expect(screen.queryByText("hello")).toBeNull();
     });
+  });
+
+  test("renders multiline text from message_updated SSE events with visible line breaks", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+
+    const text = "updated first line\nupdated second line\nupdated third line";
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessageUpdated({
+      id: 1,
+      user_id: 1,
+      channel_id: 100,
+      text,
+      username: "alice",
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      embeds: [],
+    });
+
+    const messageText = await findRenderedMessageText(text);
+    expect(messageText.textContent).toBe(text);
+    expect(messageText).toHaveClass(
+      "whitespace-pre-wrap",
+      "break-words",
+      "[overflow-wrap:anywhere]",
+    );
+    expect(screen.queryByText("hello")).toBeNull();
   });
 
   test("renders emoji glyphs and links from message_updated SSE events", async () => {

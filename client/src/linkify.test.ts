@@ -60,6 +60,20 @@ describe("linkifyText", () => {
     ]);
   });
 
+  test("treats newlines as URL separators like ordinary whitespace", () => {
+    expect(
+      linkifyText("before https://one.test\nhttps://two.test/path after\nsee https://three.test."),
+    ).toEqual([
+      { type: "text", value: "before " },
+      { type: "link", url: "https://one.test" },
+      { type: "text", value: "\n" },
+      { type: "link", url: "https://two.test/path" },
+      { type: "text", value: " after\nsee " },
+      { type: "link", url: "https://three.test" },
+      { type: "text", value: "." },
+    ]);
+  });
+
   test("URL with path and query params", () => {
     expect(linkifyText("check https://example.com/path?x=1&y=2")).toEqual([
       { type: "text", value: "check " },

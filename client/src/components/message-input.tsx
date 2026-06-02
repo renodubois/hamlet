@@ -36,8 +36,9 @@ export interface MessageInputProps {
 }
 
 const DEFAULT_ROOT_CLASS = "flex min-w-0 flex-1 items-center gap-2";
-const DEFAULT_INPUT_CLASS =
-  "relative min-h-[3.5rem] w-full rounded-md bg-gray-100 p-4 whitespace-pre-wrap break-words focus:outline-none focus:ring-2 focus:ring-blue-400 empty:before:content-[attr(data-placeholder)] empty:before:text-gray-500";
+const MULTILINE_INPUT_BEHAVIOR_CLASS =
+  "relative min-h-[2.75rem] max-h-40 overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]";
+const DEFAULT_INPUT_CLASS = `${MULTILINE_INPUT_BEHAVIOR_CLASS} w-full rounded-md bg-gray-100 p-4 focus:outline-none focus:ring-2 focus:ring-blue-400 empty:before:content-[attr(data-placeholder)] empty:before:text-gray-500`;
 const DEFAULT_EMOJI_BUTTON_CLASS =
   "cursor-pointer rounded-md bg-gray-100 p-4 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400";
 // Browsers struggle to place a caret after a contenteditable=false chip when
@@ -69,40 +70,91 @@ function markerForElement(node: Node): string | null {
   return node instanceof HTMLElement ? (node.dataset.emojiMarker ?? null) : null;
 }
 
-function serializedLength(node: Node): number {
-  const marker = markerForElement(node);
-  if (marker) return marker.length;
-  if (node.nodeType === Node.TEXT_NODE) {
-    return stripEditorCaretSentinels(node.textContent ?? "").length;
+const BLOCK_BOUNDARY_ELEMENT_NAMES = new Set(["DIV", "P", "LI"]);
+
+function isElementNamed(node: Node, names: ReadonlySet<string>): boolean {
+  return node instanceof HTMLElement && names.has(node.tagName);
+}
+
+function isLineBreakElement(node: Node): boolean {
+  return node instanceof HTMLBRElement;
+}
+
+function isBlockBoundaryElement(node: Node): boolean {
+  return isElementNamed(node, BLOCK_BOUNDARY_ELEMENT_NAMES);
+}
+
+function shouldInsertBlockSeparator(
+  previous: Node | null,
+  next: Node | undefined,
+  serializedPrefix: string,
+): boolean {
+  if (!previous || !next || serializedPrefix.endsWith("\n")) return false;
+  return isBlockBoundaryElement(previous) || isBlockBoundaryElement(next);
+}
+
+function serializeChildren(parent: Node, limit = parent.childNodes.length): string {
+  const children = Array.from(parent.childNodes).slice(0, limit);
+  let value = "";
+  let previous: Node | null = null;
+
+  for (const child of children) {
+    if (shouldInsertBlockSeparator(previous, child, value)) value += "\n";
+    value += serializeNode(child);
+    previous = child;
   }
 
-  let length = 0;
-  node.childNodes.forEach((child) => {
-    length += serializedLength(child);
-  });
-  return length;
+  return value;
+}
+
+function serializeChildrenBeforeOffset(parent: Node, offset: number): string {
+  const children = Array.from(parent.childNodes);
+  const boundedOffset = Math.min(Math.max(offset, 0), children.length);
+  let value = "";
+  let previous: Node | null = null;
+
+  for (let index = 0; index < boundedOffset; index += 1) {
+    const child = children[index];
+    if (shouldInsertBlockSeparator(previous, child, value)) value += "\n";
+    value += serializeNode(child);
+    previous = child;
+  }
+
+  const next = children[boundedOffset];
+  if (shouldInsertBlockSeparator(previous, next, value)) value += "\n";
+
+  return value;
+}
+
+function serializedLength(node: Node): number {
+  return serializeNode(node).length;
 }
 
 function serializeEditor(root: HTMLElement): string {
-  let value = "";
-  root.childNodes.forEach((child) => {
-    value += serializeNode(child);
-  });
-  return value;
+  return serializeChildren(root);
 }
 
 function serializeNode(node: Node): string {
   const marker = markerForElement(node);
   if (marker) return marker;
+  if (isLineBreakElement(node)) return "\n";
   if (node.nodeType === Node.TEXT_NODE) {
     return stripEditorCaretSentinels(node.textContent ?? "");
   }
 
-  let value = "";
-  node.childNodes.forEach((child) => {
-    value += serializeNode(child);
-  });
-  return value;
+  return serializeChildren(node);
+}
+
+function domOffsetForSerializedTextIndex(text: string, index: number): number {
+  const boundedIndex = clampIndex(index, stripEditorCaretSentinels(text));
+  let serializedOffset = 0;
+
+  for (let domOffset = 0; domOffset < text.length; domOffset += 1) {
+    if (serializedOffset >= boundedIndex) return domOffset;
+    if (text[domOffset] !== EDITOR_CARET_SENTINEL) serializedOffset += 1;
+  }
+
+  return text.length;
 }
 
 function childOffset(parent: Node, child: Node): number {
@@ -112,15 +164,13 @@ function childOffset(parent: Node, child: Node): number {
 function offsetWithinNode(container: Node, offset: number): number {
   const marker = markerForElement(container);
   if (marker) return offset <= 0 ? 0 : marker.length;
+  if (isLineBreakElement(container)) return offset <= 0 ? 0 : 1;
 
   if (container.nodeType === Node.TEXT_NODE) {
     return stripEditorCaretSentinels((container.textContent ?? "").slice(0, offset)).length;
   }
 
-  let length = 0;
-  const children = Array.from(container.childNodes).slice(0, offset);
-  for (const child of children) length += serializedLength(child);
-  return length;
+  return serializeChildrenBeforeOffset(container, offset).length;
 }
 
 function serializedOffset(root: HTMLElement, container: Node, offset: number): number {
@@ -171,29 +221,49 @@ function positionForIndex(root: HTMLElement, index: number): DomPosition {
 
 function findPositionInChildren(parent: Node, index: number): DomPosition | null {
   let remaining = index;
+  let serializedPrefix = "";
+  let previous: Node | null = null;
 
   for (const child of Array.from(parent.childNodes)) {
-    const length = serializedLength(child);
+    const offset = childOffset(parent, child);
 
-    if (remaining === 0) return { node: parent, offset: childOffset(parent, child) };
+    if (shouldInsertBlockSeparator(previous, child, serializedPrefix)) {
+      if (remaining === 0) return { node: parent, offset };
+      if (remaining === 1) return { node: parent, offset };
+      remaining -= 1;
+      serializedPrefix += "\n";
+    } else if (remaining === 0) {
+      return { node: parent, offset };
+    }
+
+    const length = serializedLength(child);
 
     if (remaining < length) {
       const marker = markerForElement(child);
       if (marker) {
         return remaining > marker.length / 2
-          ? { node: parent, offset: childOffset(parent, child) + 1 }
-          : { node: parent, offset: childOffset(parent, child) };
+          ? { node: parent, offset: offset + 1 }
+          : { node: parent, offset };
       }
 
-      if (child.nodeType === Node.TEXT_NODE) return { node: child, offset: remaining };
+      if (isLineBreakElement(child)) return { node: parent, offset };
+
+      if (child.nodeType === Node.TEXT_NODE) {
+        return {
+          node: child,
+          offset: domOffsetForSerializedTextIndex(child.textContent ?? "", remaining),
+        };
+      }
 
       const nested = findPositionInChildren(child, remaining);
       if (nested) return nested;
     }
 
-    if (remaining === length) return { node: parent, offset: childOffset(parent, child) + 1 };
+    if (remaining === length) return { node: parent, offset: offset + 1 };
 
     remaining -= length;
+    serializedPrefix += serializeNode(child);
+    previous = child;
   }
 
   return { node: parent, offset: parent.childNodes.length };
@@ -270,6 +340,17 @@ function createEmojiChipElement(
   return chip;
 }
 
+function appendTextWithLineBreaks(fragment: DocumentFragment, value: string) {
+  const lines = value.split("\n");
+  lines.forEach((line, index) => {
+    if (line.length > 0) fragment.append(document.createTextNode(line));
+    if (index < lines.length - 1) {
+      fragment.append(document.createElement("br"));
+      fragment.append(createEditorCaretSentinel());
+    }
+  });
+}
+
 function renderEditorValue(
   root: HTMLElement,
   value: string,
@@ -281,7 +362,7 @@ function renderEditorValue(
 
   tokens.forEach((token, index) => {
     if (token.type === "text") {
-      fragment.append(document.createTextNode(token.value));
+      appendTextWithLineBreaks(fragment, token.value);
       return;
     }
 
@@ -412,9 +493,24 @@ export default function MessageInput(props: MessageInputProps) {
     props.onKeyDown?.(event);
     if (event.defaultPrevented) return;
 
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter") {
+      if (event.isComposing) return;
+
       event.preventDefault();
-      event.currentTarget.closest("form")?.requestSubmit();
+
+      if (event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        const currentSelection = readInputSelection();
+        const nextValue = `${props.value.slice(0, currentSelection.start)}\n${props.value.slice(
+          currentSelection.end,
+        )}`;
+        const caretIndex = currentSelection.start + 1;
+        updateValue(nextValue, { start: caretIndex, end: caretIndex }, { restoreSelection: true });
+        return;
+      }
+
+      if (!event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        event.currentTarget.closest("form")?.requestSubmit();
+      }
       return;
     }
 
@@ -525,8 +621,12 @@ export default function MessageInput(props: MessageInputProps) {
           props.inputRef?.(inputRef);
         }}
         role="textbox"
-        aria-multiline="false"
-        class={props.inputClass ?? DEFAULT_INPUT_CLASS}
+        aria-multiline="true"
+        class={
+          props.inputClass
+            ? `${MULTILINE_INPUT_BEHAVIOR_CLASS} ${props.inputClass}`
+            : DEFAULT_INPUT_CLASS
+        }
         aria-label={props.ariaLabel ?? "Message input"}
         aria-placeholder={props.placeholder}
         autocorrect="off"

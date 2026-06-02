@@ -38,7 +38,7 @@ function MessageBody(props: { message: Message }) {
         </p>
       }
     >
-      <div class="whitespace-pre-wrap break-words">
+      <div class="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
         {linkifyText(props.message.text).map((tok) =>
           tok.type === "link" ? (
             <a
@@ -411,7 +411,7 @@ export default function ThreadPanel(props: {
 
   return (
     <aside
-      class="w-96 max-w-[45vw] flex-shrink-0 border-l border-gray-200 bg-white text-gray-900 flex flex-col"
+      class="w-96 max-w-[45vw] min-h-0 flex-shrink-0 border-l border-gray-200 bg-white text-gray-900 flex flex-col"
       aria-label="Thread panel"
     >
       <header class="flex items-center justify-between border-b border-gray-200 p-4">
@@ -500,7 +500,7 @@ export default function ThreadPanel(props: {
       </div>
 
       <form
-        class="border-t border-gray-200 p-4"
+        class="flex-shrink-0 border-t border-gray-200 p-4"
         onSubmit={(e) => {
           e.preventDefault();
           void submitReply();
@@ -513,12 +513,13 @@ export default function ThreadPanel(props: {
             </p>
           )}
         </Show>
-        <div class="flex items-center gap-2">
+        <div class="flex items-end gap-2">
           <MessageInput
             value={draft()}
             onChange={setDraft}
             ariaLabel="Thread reply"
             placeholder="Reply in thread..."
+            class="flex min-w-0 flex-1 items-end gap-2"
             inputRef={(el) => {
               inputRef = el;
             }}

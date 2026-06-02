@@ -96,6 +96,30 @@ describe("<ChannelMessages> message text rendering", () => {
     expect(screen.queryByText("legacy 😀 shortcode")).toBeNull();
   });
 
+  test("preserves literal newlines with wrapping-friendly message text styles", () => {
+    const multiline = makeMessage({
+      id: 506,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "first line\nsecond line\nthird line",
+      username: "them",
+    });
+
+    mount([multiline], SELF_ID);
+
+    const messageText = screen.getByText(
+      (_, element) =>
+        element?.textContent === "first line\nsecond line\nthird line" &&
+        element.classList.contains("whitespace-pre-wrap"),
+    );
+    expect(messageText.textContent).toBe("first line\nsecond line\nthird line");
+    expect(messageText).toHaveClass(
+      "whitespace-pre-wrap",
+      "break-words",
+      "[overflow-wrap:anywhere]",
+    );
+  });
+
   test("preserves emoji glyphs while linkifying nearby URLs", () => {
     const linkedEmoji = makeMessage({
       id: 501,
@@ -111,6 +135,39 @@ describe("<ChannelMessages> message text rendering", () => {
     expect(link).toHaveAttribute("href", "https://example.com");
     expect(assertExists(link.parentElement, "message text")).toHaveTextContent(
       "glyph 😀 and literal :grinning: before https://example.com after",
+    );
+  });
+
+  test("linkifies URLs before and after newlines while preserving channel text line breaks", () => {
+    const text = "before https://before.test\nhttps://solo.test/path\nafter https://after.test end";
+    const multilineUrls = makeMessage({
+      id: 507,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text,
+      username: "them",
+    });
+
+    mount([multilineUrls], SELF_ID);
+
+    const before = screen.getByRole("link", { name: "https://before.test" });
+    const messageText = assertExists(before.parentElement, "message text");
+    expect(messageText.textContent).toBe(text);
+    expect(messageText).toHaveClass(
+      "whitespace-pre-wrap",
+      "break-words",
+      "[overflow-wrap:anywhere]",
+    );
+    expect(within(messageText).getByRole("link", { name: "https://before.test" })).toHaveAttribute(
+      "href",
+      "https://before.test",
+    );
+    expect(
+      within(messageText).getByRole("link", { name: "https://solo.test/path" }),
+    ).toHaveAttribute("href", "https://solo.test/path");
+    expect(within(messageText).getByRole("link", { name: "https://after.test" })).toHaveAttribute(
+      "href",
+      "https://after.test",
     );
   });
 
@@ -347,6 +404,64 @@ describe("<ChannelMessages> hover action toolbar", () => {
     await waitFor(() => expect(editMessage).toHaveBeenCalledWith(ownMessage.id, "edited text"));
   });
 
+  test("Shift+Enter inserts a newline while editing and Enter saves exact multiline text", async () => {
+    mount([ownMessage], SELF_ID);
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+    input.setSelectionRange(ownMessage.text.length, ownMessage.text.length);
+
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+
+    await waitFor(() => {
+      expect(input.value).toBe(`${ownMessage.text}\n`);
+      expect(input.selectionStart).toBe(`${ownMessage.text}\n`.length);
+    });
+
+    const multilineText = `${ownMessage.text}\nsecond line`;
+    fireEvent.input(input, { target: { value: multilineText } });
+    input.setSelectionRange(multilineText.length, multilineText.length);
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(editMessage).toHaveBeenCalledWith(ownMessage.id, multilineText));
+  });
+
+  test("Save button preserves exact multiline edit text", async () => {
+    mount([ownMessage], SELF_ID);
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+    const multilineText = "first visible line\nsecond visible line\nthird visible line";
+
+    fireEvent.input(input, { target: { value: multilineText } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(editMessage).toHaveBeenCalledWith(ownMessage.id, multilineText));
+  });
+
+  test("Escape cancels a multiline edit without saving", async () => {
+    mount([ownMessage], SELF_ID);
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+
+    fireEvent.input(input, { target: { value: `${ownMessage.text}\nunsaved` } });
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByLabelText(/edit message/i)).toBeNull());
+    expect(editMessage).not.toHaveBeenCalled();
+    expect(screen.getByText(ownMessage.text)).toBeInTheDocument();
+  });
+
+  test("unchanged multiline edits compare exact strings and skip PUT", async () => {
+    const multiline = makeMessage({ ...ownMessage, text: "same first line\nsame second line" });
+    mount([multiline], SELF_ID);
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+
+    await waitFor(() => expect(screen.queryByLabelText(/edit message/i)).toBeNull());
+    expect(editMessage).not.toHaveBeenCalled();
+  });
+
   test("editing a message displays custom emoji markers as chips and preserves PUT text", async () => {
     const party = {
       id: 123,
@@ -464,12 +579,68 @@ describe("<ChannelMessages> embeds", () => {
     expect(screen.getByText("A description.")).toBeInTheDocument();
   });
 
+  test("renders embed cards aligned with linkified multiline URLs", async () => {
+    const baseEmbed = assertExists(embeddedOwnMessage.embeds[0], "base embed");
+    const embeddedMultilineMessage: Message = makeMessage({
+      ...embeddedOwnMessage,
+      text: "one https://one.test\ntwo https://two.test/path",
+      embeds: [
+        {
+          ...baseEmbed,
+          id: 9100,
+          url: "https://one.test",
+          title: "One link",
+        },
+        {
+          ...baseEmbed,
+          id: 9101,
+          url: "https://two.test/path",
+          title: "Two link",
+        },
+      ],
+    });
+
+    mount([embeddedMultilineMessage], SELF_ID);
+
+    expect(screen.getByRole("link", { name: "https://one.test" })).toHaveAttribute(
+      "href",
+      "https://one.test",
+    );
+    expect(screen.getByRole("link", { name: "https://two.test/path" })).toHaveAttribute(
+      "href",
+      "https://two.test/path",
+    );
+    expect(screen.getByRole("link", { name: /one link/i })).toHaveAttribute(
+      "href",
+      "https://one.test",
+    );
+    expect(screen.getByRole("link", { name: /two link/i })).toHaveAttribute(
+      "href",
+      "https://two.test/path",
+    );
+  });
+
   test("does not render embeds when suppress_embeds is true", async () => {
     const suppressed: Message = {
       ...embeddedOwnMessage,
       suppress_embeds: true,
     };
     mount([suppressed], SELF_ID);
+    expect(screen.queryByRole("link", { name: /example domain/i })).toBeNull();
+  });
+
+  test("keeps suppress-embed behavior unchanged for multiline URL messages", async () => {
+    const suppressed: Message = {
+      ...embeddedOwnMessage,
+      text: "first https://example.com\nsecond line",
+      suppress_embeds: true,
+    };
+    mount([suppressed], SELF_ID);
+
+    expect(screen.getByRole("link", { name: "https://example.com" })).toHaveAttribute(
+      "href",
+      "https://example.com",
+    );
     expect(screen.queryByRole("link", { name: /example domain/i })).toBeNull();
   });
 
