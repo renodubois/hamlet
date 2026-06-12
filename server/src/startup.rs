@@ -9,6 +9,7 @@ use sea_orm::DatabaseConnection;
 use tracing_actix_web::TracingLogger;
 
 use crate::api;
+use crate::api::attachments::AttachmentStorage;
 use crate::api::avatars::AvatarStorage;
 use crate::api::emoji::EmojiStorage;
 use crate::api::messages::EmbedFetcher;
@@ -65,6 +66,7 @@ pub fn configure_app(cfg: &mut web::ServiceConfig, deps: AppDeps) {
         .service(
             web::scope("")
                 .wrap(from_fn(middleware::require_auth))
+                .configure(api::attachments::configure)
                 .configure(api::messages::configure)
                 .configure(api::channels::configure)
                 .configure(api::voice::configure_authed)
@@ -83,13 +85,18 @@ pub async fn start_server(
 ) -> std::io::Result<()> {
     let avatars_dir = config.uploads_dir.join(crate::api::avatars::AVATARS_SUBDIR);
     let emojis_dir = config.uploads_dir.join(crate::api::emoji::EMOJIS_SUBDIR);
+    let message_attachments_dir = config.message_attachments_dir.clone();
     std::fs::create_dir_all(&avatars_dir)?;
     std::fs::create_dir_all(&emojis_dir)?;
+    std::fs::create_dir_all(&message_attachments_dir)?;
     let avatar_storage = Data::new(AvatarStorage {
         dir: config.uploads_dir.clone(),
     });
     let emoji_storage = Data::new(EmojiStorage {
         dir: config.uploads_dir.clone(),
+    });
+    let attachment_storage = Data::new(AttachmentStorage {
+        dir: message_attachments_dir,
     });
 
     if config.voice.is_none() {
@@ -112,7 +119,8 @@ pub async fn start_server(
     };
 
     let bind_addr = config.bind_addr.clone();
-    let uploads_dir = config.uploads_dir.clone();
+    let avatars_dir = avatars_dir.clone();
+    let emojis_dir = emojis_dir.clone();
     tracing::info!(addr = %bind_addr, "starting server");
 
     HttpServer::new(move || {
@@ -134,7 +142,15 @@ pub async fn start_server(
             .wrap(cors)
             .app_data(avatar_storage.clone())
             .app_data(emoji_storage.clone())
-            .service(actix_files::Files::new("/uploads", uploads_dir.clone()))
+            .app_data(attachment_storage.clone())
+            .service(actix_files::Files::new(
+                "/uploads/avatars",
+                avatars_dir.clone(),
+            ))
+            .service(actix_files::Files::new(
+                "/uploads/emojis",
+                emojis_dir.clone(),
+            ))
             .configure(|cfg| configure_app(cfg, deps.clone()))
     })
     .bind(&bind_addr)?

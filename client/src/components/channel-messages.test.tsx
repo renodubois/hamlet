@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-lib
 import userEvent from "@testing-library/user-event";
 import type { Message } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
-import { makeMessage } from "../test/fixtures";
+import { makeAttachment, makeMessage } from "../test/fixtures";
 import { assertExists } from "../test/render";
 
 const customEmojiContext = vi.hoisted(() => ({
@@ -322,6 +322,111 @@ describe("<ChannelMessages> message text rendering", () => {
     expect(
       screen.getByRole("link", { name: "https://example.com/%3C:party:123%3E" }),
     ).toHaveAttribute("href", "https://example.com/%3C:party:123%3E");
+  });
+});
+
+describe("<ChannelMessages> attachments", () => {
+  test("renders multiple photo thumbnails in a constrained aspect-ratio grid", () => {
+    const withPhotos = makeMessage({
+      id: 520,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "two photos",
+      username: "them",
+      attachments: [
+        makeAttachment({
+          id: 8101,
+          message_id: 520,
+          position: 0,
+          thumbnail_width: 640,
+          thumbnail_height: 480,
+        }),
+        makeAttachment({
+          id: 8102,
+          message_id: 520,
+          position: 1,
+          thumbnail_width: 300,
+          thumbnail_height: 500,
+        }),
+      ],
+    });
+
+    mount([withPhotos], SELF_ID);
+
+    const grid = screen.getByRole("list", { name: /2 photo attachments/i });
+    expect(grid).toHaveClass("grid", "gap-2", "max-w-xl", "grid-cols-2");
+    expect(screen.getByRole("img", { name: /photo 1 of 2 from them/i })).toHaveAttribute(
+      "loading",
+      "lazy",
+    );
+    expect(screen.getByRole("img", { name: /photo 2 of 2 from them/i })).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    expect(screen.getAllByRole("link", { name: /open photo \d of 2 from them/i })).toHaveLength(2);
+    expect(screen.getAllByRole("link", { name: /open photo \d of 2 from them/i })[0]).toHaveStyle({
+      "aspect-ratio": "640 / 480",
+    });
+  });
+
+  test("shows an accessible fallback when a thumbnail image fails", () => {
+    localStorage.setItem("hamlet.serverUrl", "http://127.0.0.1:3030");
+    const withBrokenPhoto = makeMessage({
+      id: 521,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "broken photo",
+      username: "them",
+      attachments: [makeAttachment({ id: 8201, message_id: 521 })],
+    });
+
+    mount([withBrokenPhoto], SELF_ID);
+
+    const image = screen.getByRole("img", { name: /photo attachment from them/i });
+    fireEvent.error(image);
+
+    expect(screen.getByText("Photo unavailable")).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: /photo attachment from them unavailable/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /open photo attachment from them/i })).toHaveAttribute(
+      "href",
+      "http://127.0.0.1:3030/attachments/8201",
+    );
+  });
+
+  test("attachment thumbnails pass axe checks", async () => {
+    const withPhoto = makeMessage({
+      id: 522,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "accessible photo",
+      username: "them",
+      display_name: "Casey",
+      attachments: [makeAttachment({ id: 8301, message_id: 522 })],
+    });
+    const { container } = mount([withPhoto], SELF_ID);
+
+    await expectNoA11yViolations(container, "message attachment thumbnails");
+  });
+
+  test("does not render attachments for deleted tombstones", () => {
+    mount(
+      [
+        makeMessage({
+          id: 523,
+          user_id: OTHER_ID,
+          channel_id: 1,
+          text: "",
+          username: "them",
+          deleted_at: 1_700_000_100,
+          attachments: [makeAttachment({ id: 8401, message_id: 523 })],
+        }),
+      ],
+      SELF_ID,
+    );
+
+    expect(screen.getByLabelText(/original message deleted/i)).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: /photo attachment/i })).toBeNull();
+    expect(screen.queryByRole("img", { name: /photo/i })).toBeNull();
   });
 });
 
@@ -865,13 +970,16 @@ describe("<ChannelMessages> hover action toolbar", () => {
     expect(screen.queryByRole("toolbar", { name: /message actions/i })).toBeNull();
   });
 
-  test("renders reaction rows after body and embeds but before the thread summary", () => {
+  test("renders message content in text, attachments, embeds, reactions, thread summary order", () => {
+    localStorage.setItem("hamlet.serverUrl", "http://hamlet.test:4040");
     const placed = makeMessage({
       id: 610,
       user_id: OTHER_ID,
       channel_id: 1,
-      text: "body before embed",
+      text: "body before attachments",
       username: "them",
+      display_name: "Riley",
+      attachments: [makeAttachment({ id: 7001, message_id: 610 })],
       embeds: [
         {
           id: 9001,
@@ -892,12 +1000,22 @@ describe("<ChannelMessages> hover action toolbar", () => {
     });
     mount([placed], SELF_ID, vi.fn());
 
-    const body = screen.getByText("body before embed");
+    const body = screen.getByText("body before attachments");
+    const attachments = screen.getByRole("list", { name: /1 photo attachment/i });
+    const image = screen.getByRole("img", { name: /photo attachment from riley/i });
+    const fullImageLink = screen.getByRole("link", { name: /open photo attachment from riley/i });
     const embed = screen.getByRole("link", { name: "Example embed" });
     const reaction = screen.getByRole("button", { name: /👍 1 reaction\. add your reaction/i });
     const summary = screen.getByRole("button", { name: /open thread with 1 reply/i });
 
-    expect(body.compareDocumentPosition(embed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(image).toHaveAttribute("src", "http://hamlet.test:4040/attachments/7001/thumbnail");
+    expect(fullImageLink).toHaveAttribute("href", "http://hamlet.test:4040/attachments/7001");
+    expect(
+      body.compareDocumentPosition(attachments) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      attachments.compareDocumentPosition(embed) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     expect(embed.compareDocumentPosition(reaction) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(
       reaction.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -918,6 +1036,24 @@ describe("<ChannelMessages> hover action toolbar", () => {
     fireEvent.input(input, { target: { value: "edited text" } });
     fireEvent.submit(assertExists(input.closest("form"), "form"));
     await waitFor(() => expect(editMessage).toHaveBeenCalledWith(ownMessage.id, "edited text"));
+  });
+
+  test("clearing a photo message edit saves an empty caption instead of prompting delete", async () => {
+    const photoMessage = makeMessage({
+      ...ownMessage,
+      text: "caption to clear",
+      attachments: [makeAttachment({ id: 8501, message_id: ownMessage.id })],
+    });
+    mount([photoMessage], SELF_ID);
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+
+    fireEvent.input(input, { target: { value: "" } });
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+
+    await waitFor(() => expect(editMessage).toHaveBeenCalledWith(photoMessage.id, ""));
+    expect(screen.queryByRole("dialog", { name: /delete message/i })).toBeNull();
+    expect(deleteMessage).not.toHaveBeenCalled();
   });
 
   test("Shift+Enter inserts a newline while editing and Enter saves exact multiline text", async () => {

@@ -3,8 +3,8 @@ import {
   addMessageReaction,
   deleteMessage,
   editMessage,
-  getServerUrl,
   messageDisplayName,
+  resolveServerUrl,
   removeMessageReaction,
   setMessageEmbedsSuppressed,
   type CustomEmoji,
@@ -17,6 +17,7 @@ import { CONSERVATIVE_EMOJIS } from "../emoji/emoji-data";
 import { customEmojisToEntries, parseCustomEmojiMarkers } from "../emoji/custom-emojis";
 import { applyOptimisticReaction, reactionSummariesEqual } from "../reactions/reaction-summaries";
 import { linkifyText } from "../linkify";
+import AttachmentGrid from "./attachment-grid";
 import Avatar from "./avatar";
 import EmojiPicker from "./emoji-picker";
 import { DeleteIcon, EditIcon, EmojiIcon } from "./icons";
@@ -36,11 +37,6 @@ interface ReactionPickerState {
   anchor: HTMLElement;
 }
 
-function resolveImageUrl(url: string): string {
-  if (url.startsWith("http://") || url.startsWith("https://")) return url;
-  return `${getServerUrl()}${url}`;
-}
-
 function renderTextWithCustomEmojis(
   text: string,
   byId: (id: number) => CustomEmoji | null,
@@ -58,7 +54,7 @@ function renderTextWithCustomEmojis(
     const label = `:${emoji.name}:`;
     return (
       <img
-        src={resolveImageUrl(emoji.image_url)}
+        src={resolveServerUrl(emoji.image_url)}
         alt={label}
         title={emoji.deleted_at === null ? label : `${label} (deleted)`}
         class="inline-block h-6 w-6 align-text-bottom object-contain"
@@ -165,7 +161,7 @@ const ChannelMessages: Component<{
 
   const saveEdit = async (msg: Message) => {
     const next = draft();
-    if (next.length === 0) {
+    if (next.length === 0 && msg.attachments.length === 0) {
       requestDelete(msg.id);
       return;
     }
@@ -354,6 +350,12 @@ const ChannelMessages: Component<{
                     </button>
                   </form>
                 </Show>
+              </Show>
+              <Show when={!isDeletedMessage(message) && message.attachments.length > 0}>
+                <AttachmentGrid
+                  attachments={message.attachments}
+                  authorName={messageDisplayName(message)}
+                />
               </Show>
               <Show
                 when={

@@ -1,5 +1,6 @@
 /target
 /uploads
+/private-uploads
 .env
 .env.*
 !.env.example

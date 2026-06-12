@@ -235,12 +235,30 @@ for the target machine, then complete the platform smoke areas below.
 - **SSE delivery and two-client behavior**
   - Run two isolated Electron profiles, or one Electron profile plus a browser
     renderer session, against the same server.
-  - Send messages from one client and confirm the other updates without reload.
+  - Send text and photo messages from one client and confirm the other updates
+    without reload, including the received photo thumbnail.
   - Check channel creation/reorder, typing indicators, message edits/deletes, and
     voice participant/speaking updates where the server supports them.
-- **Channel, message, avatar, and embed flows**
+- **Channel, message, avatar, embed, and photo flows**
   - Open text and voice channels and verify the sidebar distinguishes them.
   - Send plain text, emoji, URLs, and messages that produce embeds/previews.
+  - Upload JPEG, PNG, and static WebP photos in the channel composer; verify
+    selected-photo previews clear after send and thumbnails render from the
+    configured Hamlet server URL.
+  - Upload a photo in a thread reply and verify the open thread panel renders the
+    reply thumbnail. Renderer E2E covers this flow; rerun manually if thread UI
+    changes or if packaged behavior is being certified.
+  - Try a file larger than 10 MB and an unsupported type such as GIF/HEIC/TXT;
+    verify the composer rejects it accessibly and no message is sent.
+  - Delete a message or thread reply with photos and verify the thumbnail/full
+    attachment disappear in the current client and in another SSE-connected
+    client without reload.
+  - Copy a thumbnail/full attachment URL: it should load only with an
+    authenticated server session and return an auth error from a clean browser or
+    after logout.
+  - In both `npm run electron:dev` and `npm run package:launch`, repeat a photo
+    send against the configured local server URL and confirm thumbnails/full
+    links use that server origin, not the renderer origin.
   - Reload a deep `/channel/<id>` route and confirm SPA fallback restores the
     same channel in dev and packaged modes.
   - Verify deterministic fallback avatars and uploaded avatars render beside

@@ -15,6 +15,7 @@ import {
   removeMessageReaction,
   messageDisplayName,
   updateDisplayName,
+  MessagePhotoValidationError,
   listCustomEmojis,
   uploadCustomEmoji,
   renameCustomEmoji,
@@ -23,6 +24,7 @@ import {
   type Channel,
   type CustomEmoji,
 } from "./api";
+import { tinyPngFile, tinyWebpFile } from "./test/image-fixtures";
 
 const DEFAULT_SERVER = import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL ?? "http://127.0.0.1:3030";
 
@@ -277,14 +279,41 @@ describe("apiFetch behavior", () => {
     await expect(restoreCustomEmoji(9)).rejects.toThrow(/custom emoji name already exists/i);
   });
 
-  test("sendMessage targets the channel-specific endpoint", async () => {
+  test("sendMessage uses JSON for text-only channel messages", async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
     await sendMessage("42", "hi");
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${DEFAULT_SERVER}/message/42`);
     expect(init.method).toBe("POST");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
     expect(JSON.parse(init.body)).toEqual({ text: "hi" });
+  });
+
+  test("sendMessage uses FormData with repeated photos when photos are supplied", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    const first = tinyPngFile("first.png");
+    const second = tinyWebpFile("second.webp");
+
+    await sendMessage("42", "caption", [first, second]);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/message/42`);
+    expect(init.method).toBe("POST");
+    expect(init.headers).toBeUndefined();
+    expect(init.body).toBeInstanceOf(FormData);
+    const body = init.body as FormData;
+    expect(body.get("text")).toBe("caption");
+    expect(body.getAll("photos")).toEqual([first, second]);
+  });
+
+  test("sendMessage rejects invalid photos before making a request", async () => {
+    const invalid = new File(["not a photo"], "not-a-photo.gif", { type: "image/gif" });
+
+    await expect(sendMessage("42", "caption", [invalid])).rejects.toBeInstanceOf(
+      MessagePhotoValidationError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   test("listParticipatedThreads fetches the global participation endpoint", async () => {
@@ -301,6 +330,7 @@ describe("apiFetch behavior", () => {
           display_name: null,
           avatar_url: null,
           suppress_embeds: false,
+          attachments: [],
           embeds: [],
         },
         reply_count: 2,
@@ -331,6 +361,7 @@ describe("apiFetch behavior", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
       replies: [],
@@ -375,6 +406,7 @@ describe("apiFetch behavior", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      attachments: [],
       embeds: [],
     };
     fetchMock.mockResolvedValue(
@@ -392,6 +424,49 @@ describe("apiFetch behavior", () => {
     expect(JSON.parse(init.body)).toEqual({ text: "reply" });
   });
 
+  test("sendThreadReply uses FormData with repeated photos when photos are supplied", async () => {
+    const reply = {
+      id: 8,
+      user_id: 1,
+      channel_id: 100,
+      parent_id: 7,
+      text: "caption",
+      username: "alice",
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      attachments: [],
+      embeds: [],
+    };
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(reply), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const first = tinyPngFile("first.png");
+    const second = tinyWebpFile("second.webp");
+
+    await expect(sendThreadReply(7, "caption", [first, second])).resolves.toEqual(reply);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/thread/7/reply`);
+    expect(init.method).toBe("POST");
+    expect(init.headers).toBeUndefined();
+    expect(init.body).toBeInstanceOf(FormData);
+    const body = init.body as FormData;
+    expect(body.get("text")).toBe("caption");
+    expect(body.getAll("photos")).toEqual([first, second]);
+  });
+
+  test("sendThreadReply rejects invalid photos before making a request", async () => {
+    const invalid = new File(["not a photo"], "not-a-photo.gif", { type: "image/gif" });
+
+    await expect(sendThreadReply(7, "caption", [invalid])).rejects.toBeInstanceOf(
+      MessagePhotoValidationError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   test("editMessage sends PUT with text body and parses message response", async () => {
     const updated = {
       id: 7,
@@ -400,6 +475,7 @@ describe("apiFetch behavior", () => {
       text: "fixed typo",
       username: "alice",
       avatar_url: null,
+      attachments: [],
     };
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify(updated), {

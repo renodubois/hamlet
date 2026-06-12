@@ -14,6 +14,7 @@ services:
       LIVEKIT_API_SECRET: devsecretdevsecretdevsecretdevsecret
     volumes:
       - hamlet_uploads:/app/uploads
+      - hamlet_private_uploads:/app/private-uploads
     depends_on:
       - livekit
     restart: unless-stopped
@@ -28,3 +29,4 @@ services:
 
 volumes:
   hamlet_uploads:
+  hamlet_private_uploads:

@@ -7,6 +7,7 @@ pub mod credential;
 pub mod embed;
 pub mod emoji;
 pub mod message;
+pub mod message_attachment;
 pub mod message_reaction;
 pub mod session;
 pub mod user;

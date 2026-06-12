@@ -12,6 +12,7 @@ pub mod embeds;
 pub mod entity;
 pub mod error;
 pub mod middleware;
+mod photos;
 pub mod reactions;
 pub mod seed;
 pub mod startup;
@@ -20,6 +21,7 @@ pub mod util;
 pub mod voice;
 
 // Stable surface for binaries and integration tests.
+pub use api::attachments::AttachmentStorage;
 pub use api::avatars::AvatarStorage;
 pub use api::emoji::EmojiStorage;
 pub use api::messages::EmbedFetcher;

@@ -6,6 +6,7 @@ import { ChannelsProvider } from "../contexts/channels";
 import { EventsProvider } from "../contexts/events";
 import { FakeEventSource } from "../test/msw/sse";
 import { resetMswState } from "../test/msw/server";
+import { makeAttachment } from "../test/fixtures";
 import { DEV_USER } from "../test/msw/handlers";
 import ChannelView from "./channel";
 import ThreadsView from "./threads";
@@ -38,6 +39,12 @@ function mountAt(path = "/threads") {
   return { ...result, history };
 }
 
+function expectAttributeEndsWith(element: Element, attribute: string, suffix: string) {
+  const value = element.getAttribute(attribute);
+  expect(value).not.toBeNull();
+  expect(value?.endsWith(suffix)).toBe(true);
+}
+
 function seedParticipatedThreads() {
   const state = resetMswState();
   state.me = DEV_USER;
@@ -59,6 +66,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: true,
+        attachments: [makeAttachment({ id: 9010, message_id: 10 })],
         embeds: [],
       },
       {
@@ -72,6 +80,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ],
@@ -87,6 +96,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [makeAttachment({ id: 9001, message_id: 20 })],
         embeds: [],
         reactions: [{ kind: "native", emoji: "👍", count: 4, me_reacted: true }],
         thread_summary: {
@@ -109,6 +119,22 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
+        embeds: [],
+      },
+      {
+        id: 12,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        parent_id: 10,
+        created_at: 1_700_000_011_000_000,
+        deleted_at: 1_700_000_012_000_000,
+        text: "",
+        username: DEV_USER.username,
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: true,
+        attachments: [makeAttachment({ id: 9011, message_id: 12 })],
         embeds: [],
       },
     ],
@@ -124,6 +150,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
       {
@@ -137,6 +164,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
       {
@@ -150,6 +178,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [makeAttachment({ id: 9002, message_id: 23 })],
         embeds: [],
       },
       {
@@ -163,6 +192,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
       {
@@ -176,6 +206,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [makeAttachment({ id: 9003, message_id: 25 })],
         embeds: [],
         reactions: [{ kind: "native", emoji: "🔥", count: 2, me_reacted: false }],
       },
@@ -192,6 +223,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ],
@@ -213,6 +245,27 @@ describe("Threads view integration", () => {
     expect(within(articles[0]).getByText("third newest")).toBeInTheDocument();
     expect(within(articles[0]).getByText("second newest")).toBeInTheDocument();
     expect(within(articles[0]).getByText("newest preview reply")).toBeInTheDocument();
+    expectAttributeEndsWith(
+      within(articles[0]).getByRole("img", { name: /photo attachment from bob/i }),
+      "src",
+      "/attachments/9001/thumbnail",
+    );
+    expectAttributeEndsWith(
+      within(articles[0]).getByRole("img", { name: /photo attachment from charlie/i }),
+      "src",
+      "/attachments/9002/thumbnail",
+    );
+    expectAttributeEndsWith(
+      within(articles[0]).getByRole("img", { name: /photo attachment from baipas/i }),
+      "src",
+      "/attachments/9003/thumbnail",
+    );
+    expectAttributeEndsWith(
+      within(articles[0]).getByRole("link", { name: /open photo attachment from bob/i }),
+      "href",
+      "/attachments/9001",
+    );
+    expect(within(articles[0]).queryByText(/\.png/i)).toBeNull();
     expect(within(articles[0]).queryByText("old preview reply")).toBeNull();
     expect(within(articles[0]).queryByRole("button", { name: /reaction/i })).toBeNull();
     expect(within(articles[0]).queryByText("👍")).toBeNull();
@@ -221,6 +274,9 @@ describe("Threads view integration", () => {
     expect(within(articles[1]).getByText("# general")).toBeInTheDocument();
     expect(within(articles[1]).getByText(/original message deleted/i)).toBeInTheDocument();
     expect(within(articles[1]).getByText("reply to deleted root")).toBeInTheDocument();
+    expect(within(articles[1]).getByText(/reply deleted/i)).toBeInTheDocument();
+    expect(within(articles[1]).queryByRole("list", { name: /photo attachment/i })).toBeNull();
+    expect(within(articles[1]).queryByRole("img", { name: /photo/i })).toBeNull();
     expect(screen.queryByText("bob-only root")).toBeNull();
     expect(screen.queryByText("bob-only newest reply")).toBeNull();
 
@@ -231,6 +287,21 @@ describe("Threads view integration", () => {
     const panel = await screen.findByRole("complementary", { name: /thread panel/i });
     await waitFor(() => expect(within(panel).getByText("root alice joined")).toBeInTheDocument());
     expect(within(panel).getByText("old preview reply")).toBeInTheDocument();
+    expectAttributeEndsWith(
+      within(panel).getByRole("img", { name: /photo attachment from bob/i }),
+      "src",
+      "/attachments/9001/thumbnail",
+    );
+    expectAttributeEndsWith(
+      within(panel).getByRole("img", { name: /photo attachment from charlie/i }),
+      "src",
+      "/attachments/9002/thumbnail",
+    );
+    expectAttributeEndsWith(
+      within(panel).getByRole("img", { name: /photo attachment from baipas/i }),
+      "src",
+      "/attachments/9003/thumbnail",
+    );
     expect(history.get()).toBe("/channel/200?thread=20");
     expect(state.threadFetches).toContain(20);
   });

@@ -12,6 +12,7 @@ const DEFAULT_BIND_ADDR: &str = "127.0.0.1:3030";
 const DEFAULT_DATABASE_URL: &str = "sqlite:file::memory:?cache=shared";
 const DEFAULT_LOG_FILTER: &str = "info";
 const DEFAULT_UPLOADS_DIR: &str = "./uploads";
+const DEFAULT_MESSAGE_ATTACHMENTS_DIR: &str = "./private-uploads/message-attachments";
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -19,6 +20,7 @@ pub struct Config {
     pub database_url: String,
     pub log_filter: String,
     pub uploads_dir: PathBuf,
+    pub message_attachments_dir: PathBuf,
     /// `None` when LiveKit env vars are missing — voice endpoints respond 503.
     pub voice: Option<VoiceConfig>,
     /// Whether outbound embed fetches happen on message create/update.
@@ -38,6 +40,10 @@ impl Config {
             database_url: env_or(DEFAULT_DATABASE_URL, "DATABASE_URL"),
             log_filter: env_or(DEFAULT_LOG_FILTER, "RUST_LOG"),
             uploads_dir: PathBuf::from(env_or(DEFAULT_UPLOADS_DIR, "HAMLET_UPLOADS_DIR")),
+            message_attachments_dir: PathBuf::from(env_or(
+                DEFAULT_MESSAGE_ATTACHMENTS_DIR,
+                "HAMLET_MESSAGE_ATTACHMENTS_DIR",
+            )),
             voice: VoiceConfig::from_env(),
             embed_fetcher_enabled: true,
             seed_dev_data: true,

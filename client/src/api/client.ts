@@ -4,6 +4,18 @@ export function getServerUrl(): string {
   return localStorage.getItem("hamlet.serverUrl") ?? DEFAULT_SERVER;
 }
 
+export function resolveServerUrl(pathOrUrl: string): string {
+  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+
+  const serverUrl = getServerUrl();
+  const base = serverUrl.endsWith("/") ? serverUrl : `${serverUrl}/`;
+  try {
+    return new URL(pathOrUrl, base).toString();
+  } catch {
+    return `${serverUrl.replace(/\/+$/, "")}/${pathOrUrl.replace(/^\/+/, "")}`;
+  }
+}
+
 export function setServerUrl(url: string): void {
   localStorage.setItem("hamlet.serverUrl", url);
 }

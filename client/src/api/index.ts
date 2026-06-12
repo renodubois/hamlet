@@ -1,4 +1,4 @@
-export { getServerUrl, setServerUrl } from "./client";
+export { getServerUrl, resolveServerUrl, setServerUrl } from "./client";
 export type { User } from "./auth";
 export {
   getMe,
@@ -20,9 +20,19 @@ export {
   restoreCustomEmoji,
 } from "./emojis";
 export type {
+  MessagePhotoValidationErrorKind,
+  MessagePhotoValidationIssue,
+} from "../photo-validation";
+export {
+  MESSAGE_PHOTO_LIMITS,
+  MessagePhotoValidationError,
+  validateMessagePhotos,
+} from "../photo-validation";
+export type {
   Embed,
   EmbedType,
   Message,
+  MessageAttachment,
   MessageDeleted,
   MessageEmbedsUpdated,
   MessageReactionsUpdated,

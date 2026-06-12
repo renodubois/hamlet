@@ -12,5 +12,6 @@ export {
   Pencil as EditIcon,
   Trash2 as DeleteIcon,
   Smile as EmojiIcon,
+  ImagePlus as ImagePlusIcon,
   X as CloseIcon,
 } from "lucide-solid";

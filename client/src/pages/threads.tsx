@@ -1,6 +1,7 @@
 import { A } from "@solidjs/router";
 import { createResource, For, Show } from "solid-js";
 import { listParticipatedThreads, messageDisplayName, type Message } from "../api";
+import AttachmentGrid from "../components/attachment-grid";
 
 function formatTimestamp(timestampMicros: number): string {
   return new Date(Math.floor(timestampMicros / 1000)).toLocaleString(undefined, {
@@ -16,11 +17,32 @@ function formatDateTime(timestampMicros: number): string {
   return new Date(Math.floor(timestampMicros / 1000)).toISOString();
 }
 
+function isDeletedMessage(message: Message): boolean {
+  return message.deleted_at != null;
+}
+
+function PreviewAttachments(props: { message: Message }) {
+  return (
+    <Show when={!isDeletedMessage(props.message) && props.message.attachments.length > 0}>
+      <AttachmentGrid
+        attachments={props.message.attachments}
+        authorName={messageDisplayName(props.message)}
+      />
+    </Show>
+  );
+}
+
 function ReplyPreview(props: { reply: Message }) {
   return (
     <li class="rounded-md bg-gray-50 px-3 py-2">
-      <p class="text-xs font-semibold text-gray-600">{messageDisplayName(props.reply)}</p>
-      <p class="mt-1 whitespace-pre-wrap break-words text-sm text-gray-800">{props.reply.text}</p>
+      <Show
+        when={!isDeletedMessage(props.reply)}
+        fallback={<p class="italic text-gray-500">Reply deleted</p>}
+      >
+        <p class="text-xs font-semibold text-gray-600">{messageDisplayName(props.reply)}</p>
+        <p class="mt-1 whitespace-pre-wrap break-words text-sm text-gray-800">{props.reply.text}</p>
+        <PreviewAttachments message={props.reply} />
+      </Show>
     </li>
   );
 }
@@ -70,7 +92,7 @@ export default function ThreadsView() {
 
                   <div class="mt-3 border-l-4 border-gray-200 pl-3">
                     <Show
-                      when={!thread.root.deleted_at}
+                      when={!isDeletedMessage(thread.root)}
                       fallback={<p class="italic text-gray-500">Original message deleted</p>}
                     >
                       <p class="text-sm font-semibold text-gray-700">
@@ -79,6 +101,7 @@ export default function ThreadsView() {
                       <p class="mt-1 whitespace-pre-wrap break-words text-gray-900">
                         {thread.root.text}
                       </p>
+                      <PreviewAttachments message={thread.root} />
                     </Show>
                   </div>
 

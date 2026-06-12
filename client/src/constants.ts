@@ -1,6 +1,16 @@
 export const CHANNEL_NAME_MAX_LEN = 128;
 export const DISPLAY_NAME_MAX_LEN = 64;
 
+export const MESSAGE_PHOTO_MAX_COUNT = 4;
+export const MESSAGE_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+export const MESSAGE_PHOTO_ACCEPT = "image/jpeg,image/png,image/webp";
+export const MESSAGE_PHOTO_SUPPORTED_TYPES = new Set([
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+]);
+
 // How often the client POSTs /typing while the user is typing. Smaller =
 // snappier indicator in other connected sessions, more server traffic.
 //

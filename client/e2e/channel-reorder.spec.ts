@@ -1,4 +1,5 @@
 import { test, expect, type Locator } from "@playwright/test";
+import { serverUrl } from "./test-config";
 
 // The seeded database only gives us `general`. Playwright tests share a
 // server process, so these tests create the extra channels they need and

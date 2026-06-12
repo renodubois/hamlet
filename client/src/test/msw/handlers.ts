@@ -3,6 +3,7 @@ import type {
   Channel,
   CustomEmoji,
   Message,
+  MessageAttachment,
   ParticipatedThreadPreview,
   Thread,
   User,
@@ -30,8 +31,18 @@ export interface HandlerState {
   messages: Record<string, Message[]>;
   validCredentials: { username: string; password: string };
   sentMessages: { channel: string; text: string }[];
+  sentMessagePhotos: {
+    channel: string;
+    text: string;
+    photos: { name: string; size: number; type: string }[];
+  }[];
   threadReplies: Record<string, Message[]>;
   sentThreadReplies: { rootId: number; text: string }[];
+  sentThreadReplyPhotos: {
+    rootId: number;
+    text: string;
+    photos: { name: string; size: number; type: string }[];
+  }[];
   threadFetches: number[];
   threadRequests: {
     rootId: number;
@@ -64,8 +75,10 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     messages: { "100": [] },
     validCredentials: { username: "baipas", password: "password" },
     sentMessages: [],
+    sentMessagePhotos: [],
     threadReplies: {},
     sentThreadReplies: [],
+    sentThreadReplyPhotos: [],
     threadFetches: [],
     threadRequests: [],
     editedMessages: [],
@@ -85,6 +98,29 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     typingPings: [],
     suppressedEmbeds: [],
     ...overrides,
+  };
+}
+
+function attachmentFromUploadedPhoto(
+  photo: Blob,
+  messageId: number,
+  position: number,
+): MessageAttachment {
+  const id = Math.floor(Math.random() * 1000) + 5000 + position;
+  return {
+    id,
+    message_id: messageId,
+    position,
+    content_type: "image/webp",
+    byte_size: Math.max(1, photo.size),
+    width: 1,
+    height: 1,
+    url: `/attachments/${id}`,
+    thumbnail_url: `/attachments/${id}/thumbnail`,
+    thumbnail_content_type: "image/webp",
+    thumbnail_byte_size: Math.max(1, Math.ceil(photo.size / 2)),
+    thumbnail_width: 1,
+    thumbnail_height: 1,
   };
 }
 
@@ -264,9 +300,53 @@ export function createHandlers(state: HandlerState) {
     }),
 
     http.post(`${BASE}/message/:id`, async ({ request, params }) => {
-      const body = (await request.json()) as { text: string };
-      state.sentMessages.push({ channel: String(params.id), text: body.text });
-      return new HttpResponse(null, { status: 200 });
+      const channel = String(params.id);
+      const channelId = Number(params.id);
+      const requestContentType = request.headers.get("content-type")?.toLowerCase() ?? "";
+      let text = "";
+      let uploadedPhotos: File[] = [];
+
+      if (requestContentType.startsWith("multipart/form-data")) {
+        const form = await request.formData();
+        const rawText = form.get("text");
+        text = typeof rawText === "string" ? rawText : "";
+        uploadedPhotos = form
+          .getAll("photos")
+          .filter((value): value is File => value instanceof File);
+        state.sentMessagePhotos.push({
+          channel,
+          text,
+          photos: uploadedPhotos.map((file) => ({
+            name: file.name,
+            size: file.size,
+            type: file.type,
+          })),
+        });
+      } else {
+        const body = (await request.json()) as { text: string };
+        text = body.text;
+      }
+
+      state.sentMessages.push({ channel, text });
+      const messageId = Math.floor(Math.random() * 1000) + 1000;
+      const message: Message = {
+        id: messageId,
+        user_id: state.me?.id ?? 1,
+        channel_id: channelId,
+        parent_id: null,
+        text,
+        username: state.me?.username ?? "baipas",
+        display_name: state.me?.display_name ?? null,
+        avatar_url: state.me?.avatar_url ?? null,
+        suppress_embeds: false,
+        attachments: uploadedPhotos.map((photo, index) =>
+          attachmentFromUploadedPhoto(photo, messageId, index),
+        ),
+        embeds: [],
+        reactions: [],
+      };
+      state.messages[channel] = [...(state.messages[channel] ?? []), message];
+      return HttpResponse.json(message);
     }),
 
     http.get(`${BASE}/threads/participated`, () => {
@@ -357,7 +437,31 @@ export function createHandlers(state: HandlerState) {
 
     http.post(`${BASE}/thread/:id/reply`, async ({ request, params }) => {
       const rootId = Number(params.id);
-      const body = (await request.json()) as { text: string };
+      const requestContentType = request.headers.get("content-type")?.toLowerCase() ?? "";
+      let text = "";
+      let uploadedPhotos: File[] = [];
+
+      if (requestContentType.startsWith("multipart/form-data")) {
+        const form = await request.formData();
+        const rawText = form.get("text");
+        text = typeof rawText === "string" ? rawText : "";
+        uploadedPhotos = form
+          .getAll("photos")
+          .filter((value): value is File => value instanceof File);
+        state.sentThreadReplyPhotos.push({
+          rootId,
+          text,
+          photos: uploadedPhotos.map((file) => ({
+            name: file.name,
+            size: file.size,
+            type: file.type,
+          })),
+        });
+      } else {
+        const body = (await request.json()) as { text: string };
+        text = body.text;
+      }
+
       let root: Message | undefined;
       for (const list of Object.values(state.messages)) {
         root = list.find((m) => m.id === rootId);
@@ -365,20 +469,24 @@ export function createHandlers(state: HandlerState) {
       }
       if (!root) return new HttpResponse(null, { status: 404 });
       const replies = state.threadReplies[String(rootId)] ?? [];
+      const replyId = Math.floor(Math.random() * 1000) + 1000;
       const reply: Message = {
-        id: Math.floor(Math.random() * 1000) + 1000,
+        id: replyId,
         user_id: state.me?.id ?? 1,
         channel_id: root.channel_id,
         parent_id: rootId,
-        text: body.text,
+        text,
         username: state.me?.username ?? "baipas",
         display_name: state.me?.display_name ?? null,
         avatar_url: state.me?.avatar_url ?? null,
         suppress_embeds: false,
+        attachments: uploadedPhotos.map((photo, index) =>
+          attachmentFromUploadedPhoto(photo, replyId, index),
+        ),
         embeds: [],
         reactions: [],
       };
-      state.sentThreadReplies.push({ rootId, text: body.text });
+      state.sentThreadReplies.push({ rootId, text });
       state.threadReplies[String(rootId)] = [...replies, reply];
       return HttpResponse.json(reply);
     }),

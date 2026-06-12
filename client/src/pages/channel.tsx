@@ -4,11 +4,17 @@ import {
   createMemo,
   createResource,
   createSignal,
+  createUniqueId,
   onCleanup,
   onMount,
 } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import ChannelMessages from "../components/channel-messages";
+import {
+  PhotoAttachControl,
+  SelectedPhotoPreviewList,
+  createComposerPhotoSelection,
+} from "../components/composer-photo-selection";
 import MessageInput from "../components/message-input";
 import ThreadPanel from "../components/thread-panel";
 import TypingIndicator from "../components/typing-indicator";
@@ -36,6 +42,8 @@ export default function ChannelView() {
   const channel = () => channels()?.find((c) => String(c.id) === params.id);
   const [message, setMessage] = createSignal("");
   const [submitting, setSubmitting] = createSignal(false);
+  const photoSelection = createComposerPhotoSelection();
+  const photoSelectionErrorId = createUniqueId();
   const [focusComposerRootId, setFocusComposerRootId] = createSignal<number | null>(null);
   const openThreadRootId = createMemo(() => parseThreadId(location.query.thread));
   // The Resource owns loading/error state for the initial fetch; the Store
@@ -109,15 +117,19 @@ export default function ChannelView() {
     void sendTyping(params.id);
   };
 
+  const hasDraftContent = () => message().trim().length > 0 || photoSelection.photos().length > 0;
+
   const submitMessage = async () => {
-    if (submitting()) return;
+    if (submitting() || !hasDraftContent()) return;
 
     const text = message();
+    const photos = photoSelection.photos().map((photo) => photo.file);
     setSubmitting(true);
     try {
-      const response = await sendMessage(params.id, text);
+      const response = await sendMessage(params.id, text, photos);
       if (!response.ok) return;
       setMessage("");
+      photoSelection.clearPhotos();
       lastTypingSentAt = 0;
       queueMicrotask(() => composerRef?.focus());
     } catch (e) {
@@ -232,7 +244,19 @@ export default function ChannelView() {
             void submitMessage();
           }}
         >
+          <SelectedPhotoPreviewList
+            photos={photoSelection.photos()}
+            error={photoSelection.error()}
+            errorId={photoSelectionErrorId}
+            disabled={submitting()}
+            onRemove={photoSelection.removePhoto}
+          />
           <div class="flex items-center gap-2">
+            <PhotoAttachControl
+              onFilesSelected={photoSelection.addFiles}
+              disabled={submitting()}
+              describedBy={photoSelection.error() ? photoSelectionErrorId : undefined}
+            />
             <MessageInput
               value={message()}
               onChange={handleMessageChange}
@@ -245,7 +269,7 @@ export default function ChannelView() {
             <button
               class="bg-blue-100 p-4 rounded-md disabled:opacity-50"
               type="submit"
-              disabled={submitting()}
+              disabled={submitting() || !hasDraftContent()}
             >
               Send
             </button>

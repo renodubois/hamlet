@@ -3,6 +3,7 @@
 //! that registers its routes. `crate::startup::configure_app` wires them
 //! together with the right auth scopes.
 
+pub mod attachments;
 pub mod auth;
 pub mod avatars;
 pub mod channels;

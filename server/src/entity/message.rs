@@ -40,6 +40,9 @@ pub struct Model {
     pub embeds: HasMany<super::embed::Entity>,
     #[serde(skip)]
     #[sea_orm(has_many)]
+    pub attachments: HasMany<super::message_attachment::Entity>,
+    #[serde(skip)]
+    #[sea_orm(has_many)]
     pub reactions: HasMany<super::message_reaction::Entity>,
 }
 

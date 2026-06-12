@@ -50,6 +50,7 @@ function fakeMessage(
     display_name: null,
     avatar_url: null,
     suppress_embeds: false,
+    attachments: [],
     embeds: [],
     ...overrides,
   };

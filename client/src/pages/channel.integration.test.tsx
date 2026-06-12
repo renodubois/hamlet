@@ -10,6 +10,8 @@ import { FakeEventSource, latestFakeEventSource } from "../test/msw/sse";
 import { mswState, resetMswState, server } from "../test/msw/server";
 import { DEV_USER } from "../test/msw/handlers";
 import { expectNoA11yViolations } from "../test/a11y";
+import { makeAttachment } from "../test/fixtures";
+import { tinyJpegFile, tinyPngFile, tinyWebpFile } from "../test/image-fixtures";
 import { assertExists } from "../test/render";
 import ChannelView from "./channel";
 import type { Message } from "../api";
@@ -58,6 +60,7 @@ function seedAuthed() {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      attachments: [],
       embeds: [],
     },
     {
@@ -69,6 +72,7 @@ function seedAuthed() {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      attachments: [],
       embeds: [],
     },
   ];
@@ -91,6 +95,53 @@ function deferred<T = void>() {
     resolve = res;
   });
   return { promise, resolve };
+}
+
+function mockObjectUrls() {
+  const originalCreateObjectURL = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
+  const originalRevokeObjectURL = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
+  let nextUrl = 0;
+  const createObjectURL = vi.fn(
+    (file: Blob | MediaSource) => `blob:${(file as File).name ?? "photo"}-${nextUrl++}`,
+  );
+  const revokeObjectURL = vi.fn();
+
+  Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectURL });
+  Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectURL });
+
+  return {
+    createObjectURL,
+    revokeObjectURL,
+    restore() {
+      if (originalCreateObjectURL) {
+        Object.defineProperty(URL, "createObjectURL", originalCreateObjectURL);
+      } else {
+        delete (URL as unknown as { createObjectURL?: unknown }).createObjectURL;
+      }
+      if (originalRevokeObjectURL) {
+        Object.defineProperty(URL, "revokeObjectURL", originalRevokeObjectURL);
+      } else {
+        delete (URL as unknown as { revokeObjectURL?: unknown }).revokeObjectURL;
+      }
+    },
+  };
+}
+
+function fileInput(): HTMLInputElement {
+  return assertExists(
+    document.querySelector('input[type="file"][aria-label="Photo files"]'),
+    "photo file input",
+  ) as HTMLInputElement;
+}
+
+function fileInputWithin(container: HTMLElement): HTMLInputElement {
+  return within(container).getByLabelText(/photo files/i) as HTMLInputElement;
+}
+
+function photoFile(name: string, type = "image/png") {
+  if (type === "image/webp") return tinyWebpFile(name);
+  if (type === "image/jpeg" || type === "image/jpg") return tinyJpegFile(name);
+  return tinyPngFile(name);
 }
 
 function findRenderedMessageText(text: string) {
@@ -127,6 +178,7 @@ function seedOwnMessage(overrides: Partial<Message> = {}) {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      attachments: [],
       embeds: [],
       ...overrides,
     },
@@ -148,6 +200,7 @@ function seedThreadWithOwnReply(overrides: Partial<Message> = {}) {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      attachments: [],
       embeds: [],
       ...overrides,
     },
@@ -609,6 +662,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
       thread_summary: { reply_count: 1, last_reply_created_at: 1_700_000_030_000_000 },
@@ -641,6 +695,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ];
@@ -805,6 +860,30 @@ describe("Channel view integration", () => {
     });
   });
 
+  test("blank thread reply edits with photos save an empty caption instead of prompting delete", async () => {
+    const state = seedThreadWithOwnReply({
+      text: "photo reply caption",
+      attachments: [makeAttachment({ id: 9401, message_id: 70 })],
+    });
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("photo reply caption")).toBeInTheDocument());
+    expect(
+      within(panel).getByRole("img", { name: /photo attachment from baipas/i }),
+    ).toBeInTheDocument();
+    const input = await openThreadReplyEdit(panel);
+    fireEvent.input(input, { target: { value: "" } });
+    fireEvent.submit(assertExists(input.closest("form"), "thread reply edit form"));
+
+    await waitFor(() => expect(state.editedMessages).toContainEqual({ id: 70, text: "" }));
+    expect(screen.queryByRole("dialog", { name: /delete reply/i })).toBeNull();
+    expect(state.deletedMessageIds).not.toContain(70);
+    expect(
+      within(panel).getByRole("img", { name: /photo attachment from baipas/i }),
+    ).toBeInTheDocument();
+  });
+
   test("message_updated SSE events update thread replies with preserved line breaks", async () => {
     seedThreadWithOwnReply({ text: "before update" });
     mountAt("/channel/100?thread=1");
@@ -826,6 +905,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      attachments: [],
       embeds: [],
     });
 
@@ -865,6 +945,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ];
@@ -927,6 +1008,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       } satisfies Message;
     });
@@ -974,6 +1056,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
       {
@@ -985,6 +1068,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
         thread_summary: { reply_count: 2, last_reply_created_at: 1_700_000_000_000_000 },
       },
@@ -1000,6 +1084,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ];
@@ -1078,6 +1163,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ];
@@ -1116,6 +1202,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ];
@@ -1140,6 +1227,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ];
@@ -1152,6 +1240,134 @@ describe("Channel view integration", () => {
       "break-words",
       "[overflow-wrap:anywhere]",
     );
+  });
+
+  test("renders photo attachments from history and incoming SSE payloads", async () => {
+    const state = seedAuthed();
+    state.messages["100"] = [
+      {
+        id: 13,
+        user_id: 2,
+        channel_id: 100,
+        text: "history photo",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        attachments: [makeAttachment({ id: 9101, message_id: 13 })],
+        embeds: [],
+      },
+    ];
+    mountAt("/channel/100");
+
+    const historyImage = await screen.findByRole("img", { name: /photo attachment from bob/i });
+    expect(historyImage).toHaveAttribute("src", `${TEST_SERVER}/attachments/9101/thumbnail`);
+    expect(screen.getByRole("link", { name: /open photo attachment from bob/i })).toHaveAttribute(
+      "href",
+      `${TEST_SERVER}/attachments/9101`,
+    );
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessage({
+      id: 14,
+      user_id: 3,
+      channel_id: 100,
+      text: "live photo",
+      username: "carol",
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      attachments: [makeAttachment({ id: 9102, message_id: 14 })],
+      embeds: [],
+    });
+
+    const liveImage = await screen.findByRole("img", { name: /photo attachment from carol/i });
+    expect(liveImage).toHaveAttribute("src", `${TEST_SERVER}/attachments/9102/thumbnail`);
+    expect(screen.getByText("live photo")).toBeInTheDocument();
+  });
+
+  test("thread panel renders root, paginated reply, and live reply photo attachments", async () => {
+    const state = seedAuthed();
+    state.messages["100"][0] = {
+      ...state.messages["100"][0],
+      attachments: [makeAttachment({ id: 9201, message_id: 1 })],
+    };
+    state.threadReplies["1"] = Array.from({ length: 51 }, (_, index) => {
+      const replyNumber = index + 1;
+      return {
+        id: 2_000 + replyNumber,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_000_000_000 + replyNumber,
+        text: `photo reply ${replyNumber}`,
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        attachments:
+          replyNumber === 1 || replyNumber === 51
+            ? [makeAttachment({ id: 9201 + replyNumber, message_id: 2_000 + replyNumber })]
+            : [],
+        embeds: [],
+      } satisfies Message;
+    });
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("photo reply 51")).toBeInTheDocument());
+    expect(
+      within(panel).getByRole("link", { name: /open photo attachment from alice/i }),
+    ).toHaveAttribute("href", `${TEST_SERVER}/attachments/9201`);
+    expect(within(panel).getByRole("img", { name: /photo attachment from bob/i })).toHaveAttribute(
+      "src",
+      `${TEST_SERVER}/attachments/9252/thumbnail`,
+    );
+    expect(within(panel).queryByText("photo reply 1")).toBeNull();
+
+    fireEvent.click(within(panel).getByRole("button", { name: /load older replies/i }));
+
+    await waitFor(() => expect(within(panel).getByText("photo reply 1")).toBeInTheDocument());
+    const bobPhotos = within(panel).getAllByRole("img", { name: /photo attachment from bob/i });
+    expect(
+      bobPhotos.some(
+        (img) => img.getAttribute("src") === `${TEST_SERVER}/attachments/9202/thumbnail`,
+      ),
+    ).toBe(true);
+    expect(
+      bobPhotos.some(
+        (img) => img.getAttribute("src") === `${TEST_SERVER}/attachments/9252/thumbnail`,
+      ),
+    ).toBe(true);
+
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushThreadReplyCreated({
+      channel_id: 100,
+      root_message_id: 1,
+      reply: {
+        id: 2_100,
+        user_id: 3,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_060_000_000,
+        text: "live thread photo",
+        username: "carol",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        attachments: [makeAttachment({ id: 9301, message_id: 2_100 })],
+        embeds: [],
+      },
+      thread_summary: { reply_count: 52, last_reply_created_at: 1_700_000_060_000_000 },
+    });
+
+    const liveImage = await within(panel).findByRole("img", {
+      name: /photo attachment from carol/i,
+    });
+    expect(liveImage).toHaveAttribute("src", `${TEST_SERVER}/attachments/9301/thumbnail`);
+    expect(within(panel).getByText("live thread photo")).toBeInTheDocument();
   });
 
   test("appends a message delivered over SSE", async () => {
@@ -1171,6 +1387,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      attachments: [],
       embeds: [],
     });
 
@@ -1197,6 +1414,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      attachments: [],
       embeds: [],
     });
 
@@ -1226,6 +1444,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      attachments: [],
       embeds: [],
     });
 
@@ -1253,6 +1472,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      attachments: [],
       embeds: [],
     });
 
@@ -1285,6 +1505,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
       thread_summary: { reply_count: 9, last_reply_created_at: 1_700_000_020_000_000 },
@@ -1303,6 +1524,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
       thread_summary: { reply_count: 4, last_reply_created_at: 1_700_000_025_000_000 },
@@ -1326,6 +1548,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
       thread_summary: { reply_count: 1, last_reply_created_at: 1_700_000_030_000_000 },
@@ -1360,6 +1583,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
       thread_summary: { reply_count: 3, last_reply_created_at: 1_700_000_030_000_000 },
@@ -1382,6 +1606,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
       thread_summary: { reply_count: 2, last_reply_created_at: 1_700_000_040_000_000 },
@@ -1415,6 +1640,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [
           {
             id: 700,
@@ -1442,6 +1668,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ];
@@ -1506,6 +1733,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
       {
@@ -1520,6 +1748,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: true,
+        attachments: [],
         embeds: [],
         reactions: [{ kind: "native", emoji: "❤️", count: 1, me_reacted: false }],
       },
@@ -1561,6 +1790,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [makeAttachment({ id: 9801, message_id: 90 })],
         embeds: [],
       },
       {
@@ -1574,6 +1804,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [makeAttachment({ id: 9802, message_id: 91 })],
         embeds: [],
       },
     ];
@@ -1581,6 +1812,9 @@ describe("Channel view integration", () => {
     mountAt("/channel/100?thread=1");
     const panel = await screen.findByRole("complementary", { name: /thread panel/i });
     await waitFor(() => expect(within(panel).getByText("newer live reply")).toBeInTheDocument());
+    expect(within(panel).getAllByRole("img", { name: /photo attachment from bob/i })).toHaveLength(
+      2,
+    );
     await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
     const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
 
@@ -1593,6 +1827,9 @@ describe("Channel view integration", () => {
 
     await waitFor(() => {
       expect(within(panel).queryByText("newer live reply")).toBeNull();
+      expect(
+        within(panel).getAllByRole("img", { name: /photo attachment from bob/i }),
+      ).toHaveLength(1);
       expect(screen.getByRole("button", { name: /open thread with 1 reply/i })).toBeInTheDocument();
     });
 
@@ -1605,6 +1842,7 @@ describe("Channel view integration", () => {
 
     await waitFor(() => {
       expect(within(panel).queryByText("older live reply")).toBeNull();
+      expect(within(panel).queryByRole("img", { name: /photo attachment from bob/i })).toBeNull();
       expect(screen.queryByRole("button", { name: /open thread with/i })).toBeNull();
     });
   });
@@ -1660,16 +1898,230 @@ describe("Channel view integration", () => {
     });
   });
 
-  test("empty channel drafts still submit to the existing API validation path", async () => {
+  test("empty channel drafts keep Send disabled and do not submit", async () => {
     seedAuthed();
     mountAt("/channel/100");
 
     const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-    fireEvent.submit(assertExists(input.closest("form"), "form"));
+    const sendButton = screen.getByRole("button", { name: /^send$/i });
+    expect(sendButton).toBeDisabled();
 
-    await waitFor(() => {
-      expect(mswState().sentMessages).toContainEqual({ channel: "100", text: "" });
-    });
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(mswState().sentMessages).toEqual([]);
+
+    fireEvent.input(input, { target: { value: "text draft" } });
+    await waitFor(() => expect(sendButton).not.toBeDisabled());
+
+    fireEvent.input(input, { target: { value: "" } });
+    await waitFor(() => expect(sendButton).toBeDisabled());
+  });
+
+  test("selected channel photos preview, persist while typing, and can be removed", async () => {
+    const urls = mockObjectUrls();
+    const state = seedAuthed();
+    const { unmount } = mountAt("/channel/100");
+
+    try {
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+      const sendButton = screen.getByRole("button", { name: /^send$/i });
+      expect(sendButton).toBeDisabled();
+
+      fireEvent.change(fileInput(), { target: { files: [photoFile("cat.png")] } });
+
+      expect(urls.createObjectURL).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("img", { name: /selected photo 1: cat\.png/i })).toHaveAttribute(
+        "src",
+        "blob:cat.png-0",
+      );
+      expect(sendButton).not.toBeDisabled();
+      expect(state.typingPings).toEqual([]);
+
+      fireEvent.input(input, { target: { value: "caption while preview remains" } });
+      await waitFor(() => expect(state.typingPings).toEqual(["100"]));
+      expect(screen.getByRole("img", { name: /selected photo 1: cat\.png/i })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: /remove selected photo 1: cat\.png/i }));
+
+      expect(urls.revokeObjectURL).toHaveBeenCalledWith("blob:cat.png-0");
+      expect(screen.queryByRole("img", { name: /cat\.png/i })).toBeNull();
+      expect(sendButton).not.toBeDisabled();
+    } finally {
+      unmount();
+      urls.restore();
+    }
+  });
+
+  test("photo-only channel drafts submit as multipart, clear previews, revoke URLs, and refocus", async () => {
+    const urls = mockObjectUrls();
+    const state = seedAuthed();
+    const { unmount } = mountAt("/channel/100");
+
+    try {
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+      const sendButton = screen.getByRole("button", { name: /^send$/i });
+
+      const catPhoto = photoFile("cat.png");
+      fireEvent.change(fileInput(), { target: { files: [catPhoto] } });
+      await waitFor(() => expect(sendButton).not.toBeDisabled());
+      fireEvent.click(sendButton);
+
+      await waitFor(() => {
+        expect(state.sentMessagePhotos).toContainEqual({
+          channel: "100",
+          text: "",
+          photos: [{ name: "cat.png", size: catPhoto.size, type: "image/png" }],
+        });
+        expect(screen.queryByRole("img", { name: /cat\.png/i })).toBeNull();
+        expect(urls.revokeObjectURL).toHaveBeenCalledWith("blob:cat.png-0");
+        expect(input.value).toBe("");
+        expect(document.activeElement).toBe(input);
+      });
+    } finally {
+      unmount();
+      urls.restore();
+    }
+  });
+
+  test("failed photo sends keep selected photos and object URLs for retry", async () => {
+    const urls = mockObjectUrls();
+    seedAuthed();
+    server.use(
+      http.post(`${TEST_SERVER}/message/:id`, () => new HttpResponse(null, { status: 500 })),
+    );
+    const { unmount } = mountAt("/channel/100");
+
+    try {
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+      fireEvent.input(input, { target: { value: "retry caption" } });
+      fireEvent.change(fileInput(), { target: { files: [photoFile("retry.webp", "image/webp")] } });
+
+      fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+
+      await waitFor(() => {
+        expect(screen.getByRole("img", { name: /selected photo 1: retry\.webp/i })).toHaveAttribute(
+          "src",
+          "blob:retry.webp-0",
+        );
+        expect(input.value).toBe("retry caption");
+        expect(screen.getByRole("button", { name: /^send$/i })).not.toBeDisabled();
+      });
+      expect(urls.revokeObjectURL).not.toHaveBeenCalled();
+    } finally {
+      unmount();
+      urls.restore();
+    }
+  });
+
+  test("thread reply photos preview, remove, and submit photo-only multipart", async () => {
+    const urls = mockObjectUrls();
+    const state = seedAuthed();
+    const { container, unmount } = mountAt("/channel/100?thread=1");
+
+    try {
+      const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+      await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
+      const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
+      const sendButton = within(panel).getByRole("button", { name: /^send$/i });
+      expect(sendButton).toBeDisabled();
+
+      fireEvent.change(fileInputWithin(panel), { target: { files: [photoFile("remove-me.png")] } });
+      expect(urls.createObjectURL).toHaveBeenCalledTimes(1);
+      expect(
+        within(panel).getByRole("img", { name: /selected photo 1: remove-me\.png/i }),
+      ).toHaveAttribute("src", "blob:remove-me.png-0");
+      expect(sendButton).not.toBeDisabled();
+
+      fireEvent.click(
+        within(panel).getByRole("button", { name: /remove selected photo 1: remove-me\.png/i }),
+      );
+      expect(urls.revokeObjectURL).toHaveBeenCalledWith("blob:remove-me.png-0");
+      expect(within(panel).queryByRole("img", { name: /remove-me\.png/i })).toBeNull();
+      expect(sendButton).toBeDisabled();
+
+      const catPhoto = photoFile("thread-cat.png");
+      fireEvent.change(fileInputWithin(panel), { target: { files: [catPhoto] } });
+      await waitFor(() => expect(sendButton).not.toBeDisabled());
+      fireEvent.click(sendButton);
+
+      await waitFor(() => {
+        expect(state.sentThreadReplyPhotos).toContainEqual({
+          rootId: 1,
+          text: "",
+          photos: [{ name: "thread-cat.png", size: catPhoto.size, type: "image/png" }],
+        });
+        expect(within(panel).queryByRole("img", { name: /thread-cat\.png/i })).toBeNull();
+        expect(urls.revokeObjectURL).toHaveBeenCalledWith("blob:thread-cat.png-1");
+        expect(input.value).toBe("");
+        expect(document.activeElement).toBe(input);
+      });
+      expect(
+        within(panel)
+          .getByRole("img", { name: /photo attachment from baipas/i })
+          .getAttribute("src"),
+      ).toContain("/attachments/");
+
+      await expectNoA11yViolations(container, "thread photo reply composer");
+    } finally {
+      unmount();
+      urls.restore();
+    }
+  });
+
+  test("failed thread photo sends keep selected photos and text for retry", async () => {
+    const urls = mockObjectUrls();
+    const state = seedAuthed();
+    server.use(
+      http.post(`${TEST_SERVER}/thread/1/reply`, async ({ request }) => {
+        const form = await request.formData();
+        const rawText = form.get("text");
+        const file = form.get("photos");
+        state.sentThreadReplyPhotos.push({
+          rootId: 1,
+          text: typeof rawText === "string" ? rawText : "",
+          photos:
+            file instanceof File ? [{ name: file.name, size: file.size, type: file.type }] : [],
+        });
+        return new HttpResponse(null, { status: 500 });
+      }),
+    );
+    const { unmount } = mountAt("/channel/100?thread=1");
+
+    try {
+      const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+      await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
+      const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
+      fireEvent.input(input, { target: { value: "retry thread caption" } });
+      fireEvent.change(fileInputWithin(panel), {
+        target: { files: [photoFile("retry-thread.webp", "image/webp")] },
+      });
+
+      fireEvent.click(within(panel).getByRole("button", { name: /^send$/i }));
+
+      await waitFor(() => {
+        expect(state.sentThreadReplyPhotos).toContainEqual({
+          rootId: 1,
+          text: "retry thread caption",
+          photos: [
+            {
+              name: "retry-thread.webp",
+              size: photoFile("retry-thread.webp", "image/webp").size,
+              type: "image/webp",
+            },
+          ],
+        });
+        expect(
+          within(panel).getByRole("img", { name: /selected photo 1: retry-thread\.webp/i }),
+        ).toHaveAttribute("src", "blob:retry-thread.webp-0");
+        expect(input.value).toBe("retry thread caption");
+        expect(within(panel).getByRole("alert")).toHaveTextContent("Thread reply failed (500)");
+        expect(within(panel).getByRole("button", { name: /^send$/i })).not.toBeDisabled();
+      });
+      expect(urls.revokeObjectURL).not.toHaveBeenCalled();
+    } finally {
+      unmount();
+      urls.restore();
+    }
   });
 
   test("typing pings remain throttled while composing multiline drafts", async () => {
@@ -1821,6 +2273,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      attachments: [],
       embeds: [],
     });
 
@@ -2077,6 +2530,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ];
@@ -2101,6 +2555,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ];
@@ -2133,6 +2588,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ];
@@ -2167,6 +2623,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ];
@@ -2194,11 +2651,49 @@ describe("Channel view integration", () => {
     });
   });
 
+  test("submitting an empty edit on a photo message saves an empty caption", async () => {
+    const state = resetMswState();
+    state.me = DEV_USER;
+    state.messages["100"] = [
+      {
+        id: 12,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        text: "photo caption",
+        username: "baipas",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        attachments: [makeAttachment({ id: 9501, message_id: 12 })],
+        embeds: [],
+      },
+    ];
+    mountAt("/channel/100");
+
+    const input = await openMessageEdit("photo caption");
+    fireEvent.input(input, { target: { value: "" } });
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+
+    await waitFor(() => {
+      expect(state.editedMessages).toContainEqual({ id: 12, text: "" });
+      expect(
+        screen.getByRole("img", { name: /photo attachment from baipas/i }),
+      ).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("dialog", { name: /delete message/i })).toBeNull();
+    expect(state.deletedMessageIds).not.toContain(12);
+  });
+
   test("removes message from UI when a message_deleted SSE event arrives", async () => {
-    seedAuthed();
+    const state = seedAuthed();
+    state.messages["100"][0] = {
+      ...state.messages["100"][0],
+      attachments: [makeAttachment({ id: 9701, message_id: 1 })],
+    };
     mountAt("/channel/100");
 
     await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+    expect(screen.getByRole("img", { name: /photo attachment from alice/i })).toBeInTheDocument();
     await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
 
     const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
@@ -2206,6 +2701,7 @@ describe("Channel view integration", () => {
 
     await waitFor(() => {
       expect(screen.queryByText("hello")).toBeNull();
+      expect(screen.queryByRole("img", { name: /photo attachment from alice/i })).toBeNull();
       expect(screen.getByText("world")).toBeInTheDocument();
     });
   });
@@ -2227,12 +2723,90 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      attachments: [],
       embeds: [],
     });
 
     await waitFor(() => {
       expect(screen.getByText("hello (edited)")).toBeInTheDocument();
       expect(screen.queryByText("hello")).toBeNull();
+    });
+  });
+
+  test("message_updated tombstones hide root photos in channel and open thread views", async () => {
+    const state = seedAuthed();
+    state.messages["100"][0] = {
+      ...state.messages["100"][0],
+      attachments: [makeAttachment({ id: 9601, message_id: 1 })],
+      embeds: [
+        {
+          id: 9602,
+          message_id: 1,
+          url: "https://example.com",
+          title: "Example",
+          description: null,
+          image_url: null,
+          site_name: null,
+          embed_type: "link",
+          iframe_url: null,
+          iframe_width: null,
+          iframe_height: null,
+        },
+      ],
+      reactions: [{ kind: "native", emoji: "👍", count: 1, me_reacted: true }],
+      thread_summary: { reply_count: 1, last_reply_created_at: 1_700_000_010_000_000 },
+    };
+    state.threadReplies["1"] = [
+      {
+        id: 96,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_010_000_000,
+        text: "reply survives tombstone",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        attachments: [],
+        embeds: [],
+      },
+    ];
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() =>
+      expect(within(panel).getByText("reply survives tombstone")).toBeInTheDocument(),
+    );
+    expect(screen.getAllByRole("img", { name: /photo attachment from alice/i })).toHaveLength(2);
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessageUpdated({
+      id: 1,
+      user_id: 1,
+      channel_id: 100,
+      parent_id: null,
+      created_at: 1_700_000_000_000_000,
+      deleted_at: 1_700_000_020_000_000,
+      text: "",
+      username: "alice",
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: true,
+      attachments: [],
+      embeds: [],
+      reactions: [],
+      thread_summary: { reply_count: 1, last_reply_created_at: 1_700_000_010_000_000 },
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("img", { name: /photo attachment from alice/i })).toBeNull();
+      expect(screen.queryByRole("link", { name: /example/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /👍 1 reaction/i })).toBeNull();
+      expect(screen.getAllByLabelText(/original message deleted/i)).toHaveLength(2);
+      expect(within(panel).getByText("reply survives tombstone")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /open thread with 1 reply/i })).toBeInTheDocument();
     });
   });
 
@@ -2254,6 +2828,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      attachments: [],
       embeds: [],
     });
 
@@ -2284,6 +2859,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      attachments: [],
       embeds: [],
     });
 
@@ -2325,6 +2901,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ];
@@ -2435,6 +3012,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ];
@@ -2468,6 +3046,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ];
@@ -2497,6 +3076,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ];
@@ -2524,6 +3104,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: "/uploads/avatars/1.webp?v=1",
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
       {
@@ -2535,6 +3116,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ];
@@ -2560,6 +3142,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
       },
     ];
@@ -2612,6 +3195,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
         reactions: [],
       },
@@ -2684,6 +3268,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [],
         reactions: [{ kind: "native", emoji: "👍", count: 2, me_reacted: true }],
       },
@@ -2722,6 +3307,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        attachments: [],
         embeds: [
           {
             id: 6000,

@@ -5,10 +5,10 @@ mod common;
 use actix_web::{
     App,
     http::{StatusCode, header::ContentType},
-    test,
+    test, web,
 };
-use common::{TestCtx, insert_message};
-use hamlet::{configure_app, entity, generate_id, now_unix_micros};
+use common::{TestCtx, insert_message, make_tmp_uploads_dir};
+use hamlet::{AttachmentStorage, configure_app, entity, generate_id, now_unix_micros};
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, Set};
 
 async fn insert_message_with_parent(
@@ -114,6 +114,68 @@ async fn insert_custom_reaction(
     .unwrap();
 }
 
+async fn insert_message_attachment(
+    db: &sea_orm::DatabaseConnection,
+    message_id: i64,
+    position: i32,
+) -> i64 {
+    let id = generate_id();
+    entity::message_attachment::ActiveModel {
+        id: Set(id),
+        message_id: Set(message_id),
+        position: Set(position),
+        content_type: Set("image/webp".to_owned()),
+        byte_size: Set(12_345),
+        width: Set(640),
+        height: Set(480),
+        storage_path: Set(format!("attachments/{id}/full.webp")),
+        thumbnail_content_type: Set("image/webp".to_owned()),
+        thumbnail_byte_size: Set(2_345),
+        thumbnail_width: Set(320),
+        thumbnail_height: Set(240),
+        thumbnail_storage_path: Set(format!("attachments/{id}/thumb.webp")),
+        created_at: Set(now_unix_micros()),
+    }
+    .insert(db)
+    .await
+    .unwrap();
+    id
+}
+
+async fn attachment_row(
+    db: &sea_orm::DatabaseConnection,
+    attachment_id: i64,
+) -> entity::message_attachment::Model {
+    entity::message_attachment::Entity::find_by_id(attachment_id)
+        .one(db)
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+fn write_attachment_file(root: &std::path::Path, relative_path: &str, bytes: &[u8]) {
+    let path = root.join(relative_path);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
+async fn insert_message_attachment_with_files(
+    db: &sea_orm::DatabaseConnection,
+    storage_root: &std::path::Path,
+    message_id: i64,
+    position: i32,
+) -> (i64, String, String) {
+    let attachment_id = insert_message_attachment(db, message_id, position).await;
+    let row = attachment_row(db, attachment_id).await;
+    write_attachment_file(storage_root, &row.storage_path, b"full");
+    write_attachment_file(storage_root, &row.thumbnail_storage_path, b"thumb");
+    (attachment_id, row.storage_path, row.thumbnail_storage_path)
+}
+
+fn assert_empty_attachments(message: &serde_json::Value) {
+    assert_eq!(message["attachments"], serde_json::json!([]));
+}
+
 #[actix_web::test]
 async fn test_message_create_requires_auth() {
     let ctx = TestCtx::new().await;
@@ -145,6 +207,172 @@ async fn test_message_create() {
         .set_payload(serde_json::json!({"text": "test message!"}).to_string())
         .to_request();
     assert!(test::call_service(&app, req).await.status().is_success());
+}
+
+#[actix_web::test]
+async fn test_text_only_message_surfaces_return_empty_attachments() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{chan_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"text": "root"}).to_string())
+        .to_request();
+    let created: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    assert_empty_attachments(&created);
+    let root_id = created["id"].as_i64().unwrap();
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/thread/{root_id}/reply"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"text": "reply"}).to_string())
+        .to_request();
+    let reply: serde_json::Value = test::read_body_json(test::call_service(&app, req).await).await;
+    assert_empty_attachments(&reply);
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    assert_empty_attachments(&history[0]);
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/thread/{root_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let thread: serde_json::Value = test::read_body_json(test::call_service(&app, req).await).await;
+    assert_empty_attachments(&thread["root"]);
+    assert_empty_attachments(&thread["replies"][0]);
+
+    let req = test::TestRequest::get()
+        .uri("/threads/participated")
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let previews: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    assert_empty_attachments(&previews[0]["root"]);
+    assert_empty_attachments(&previews[0]["recent_replies"][0]);
+
+    let req = test::TestRequest::put()
+        .uri(&format!("/message/{root_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"text": "edited root"}).to_string())
+        .to_request();
+    let edited: serde_json::Value = test::read_body_json(test::call_service(&app, req).await).await;
+    assert_empty_attachments(&edited);
+}
+
+#[actix_web::test]
+async fn test_attachment_metadata_uses_canonical_message_response_shape() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let root_id = insert_message(&ctx.db, alice.user_id, chan_id, "root with photo").await;
+    let attachment_id = insert_message_attachment(&ctx.db, root_id, 0).await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let attachment = &history[0]["attachments"][0];
+    assert_eq!(attachment["id"], attachment_id);
+    assert_eq!(attachment["message_id"], root_id);
+    assert_eq!(attachment["position"], 0);
+    assert_eq!(attachment["content_type"], "image/webp");
+    assert_eq!(attachment["byte_size"], 12_345);
+    assert_eq!(attachment["width"], 640);
+    assert_eq!(attachment["height"], 480);
+    assert_eq!(attachment["url"], format!("/attachments/{attachment_id}"));
+    assert_eq!(
+        attachment["thumbnail_url"],
+        format!("/attachments/{attachment_id}/thumbnail")
+    );
+    assert_eq!(attachment["thumbnail_content_type"], "image/webp");
+    assert_eq!(attachment["thumbnail_byte_size"], 2_345);
+    assert_eq!(attachment["thumbnail_width"], 320);
+    assert_eq!(attachment["thumbnail_height"], 240);
+}
+
+#[actix_web::test]
+async fn test_message_edit_updates_only_text_and_preserves_photo_attachments() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let root_id = insert_message(&ctx.db, alice.user_id, chan_id, "caption").await;
+    let root_attachment = insert_message_attachment(&ctx.db, root_id, 0).await;
+    let reply_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(root_id),
+        now_unix_micros(),
+        "reply caption",
+    )
+    .await;
+    let reply_attachment = insert_message_attachment(&ctx.db, reply_id, 0).await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::put()
+        .uri(&format!("/message/{root_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"text": ""}).to_string())
+        .to_request();
+    let edited_root: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(edited_root["text"], "");
+    assert_eq!(edited_root["attachments"][0]["id"], root_attachment);
+
+    let req = test::TestRequest::put()
+        .uri(&format!("/message/{reply_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"text": "edited reply caption"}).to_string())
+        .to_request();
+    let edited_reply: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(edited_reply["text"], "edited reply caption");
+    assert_eq!(edited_reply["attachments"][0]["id"], reply_attachment);
+
+    assert!(
+        entity::message_attachment::Entity::find_by_id(root_attachment)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        entity::message_attachment::Entity::find_by_id(reply_attachment)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/thread/{root_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let thread: serde_json::Value = test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(thread["root"]["text"], "");
+    assert_eq!(thread["root"]["attachments"][0]["id"], root_attachment);
+    assert_eq!(thread["replies"][0]["text"], "edited reply caption");
+    assert_eq!(
+        thread["replies"][0]["attachments"][0]["id"],
+        reply_attachment
+    );
 }
 
 #[actix_web::test]
@@ -758,6 +986,224 @@ async fn test_thread_get_defaults_to_newest_50_replies_and_loads_older_pages() {
 }
 
 #[actix_web::test]
+async fn test_thread_get_includes_attachments_on_root_newest_and_older_replies() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let root_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        "root with photo",
+    )
+    .await;
+    let root_attachment = insert_message_attachment(&ctx.db, root_id, 0).await;
+    let older_reply_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_010_000_000,
+        "older reply with photo",
+    )
+    .await;
+    let older_attachment = insert_message_attachment(&ctx.db, older_reply_id, 0).await;
+    let newer_reply_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_020_000_000,
+        "newer reply with photo",
+    )
+    .await;
+    let newer_attachment = insert_message_attachment(&ctx.db, newer_reply_id, 0).await;
+
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/thread/{root_id}?limit=1"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let thread: serde_json::Value = test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(thread["root"]["attachments"][0]["id"], root_attachment);
+    assert_eq!(thread["root"]["attachments"][0]["message_id"], root_id);
+    assert_eq!(thread["replies"].as_array().unwrap().len(), 1);
+    assert_eq!(thread["replies"][0]["id"], newer_reply_id);
+    assert_eq!(
+        thread["replies"][0]["attachments"][0]["id"],
+        newer_attachment
+    );
+    assert_eq!(thread["has_more_replies"], true);
+
+    let cursor_created_at = thread["replies"][0]["created_at"].as_i64().unwrap();
+    let req = test::TestRequest::get()
+        .uri(&format!(
+            "/thread/{root_id}?limit=1&before_created_at={cursor_created_at}&before_id={newer_reply_id}"
+        ))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let older_thread: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(
+        older_thread["root"]["attachments"][0]["id"],
+        root_attachment
+    );
+    assert_eq!(older_thread["replies"].as_array().unwrap().len(), 1);
+    assert_eq!(older_thread["replies"][0]["id"], older_reply_id);
+    assert_eq!(
+        older_thread["replies"][0]["attachments"][0]["id"],
+        older_attachment
+    );
+    assert_eq!(older_thread["has_more_replies"], false);
+}
+
+#[actix_web::test]
+async fn test_participated_threads_include_root_and_recent_reply_attachments_and_strip_tombstones()
+{
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob = ctx.register("bob", "hunter2").await;
+
+    let root_id = insert_message_with_parent(
+        &ctx.db,
+        bob.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        "root with photo",
+    )
+    .await;
+    let root_attachment = insert_message_attachment(&ctx.db, root_id, 0).await;
+    let old_reply_id = insert_message_with_parent(
+        &ctx.db,
+        bob.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_010_000_000,
+        "old reply excluded from preview",
+    )
+    .await;
+    let _old_attachment = insert_message_attachment(&ctx.db, old_reply_id, 0).await;
+    let recent_reply_id = insert_message_with_parent(
+        &ctx.db,
+        bob.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_011_000_000,
+        "recent reply with photo",
+    )
+    .await;
+    let recent_attachment = insert_message_attachment(&ctx.db, recent_reply_id, 0).await;
+    let middle_reply_id = insert_message_with_parent(
+        &ctx.db,
+        bob.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_012_000_000,
+        "recent text reply",
+    )
+    .await;
+    let newest_reply_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_013_000_000,
+        "newest reply with photo",
+    )
+    .await;
+    let newest_attachment = insert_message_attachment(&ctx.db, newest_reply_id, 0).await;
+
+    let tombstoned_root_id = generate_id();
+    entity::message::ActiveModel {
+        id: Set(tombstoned_root_id),
+        user_id: Set(alice.user_id),
+        channel_id: Set(chan_id),
+        parent_id: Set(None),
+        created_at: Set(1_700_000_020_000_000),
+        deleted_at: Set(Some(1_700_000_021_000_000)),
+        text: Set(String::new()),
+        suppress_embeds: Set(true),
+    }
+    .insert(&ctx.db)
+    .await
+    .unwrap();
+    let _tombstone_attachment = insert_message_attachment(&ctx.db, tombstoned_root_id, 0).await;
+    insert_message_with_parent(
+        &ctx.db,
+        bob.user_id,
+        chan_id,
+        Some(tombstoned_root_id),
+        1_700_000_022_000_000,
+        "reply under tombstone",
+    )
+    .await;
+
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::get()
+        .uri("/threads/participated")
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let previews: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let rows = previews.as_array().unwrap();
+    let preview = rows
+        .iter()
+        .find(|row| row["root"]["id"] == root_id)
+        .unwrap();
+    assert_eq!(preview["root"]["attachments"][0]["id"], root_attachment);
+    assert_eq!(preview["root"]["attachments"][0]["message_id"], root_id);
+    assert_eq!(
+        preview["root"]["attachments"][0]["url"],
+        format!("/attachments/{root_attachment}")
+    );
+
+    let recent = preview["recent_replies"].as_array().unwrap();
+    assert_eq!(recent.len(), 3);
+    assert_eq!(recent[0]["id"], recent_reply_id);
+    assert_eq!(recent[0]["attachments"][0]["id"], recent_attachment);
+    assert_eq!(recent[1]["id"], middle_reply_id);
+    assert_empty_attachments(&recent[1]);
+    assert_eq!(recent[2]["id"], newest_reply_id);
+    assert_eq!(recent[2]["attachments"][0]["id"], newest_attachment);
+    assert!(
+        !preview
+            .to_string()
+            .contains("old reply excluded from preview")
+    );
+
+    let tombstone = rows
+        .iter()
+        .find(|row| row["root"]["id"] == tombstoned_root_id)
+        .unwrap();
+    assert_eq!(tombstone["root"]["deleted_at"], 1_700_000_021_000_000_i64);
+    assert_empty_attachments(&tombstone["root"]);
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/thread/{root_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let thread: serde_json::Value = test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(thread["root"]["attachments"][0]["id"], root_attachment);
+    let thread_replies = thread["replies"].as_array().unwrap();
+    let full_recent = thread_replies
+        .iter()
+        .find(|reply| reply["id"] == recent_reply_id)
+        .unwrap();
+    assert_eq!(full_recent["attachments"][0]["id"], recent_attachment);
+    let full_newest = thread_replies
+        .iter()
+        .find(|reply| reply["id"] == newest_reply_id)
+        .unwrap();
+    assert_eq!(full_newest["attachments"][0]["id"], newest_attachment);
+}
+
+#[actix_web::test]
 async fn test_thread_get_honors_reply_limit() {
     let ctx = TestCtx::new().await;
     let chan_id = ctx.channel_id;
@@ -1238,6 +1684,25 @@ async fn test_deleting_root_with_replies_tombstones_root_and_preserves_thread() 
         "root to delete",
     )
     .await;
+    let private_dir = make_tmp_uploads_dir();
+    let (attachment_id, full_path, thumbnail_path) =
+        insert_message_attachment_with_files(&ctx.db, &private_dir, root_id, 0).await;
+    entity::embed::ActiveModel {
+        id: Set(generate_id()),
+        message_id: Set(root_id),
+        url: Set("https://example.com".into()),
+        title: Set(Some("Example".into())),
+        description: Set(None),
+        image_url: Set(None),
+        site_name: Set(None),
+        embed_type: Set("link".into()),
+        iframe_url: Set(None),
+        iframe_width: Set(None),
+        iframe_height: Set(None),
+    }
+    .insert(&ctx.db)
+    .await
+    .unwrap();
     insert_message_with_parent(
         &ctx.db,
         bob.user_id,
@@ -1259,7 +1724,15 @@ async fn test_deleting_root_with_replies_tombstones_root_and_preserves_thread() 
     insert_native_reaction(&ctx.db, root_id, alice.user_id, "👍").await;
     insert_native_reaction(&ctx.db, root_id, bob.user_id, "👍").await;
 
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+    let mut rx = ctx.broadcaster.test_client();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(AttachmentStorage {
+                dir: private_dir.clone(),
+            }))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
 
     let req = test::TestRequest::delete()
         .uri(&format!("/message/{root_id}"))
@@ -1279,6 +1752,20 @@ async fn test_deleting_root_with_replies_tombstones_root_and_preserves_thread() 
         StatusCode::NO_CONTENT
     );
 
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for tombstone broadcast")
+        .expect("broadcast channel closed");
+    let event_str = format!("{:?}", event);
+    assert!(event_str.contains("kind\\\":\\\"message_updated\\\""));
+    assert!(event_str.contains(&format!("\\\"id\\\":{root_id}")));
+    assert!(event_str.contains("\\\"text\\\":\\\"\\\""));
+    assert!(event_str.contains("\\\"suppress_embeds\\\":true"));
+    assert!(event_str.contains("\\\"attachments\\\":[]"));
+    assert!(event_str.contains("\\\"embeds\\\":[]"));
+    assert!(event_str.contains("\\\"reactions\\\":[]"));
+    assert!(event_str.contains("\\\"reply_count\\\":2"));
+
     let stored = entity::message::Entity::find_by_id(root_id)
         .one(&ctx.db)
         .await
@@ -1293,6 +1780,27 @@ async fn test_deleting_root_with_replies_tombstones_root_and_preserves_thread() 
         .await
         .unwrap();
     assert!(remaining_reactions.is_empty());
+    let remaining_attachments = entity::message_attachment::Entity::find()
+        .filter(entity::message_attachment::Column::MessageId.eq(root_id))
+        .all(&ctx.db)
+        .await
+        .unwrap();
+    assert!(remaining_attachments.is_empty());
+    let remaining_embeds = entity::embed::Entity::find()
+        .filter(entity::embed::Column::MessageId.eq(root_id))
+        .all(&ctx.db)
+        .await
+        .unwrap();
+    assert!(remaining_embeds.is_empty());
+    assert!(
+        entity::message_attachment::Entity::find_by_id(attachment_id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(!private_dir.join(full_path).exists());
+    assert!(!private_dir.join(thumbnail_path).exists());
 
     let req = test::TestRequest::get()
         .uri(&format!("/messages/{chan_id}"))
@@ -1304,6 +1812,7 @@ async fn test_deleting_root_with_replies_tombstones_root_and_preserves_thread() 
     assert_eq!(history[0]["id"], root_id);
     assert!(history[0]["deleted_at"].as_i64().is_some());
     assert_eq!(history[0]["text"], "");
+    assert_empty_attachments(&history[0]);
     assert!(history[0]["reactions"].as_array().unwrap().is_empty());
     assert_eq!(history[0]["thread_summary"]["reply_count"], 2);
 
@@ -1315,11 +1824,14 @@ async fn test_deleting_root_with_replies_tombstones_root_and_preserves_thread() 
     assert_eq!(thread["root"]["id"], root_id);
     assert!(thread["root"]["deleted_at"].as_i64().is_some());
     assert_eq!(thread["root"]["text"], "");
+    assert_empty_attachments(&thread["root"]);
     assert!(thread["root"]["reactions"].as_array().unwrap().is_empty());
     let replies = thread["replies"].as_array().unwrap();
     assert_eq!(replies.len(), 2);
     assert_eq!(replies[0]["text"], "first preserved reply");
     assert_eq!(replies[1]["text"], "second preserved reply");
+
+    std::fs::remove_dir_all(&private_dir).ok();
 }
 
 #[actix_web::test]
@@ -1440,6 +1952,7 @@ async fn test_participated_threads_filters_sorts_truncates_and_includes_tombston
     assert_eq!(rows[1]["channel"]["name"], "general");
     assert_eq!(rows[1]["root"]["text"], "");
     assert!(rows[1]["root"]["deleted_at"].as_i64().is_some());
+    assert_empty_attachments(&rows[1]["root"]);
     assert_eq!(
         rows[1]["recent_replies"][0]["text"],
         "reply to deleted root"
@@ -1676,6 +2189,231 @@ async fn test_message_delete_removes_own_message() {
         .await
         .unwrap();
     assert!(stored.is_none());
+}
+
+#[actix_web::test]
+async fn test_photo_message_hard_delete_removes_attachment_rows_files_and_broadcasts_delete() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let msg_id = insert_message(&ctx.db, alice.user_id, chan_id, "photo caption").await;
+    let private_dir = make_tmp_uploads_dir();
+    let (attachment_id, full_path, thumbnail_path) =
+        insert_message_attachment_with_files(&ctx.db, &private_dir, msg_id, 0).await;
+    let mut rx = ctx.broadcaster.test_client();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(AttachmentStorage {
+                dir: private_dir.clone(),
+            }))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
+
+    let req = test::TestRequest::delete()
+        .uri(&format!("/message/{msg_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for delete broadcast")
+        .expect("broadcast channel closed");
+    let event_str = format!("{:?}", event);
+    assert!(event_str.contains("kind\\\":\\\"message_deleted\\\""));
+    assert!(event_str.contains(&format!("\\\"id\\\":{msg_id}")));
+
+    assert!(
+        entity::message::Entity::find_by_id(msg_id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        entity::message_attachment::Entity::find_by_id(attachment_id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(!private_dir.join(full_path).exists());
+    assert!(!private_dir.join(thumbnail_path).exists());
+
+    let attachment_req = test::TestRequest::get()
+        .uri(&format!("/attachments/{attachment_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, attachment_req).await.status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let history_req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, history_req).await).await;
+    assert!(history.as_array().unwrap().is_empty());
+
+    std::fs::remove_dir_all(&private_dir).ok();
+}
+
+#[actix_web::test]
+async fn test_photo_reply_hard_delete_removes_attachment_rows_files_and_recalculates_summary() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let root_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        "root",
+    )
+    .await;
+    let older_reply = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_010_000_000,
+        "older reply",
+    )
+    .await;
+    let photo_reply = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_020_000_000,
+        "photo reply",
+    )
+    .await;
+    let private_dir = make_tmp_uploads_dir();
+    let (attachment_id, full_path, thumbnail_path) =
+        insert_message_attachment_with_files(&ctx.db, &private_dir, photo_reply, 0).await;
+    let mut rx = ctx.broadcaster.test_client();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(AttachmentStorage {
+                dir: private_dir.clone(),
+            }))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
+
+    let req = test::TestRequest::delete()
+        .uri(&format!("/message/{photo_reply}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for reply delete broadcast")
+        .expect("broadcast channel closed");
+    let event_str = format!("{:?}", event);
+    assert!(event_str.contains("kind\\\":\\\"thread_reply_deleted\\\""));
+    assert!(event_str.contains(&format!("\\\"reply_id\\\":{photo_reply}")));
+    assert!(event_str.contains("\\\"reply_count\\\":1"));
+
+    assert!(
+        entity::message::Entity::find_by_id(photo_reply)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        entity::message_attachment::Entity::find_by_id(attachment_id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(!private_dir.join(full_path).exists());
+    assert!(!private_dir.join(thumbnail_path).exists());
+
+    let thread_req = test::TestRequest::get()
+        .uri(&format!("/thread/{root_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let thread: serde_json::Value =
+        test::read_body_json(test::call_service(&app, thread_req).await).await;
+    assert_eq!(thread["replies"].as_array().unwrap().len(), 1);
+    assert_eq!(thread["replies"][0]["id"], older_reply);
+
+    let history_req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, history_req).await).await;
+    assert_eq!(history[0]["thread_summary"]["reply_count"], 1);
+    assert_eq!(
+        history[0]["thread_summary"]["last_reply_created_at"],
+        1_700_000_010_000_000_i64
+    );
+
+    std::fs::remove_dir_all(&private_dir).ok();
+}
+
+#[actix_web::test]
+async fn test_photo_delete_cleanup_missing_and_unexpected_failures_are_best_effort() {
+    let ctx = TestCtx::new().await;
+    let alice = ctx.register("alice", "hunter2").await;
+    let msg_id = insert_message(&ctx.db, alice.user_id, ctx.channel_id, "cleanup edge").await;
+    let private_dir = make_tmp_uploads_dir();
+    let attachment_id = insert_message_attachment(&ctx.db, msg_id, 0).await;
+    let row = attachment_row(&ctx.db, attachment_id).await;
+    let directory_at_full_path = private_dir.join(&row.storage_path);
+    std::fs::create_dir_all(&directory_at_full_path).unwrap();
+    assert!(!private_dir.join(&row.thumbnail_storage_path).exists());
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(AttachmentStorage {
+                dir: private_dir.clone(),
+            }))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
+
+    let req = test::TestRequest::delete()
+        .uri(&format!("/message/{msg_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::NO_CONTENT
+    );
+
+    assert!(directory_at_full_path.is_dir());
+    assert!(
+        entity::message_attachment::Entity::find_by_id(attachment_id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        entity::message::Entity::find_by_id(msg_id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    std::fs::remove_dir_all(&private_dir).ok();
 }
 
 #[actix_web::test]

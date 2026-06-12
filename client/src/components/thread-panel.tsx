@@ -4,6 +4,7 @@ import {
   createEffect,
   createResource,
   createSignal,
+  createUniqueId,
   onCleanup,
   onMount,
 } from "solid-js";
@@ -30,7 +31,13 @@ import {
   mergeReactionUpdateForViewer,
   reactionSummariesEqual,
 } from "../reactions/reaction-summaries";
+import AttachmentGrid from "./attachment-grid";
 import Avatar from "./avatar";
+import {
+  PhotoAttachControl,
+  SelectedPhotoPreviewList,
+  createComposerPhotoSelection,
+} from "./composer-photo-selection";
 import EmojiPicker from "./emoji-picker";
 import { DeleteIcon, EditIcon, EmojiIcon } from "./icons";
 import MessageEmbed from "./message-embed";
@@ -143,6 +150,12 @@ function ThreadMessage(props: {
             </button>
           </form>
         </Show>
+        <Show when={!isDeletedMessage(props.message) && props.message.attachments.length > 0}>
+          <AttachmentGrid
+            attachments={props.message.attachments}
+            authorName={messageDisplayName(props.message)}
+          />
+        </Show>
         <Show
           when={
             !isDeletedMessage(props.message) &&
@@ -236,6 +249,8 @@ export default function ThreadPanel(props: {
   );
   const [draft, setDraft] = createSignal("");
   const [submitting, setSubmitting] = createSignal(false);
+  const photoSelection = createComposerPhotoSelection();
+  const photoSelectionErrorId = createUniqueId();
   const [loadingOlder, setLoadingOlder] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [olderError, setOlderError] = createSignal<string | null>(null);
@@ -510,15 +525,21 @@ export default function ThreadPanel(props: {
     }
   };
 
+  const draftText = () => draft() || inputRef?.value || inputRef?.textContent || "";
+
+  const hasDraftContent = () => draftText().trim().length > 0 || photoSelection.photos().length > 0;
+
   const submitReply = async () => {
-    const text = draft() || inputRef?.value || inputRef?.textContent || "";
-    if (text.length === 0 || submitting()) return;
+    const text = draftText();
+    const photos = photoSelection.photos().map((photo) => photo.file);
+    if ((text.trim().length === 0 && photos.length === 0) || submitting()) return;
     setSubmitting(true);
     setError(null);
     setDraft("");
     try {
-      const reply = await sendThreadReply(props.rootMessageId, text);
+      const reply = await sendThreadReply(props.rootMessageId, text, photos);
       appendReply(reply);
+      photoSelection.clearPhotos();
       queueMicrotask(() => inputRef?.focus());
     } catch (e) {
       setDraft(text);
@@ -540,7 +561,7 @@ export default function ThreadPanel(props: {
 
   const saveEdit = async (message: Message) => {
     const next = editDraft();
-    if (next.length === 0) {
+    if (next.length === 0 && message.attachments.length === 0) {
       setPendingDeleteId(message.id);
       return;
     }
@@ -701,7 +722,19 @@ export default function ThreadPanel(props: {
             </p>
           )}
         </Show>
+        <SelectedPhotoPreviewList
+          photos={photoSelection.photos()}
+          error={photoSelection.error()}
+          errorId={photoSelectionErrorId}
+          disabled={submitting()}
+          onRemove={photoSelection.removePhoto}
+        />
         <div class="flex items-end gap-2">
+          <PhotoAttachControl
+            onFilesSelected={photoSelection.addFiles}
+            disabled={submitting()}
+            describedBy={photoSelection.error() ? photoSelectionErrorId : undefined}
+          />
           <MessageInput
             value={draft()}
             onChange={setDraft}
@@ -715,7 +748,7 @@ export default function ThreadPanel(props: {
           <button
             class="rounded-md bg-blue-100 p-4 disabled:opacity-50"
             type="submit"
-            disabled={submitting()}
+            disabled={submitting() || !hasDraftContent()}
           >
             Send
           </button>

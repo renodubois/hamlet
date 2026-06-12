@@ -37,6 +37,14 @@ pub enum AppError {
     EmojiFileRequired,
     #[error("emoji image must be a PNG, JPEG, static WebP, animated GIF, or animated WebP")]
     UnsupportedEmojiFile,
+    #[error("message text or at least one photo is required")]
+    MessageContentRequired,
+    #[error("photo must be a supported static JPEG, PNG, or WebP image")]
+    UnsupportedPhoto,
+    #[error("too many attachments")]
+    TooManyAttachments,
+    #[error("photo dimensions are too large")]
+    PhotoDimensionsTooLarge,
     #[error("forbidden")]
     Forbidden,
     #[error("payload too large")]
@@ -68,6 +76,10 @@ impl AppError {
             AppError::InvalidEmojiName => "invalid_emoji_name",
             AppError::EmojiFileRequired => "emoji_file_required",
             AppError::UnsupportedEmojiFile => "unsupported_emoji_file",
+            AppError::MessageContentRequired => "message_content_required",
+            AppError::UnsupportedPhoto => "unsupported_photo",
+            AppError::TooManyAttachments => "too_many_attachments",
+            AppError::PhotoDimensionsTooLarge => "photo_dimensions_too_large",
             AppError::Forbidden => "forbidden",
             AppError::PayloadTooLarge => "payload_too_large",
             AppError::ServiceUnavailable => "service_unavailable",
@@ -108,7 +120,11 @@ impl ResponseError for AppError {
             | AppError::EmojiNameRequired
             | AppError::InvalidEmojiName
             | AppError::EmojiFileRequired
-            | AppError::UnsupportedEmojiFile => StatusCode::BAD_REQUEST,
+            | AppError::UnsupportedEmojiFile
+            | AppError::MessageContentRequired
+            | AppError::UnsupportedPhoto
+            | AppError::TooManyAttachments
+            | AppError::PhotoDimensionsTooLarge => StatusCode::BAD_REQUEST,
             AppError::Unauthorized | AppError::InvalidCredentials => StatusCode::UNAUTHORIZED,
             AppError::Forbidden => StatusCode::FORBIDDEN,
             AppError::NotFound => StatusCode::NOT_FOUND,

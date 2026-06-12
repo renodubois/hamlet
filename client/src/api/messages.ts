@@ -1,3 +1,4 @@
+import { assertValidMessagePhotos } from "../photo-validation";
 import { apiFetch } from "./client";
 import type { Channel } from "./channels";
 
@@ -20,6 +21,22 @@ export interface Embed {
 export interface ThreadSummary {
   reply_count: number;
   last_reply_created_at: number;
+}
+
+export interface MessageAttachment {
+  id: number;
+  message_id: number;
+  position: number;
+  content_type: string;
+  byte_size: number;
+  width: number;
+  height: number;
+  url: string;
+  thumbnail_url: string;
+  thumbnail_content_type: string;
+  thumbnail_byte_size: number;
+  thumbnail_width: number;
+  thumbnail_height: number;
 }
 
 export type ReactionSummary =
@@ -75,6 +92,7 @@ export interface Message {
   display_name: string | null;
   avatar_url: string | null;
   suppress_embeds: boolean;
+  attachments: MessageAttachment[];
   embeds: Embed[];
   reactions?: ReactionSummary[];
   thread_summary?: ThreadSummary;
@@ -144,11 +162,28 @@ export async function listMessages(channelId: string): Promise<Message[]> {
   return res.json() as Promise<Message[]>;
 }
 
-export async function sendMessage(channelId: string, text: string): Promise<Response> {
+export async function sendMessage(
+  channelId: string,
+  text: string,
+  photos: readonly File[] = [],
+): Promise<Response> {
+  if (photos.length === 0) {
+    return apiFetch(`/message/${channelId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+  }
+
+  await assertValidMessagePhotos(photos);
+
+  const body = new FormData();
+  body.append("text", text);
+  for (const photo of photos) body.append("photos", photo, photo.name);
+
   return apiFetch(`/message/${channelId}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
+    body,
   });
 }
 
@@ -174,12 +209,30 @@ export async function getThread(
   return res.json() as Promise<Thread>;
 }
 
-export async function sendThreadReply(rootMessageId: number, text: string): Promise<Message> {
-  const res = await apiFetch(`/thread/${rootMessageId}/reply`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
-  });
+export async function sendThreadReply(
+  rootMessageId: number,
+  text: string,
+  photos: readonly File[] = [],
+): Promise<Message> {
+  let res: Response;
+  if (photos.length === 0) {
+    res = await apiFetch(`/thread/${rootMessageId}/reply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+  } else {
+    await assertValidMessagePhotos(photos);
+
+    const body = new FormData();
+    body.append("text", text);
+    for (const photo of photos) body.append("photos", photo, photo.name);
+
+    res = await apiFetch(`/thread/${rootMessageId}/reply`, {
+      method: "POST",
+      body,
+    });
+  }
   if (!res.ok) throw new Error(`Thread reply failed (${res.status})`);
   return res.json() as Promise<Message>;
 }
