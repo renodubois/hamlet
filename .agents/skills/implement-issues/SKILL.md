@@ -21,8 +21,9 @@ At the start of every run:
 
 1. Record `INTEGRATION_REPO=$(git rev-parse --show-toplevel)` from the current working directory.
 2. Record the current branch/ref in `INTEGRATION_REPO`; this is the **main working branch** for this run, even if it is a feature branch such as `feature/emoji-autocomplete`.
-3. Set `TRACKER_DIR="$HOME/.issues/hamlet"` and run all tracker reads/writes against that directory.
-4. Confirm `TRACKER_DIR` exists before reading or mutating tracker state. If it is missing, stop and ask the user rather than recreating or switching to a repo-local `issues/` directory.
+3. Record `INITIAL_INTEGRATION_HEAD=$(git rev-parse HEAD)` before creating or merging any issue branches. This is the base commit used for the final feature-history cleanup.
+4. Set `TRACKER_DIR="$HOME/.issues/hamlet"` and run all tracker reads/writes against that directory.
+5. Confirm `TRACKER_DIR` exists before reading or mutating tracker state. If it is missing, stop and ask the user rather than recreating or switching to a repo-local `issues/` directory.
 
 Do not assume `/home/reno/projects/hamlet` is the integration target. It is only a repository worktree path, and must not receive implementation commits or merges unless the user actually invoked the skill from there.
 
@@ -122,6 +123,7 @@ Before launching workers, print a concise plan:
 ```text
 Project: <tag>
 Integration worktree: <INTEGRATION_REPO> (<main-working-branch>)
+Initial base: <INITIAL_INTEGRATION_HEAD>
 Tracker dir: <TRACKER_DIR>
 Wave 1: #1 Title, #2 Title (parallel)
 Wave 2: #3 Title (after #1/#2)
@@ -215,19 +217,68 @@ After a batch finishes:
 
 If an issue fails or remains blocked, leave it `in-progress`, report why, do not commit/merge partial work unless the user explicitly asks, and do not run dependent issues unless their blockers are otherwise satisfied.
 
-### 8. Final verification and report
+### 8. Final verification
 
 After all runnable waves finish:
 
 1. Run the appropriate final project checks for all touched sides from the main working branch in `INTEGRATION_REPO`. Use the repo's aggregate check script if practical.
 2. Re-run `it list --dir "$TRACKER_DIR" --tag <project-tag>` to verify statuses.
-3. Report concisely:
-   - project tag
-   - integration worktree and branch
-   - tracker dir
-   - completed issues
-   - issues left blocked or HITL, with reasons
-   - files/areas changed
-   - checks/tests run
+3. Do not claim an issue is complete unless its tracker status is `completed` in the central `TRACKER_DIR` and its acceptance criteria were verified.
 
-Do not claim an issue is complete unless its tracker status is `completed` in the central `TRACKER_DIR` and its acceptance criteria were verified.
+### 9. Final feature-history cleanup
+
+After final verification passes and every issue in the selected project tag is completed, rewrite the integration branch's local history so the project appears as one feature commit instead of a stack of `Merge issue #<id>` commits.
+
+Skip this cleanup and ask the user how to proceed if any project issue is still blocked, HITL, failed, or incomplete; if the user explicitly asked to preserve per-issue history; if the integration worktree is dirty; if the current branch/ref is not the recorded main working branch; or if the commits after `INITIAL_INTEGRATION_HEAD` include unrelated work that was not produced by this skill run.
+
+Cleanup procedure:
+
+1. In `INTEGRATION_REPO`, confirm the branch is clean and still on the recorded main working branch:
+
+   ```bash
+   git status --short --branch
+   git merge-base --is-ancestor "$INITIAL_INTEGRATION_HEAD" HEAD
+   git log --first-parent --oneline "$INITIAL_INTEGRATION_HEAD"..HEAD
+   git diff --stat "$INITIAL_INTEGRATION_HEAD"..HEAD
+   ```
+
+2. Confirm the first-parent log and diff only contain the issue implementation work for this project. If there is ambiguity, stop and ask the user before rewriting history.
+3. Create a safety branch at the pre-cleanup tip:
+
+   ```bash
+   BACKUP_BRANCH="backup/<project-tag>-before-squash-$(date +%Y%m%d%H%M%S)"
+   git branch "$BACKUP_BRANCH" HEAD
+   ```
+
+4. Soft-reset back to the recorded initial base and create one feature commit:
+
+   ```bash
+   git reset --soft "$INITIAL_INTEGRATION_HEAD"
+   git commit -m "Implement <human-readable project name>"
+   ```
+
+   Use a user-provided commit message if one was given. Otherwise, derive the message from the project tag by removing a leading `project-`, replacing hyphens with spaces, and title/lowercasing naturally, e.g. `project-photo-upload` becomes `Implement photo upload`.
+
+5. Verify the cleaned history and worktree:
+
+   ```bash
+   git status --short --branch
+   git log --oneline --decorate --graph "$INITIAL_INTEGRATION_HEAD"..HEAD
+   ```
+
+   The range should contain the single `Implement <feature>` commit and no `Merge issue #<id>` commits.
+
+Do not push after rewriting history unless the user explicitly asks. If the branch was already pushed, report that publishing the cleanup requires `git push --force-with-lease`.
+
+### 10. Final report
+
+Report concisely:
+
+- project tag
+- integration worktree and branch
+- tracker dir
+- completed issues
+- issues left blocked or HITL, with reasons
+- final feature commit message and backup branch created, if history cleanup ran
+- files/areas changed
+- checks/tests run
