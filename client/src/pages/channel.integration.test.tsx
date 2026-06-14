@@ -1262,10 +1262,7 @@ describe("Channel view integration", () => {
 
     const historyImage = await screen.findByRole("img", { name: /photo attachment from bob/i });
     expect(historyImage).toHaveAttribute("src", `${TEST_SERVER}/attachments/9101/thumbnail`);
-    expect(screen.getByRole("link", { name: /open photo attachment from bob/i })).toHaveAttribute(
-      "href",
-      `${TEST_SERVER}/attachments/9101`,
-    );
+    expect(screen.getByRole("button", { name: /open photo attachment from bob/i })).toBeEnabled();
     await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
 
     const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
@@ -1318,8 +1315,8 @@ describe("Channel view integration", () => {
     const panel = await screen.findByRole("complementary", { name: /thread panel/i });
     await waitFor(() => expect(within(panel).getByText("photo reply 51")).toBeInTheDocument());
     expect(
-      within(panel).getByRole("link", { name: /open photo attachment from alice/i }),
-    ).toHaveAttribute("href", `${TEST_SERVER}/attachments/9201`);
+      within(panel).getByRole("button", { name: /open photo attachment from alice/i }),
+    ).toBeEnabled();
     expect(within(panel).getByRole("img", { name: /photo attachment from bob/i })).toHaveAttribute(
       "src",
       `${TEST_SERVER}/attachments/9252/thumbnail`,

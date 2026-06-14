@@ -65,11 +65,11 @@ async function expectPhotoMessage(root: LocatorRoot, marker: string, author: str
     )
     .toBe(true);
 
-  await expect(
-    row.getByRole("link", {
-      name: new RegExp(`open photo attachment from ${escapeRegExp(author)}`, "i"),
-    }),
-  ).toHaveAttribute("href", new RegExp(`^${escapeRegExp(serverUrl)}/attachments/\\d+$`));
+  const openButton = row.getByRole("button", {
+    name: new RegExp(`open photo attachment from ${escapeRegExp(author)}`, "i"),
+  });
+  await expect(openButton).toBeVisible();
+  return { row, thumbnail, openButton };
 }
 
 test("uploads a channel photo and renders the server thumbnail", async ({ page }) => {
@@ -81,7 +81,19 @@ test("uploads a channel photo and renders the server thumbnail", async ({ page }
   await page.getByPlaceholder(/send a new message/i).fill(marker);
   await page.getByRole("button", { name: /^send$/i }).click();
 
-  await expectPhotoMessage(page, marker, "baipas");
+  const { openButton } = await expectPhotoMessage(page, marker, "baipas");
+  await openButton.click();
+  const dialog = page.getByRole("dialog", { name: /photo attachment from baipas/i });
+  await expect(dialog).toBeVisible();
+  const fullSizeImage = dialog.getByRole("img", { name: /photo attachment from baipas/i });
+  await expect(fullSizeImage).toBeVisible();
+  await expect
+    .poll(() =>
+      fullSizeImage.evaluate(
+        (image) => image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0,
+      ),
+    )
+    .toBe(true);
 });
 
 test("uploads a thread reply photo and renders it in the open panel", async ({ page }) => {

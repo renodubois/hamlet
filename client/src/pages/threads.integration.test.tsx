@@ -260,11 +260,9 @@ describe("Threads view integration", () => {
       "src",
       "/attachments/9003/thumbnail",
     );
-    expectAttributeEndsWith(
-      within(articles[0]).getByRole("link", { name: /open photo attachment from bob/i }),
-      "href",
-      "/attachments/9001",
-    );
+    expect(
+      within(articles[0]).getByRole("button", { name: /open photo attachment from bob/i }),
+    ).toBeEnabled();
     expect(within(articles[0]).queryByText(/\.png/i)).toBeNull();
     expect(within(articles[0]).queryByText("old preview reply")).toBeNull();
     expect(within(articles[0]).queryByRole("button", { name: /reaction/i })).toBeNull();

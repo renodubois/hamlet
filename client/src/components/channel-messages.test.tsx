@@ -361,9 +361,16 @@ describe("<ChannelMessages> attachments", () => {
     );
     expect(screen.getByRole("img", { name: /photo 2 of 2 from them/i })).toBeInTheDocument();
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
-    expect(screen.getAllByRole("link", { name: /open photo \d of 2 from them/i })).toHaveLength(2);
-    expect(screen.getAllByRole("link", { name: /open photo \d of 2 from them/i })[0]).toHaveStyle({
+    const openButtons = screen.getAllByRole("button", { name: /open photo \d of 2 from them/i });
+    expect(openButtons).toHaveLength(2);
+    expect(openButtons[0]).toHaveStyle({
       "aspect-ratio": "640 / 480",
+      width: "448px",
+      "max-width": "100%",
+    });
+    expect(openButtons[1]).toHaveStyle({
+      "aspect-ratio": "300 / 500",
+      width: "230px",
     });
   });
 
@@ -387,10 +394,32 @@ describe("<ChannelMessages> attachments", () => {
     expect(
       screen.getByRole("img", { name: /photo attachment from them unavailable/i }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /open photo attachment from them/i })).toHaveAttribute(
-      "href",
-      "http://127.0.0.1:3030/attachments/8201",
-    );
+    expect(screen.getByRole("button", { name: /open photo attachment from them/i })).toBeEnabled();
+  });
+
+  test("opens a full-size attachment preview in an in-app dialog", () => {
+    localStorage.setItem("hamlet.serverUrl", "http://127.0.0.1:3030");
+    const withPhoto = makeMessage({
+      id: 522,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "open photo",
+      username: "them",
+      attachments: [makeAttachment({ id: 8301, message_id: 522 })],
+    });
+
+    mount([withPhoto], SELF_ID);
+
+    fireEvent.click(screen.getByRole("button", { name: /open photo attachment from them/i }));
+
+    const dialog = screen.getByRole("dialog", { name: /photo attachment from them/i });
+    expect(
+      within(dialog).getByRole("img", { name: /photo attachment from them/i }),
+    ).toHaveAttribute("src", "http://127.0.0.1:3030/attachments/8301");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /close/i }));
+
+    expect(screen.queryByRole("dialog", { name: /photo attachment from them/i })).toBeNull();
   });
 
   test("attachment thumbnails pass axe checks", async () => {
@@ -1003,13 +1032,15 @@ describe("<ChannelMessages> hover action toolbar", () => {
     const body = screen.getByText("body before attachments");
     const attachments = screen.getByRole("list", { name: /1 photo attachment/i });
     const image = screen.getByRole("img", { name: /photo attachment from riley/i });
-    const fullImageLink = screen.getByRole("link", { name: /open photo attachment from riley/i });
+    const fullImageButton = screen.getByRole("button", {
+      name: /open photo attachment from riley/i,
+    });
     const embed = screen.getByRole("link", { name: "Example embed" });
     const reaction = screen.getByRole("button", { name: /👍 1 reaction\. add your reaction/i });
     const summary = screen.getByRole("button", { name: /open thread with 1 reply/i });
 
     expect(image).toHaveAttribute("src", "http://hamlet.test:4040/attachments/7001/thumbnail");
-    expect(fullImageLink).toHaveAttribute("href", "http://hamlet.test:4040/attachments/7001");
+    expect(fullImageButton).toBeEnabled();
     expect(
       body.compareDocumentPosition(attachments) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
