@@ -88,8 +88,9 @@ describe("static renderer server", () => {
     expect(response.headers["permissions-policy"]).toContain("microphone=(self)");
     expect(response.headers["permissions-policy"]).toContain("speaker-selection=(self)");
     expect(response.headers["permissions-policy"]).toContain("display-capture=(self)");
-    expect(response.headers["permissions-policy"]).toContain("camera=()");
+    expect(response.headers["permissions-policy"]).toContain("camera=(self)");
     expect(response.headers["permissions-policy"]).toContain("geolocation=()");
+    expect(response.headers["permissions-policy"]).not.toContain("camera=*");
     expect(response.headers["permissions-policy"]).not.toContain("display-capture=*");
   });
 

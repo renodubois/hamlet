@@ -1,6 +1,7 @@
 import { describe, expect, beforeEach, test, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { Show } from "solid-js";
+import type { CameraStream } from "../api";
 
 const apiMock = vi.hoisted(() => ({
   getVoiceToken: vi.fn(),
@@ -37,6 +38,7 @@ const livekitMock = vi.hoisted(() => {
       Video: "video",
     },
     Source: {
+      Camera: "camera",
       Microphone: "microphone",
       ScreenShare: "screen_share",
       ScreenShareAudio: "screen_share_audio",
@@ -62,6 +64,7 @@ const livekitMock = vi.hoisted(() => {
 
   class FakeMediaStreamTrack {
     private endedListeners = new Set<() => void>();
+    readyState: "live" | "ended" = "live";
 
     addEventListener = vi.fn((type: string, listener: () => void) => {
       if (type === "ended") this.endedListeners.add(listener);
@@ -71,15 +74,32 @@ const livekitMock = vi.hoisted(() => {
       if (type === "ended") this.endedListeners.delete(listener);
     });
 
+    stop = vi.fn(() => {
+      this.readyState = "ended";
+    });
+
     dispatchEnded() {
+      this.readyState = "ended";
       [...this.endedListeners].forEach((listener) => listener());
       this.endedListeners.clear();
     }
   }
 
+  class FakeLocalVideoTrack {
+    kind = Track.Kind.Video;
+    source = Track.Source.Camera;
+    mediaStreamTrack = new FakeMediaStreamTrack();
+    attach = vi.fn((element?: HTMLMediaElement) => element ?? document.createElement("video"));
+    detach = vi.fn((element?: HTMLMediaElement) => (element ? [element] : []));
+    stop = vi.fn(() => this.mediaStreamTrack.stop());
+  }
+
   interface FakePublication {
     source: string;
-    track: { source: string; mediaStreamTrack?: FakeMediaStreamTrack };
+    track:
+      | FakeLocalVideoTrack
+      | { source: string; mediaStreamTrack?: FakeMediaStreamTrack; stop: () => void };
+    videoTrack?: FakeLocalVideoTrack;
   }
 
   class FakeRemoteAudioTrack {
@@ -148,15 +168,47 @@ const livekitMock = vi.hoisted(() => {
   class FakeLocalParticipant extends FakeEmitter {
     identity = "1";
     screenPublication: FakePublication | undefined;
+    cameraPublication: FakePublication | undefined;
     private nextScreenShareError: unknown;
+    private nextCameraError: unknown;
 
     constructor(private owner: FakeRoom) {
       super();
     }
 
     setMicrophoneEnabled = vi.fn(async (_enabled: boolean) => {});
-    setCameraEnabled = vi.fn(async (_enabled: boolean) => {});
+    setCameraEnabled = vi.fn(async (enabled: boolean, _options?: unknown) => {
+      if (this.nextCameraError) {
+        const error = this.nextCameraError;
+        this.nextCameraError = undefined;
+        throw error;
+      }
+      if (enabled) {
+        const track = new FakeLocalVideoTrack();
+        this.cameraPublication = {
+          source: Track.Source.Camera,
+          track,
+          videoTrack: track,
+        };
+        return this.cameraPublication;
+      }
+      const publication = this.cameraPublication;
+      this.cameraPublication = undefined;
+      if (publication) this.owner.emit(RoomEvent.LocalTrackUnpublished, publication);
+      return undefined;
+    });
+    unpublishTrack = vi.fn(async (track: FakePublication["track"], stopOnUnpublish?: boolean) => {
+      const cameraPublication = this.cameraPublication;
+      if (cameraPublication?.track === track) {
+        if (stopOnUnpublish) cameraPublication.track.stop?.();
+        this.cameraPublication = undefined;
+        this.owner.emit(RoomEvent.LocalTrackUnpublished, cameraPublication);
+        return cameraPublication;
+      }
+      return undefined;
+    });
     getTrackPublication = vi.fn((source: string) => {
+      if (source === Track.Source.Camera) return this.cameraPublication;
       if (source === Track.Source.ScreenShare) return this.screenPublication;
       return undefined;
     });
@@ -172,6 +224,7 @@ const livekitMock = vi.hoisted(() => {
           track: {
             source: Track.Source.ScreenShare,
             mediaStreamTrack: new FakeMediaStreamTrack(),
+            stop: vi.fn(),
           },
         };
         return this.screenPublication;
@@ -184,6 +237,10 @@ const livekitMock = vi.hoisted(() => {
 
     failNextScreenShare(error: unknown) {
       this.nextScreenShareError = error;
+    }
+
+    failNextCamera(error: unknown) {
+      this.nextCameraError = error;
     }
   }
 
@@ -214,10 +271,12 @@ const livekitMock = vi.hoisted(() => {
 
   return {
     FakeMediaStreamTrack,
+    FakeLocalVideoTrack,
     FakeRemoteAudioTrack,
     FakeRemoteParticipant,
     FakeRemotePublication,
     FakeRemoteVideoTrack,
+    LocalVideoTrack: FakeLocalVideoTrack,
     ParticipantEvent,
     RemoteAudioTrack: FakeRemoteAudioTrack,
     RemoteVideoTrack: FakeRemoteVideoTrack,
@@ -251,6 +310,7 @@ vi.mock("../voice/audio-routing", () => ({
 }));
 
 vi.mock("../voice/settings", () => ({
+  VOICE_CAMERA_STORAGE_KEY: "hamlet.voice.cameraDeviceId",
   VOICE_INPUT_STORAGE_KEY: "hamlet.voice.inputDeviceId",
   getInputGain: () => 1,
   getNoiseSuppressionEnabled: () => true,
@@ -262,6 +322,22 @@ vi.mock("../voice/livekit", () => ({
 
 import { VoiceChatProvider, useVoiceChat } from "./voice-chat";
 
+function makeCameraStream(overrides: Partial<CameraStream> = {}): CameraStream {
+  return {
+    channel_id: 42,
+    sharer_user_id: 2,
+    username: "bob",
+    display_name: "Bobby",
+    avatar_url: null,
+    participant_identity: "2",
+    track_sid: "TR_bob_camera",
+    track_name: "camera",
+    source: "camera",
+    started_at: 1,
+    ...overrides,
+  };
+}
+
 function VoiceHarness() {
   const voice = useVoiceChat();
   return (
@@ -271,6 +347,15 @@ function VoiceHarness() {
       <div data-testid="deafened">{voice.isDeafened() ? "deafened" : "undeafened"}</div>
       <div data-testid="sharing">{voice.isScreenSharing() ? "sharing" : "not-sharing"}</div>
       <div data-testid="starting">{voice.isScreenShareStarting() ? "starting" : "idle"}</div>
+      <div data-testid="camera">{voice.isCameraEnabled() ? "camera-on" : "camera-off"}</div>
+      <div data-testid="camera-busy">{voice.isCameraBusy() ? "busy" : "idle"}</div>
+      <div data-testid="camera-track">{voice.localCameraTrack() ? "video" : "none"}</div>
+      <div data-testid="remote-cameras">
+        {voice
+          .remoteCameraTiles()
+          .map((tile) => `${tile.stream.track_sid}:${tile.track ? "video" : "connecting"}`)
+          .join(",") || "none"}
+      </div>
       <div data-testid="watching">{voice.watchingScreenShare()?.track_sid ?? "none"}</div>
       <div data-testid="watch-track">{voice.watchingScreenShareTrack() ? "video" : "none"}</div>
       <Show when={voice.lastError()}>{(message) => <div role="alert">{message()}</div>}</Show>
@@ -294,6 +379,38 @@ function VoiceHarness() {
       </button>
       <button type="button" onClick={() => void voice.stopScreenShare().catch(() => {})}>
         Stop screen share
+      </button>
+      <button type="button" onClick={() => void voice.startCamera().catch(() => {})}>
+        Start camera
+      </button>
+      <button type="button" onClick={() => void voice.stopCamera().catch(() => {})}>
+        Stop camera
+      </button>
+      <button type="button" onClick={() => voice.syncRemoteCameraStreams(42, [makeCameraStream()])}>
+        Sync Bob camera
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          voice.syncRemoteCameraStreams(42, [
+            makeCameraStream({
+              sharer_user_id: 3,
+              username: "carol",
+              display_name: null,
+              participant_identity: "3",
+              track_sid: "TR_carol_camera",
+              started_at: 2,
+            }),
+          ])
+        }
+      >
+        Sync Carol camera
+      </button>
+      <button type="button" onClick={() => voice.syncRemoteCameraStreams(42, [])}>
+        Clear cameras
+      </button>
+      <button type="button" onClick={() => voice.syncRemoteCameraStreams(99, [makeCameraStream()])}>
+        Sync other channel camera
       </button>
       <button
         type="button"
@@ -367,6 +484,13 @@ async function startScreenShare() {
   });
 }
 
+async function startCamera() {
+  fireEvent.click(screen.getByRole("button", { name: "Start camera" }));
+  await waitFor(() => {
+    expect(screen.getByTestId("camera")).toHaveTextContent("camera-on");
+  });
+}
+
 function firstCallOrderAfter(
   calls: readonly unknown[][],
   invocationCallOrder: readonly number[],
@@ -381,6 +505,7 @@ function firstCallOrderAfter(
 }
 
 beforeEach(() => {
+  localStorage.clear();
   livekitMock.reset();
   apiMock.getVoiceToken.mockReset();
   apiMock.postVoiceSpeaking.mockReset();
@@ -510,6 +635,159 @@ describe("VoiceChatProvider screen sharing", () => {
 
     expect(audioMock.router.attach).toHaveBeenCalledWith(micTrack);
     expect(screen.getByTestId("watch-track")).toHaveTextContent("none");
+  });
+
+  test("syncing camera discovery subscribes only matching camera publications", async () => {
+    const micTrack = new livekitMock.FakeRemoteAudioTrack();
+    const cameraTrack = new livekitMock.FakeRemoteVideoTrack();
+    const screenTrack = new livekitMock.FakeRemoteVideoTrack();
+    const micPublication = new livekitMock.FakeRemotePublication({
+      sid: "TR_bob_mic",
+      kind: livekitMock.Track.Kind.Audio,
+      source: livekitMock.Track.Source.Microphone,
+      track: micTrack,
+    });
+    const cameraPublication = new livekitMock.FakeRemotePublication({
+      sid: "TR_bob_camera",
+      kind: livekitMock.Track.Kind.Video,
+      source: livekitMock.Track.Source.Camera,
+      track: cameraTrack,
+    });
+    const screenPublication = new livekitMock.FakeRemotePublication({
+      sid: "TR_bob_screen",
+      kind: livekitMock.Track.Kind.Video,
+      source: livekitMock.Track.Source.ScreenShare,
+      track: screenTrack,
+    });
+    livekitMock.seedNextRemoteParticipants([
+      { identity: "2", publications: [micPublication, cameraPublication, screenPublication] },
+    ]);
+
+    renderVoiceHarness();
+    await joinVoiceChannel();
+
+    expect(micPublication.setSubscribed).toHaveBeenCalledWith(true);
+    expect(cameraPublication.setSubscribed).toHaveBeenLastCalledWith(false);
+    expect(screenPublication.setSubscribed).toHaveBeenLastCalledWith(false);
+    expect(screen.getByTestId("remote-cameras")).toHaveTextContent("none");
+
+    fireEvent.click(screen.getByRole("button", { name: "Sync Bob camera" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("remote-cameras")).toHaveTextContent("TR_bob_camera:video"),
+    );
+    expect(cameraPublication.setEnabled).toHaveBeenLastCalledWith(true);
+    expect(cameraPublication.setSubscribed).toHaveBeenLastCalledWith(true);
+    expect(screenPublication.setSubscribed).toHaveBeenLastCalledWith(false);
+  });
+
+  test("camera discovery before LiveKit publication shows a placeholder until subscribed", async () => {
+    renderVoiceHarness();
+    const room = await joinVoiceChannel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Sync Bob camera" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("remote-cameras")).toHaveTextContent("TR_bob_camera:connecting"),
+    );
+
+    const cameraTrack = new livekitMock.FakeRemoteVideoTrack();
+    const cameraPublication = new livekitMock.FakeRemotePublication({
+      sid: "TR_bob_camera",
+      kind: livekitMock.Track.Kind.Video,
+      source: livekitMock.Track.Source.Camera,
+      track: cameraTrack,
+    });
+    const participant = new livekitMock.FakeRemoteParticipant("2", [cameraPublication]);
+    room.remoteParticipants.set("2", participant);
+    room.emit(livekitMock.RoomEvent.ParticipantConnected, participant);
+
+    expect(cameraPublication.setEnabled).toHaveBeenLastCalledWith(true);
+    expect(cameraPublication.setSubscribed).toHaveBeenLastCalledWith(true);
+
+    room.emit(livekitMock.RoomEvent.TrackSubscribed, cameraTrack, cameraPublication, participant);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("remote-cameras")).toHaveTextContent("TR_bob_camera:video"),
+    );
+  });
+
+  test("clearing camera discovery unsubscribes camera video and preserves audio", async () => {
+    const micTrack = new livekitMock.FakeRemoteAudioTrack();
+    const cameraTrack = new livekitMock.FakeRemoteVideoTrack();
+    const micPublication = new livekitMock.FakeRemotePublication({
+      sid: "TR_bob_mic",
+      kind: livekitMock.Track.Kind.Audio,
+      source: livekitMock.Track.Source.Microphone,
+      track: micTrack,
+    });
+    const cameraPublication = new livekitMock.FakeRemotePublication({
+      sid: "TR_bob_camera",
+      kind: livekitMock.Track.Kind.Video,
+      source: livekitMock.Track.Source.Camera,
+      track: cameraTrack,
+    });
+    livekitMock.seedNextRemoteParticipants([
+      { identity: "2", publications: [micPublication, cameraPublication] },
+    ]);
+
+    renderVoiceHarness();
+    const room = await joinVoiceChannel();
+    const participant = room.remoteParticipants.get("2");
+    if (!participant) throw new Error("expected seeded remote participant");
+    room.emit(livekitMock.RoomEvent.TrackSubscribed, micTrack, micPublication, participant);
+    fireEvent.click(screen.getByRole("button", { name: "Sync Bob camera" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("remote-cameras")).toHaveTextContent("TR_bob_camera:video"),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear cameras" }));
+
+    await waitFor(() => expect(screen.getByTestId("remote-cameras")).toHaveTextContent("none"));
+    expect(cameraPublication.setEnabled).toHaveBeenLastCalledWith(false);
+    expect(cameraPublication.setSubscribed).toHaveBeenLastCalledWith(false);
+    expect(audioMock.router.attach).toHaveBeenCalledWith(micTrack);
+    expect(audioMock.router.detach).not.toHaveBeenCalled();
+  });
+
+  test("remote camera tracks clean up on participant disconnect and channel switch", async () => {
+    const cameraTrack = new livekitMock.FakeRemoteVideoTrack();
+    const cameraPublication = new livekitMock.FakeRemotePublication({
+      sid: "TR_bob_camera",
+      kind: livekitMock.Track.Kind.Video,
+      source: livekitMock.Track.Source.Camera,
+      track: cameraTrack,
+    });
+    livekitMock.seedNextRemoteParticipants([{ identity: "2", publications: [cameraPublication] }]);
+
+    renderVoiceHarness();
+    const firstRoom = await joinVoiceChannel();
+    const participant = firstRoom.remoteParticipants.get("2");
+    if (!participant) throw new Error("expected seeded remote participant");
+    fireEvent.click(screen.getByRole("button", { name: "Sync Bob camera" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("remote-cameras")).toHaveTextContent("TR_bob_camera:video"),
+    );
+
+    firstRoom.emit(livekitMock.RoomEvent.ParticipantDisconnected, participant);
+    firstRoom.remoteParticipants.delete("2");
+
+    await waitFor(() => expect(screen.getByTestId("remote-cameras")).toHaveTextContent("none"));
+    expect(cameraPublication.setEnabled).toHaveBeenLastCalledWith(false);
+    expect(cameraPublication.setSubscribed).toHaveBeenLastCalledWith(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Sync Bob camera" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("remote-cameras")).toHaveTextContent("TR_bob_camera:connecting"),
+    );
+
+    const secondRoom = await joinVoiceChannel("Join 99", "99");
+
+    expect(firstRoom.disconnect).toHaveBeenCalled();
+    expect(secondRoom.connect).toHaveBeenCalledWith("ws://livekit.test", "token-99", {
+      autoSubscribe: false,
+    });
+    expect(screen.getByTestId("remote-cameras")).toHaveTextContent("none");
   });
 
   test("watching one screen share subscribes only that publication and stop preserves audio", async () => {
@@ -655,6 +933,189 @@ describe("VoiceChatProvider screen sharing", () => {
     expect(room.localParticipant.setMicrophoneEnabled).toHaveBeenLastCalledWith(true);
     expect(screen.getByTestId("active-channel")).toHaveTextContent("42");
     expect(screen.getByTestId("starting")).toHaveTextContent("idle");
+  });
+
+  test("publishes local camera with the saved device without changing mic or screen state", async () => {
+    localStorage.setItem("hamlet.voice.cameraDeviceId", "cam-a");
+    renderVoiceHarness();
+    const room = await joinVoiceChannel();
+
+    await startCamera();
+
+    expect(room.localParticipant.setCameraEnabled).toHaveBeenCalledWith(true, {
+      deviceId: { exact: "cam-a" },
+    });
+    expect(room.localParticipant.setScreenShareEnabled).not.toHaveBeenCalled();
+    expect(room.localParticipant.setMicrophoneEnabled).toHaveBeenCalledTimes(1);
+    expect(room.localParticipant.setMicrophoneEnabled).toHaveBeenLastCalledWith(true);
+    expect(screen.getByTestId("camera-track")).toHaveTextContent("video");
+    expect(screen.getByTestId("sharing")).toHaveTextContent("not-sharing");
+    expect(screen.getByTestId("active-channel")).toHaveTextContent("42");
+  });
+
+  test("starting camera requires an active voice room", async () => {
+    renderVoiceHarness();
+
+    fireEvent.click(screen.getByRole("button", { name: "Start camera" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Join a voice channel before turning on your camera.",
+      );
+    });
+    expect(screen.getByTestId("camera")).toHaveTextContent("camera-off");
+    expect(livekitMock.rooms).toHaveLength(0);
+  });
+
+  test("stops camera by unpublishing and stopping the local video track", async () => {
+    renderVoiceHarness();
+    const room = await joinVoiceChannel();
+    await startCamera();
+    const publication = room.localParticipant.cameraPublication;
+    if (!publication) throw new Error("expected camera publication");
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop camera" }));
+
+    await waitFor(() => {
+      expect(room.localParticipant.unpublishTrack).toHaveBeenCalledWith(publication.track, true);
+      expect(screen.getByTestId("camera")).toHaveTextContent("camera-off");
+    });
+    expect(publication.track.stop).toHaveBeenCalled();
+    expect(screen.getByTestId("camera-track")).toHaveTextContent("none");
+    expect(screen.getByTestId("active-channel")).toHaveTextContent("42");
+    expect(room.disconnect).not.toHaveBeenCalled();
+  });
+
+  test("stopping camera leaves an active screen share alone", async () => {
+    renderVoiceHarness();
+    const room = await joinVoiceChannel();
+    await startScreenShare();
+    await startCamera();
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop camera" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("camera")).toHaveTextContent("camera-off");
+    });
+    expect(screen.getByTestId("sharing")).toHaveTextContent("sharing");
+    expect(room.localParticipant.setScreenShareEnabled).toHaveBeenCalledTimes(1);
+    expect(room.localParticipant.setScreenShareEnabled).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ video: true }),
+    );
+  });
+
+  test("camera failure leaves voice joined and preserves mute, deafen, and screen share", async () => {
+    renderVoiceHarness();
+    const room = await joinVoiceChannel();
+    await startScreenShare();
+    fireEvent.click(screen.getByRole("button", { name: "Toggle mute" }));
+    fireEvent.click(screen.getByRole("button", { name: "Toggle deafen" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("muted")).toHaveTextContent(/^muted$/);
+      expect(screen.getByTestId("deafened")).toHaveTextContent(/^deafened$/);
+    });
+
+    const denied = new Error("Permission denied");
+    denied.name = "NotAllowedError";
+    room.localParticipant.failNextCamera(denied);
+    fireEvent.click(screen.getByRole("button", { name: "Start camera" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent("Camera permission was denied.");
+      expect(screen.getByTestId("camera")).toHaveTextContent("camera-off");
+    });
+    expect(screen.getByTestId("active-channel")).toHaveTextContent("42");
+    expect(screen.getByTestId("muted")).toHaveTextContent(/^muted$/);
+    expect(screen.getByTestId("deafened")).toHaveTextContent(/^deafened$/);
+    expect(screen.getByTestId("sharing")).toHaveTextContent("sharing");
+    expect(room.disconnect).not.toHaveBeenCalled();
+  });
+
+  test("no-device camera errors are concise", async () => {
+    renderVoiceHarness();
+    const room = await joinVoiceChannel();
+    const noDevice = new Error("Requested device not found");
+    noDevice.name = "NotFoundError";
+    room.localParticipant.failNextCamera(noDevice);
+
+    fireEvent.click(screen.getByRole("button", { name: "Start camera" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent("No camera device was found.");
+    });
+    expect(screen.getByTestId("active-channel")).toHaveTextContent("42");
+    expect(screen.getByTestId("camera-track")).toHaveTextContent("none");
+  });
+
+  test("camera publish errors are reported without leaving voice", async () => {
+    renderVoiceHarness();
+    const room = await joinVoiceChannel();
+    room.localParticipant.failNextCamera(new Error("SFU rejected publish"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Start camera" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Could not start camera: SFU rejected publish",
+      );
+    });
+    expect(screen.getByTestId("active-channel")).toHaveTextContent("42");
+    expect(room.disconnect).not.toHaveBeenCalled();
+  });
+
+  test("camera media track ended events unpublish and detach the local track", async () => {
+    renderVoiceHarness();
+    const room = await joinVoiceChannel();
+    await startCamera();
+    const publication = room.localParticipant.cameraPublication;
+    const mediaTrack = publication?.track.mediaStreamTrack;
+    if (!publication || !mediaTrack) throw new Error("expected camera media track");
+    const callsBeforeEnd = room.localParticipant.unpublishTrack.mock.calls.length;
+
+    mediaTrack.dispatchEnded();
+
+    await waitFor(() => {
+      expect(room.localParticipant.unpublishTrack).toHaveBeenCalledTimes(callsBeforeEnd + 1);
+      expect(screen.getByTestId("camera")).toHaveTextContent("camera-off");
+    });
+    expect(room.localParticipant.unpublishTrack).toHaveBeenLastCalledWith(publication.track, true);
+    expect(screen.getByTestId("camera-track")).toHaveTextContent("none");
+    expect(screen.getByTestId("active-channel")).toHaveTextContent("42");
+    expect(room.disconnect).not.toHaveBeenCalled();
+  });
+
+  test("switching voice channels stops the previous local camera", async () => {
+    renderVoiceHarness();
+    const firstRoom = await joinVoiceChannel();
+    await startCamera();
+    const publication = firstRoom.localParticipant.cameraPublication;
+    if (!publication) throw new Error("expected camera publication");
+
+    const secondRoom = await joinVoiceChannel("Join 99", "99");
+
+    expect(firstRoom.localParticipant.unpublishTrack).toHaveBeenCalledWith(publication.track, true);
+    expect(firstRoom.disconnect).toHaveBeenCalled();
+    expect(secondRoom.connect).toHaveBeenCalledWith("ws://livekit.test", "token-99", {
+      autoSubscribe: false,
+    });
+    expect(screen.getByTestId("camera")).toHaveTextContent("camera-off");
+    expect(screen.getByTestId("camera-track")).toHaveTextContent("none");
+  });
+
+  test("LiveKit disconnect stops camera tracks and clears local camera state", async () => {
+    renderVoiceHarness();
+    const room = await joinVoiceChannel();
+    await startCamera();
+    const publication = room.localParticipant.cameraPublication;
+    if (!publication) throw new Error("expected camera publication");
+
+    room.emit(livekitMock.RoomEvent.Disconnected);
+
+    await waitFor(() => expect(screen.getByTestId("active-channel")).toHaveTextContent("none"));
+    expect(publication.track.stop).toHaveBeenCalled();
+    expect(screen.getByTestId("camera")).toHaveTextContent("camera-off");
+    expect(screen.getByTestId("camera-track")).toHaveTextContent("none");
   });
 
   test("rejects starting another local screen share while one is active", async () => {

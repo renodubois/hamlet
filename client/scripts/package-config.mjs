@@ -12,7 +12,7 @@ export const ALPHA_PACKAGE_METADATA = Object.freeze({
   usageDescription: Object.freeze({
     Microphone: "Hamlet Electron Alpha uses the microphone for voice channels.",
     Camera:
-      "Hamlet Electron Alpha does not capture camera video during the alpha; this string keeps macOS media prompts explicit if Chromium requests media access.",
+      "Hamlet Electron Alpha uses the camera for explicit local previews and voice/video camera features you start.",
   }),
   win32metadata: Object.freeze({
     CompanyName: "Hamlet",

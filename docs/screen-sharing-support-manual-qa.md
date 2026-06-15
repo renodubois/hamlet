@@ -4,7 +4,7 @@ This document is the human validation checklist for the Hamlet screen-sharing MV
 
 ## Scope
 
-Validate that screen sharing remains tied to an active voice channel, uses explicit user consent, preserves camera denial, supports opt-in watching, and behaves correctly across browser renderer development, Electron development, and unpacked packaged Electron where the platform permits display capture.
+Validate that screen sharing remains tied to an active voice channel, uses explicit user consent, avoids camera requests during screen-share flows, supports opt-in watching, and behaves correctly across browser renderer development, Electron development, and unpacked packaged Electron where the platform permits display capture.
 
 Out of scope for this MVP: camera chat, screen-share audio, recording, persistent stream history, watch-only participation, multi-stream grid viewing, moderation controls, and production packaging/signing.
 
@@ -79,7 +79,7 @@ Run these against each checked environment above.
 - [ ] Reload a viewer during an active share and confirm current stream state bootstraps correctly.
 - [ ] Send text messages while watching and confirm chat remains usable.
 
-### Privacy, camera denial, and accessibility
+### Privacy, camera isolation, and accessibility
 
 - [ ] Confirm no camera permission prompt appears during screen-share flows.
 - [ ] Confirm screen-share audio is not offered or published in the MVP.

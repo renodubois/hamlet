@@ -36,6 +36,53 @@ function captureVoiceDiagnostics(page: Page, diagnostics: string[], label = "pag
   });
 }
 
+type FakeCameraPrerequisiteResult =
+  | { ok: true; videoTracks: number; stoppedVideoTracks: number }
+  | { ok: false; reason: string };
+
+type CameraTrackSnapshot = {
+  videoTracks: number;
+  liveVideoTracks: number;
+  labels: string[];
+};
+
+async function ensureBrowserFakeCameraOrSkip(page: Page) {
+  const result = await page.evaluate(async (): Promise<FakeCameraPrerequisiteResult> => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      return { ok: false, reason: "navigator.mediaDevices.getUserMedia is unavailable" };
+    }
+
+    let stream: MediaStream | undefined;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      const videoTracks = stream.getVideoTracks();
+      videoTracks.forEach((track) => track.stop());
+      const stoppedVideoTracks = videoTracks.filter((track) => track.readyState === "ended").length;
+      if (videoTracks.length === 0) {
+        return { ok: false, reason: "getUserMedia returned no video tracks" };
+      }
+      if (stoppedVideoTracks !== videoTracks.length) {
+        return {
+          ok: false,
+          reason: `getUserMedia fake tracks did not stop cleanly (${stoppedVideoTracks}/${videoTracks.length})`,
+        };
+      }
+      return { ok: true, videoTracks: videoTracks.length, stoppedVideoTracks };
+    } catch (error: unknown) {
+      stream?.getTracks().forEach((track) => track.stop());
+      const reason =
+        error instanceof DOMException || error instanceof Error
+          ? `${error.name}: ${error.message}`
+          : String(error);
+      return { ok: false, reason };
+    }
+  });
+
+  if (!result.ok) {
+    test.skip(true, `Browser fake camera media is unavailable: ${result.reason}`);
+  }
+}
+
 async function voiceFailureDetails(page: Page, diagnostics: string[]) {
   const alerts = await page
     .getByRole("alert")
@@ -149,6 +196,93 @@ async function stopScreenShare(page: Page) {
   await expect(page.getByText(/^Sharing screen$/)).toHaveCount(0);
 }
 
+async function waitForCameraStart(
+  page: Page,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const stopButton = page.getByRole("button", { name: /^Turn off camera$/i });
+  const deadline = Date.now() + 45_000;
+  let lastAlert = "";
+
+  while (Date.now() < deadline) {
+    if (await stopButton.isVisible().catch(() => false)) return { ok: true };
+
+    const alerts = await page
+      .getByRole("alert")
+      .allTextContents()
+      .catch(() => [] as string[]);
+    lastAlert = alerts.join(" | ");
+    if (
+      /camera|permission|not supported|denied|not found|device|overconstrained/i.test(lastAlert)
+    ) {
+      return { ok: false, message: lastAlert };
+    }
+    await page.waitForTimeout(500);
+  }
+
+  return { ok: false, message: lastAlert || "timed out waiting for camera state" };
+}
+
+async function rememberLocalCameraTrack(page: Page) {
+  const snapshot = await page.evaluate((): CameraTrackSnapshot => {
+    const video = document.querySelector(
+      'video[aria-label="Your camera video"]',
+    ) as HTMLVideoElement | null;
+    const stream = video?.srcObject instanceof MediaStream ? video.srcObject : null;
+    const tracks = stream?.getVideoTracks() ?? [];
+    const testWindow = window as typeof window & {
+      __hamletCameraSmokeTrack?: MediaStreamTrack;
+    };
+    if (tracks[0]) testWindow.__hamletCameraSmokeTrack = tracks[0];
+    return {
+      videoTracks: tracks.length,
+      liveVideoTracks: tracks.filter((track) => track.readyState === "live").length,
+      labels: tracks.map((track) => track.label),
+    };
+  });
+
+  expect(snapshot.videoTracks, `local camera tracks: ${snapshot.labels.join(", ")}`).toBe(1);
+  expect(snapshot.liveVideoTracks).toBe(1);
+}
+
+async function rememberedLocalCameraTrackState(page: Page) {
+  return page.evaluate(() => {
+    const testWindow = window as typeof window & {
+      __hamletCameraSmokeTrack?: MediaStreamTrack;
+    };
+    return testWindow.__hamletCameraSmokeTrack?.readyState ?? "missing";
+  });
+}
+
+async function startCameraOrSkip(page: Page, diagnostics: string[]) {
+  await page.getByRole("button", { name: /^Turn on camera$/i }).click();
+  const result = await waitForCameraStart(page);
+  if (!result.ok) {
+    const details = await voiceFailureDetails(page, diagnostics);
+    if (/permission|denied|not found|no camera|getUserMedia|not supported|device/i.test(details)) {
+      test.skip(
+        true,
+        `Browser fake camera media could not start through LiveKit: ${result.message}\n${details}`,
+      );
+    }
+    throw new Error(`Camera did not start in browser.\n${details}`);
+  }
+
+  await expect(page.getByRole("region", { name: /local camera preview/i })).toBeVisible({
+    timeout: 30_000,
+  });
+  await rememberLocalCameraTrack(page);
+  await expect(page.getByText(/^Camera on$/).first()).toBeVisible();
+}
+
+async function stopCamera(page: Page) {
+  await page.getByRole("button", { name: /^Turn off camera$/i }).click();
+  await expect(page.getByRole("button", { name: /^Turn on camera$/i })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByRole("region", { name: /local camera preview/i })).toHaveCount(0);
+  await expect.poll(() => rememberedLocalCameraTrackState(page), { timeout: 30_000 }).toBe("ended");
+}
+
 async function installControlledSseTap(page: Page) {
   await page.context().addInitScript(() => {
     const NativeEventSource = window.EventSource;
@@ -196,8 +330,10 @@ async function currentUserId(page: Page): Promise<number> {
 }
 
 async function newVoicePage(browser: Browser, username: string, diagnostics: string[]) {
-  const context = await browser.newContext({ permissions: ["microphone"] });
-  await context.grantPermissions(["microphone"], { origin: new URL(rendererUrl).origin });
+  const context = await browser.newContext({ permissions: ["microphone", "camera"] });
+  await context.grantPermissions(["microphone", "camera"], {
+    origin: new URL(rendererUrl).origin,
+  });
   const page = await context.newPage();
   await installControlledSseTap(page);
   captureVoiceDiagnostics(page, diagnostics, username);
@@ -213,6 +349,19 @@ test("browser dev user can join the seeded voice channel via LiveKit", async ({ 
 
   await logInAsDevUser(page);
   await joinSeededVoiceChannel(page, diagnostics);
+});
+
+test("browser can start and stop camera with fake media after joining voice", async ({ page }) => {
+  test.setTimeout(150_000);
+
+  const diagnostics: string[] = [];
+  captureVoiceDiagnostics(page, diagnostics);
+
+  await logInAsDevUser(page);
+  await ensureBrowserFakeCameraOrSkip(page);
+  await joinSeededVoiceChannel(page, diagnostics);
+  await startCameraOrSkip(page, diagnostics);
+  await stopCamera(page);
 });
 
 test("Chromium can start and stop screen share after joining voice", async ({

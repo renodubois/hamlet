@@ -1,6 +1,7 @@
-import { createContext, createSignal, onCleanup, type JSX, useContext } from "solid-js";
+import { createContext, createMemo, createSignal, onCleanup, type JSX, useContext } from "solid-js";
 import {
   type LocalTrackPublication,
+  type LocalVideoTrack,
   type Participant,
   ParticipantEvent,
   RemoteAudioTrack,
@@ -10,16 +11,30 @@ import {
   Room,
   RoomEvent,
   Track,
+  type VideoCaptureOptions,
 } from "livekit-client";
-import { getVoiceToken, postVoiceSpeaking, postVoiceStatus, type ScreenShareStream } from "../api";
 import {
+  getVoiceToken,
+  postVoiceSpeaking,
+  postVoiceStatus,
+  type CameraStream,
+  type ScreenShareStream,
+} from "../api";
+import {
+  VOICE_CAMERA_STORAGE_KEY,
   VOICE_INPUT_STORAGE_KEY,
   getInputGain,
   getNoiseSuppressionEnabled,
 } from "../voice/settings";
 import { createAudioRouter } from "../voice/audio-routing";
 import { applyInputGain } from "../voice/livekit";
+import { cameraKey, sortCameraStreams } from "../voice/camera";
 import { isSameScreenShare } from "../voice/screen-share";
+
+export interface RemoteCameraTile {
+  stream: CameraStream;
+  track: RemoteVideoTrack | null;
+}
 
 interface VoiceChatContextValue {
   activeChannelId: () => number | null;
@@ -28,6 +43,10 @@ interface VoiceChatContextValue {
   isDeafened: () => boolean;
   isScreenSharing: () => boolean;
   isScreenShareStarting: () => boolean;
+  isCameraEnabled: () => boolean;
+  isCameraBusy: () => boolean;
+  localCameraTrack: () => LocalVideoTrack | null;
+  remoteCameraTiles: () => readonly RemoteCameraTile[];
   watchingScreenShare: () => ScreenShareStream | null;
   watchingScreenShareTrack: () => RemoteVideoTrack | null;
   lastError: () => string | null;
@@ -38,6 +57,9 @@ interface VoiceChatContextValue {
   toggleDeafened: () => Promise<void>;
   startScreenShare: () => Promise<void>;
   stopScreenShare: () => Promise<void>;
+  startCamera: () => Promise<void>;
+  stopCamera: () => Promise<void>;
+  syncRemoteCameraStreams: (channelId: number, streams: readonly CameraStream[]) => void;
   watchScreenShare: (stream: ScreenShareStream) => Promise<void>;
   stopWatchingScreenShare: () => Promise<void>;
 }
@@ -66,11 +88,67 @@ function formatScreenShareStopError(error: unknown): string {
   return "Could not stop screen share";
 }
 
+function formatCameraStartError(error: unknown): string {
+  const name = error instanceof Error ? error.name : "";
+  if (name === "NotAllowedError" || name === "SecurityError") {
+    return "Camera permission was denied.";
+  }
+  if (name === "AbortError") return "Camera start was canceled.";
+  if (
+    name === "NotFoundError" ||
+    name === "DevicesNotFoundError" ||
+    name === "OverconstrainedError"
+  ) {
+    return "No camera device was found.";
+  }
+  if (error instanceof Error && error.message) {
+    return `Could not start camera: ${error.message}`;
+  }
+  return "Could not start camera";
+}
+
+function formatCameraStopError(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return `Could not stop camera: ${error.message}`;
+  }
+  return "Could not stop camera";
+}
+
+function getCameraCaptureOptions(): VideoCaptureOptions | undefined {
+  const cameraDeviceId = localStorage.getItem(VOICE_CAMERA_STORAGE_KEY) ?? "";
+  return cameraDeviceId ? { deviceId: { exact: cameraDeviceId } } : undefined;
+}
+
 function isScreenSharePublication(publication: LocalTrackPublication): boolean {
   return (
     publication.source === Track.Source.ScreenShare ||
     publication.track?.source === Track.Source.ScreenShare
   );
+}
+
+function isCameraPublication(publication: LocalTrackPublication): boolean {
+  return (
+    publication.source === Track.Source.Camera || publication.track?.source === Track.Source.Camera
+  );
+}
+
+function localVideoTrackFromPublication(
+  publication: LocalTrackPublication,
+): LocalVideoTrack | null {
+  const track = publication.videoTrack ?? publication.track;
+  if (!track) return null;
+  if (track.kind === Track.Kind.Video || track.source === Track.Source.Camera) {
+    return track as LocalVideoTrack;
+  }
+  return null;
+}
+
+function stopCameraPublicationTrack(publication: LocalTrackPublication | undefined): void {
+  try {
+    publication?.track?.stop();
+  } catch {
+    // Best-effort local cleanup; the caller owns reporting any unpublish error.
+  }
 }
 
 const VoiceChatContext = createContext<VoiceChatContextValue>();
@@ -82,6 +160,20 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
   const [isDeafened, setIsDeafened] = createSignal(false);
   const [isScreenSharing, setIsScreenSharing] = createSignal(false);
   const [isScreenShareStarting, setIsScreenShareStarting] = createSignal(false);
+  const [isCameraEnabled, setIsCameraEnabled] = createSignal(false);
+  const [isCameraBusy, setIsCameraBusy] = createSignal(false);
+  const [localCameraTrack, setLocalCameraTrack] = createSignal<LocalVideoTrack | null>(null);
+  const [remoteCameraStreams, setRemoteCameraStreams] = createSignal<CameraStream[]>([]);
+  const [remoteCameraTracks, setRemoteCameraTracks] = createSignal<
+    ReadonlyMap<string, RemoteVideoTrack>
+  >(new Map());
+  const remoteCameraTiles = createMemo<readonly RemoteCameraTile[]>(() => {
+    const tracks = remoteCameraTracks();
+    return remoteCameraStreams().map((stream) => ({
+      stream,
+      track: tracks.get(cameraKey(stream)) ?? null,
+    }));
+  });
   const [watchingScreenShare, setWatchingScreenShare] = createSignal<ScreenShareStream | null>(
     null,
   );
@@ -94,6 +186,8 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
   let room: Room | null = null;
   let screenSharePublication: LocalTrackPublication | undefined;
   let cleanupScreenShareTrackEnded: (() => void) | undefined;
+  let cameraPublication: LocalTrackPublication | undefined;
+  let cleanupCameraTrackEnded: (() => void) | undefined;
   // Last speaking state we POSTed for the local participant, so we only emit
   // on transitions rather than on every IsSpeakingChanged callback.
   let lastLocalSpeaking = false;
@@ -139,6 +233,47 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     cleanupScreenShareTrackEnded = () => mediaTrack.removeEventListener("ended", handleEnded);
   }
 
+  function clearCameraState(): void {
+    cleanupCameraTrackEnded?.();
+    cleanupCameraTrackEnded = undefined;
+    cameraPublication = undefined;
+    setLocalCameraTrack(null);
+    setIsCameraEnabled(false);
+    setIsCameraBusy(false);
+  }
+
+  function bindCameraPublication(publication: LocalTrackPublication, currentRoom: Room): void {
+    const track = localVideoTrackFromPublication(publication);
+    if (!track) return;
+
+    cleanupCameraTrackEnded?.();
+    cleanupCameraTrackEnded = undefined;
+    cameraPublication = publication;
+    setLocalCameraTrack(track);
+    setIsCameraEnabled(true);
+
+    const mediaTrack = publication.track?.mediaStreamTrack;
+    if (!mediaTrack) return;
+
+    const handleEnded = () => {
+      if (room !== currentRoom || cameraPublication !== publication) return;
+      void stopLocalCamera(false).catch(() => {});
+    };
+    mediaTrack.addEventListener("ended", handleEnded, { once: true });
+    cleanupCameraTrackEnded = () => mediaTrack.removeEventListener("ended", handleEnded);
+  }
+
+  async function unpublishCameraPublication(
+    currentRoom: Room,
+    publication: LocalTrackPublication | undefined,
+  ): Promise<void> {
+    if (publication?.track) {
+      await currentRoom.localParticipant.unpublishTrack(publication.track, true);
+      return;
+    }
+    await currentRoom.localParticipant.setCameraEnabled(false);
+  }
+
   function clearWatchedScreenShareState(): void {
     setWatchingScreenShare(null);
     setWatchingScreenShareTrack(null);
@@ -149,12 +284,109 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     updateAllRemotePublicationSubscriptions(currentRoom);
   }
 
+  function clearRemoteCameraState(): void {
+    setRemoteCameraStreams([]);
+    setRemoteCameraTracks(new Map());
+  }
+
+  function retainRemoteCameraTracksForStreams(streams: readonly CameraStream[]): void {
+    const keys = new Set(streams.map(cameraKey));
+    setRemoteCameraTracks((prev) => {
+      let changed = false;
+      const next = new Map<string, RemoteVideoTrack>();
+      prev.forEach((track, key) => {
+        if (keys.has(key)) next.set(key, track);
+        else changed = true;
+      });
+      return changed ? next : prev;
+    });
+  }
+
+  function setRemoteCameraTrack(stream: CameraStream, track: RemoteVideoTrack): void {
+    const key = cameraKey(stream);
+    setRemoteCameraTracks((prev) => {
+      if (prev.get(key) === track) return prev;
+      const next = new Map(prev);
+      next.set(key, track);
+      return next;
+    });
+  }
+
+  function clearRemoteCameraTracksForPublication(
+    participant: RemoteParticipant,
+    publication: RemoteTrackPublication,
+  ): void {
+    const keys = remoteCameraStreams()
+      .filter((stream) => doesPublicationMatchCamera(participant, publication, stream))
+      .map(cameraKey);
+    if (keys.length === 0) return;
+    const staleKeys = new Set(keys);
+    setRemoteCameraTracks((prev) => {
+      let changed = false;
+      const next = new Map(prev);
+      staleKeys.forEach((key) => {
+        changed = next.delete(key) || changed;
+      });
+      return changed ? next : prev;
+    });
+  }
+
+  function clearRemoteCameraTracksForTrack(track: RemoteVideoTrack): void {
+    setRemoteCameraTracks((prev) => {
+      let changed = false;
+      const next = new Map<string, RemoteVideoTrack>();
+      prev.forEach((currentTrack, key) => {
+        if (currentTrack === track) changed = true;
+        else next.set(key, currentTrack);
+      });
+      return changed ? next : prev;
+    });
+  }
+
+  function normalizeRemoteCameraStreams(
+    channelId: number,
+    streams: readonly CameraStream[],
+    currentRoom: Room,
+  ): CameraStream[] {
+    const localIdentity = currentRoom.localParticipant.identity;
+    const byKey = new Map<string, CameraStream>();
+    for (const stream of streams) {
+      if (stream.channel_id !== channelId) continue;
+      if (stream.source !== Track.Source.Camera) continue;
+      if (localIdentity && stream.participant_identity === localIdentity) continue;
+      byKey.set(cameraKey(stream), stream);
+    }
+    return sortCameraStreams([...byKey.values()]);
+  }
+
+  function syncRemoteCameraStreams(channelId: number, streams: readonly CameraStream[]): void {
+    const currentRoom = room;
+    if (!currentRoom || activeChannelId() !== channelId) return;
+    const normalized = normalizeRemoteCameraStreams(channelId, streams, currentRoom);
+    setRemoteCameraStreams(normalized);
+    retainRemoteCameraTracksForStreams(normalized);
+    updateAllRemotePublicationSubscriptions(currentRoom);
+  }
+
+  function removeRemoteCameraStreamsForParticipant(participantIdentity: string): void {
+    const next = remoteCameraStreams().filter(
+      (stream) => stream.participant_identity !== participantIdentity,
+    );
+    if (next.length === remoteCameraStreams().length) return;
+    setRemoteCameraStreams(next);
+    retainRemoteCameraTracksForStreams(next);
+  }
+
   function isRemoteMicrophonePublication(publication: RemoteTrackPublication): boolean {
     return publication.kind === Track.Kind.Audio && publication.source === Track.Source.Microphone;
   }
 
   function isRemoteScreenShareVideoPublication(publication: RemoteTrackPublication): boolean {
     return publication.kind === Track.Kind.Video && publication.source === Track.Source.ScreenShare;
+  }
+
+  function isRemoteCameraVideoPublication(publication: RemoteTrackPublication): boolean {
+    return publication.kind === Track.Kind.Video && publication.source === Track.Source.Camera;
   }
 
   function doesPublicationMatchScreenShare(
@@ -168,6 +400,28 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     );
   }
 
+  function doesPublicationMatchCamera(
+    participant: RemoteParticipant,
+    publication: RemoteTrackPublication,
+    stream: CameraStream,
+  ): boolean {
+    return (
+      participant.identity === stream.participant_identity &&
+      publication.trackSid === stream.track_sid
+    );
+  }
+
+  function findRemoteCameraStream(
+    participant: RemoteParticipant,
+    publication: RemoteTrackPublication,
+  ): CameraStream | null {
+    return (
+      remoteCameraStreams().find((stream) =>
+        doesPublicationMatchCamera(participant, publication, stream),
+      ) ?? null
+    );
+  }
+
   function updateRemotePublicationSubscription(
     publication: RemoteTrackPublication,
     participant: RemoteParticipant,
@@ -177,16 +431,29 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
       return;
     }
 
-    if (!isRemoteScreenShareVideoPublication(publication)) return;
+    if (isRemoteScreenShareVideoPublication(publication)) {
+      const watched = watchingScreenShare();
+      const shouldWatch = Boolean(
+        watched && doesPublicationMatchScreenShare(participant, publication, watched),
+      );
+      publication.setEnabled(shouldWatch);
+      publication.setSubscribed(shouldWatch);
+      if (shouldWatch && publication.track instanceof RemoteVideoTrack) {
+        setWatchingScreenShareTrack(publication.track);
+      }
+      return;
+    }
 
-    const watched = watchingScreenShare();
-    const shouldWatch = Boolean(
-      watched && doesPublicationMatchScreenShare(participant, publication, watched),
-    );
-    publication.setEnabled(shouldWatch);
-    publication.setSubscribed(shouldWatch);
-    if (shouldWatch && publication.track instanceof RemoteVideoTrack) {
-      setWatchingScreenShareTrack(publication.track);
+    if (!isRemoteCameraVideoPublication(publication)) return;
+
+    const cameraStream = findRemoteCameraStream(participant, publication);
+    const shouldSubscribe = cameraStream != null;
+    publication.setEnabled(shouldSubscribe);
+    publication.setSubscribed(shouldSubscribe);
+    if (cameraStream && publication.track instanceof RemoteVideoTrack) {
+      setRemoteCameraTrack(cameraStream, publication.track);
+    } else if (!cameraStream) {
+      clearRemoteCameraTracksForPublication(participant, publication);
     }
   }
 
@@ -293,6 +560,109 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     await stopLocalScreenShare(true);
   }
 
+  async function stopLocalCamera(reportErrors: boolean): Promise<void> {
+    const currentRoom = room;
+    const existingPublication = currentRoom?.localParticipant.getTrackPublication(
+      Track.Source.Camera,
+    );
+    const publication = cameraPublication ?? existingPublication;
+    const shouldStop =
+      isCameraEnabled() ||
+      isCameraBusy() ||
+      localCameraTrack() != null ||
+      cameraPublication != null ||
+      existingPublication != null;
+
+    if (!currentRoom || !shouldStop) {
+      clearCameraState();
+      return;
+    }
+
+    setIsCameraBusy(true);
+    try {
+      await unpublishCameraPublication(currentRoom, publication);
+    } catch (e) {
+      if (reportErrors) {
+        const message = formatCameraStopError(e);
+        setLastError(message);
+        throw new Error(message);
+      }
+    } finally {
+      if (!cameraPublication || cameraPublication === publication) {
+        clearCameraState();
+      } else {
+        setIsCameraBusy(false);
+      }
+      stopCameraPublicationTrack(publication);
+    }
+  }
+
+  async function startCamera(): Promise<void> {
+    const currentRoom = room;
+    if (!currentRoom || activeChannelId() == null) {
+      const message = "Join a voice channel before turning on your camera.";
+      setLastError(message);
+      throw new Error(message);
+    }
+    if (isCameraBusy()) return;
+
+    const existingPublication = currentRoom.localParticipant.getTrackPublication(
+      Track.Source.Camera,
+    );
+    if (isCameraEnabled() || cameraPublication || existingPublication) {
+      if (existingPublication && isCameraPublication(existingPublication)) {
+        bindCameraPublication(existingPublication, currentRoom);
+      }
+      const message = "Camera is already on.";
+      setLastError(message);
+      throw new Error(message);
+    }
+
+    setLastError(null);
+    setIsCameraBusy(true);
+    try {
+      const publication = await currentRoom.localParticipant.setCameraEnabled(
+        true,
+        getCameraCaptureOptions(),
+      );
+      const cameraTrackPublication =
+        publication ?? currentRoom.localParticipant.getTrackPublication(Track.Source.Camera);
+      if (!cameraTrackPublication || !isCameraPublication(cameraTrackPublication)) {
+        throw new Error("Camera track was not published");
+      }
+      if (!localVideoTrackFromPublication(cameraTrackPublication)) {
+        throw new Error("Camera track was not published");
+      }
+      if (room !== currentRoom || activeChannelId() == null) {
+        await unpublishCameraPublication(currentRoom, cameraTrackPublication).catch(() => {
+          stopCameraPublicationTrack(cameraTrackPublication);
+        });
+        if (!cameraPublication || cameraPublication === cameraTrackPublication) clearCameraState();
+        return;
+      }
+      bindCameraPublication(cameraTrackPublication, currentRoom);
+    } catch (e) {
+      const published = currentRoom.localParticipant.getTrackPublication(Track.Source.Camera);
+      if (published) {
+        await unpublishCameraPublication(currentRoom, published).catch(() => {
+          stopCameraPublicationTrack(published);
+        });
+      }
+      if (!published || !cameraPublication || cameraPublication === published) clearCameraState();
+      if (room !== currentRoom || activeChannelId() == null) return;
+      const message = formatCameraStartError(e);
+      setLastError(message);
+      throw new Error(message);
+    } finally {
+      setIsCameraBusy(false);
+    }
+  }
+
+  async function stopCamera(): Promise<void> {
+    setLastError(null);
+    await stopLocalCamera(true);
+  }
+
   async function watchScreenShare(stream: ScreenShareStream): Promise<void> {
     const currentRoom = room;
     if (!currentRoom || activeChannelId() !== stream.channel_id) {
@@ -330,13 +700,17 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     const leavingChannelId = activeChannelId();
     if (room) {
       const r = room;
+      await stopLocalCamera(false).catch(() => {});
       await stopLocalScreenShare(false).catch(() => {});
+      clearRemoteCameraState();
       stopWatchingScreenShareInRoom(r);
       room = null;
       await r.disconnect().catch(() => {});
     }
+    clearCameraState();
     clearScreenShareState();
     clearWatchedScreenShareState();
+    clearRemoteCameraState();
     audio.detachAll();
     setActiveChannelId(null);
     speakingById.clear();
@@ -385,24 +759,35 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
           return;
         }
         const watched = watchingScreenShare();
-        if (
-          track instanceof RemoteVideoTrack &&
-          isRemoteScreenShareVideoPublication(publication) &&
-          watched &&
-          doesPublicationMatchScreenShare(participant, publication, watched)
-        ) {
-          setWatchingScreenShareTrack(track);
+        if (track instanceof RemoteVideoTrack) {
+          if (
+            isRemoteScreenShareVideoPublication(publication) &&
+            watched &&
+            doesPublicationMatchScreenShare(participant, publication, watched)
+          ) {
+            setWatchingScreenShareTrack(track);
+          }
+          if (isRemoteCameraVideoPublication(publication)) {
+            const cameraStream = findRemoteCameraStream(participant, publication);
+            if (cameraStream) setRemoteCameraTrack(cameraStream, track);
+          }
         }
       });
 
       newRoom.on(RoomEvent.TrackUnpublished, (publication, participant) => {
         const watched = watchingScreenShare();
-        if (!isRemoteScreenShareVideoPublication(publication)) return;
+        if (isRemoteScreenShareVideoPublication(publication)) {
+          publication.setEnabled(false);
+          publication.setSubscribed(false);
+          if (watched && doesPublicationMatchScreenShare(participant, publication, watched)) {
+            clearWatchedScreenShareState();
+          }
+          return;
+        }
+        if (!isRemoteCameraVideoPublication(publication)) return;
         publication.setEnabled(false);
         publication.setSubscribed(false);
-        if (watched && doesPublicationMatchScreenShare(participant, publication, watched)) {
-          clearWatchedScreenShareState();
-        }
+        clearRemoteCameraTracksForPublication(participant, publication);
       });
 
       newRoom.on(RoomEvent.TrackUnsubscribed, (track) => {
@@ -413,6 +798,9 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
         if (track instanceof RemoteVideoTrack && watchingScreenShareTrack() === track) {
           setWatchingScreenShareTrack(null);
         }
+        if (track instanceof RemoteVideoTrack) {
+          clearRemoteCameraTracksForTrack(track);
+        }
       });
 
       newRoom.on(RoomEvent.LocalTrackUnpublished, (publication) => {
@@ -422,13 +810,24 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
         ) {
           clearScreenShareState();
         }
+        if (
+          isCameraPublication(publication) &&
+          (!cameraPublication || publication === cameraPublication)
+        ) {
+          clearCameraState();
+        }
       });
 
       newRoom.on(RoomEvent.Disconnected, () => {
         // LiveKit disconnected us (server-side kick, network failure, etc.).
+        stopCameraPublicationTrack(
+          cameraPublication ?? newRoom.localParticipant.getTrackPublication(Track.Source.Camera),
+        );
         room = null;
+        clearCameraState();
         clearScreenShareState();
         clearWatchedScreenShareState();
+        clearRemoteCameraState();
         audio.detachAll();
         setActiveChannelId(null);
         speakingById.clear();
@@ -471,17 +870,24 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
         const watched = watchingScreenShare();
         const disconnectedScreenShareSids = new Set<string>();
         p.trackPublications.forEach((publication) => {
-          if (!isRemoteScreenShareVideoPublication(publication)) return;
-          disconnectedScreenShareSids.add(publication.trackSid);
-          publication.setEnabled(false);
-          publication.setSubscribed(false);
-          if (
-            publication.track instanceof RemoteVideoTrack &&
-            watchingScreenShareTrack() === publication.track
-          ) {
-            setWatchingScreenShareTrack(null);
+          if (isRemoteScreenShareVideoPublication(publication)) {
+            disconnectedScreenShareSids.add(publication.trackSid);
+            publication.setEnabled(false);
+            publication.setSubscribed(false);
+            if (
+              publication.track instanceof RemoteVideoTrack &&
+              watchingScreenShareTrack() === publication.track
+            ) {
+              setWatchingScreenShareTrack(null);
+            }
+          }
+          if (isRemoteCameraVideoPublication(publication)) {
+            publication.setEnabled(false);
+            publication.setSubscribed(false);
+            clearRemoteCameraTracksForPublication(p, publication);
           }
         });
+        removeRemoteCameraStreamsForParticipant(p.identity);
         if (
           watched?.participant_identity === p.identity &&
           (disconnectedScreenShareSids.size === 0 ||
@@ -622,6 +1028,10 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
         isDeafened,
         isScreenSharing,
         isScreenShareStarting,
+        isCameraEnabled,
+        isCameraBusy,
+        localCameraTrack,
+        remoteCameraTiles,
         watchingScreenShare,
         watchingScreenShareTrack,
         lastError,
@@ -632,6 +1042,9 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
         toggleDeafened,
         startScreenShare,
         stopScreenShare,
+        startCamera,
+        stopCamera,
+        syncRemoteCameraStreams,
         watchScreenShare,
         stopWatchingScreenShare,
       }}

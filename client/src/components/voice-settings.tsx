@@ -2,6 +2,7 @@ import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid
 import {
   VOICE_INPUT_STORAGE_KEY,
   VOICE_OUTPUT_STORAGE_KEY,
+  VOICE_CAMERA_STORAGE_KEY,
   VOICE_NOISE_SUPPRESSION_STORAGE_KEY,
   VOICE_INPUT_GAIN_STORAGE_KEY,
   VOICE_SHOW_SPEAKING_EVERYWHERE_KEY,
@@ -36,14 +37,18 @@ export default function VoiceSettings() {
 
   const [inputDevices, setInputDevices] = createSignal<MediaDeviceInfo[]>([]);
   const [outputDevices, setOutputDevices] = createSignal<MediaDeviceInfo[]>([]);
-  // `true` until warm-up resolves (success or silent failure). Stays `false` on
-  // unsupported platforms so the fallback banner isn't obscured by the overlay.
+  const [cameraDevices, setCameraDevices] = createSignal<MediaDeviceInfo[]>([]);
+  // `true` until audio warm-up resolves (success or silent failure). Stays `false`
+  // on unsupported platforms so the fallback banner isn't obscured by the overlay.
   const [isLoading, setIsLoading] = createSignal(supported);
   const [inputId, setInputId] = createSignal<string>(
     localStorage.getItem(VOICE_INPUT_STORAGE_KEY) ?? DEFAULT_DEVICE_ID,
   );
   const [outputId, setOutputId] = createSignal<string>(
     localStorage.getItem(VOICE_OUTPUT_STORAGE_KEY) ?? DEFAULT_DEVICE_ID,
+  );
+  const [cameraId, setCameraId] = createSignal<string>(
+    localStorage.getItem(VOICE_CAMERA_STORAGE_KEY) ?? DEFAULT_DEVICE_ID,
   );
   const [noiseSuppression, setNoiseSuppression] = createSignal<boolean>(
     getNoiseSuppressionEnabled(),
@@ -57,17 +62,45 @@ export default function VoiceSettings() {
   const [micError, setMicError] = createSignal<string | null>(null);
   const [outputError, setOutputError] = createSignal<string | null>(null);
   const [playingTestSound, setPlayingTestSound] = createSignal(false);
+  const [cameraPreviewStream, setCameraPreviewStream] = createSignal<MediaStream | null>(null);
+  const [cameraPreviewStarting, setCameraPreviewStarting] = createSignal(false);
+  const [cameraError, setCameraError] = createSignal<string | null>(null);
 
   let micStream: MediaStream | null = null;
   let micCtx: AudioContext | null = null;
   let micRaf: number | null = null;
+  let cameraVideoRef: HTMLVideoElement | undefined;
+  let cameraPreviewRequestId = 0;
+  let isDisposed = false;
   let inputSelectRef: HTMLSelectElement | undefined;
   let outputSelectRef: HTMLSelectElement | undefined;
+  let cameraSelectRef: HTMLSelectElement | undefined;
   const setInputSelectRef = (el: HTMLSelectElement) => {
     inputSelectRef = el;
   };
   const setOutputSelectRef = (el: HTMLSelectElement) => {
     outputSelectRef = el;
+  };
+  const setCameraSelectRef = (el: HTMLSelectElement) => {
+    cameraSelectRef = el;
+  };
+  const attachCameraPreview = () => {
+    if (!cameraVideoRef) return;
+    const stream = cameraPreviewStream();
+    try {
+      if (cameraVideoRef.srcObject !== stream) cameraVideoRef.srcObject = stream;
+      if (stream) {
+        const playPromise = cameraVideoRef.play();
+        if (playPromise) void playPromise.catch(() => {});
+      }
+    } catch {
+      // Assigning srcObject is enough for the local preview; autoplay or test-DOM
+      // media assignment failures should not replace actionable device errors.
+    }
+  };
+  const setCameraVideoRef = (el: HTMLVideoElement) => {
+    cameraVideoRef = el;
+    attachCameraPreview();
   };
 
   const refreshDevices = async () => {
@@ -76,16 +109,19 @@ export default function VoiceSettings() {
       const devices = await navigator.mediaDevices.enumerateDevices();
       setInputDevices(devices.filter((d) => d.kind === "audioinput"));
       setOutputDevices(devices.filter((d) => d.kind === "audiooutput"));
+      setCameraDevices(devices.filter((d) => d.kind === "videoinput"));
     } catch {
       // Enumeration can fail in restricted contexts; leave lists empty and
       // the UI will fall through to "System default" only.
     }
   };
 
-  // Browsers (especially WebKitGTK) hide real device labels and only expose a
-  // single default input until the page has been granted microphone access. Do
-  // a one-shot silent getUserMedia on mount so the dropdowns show real device
-  // names, then drop the stream immediately — startMicTest re-opens its own.
+  // Browsers (especially WebKitGTK) hide real microphone/speaker labels and only
+  // expose a single default input until the page has been granted microphone
+  // access. Do a one-shot silent audio-only getUserMedia on mount so the audio
+  // dropdowns show real device names, then drop the stream immediately —
+  // startMicTest re-opens its own. Camera access is intentionally not requested
+  // here; preview capture only starts from the explicit camera button.
   // The loading overlay stays up until this resolves (either outcome).
   const primeDeviceLabels = async () => {
     if (!supported) return;
@@ -160,6 +196,55 @@ export default function VoiceSettings() {
     else void startMicTest();
   };
 
+  const clearCameraPreviewStream = () => {
+    const stream = cameraPreviewStream();
+    if (stream) {
+      stream.getTracks().forEach((t) => t.stop());
+    }
+    if (cameraVideoRef) cameraVideoRef.srcObject = null;
+    setCameraPreviewStream(null);
+  };
+
+  const stopCameraPreview = () => {
+    cameraPreviewRequestId += 1;
+    setCameraPreviewStarting(false);
+    clearCameraPreviewStream();
+  };
+
+  const startCameraPreview = async (selectedCameraId = cameraId()) => {
+    const requestId = cameraPreviewRequestId + 1;
+    cameraPreviewRequestId = requestId;
+    setCameraError(null);
+    setCameraPreviewStarting(true);
+    clearCameraPreviewStream();
+    try {
+      const constraints: MediaStreamConstraints = {
+        audio: false,
+        video: selectedCameraId ? { deviceId: { exact: selectedCameraId } } : true,
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      if (isDisposed || requestId !== cameraPreviewRequestId) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      setCameraPreviewStream(stream);
+      void refreshDevices();
+    } catch (e) {
+      if (!isDisposed && requestId === cameraPreviewRequestId) {
+        setCameraError(e instanceof Error ? e.message : "Could not access camera");
+      }
+    } finally {
+      if (!isDisposed && requestId === cameraPreviewRequestId) {
+        setCameraPreviewStarting(false);
+      }
+    }
+  };
+
+  const toggleCameraPreview = () => {
+    if (cameraPreviewStream() || cameraPreviewStarting()) stopCameraPreview();
+    else void startCameraPreview();
+  };
+
   const playTestSound = async () => {
     setOutputError(null);
     setPlayingTestSound(true);
@@ -220,8 +305,11 @@ export default function VoiceSettings() {
     navigator.mediaDevices.addEventListener("devicechange", refreshDevices);
   });
 
+  createEffect(attachCameraPreview);
+
   createEffect(() => localStorage.setItem(VOICE_INPUT_STORAGE_KEY, inputId()));
   createEffect(() => localStorage.setItem(VOICE_OUTPUT_STORAGE_KEY, outputId()));
+  createEffect(() => localStorage.setItem(VOICE_CAMERA_STORAGE_KEY, cameraId()));
   createEffect(() =>
     localStorage.setItem(VOICE_NOISE_SUPPRESSION_STORAGE_KEY, noiseSuppression() ? "on" : "off"),
   );
@@ -243,9 +331,15 @@ export default function VoiceSettings() {
     outputDevices();
     if (outputSelectRef) outputSelectRef.value = outputId();
   });
+  createEffect(() => {
+    cameraDevices();
+    if (cameraSelectRef) cameraSelectRef.value = cameraId();
+  });
 
   onCleanup(() => {
+    isDisposed = true;
     stopMicTest();
+    stopCameraPreview();
     if (supported) {
       navigator.mediaDevices.removeEventListener("devicechange", refreshDevices);
     }
@@ -253,6 +347,7 @@ export default function VoiceSettings() {
 
   const inputLabel = (d: MediaDeviceInfo, i: number) => d.label || `Microphone ${i + 1}`;
   const outputLabel = (d: MediaDeviceInfo, i: number) => d.label || `Speaker ${i + 1}`;
+  const cameraLabel = (d: MediaDeviceInfo, i: number) => d.label || `Camera ${i + 1}`;
 
   return (
     <div class="relative flex flex-col gap-6">
@@ -267,14 +362,15 @@ export default function VoiceSettings() {
               aria-hidden="true"
               class="inline-block h-4 w-4 animate-spin rounded-full border-2 border-gray-500 border-t-blue-400"
             />
-            <span>Loading audio devices…</span>
+            <span>Loading media devices…</span>
           </div>
         </div>
       </Show>
 
       <Show when={!supported}>
         <p class="text-red-400" role="alert">
-          This platform does not expose media device APIs, so voice chat is unavailable here.
+          This platform does not expose media device APIs, so voice and video chat are unavailable
+          here.
         </p>
       </Show>
 
@@ -334,6 +430,66 @@ export default function VoiceSettings() {
         </Show>
         <Show when={micTesting()}>
           <p class="text-xs text-gray-400">Speak into your mic — the bar should move.</p>
+        </Show>
+      </div>
+
+      <div class="flex flex-col gap-2">
+        <label for="voice-camera-select" class="font-medium text-gray-100">
+          Camera
+        </label>
+        <select
+          id="voice-camera-select"
+          ref={setCameraSelectRef}
+          class="bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+          value={cameraId()}
+          disabled={!supported}
+          onChange={(e) => {
+            const nextId = e.currentTarget.value;
+            setCameraId(nextId);
+            if (cameraPreviewStream()) void startCameraPreview(nextId);
+          }}
+        >
+          <option value={DEFAULT_DEVICE_ID}>System default</option>
+          <For each={cameraDevices()}>
+            {(d, i) => <option value={d.deviceId}>{cameraLabel(d, i())}</option>}
+          </For>
+        </select>
+
+        <div class="mt-1 flex items-center gap-3">
+          <button
+            type="button"
+            class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-md px-4 py-2 text-sm font-medium"
+            onClick={toggleCameraPreview}
+            disabled={!supported}
+            aria-busy={cameraPreviewStarting()}
+          >
+            <Show
+              when={cameraPreviewStarting()}
+              fallback={cameraPreviewStream() ? "Stop preview" : "Preview camera"}
+            >
+              Starting preview…
+            </Show>
+          </button>
+          <Show when={cameraPreviewStream()}>
+            <p class="text-xs text-gray-400">Your camera preview stays local to this device.</p>
+          </Show>
+        </div>
+        <Show when={cameraPreviewStream()}>
+          <video
+            ref={setCameraVideoRef}
+            aria-label="Camera preview"
+            autoplay
+            muted
+            playsinline
+            class="mt-2 aspect-video w-full max-w-sm rounded-md bg-black object-cover"
+          />
+        </Show>
+        <Show when={cameraError()}>
+          {(msg) => (
+            <p class="text-red-400 text-sm" role="alert">
+              {msg()}
+            </p>
+          )}
         </Show>
       </div>
 

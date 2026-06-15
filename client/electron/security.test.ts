@@ -111,7 +111,7 @@ describe("Electron permission policy", () => {
     securityOrigin: TRUSTED_RENDERER_ORIGIN,
   };
 
-  it("allows only trusted audio media requests needed by voice", () => {
+  it("allows trusted audio, video, and audio-plus-video media requests", () => {
     expect(
       shouldAllowPermissionRequest({
         ...trustedRequest,
@@ -119,30 +119,37 @@ describe("Electron permission policy", () => {
         mediaTypes: ["audio"],
       }),
     ).toBe(true);
-
     expect(
       shouldAllowPermissionRequest({
         ...trustedRequest,
         permission: "media",
         mediaTypes: ["video"],
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldAllowPermissionRequest({
         ...trustedRequest,
         permission: "media",
         mediaTypes: ["audio", "video"],
       }),
-    ).toBe(false);
+    ).toBe(true);
+
     expect(
       shouldAllowPermissionRequest({
         ...trustedRequest,
         permission: "media",
       }),
     ).toBe(false);
+    expect(
+      shouldAllowPermissionRequest({
+        ...trustedRequest,
+        permission: "media",
+        mediaTypes: ["audio", "midi"],
+      }),
+    ).toBe(false);
   });
 
-  it("allows trusted media-device checks but rejects camera checks", () => {
+  it("allows trusted media-device checks including camera checks", () => {
     expect(
       shouldAllowPermissionCheck({
         permission: "media",
@@ -163,7 +170,7 @@ describe("Electron permission policy", () => {
         requestingOrigin: TRUSTED_RENDERER_ORIGIN,
         mediaType: "video",
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("allows trusted display capture permission prompts for the Electron capture handler", () => {
@@ -232,10 +239,25 @@ describe("Electron permission policy", () => {
       }),
     ).toBe(false);
     expect(
+      shouldAllowPermissionRequest({
+        permission: "media",
+        requestingUrl: "https://evil.example/camera",
+        securityOrigin: "https://evil.example",
+        mediaTypes: ["video"],
+      }),
+    ).toBe(false);
+    expect(
       shouldAllowPermissionCheck({
         permission: "media",
         requestingOrigin: "https://evil.example",
         mediaType: "audio",
+      }),
+    ).toBe(false);
+    expect(
+      shouldAllowPermissionCheck({
+        permission: "media",
+        requestingOrigin: "https://evil.example",
+        mediaType: "video",
       }),
     ).toBe(false);
     expect(
@@ -341,7 +363,23 @@ describe("Electron permission policy", () => {
       },
     );
 
+    let cameraDecision: boolean | undefined;
+    requestHandler?.(
+      {} as never,
+      "media",
+      (granted) => {
+        cameraDecision = granted;
+      },
+      {
+        isMainFrame: true,
+        requestingUrl: `${TRUSTED_RENDERER_ORIGIN}/settings`,
+        securityOrigin: TRUSTED_RENDERER_ORIGIN,
+        mediaTypes: ["video"],
+      },
+    );
+
     expect(microphoneDecision).toBe(true);
+    expect(cameraDecision).toBe(true);
     expect(
       checkHandler?.(null, "geolocation", TRUSTED_RENDERER_ORIGIN, { isMainFrame: true }),
     ).toBe(false);

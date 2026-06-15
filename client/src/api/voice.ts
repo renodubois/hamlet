@@ -28,8 +28,9 @@ export interface VoiceParticipantStatus {
 }
 
 export type ScreenShareSource = "screen_share";
+export type CameraSource = "camera";
 
-export interface ScreenShareStream {
+interface ActiveMediaStream<Source extends string> {
   channel_id: number;
   sharer_user_id: number;
   username: string;
@@ -38,9 +39,12 @@ export interface ScreenShareStream {
   participant_identity: string;
   track_sid: string;
   track_name: string;
-  source: ScreenShareSource;
+  source: Source;
   started_at: number;
 }
+
+export type ScreenShareStream = ActiveMediaStream<ScreenShareSource>;
+export type CameraStream = ActiveMediaStream<CameraSource>;
 
 export interface ScreenShareStopped {
   channel_id: number;
@@ -48,6 +52,8 @@ export interface ScreenShareStopped {
   participant_identity: string;
   track_sid: string;
 }
+
+export type CameraVideoStopped = ScreenShareStopped;
 
 export interface VoiceToken {
   url: string;
@@ -67,11 +73,20 @@ export async function listVoiceParticipants(channelId: number): Promise<VoicePar
   return res.json() as Promise<VoiceParticipant[]>;
 }
 
+function channelFilterQuery(channelId?: number): string {
+  return channelId == null ? "" : `?channel_id=${encodeURIComponent(String(channelId))}`;
+}
+
 export async function listScreenShareStreams(channelId?: number): Promise<ScreenShareStream[]> {
-  const query = channelId == null ? "" : `?channel_id=${encodeURIComponent(String(channelId))}`;
-  const res = await apiFetch(`/voice/screen-shares${query}`);
+  const res = await apiFetch(`/voice/screen-shares${channelFilterQuery(channelId)}`);
   if (!res.ok) throw new Error(`Screen share streams fetch failed (${res.status})`);
   return res.json() as Promise<ScreenShareStream[]>;
+}
+
+export async function listCameraStreams(channelId?: number): Promise<CameraStream[]> {
+  const res = await apiFetch(`/voice/cameras${channelFilterQuery(channelId)}`);
+  if (!res.ok) throw new Error(`Camera streams fetch failed (${res.status})`);
+  return res.json() as Promise<CameraStream[]>;
 }
 
 export async function postVoiceSpeaking(channelId: number, speaking: boolean): Promise<void> {

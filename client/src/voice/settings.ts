@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 
 export const VOICE_INPUT_STORAGE_KEY = "hamlet:voice:input_device";
 export const VOICE_OUTPUT_STORAGE_KEY = "hamlet:voice:output_device";
+export const VOICE_CAMERA_STORAGE_KEY = "hamlet:voice:camera_device";
 export const VOICE_NOISE_SUPPRESSION_STORAGE_KEY = "hamlet:voice:noise_suppression";
 export const VOICE_INPUT_GAIN_STORAGE_KEY = "hamlet:voice:input_gain";
 export const VOICE_SHOW_SPEAKING_EVERYWHERE_KEY = "hamlet:voice:show_speaking_everywhere";

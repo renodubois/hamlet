@@ -1,4 +1,11 @@
 docs/
+!docs/
+docs/*
+!docs/plans/
+docs/plans/*
+!docs/plans/2026-06-15-webcam-video-calls.md
+!docs/webcam-video-calls-prd.md
+!docs/webcam-video-calls-manual-qa.md
 issues/
 .env
 .env.*

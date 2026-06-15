@@ -1,7 +1,10 @@
-import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import {
+  listCameraStreams,
   listScreenShareStreams,
   listVoiceParticipants,
+  type CameraStream,
+  type CameraVideoStopped,
   type Channel,
   type ScreenShareStream,
   type VoiceParticipant,
@@ -9,9 +12,17 @@ import {
 import { useEvents } from "../contexts/events";
 import { useVoiceChat } from "../contexts/voice-chat";
 import Avatar from "./avatar";
+import {
+  cameraDisplayName,
+  cameraKey,
+  isSameCameraStream,
+  sortCameraStreams,
+} from "../voice/camera";
 import { showSpeakingIndicatorsEverywhere } from "../voice/settings";
 import { isSameScreenShare, screenShareDisplayName, screenShareKey } from "../voice/screen-share";
 import {
+  CameraIcon,
+  CameraOffIcon,
   HeadphoneOffIcon,
   MicOffIcon,
   ScreenShareIcon,
@@ -21,11 +32,11 @@ import {
 
 /**
  * Everything the sidebar needs to render a single voice channel: the channel
- * row itself, the live participant list beneath it, active screen-share
- * discovery, and (when this is the channel we're connected to)
- * screen-share/disconnect controls.
+ * row itself, the live participant list beneath it, active screen-share and
+ * camera discovery, and (when this is the channel we're connected to)
+ * media controls.
  *
- * Participant and screen-share state are fetched once on mount and kept current
+ * Participant and media state are fetched once on mount and kept current
  * by listening for SSE events — the server is the source of truth, driven by
  * LiveKit webhooks.
  */
@@ -45,13 +56,16 @@ export default function VoiceChannel(props: { channel: Channel }) {
   const voice = useVoiceChat();
   const [participants, setParticipants] = createSignal<VoiceParticipant[]>([]);
   const [screenShares, setScreenShares] = createSignal<ScreenShareStream[]>([]);
+  const [cameraStreams, setCameraStreams] = createSignal<CameraStream[]>([]);
   const [screenShareAnnouncement, setScreenShareAnnouncement] = createSignal("");
+  const [cameraAnnouncement, setCameraAnnouncement] = createSignal("");
   const [localError, setLocalError] = createSignal<string | null>(null);
   // Speakers known from SSE broadcasts — used to render the ring when we're
   // NOT connected to this channel. In-channel speakers come from LiveKit via
   // voice.speakingUserIds() instead.
   const [remoteSpeakers, setRemoteSpeakers] = createSignal<ReadonlySet<number>>(new Set());
   const stoppedScreenShareKeys = new Set<string>();
+  const stoppedCameraKeys = new Set<string>();
 
   const isActive = () => voice.activeChannelId() === props.channel.id;
   const isBusy = () => voice.isConnecting();
@@ -69,6 +83,15 @@ export default function VoiceChannel(props: { channel: Channel }) {
   const sharingUserIds = createMemo<ReadonlySet<number>>(
     () => new Set(screenShares().map((stream) => stream.sharer_user_id)),
   );
+
+  const cameraUserIds = createMemo<ReadonlySet<number>>(
+    () => new Set(cameraStreams().map((stream) => stream.sharer_user_id)),
+  );
+
+  createEffect(() => {
+    if (!isActive()) return;
+    voice.syncRemoteCameraStreams(props.channel.id, cameraStreams());
+  });
 
   async function handleToggleJoin() {
     setLocalError(null);
@@ -93,6 +116,19 @@ export default function VoiceChannel(props: { channel: Channel }) {
       }
     } catch (e) {
       setLocalError(e instanceof Error ? e.message : "Could not update screen share");
+    }
+  }
+
+  async function handleToggleCamera() {
+    setLocalError(null);
+    try {
+      if (voice.isCameraEnabled()) {
+        await voice.stopCamera();
+      } else {
+        await voice.startCamera();
+      }
+    } catch (e) {
+      setLocalError(e instanceof Error ? e.message : "Could not update camera");
     }
   }
 
@@ -125,6 +161,20 @@ export default function VoiceChannel(props: { channel: Channel }) {
       .catch(() => {
         // Screen-share discovery is best-effort; the rest of voice stays usable.
       });
+    void listCameraStreams(props.channel.id)
+      .then((streams) => {
+        setCameraStreams((prev) => {
+          const byKey = new Map(prev.map((stream) => [cameraKey(stream), stream]));
+          for (const stream of streams) {
+            if (stoppedCameraKeys.has(cameraKey(stream))) continue;
+            byKey.set(cameraKey(stream), stream);
+          }
+          return sortCameraStreams([...byKey.values()]);
+        });
+      })
+      .catch(() => {
+        // Camera discovery is best-effort; the rest of voice stays usable.
+      });
 
     const unsubJoined = events.onVoiceParticipantJoined((p) => {
       if (p.channel_id !== props.channel.id) return;
@@ -155,6 +205,11 @@ export default function VoiceChannel(props: { channel: Channel }) {
         ) {
           void voice.stopWatchingScreenShare();
         }
+        return prev.filter((stream) => stream.sharer_user_id !== p.user_id);
+      });
+      setCameraStreams((prev) => {
+        const removed = prev.filter((stream) => stream.sharer_user_id === p.user_id);
+        removed.forEach((stream) => stoppedCameraKeys.add(cameraKey(stream)));
         return prev.filter((stream) => stream.sharer_user_id !== p.user_id);
       });
     });
@@ -216,6 +271,37 @@ export default function VoiceChannel(props: { channel: Channel }) {
         );
       }
     });
+    const unsubCameraStarted = events.onCameraVideoStarted((stream) => {
+      if (stream.channel_id !== props.channel.id) return;
+      if (stoppedCameraKeys.has(cameraKey(stream))) return;
+      let shouldAnnounce = false;
+      setCameraStreams((prev) => {
+        const existing = prev.findIndex((current) => isSameCameraStream(current, stream));
+        if (existing >= 0) return prev;
+        shouldAnnounce = true;
+        return sortCameraStreams([...prev, stream]);
+      });
+      if (shouldAnnounce) {
+        setCameraAnnouncement(
+          `${cameraDisplayName(stream)} turned on camera in ${props.channel.name}.`,
+        );
+      }
+    });
+    const unsubCameraStopped = events.onCameraVideoStopped((stopped: CameraVideoStopped) => {
+      if (stopped.channel_id !== props.channel.id) return;
+      stoppedCameraKeys.add(cameraKey(stopped));
+      let removed: CameraStream | undefined;
+      setCameraStreams((prev) => {
+        removed = prev.find((stream) => isSameCameraStream(stream, stopped));
+        if (!removed) return prev;
+        return prev.filter((stream) => !isSameCameraStream(stream, stopped));
+      });
+      if (removed) {
+        setCameraAnnouncement(
+          `${cameraDisplayName(removed)} turned off camera in ${props.channel.name}.`,
+        );
+      }
+    });
 
     onCleanup(() => {
       unsubJoined();
@@ -224,6 +310,9 @@ export default function VoiceChannel(props: { channel: Channel }) {
       unsubStatus();
       unsubScreenShareStarted();
       unsubScreenShareStopped();
+      unsubCameraStarted();
+      unsubCameraStopped();
+      voice.syncRemoteCameraStreams(props.channel.id, []);
     });
   });
 
@@ -300,10 +389,37 @@ export default function VoiceChannel(props: { channel: Channel }) {
                     <ScreenShareIcon size={12} aria-hidden="true" />
                   </span>
                 </Show>
+                <Show when={cameraUserIds().has(p.user_id)}>
+                  <span
+                    class="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-blue-900/60 text-blue-300"
+                    role="img"
+                    aria-label={`${p.username} has camera on`}
+                    title={`${p.username} has camera on`}
+                  >
+                    <CameraIcon size={12} aria-hidden="true" />
+                  </span>
+                </Show>
               </li>
             )}
           </For>
         </ul>
+      </Show>
+
+      <Show when={cameraStreams().length > 0 && !isActive()}>
+        <section
+          class="ml-6 mt-1 mb-1 rounded border border-blue-900/70 bg-blue-950/20 p-2"
+          aria-label={`Active cameras in ${props.channel.name}`}
+        >
+          <div class="flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-blue-300">
+            <CameraIcon size={12} aria-hidden="true" />
+            <span>
+              {cameraStreams().length === 1
+                ? "1 camera live"
+                : `${cameraStreams().length} cameras live`}
+            </span>
+          </div>
+          <p class="mt-1 text-[11px] text-gray-400">Join voice to view cameras.</p>
+        </section>
       </Show>
 
       <Show when={screenShares().length > 0}>
@@ -369,6 +485,11 @@ export default function VoiceChannel(props: { channel: Channel }) {
           {screenShareAnnouncement()}
         </p>
       </Show>
+      <Show when={cameraAnnouncement()}>
+        <p class="sr-only" role="status" aria-live="polite">
+          {cameraAnnouncement()}
+        </p>
+      </Show>
 
       <Show when={isActive()}>
         <div
@@ -376,6 +497,35 @@ export default function VoiceChannel(props: { channel: Channel }) {
           role="group"
           aria-label="Voice controls"
         >
+          <button
+            type="button"
+            class="p-1.5 rounded hover:bg-gray-700"
+            classList={{
+              "text-green-300 bg-gray-700": voice.isCameraEnabled(),
+              "text-gray-300": !voice.isCameraEnabled(),
+            }}
+            aria-pressed={voice.isCameraEnabled()}
+            aria-busy={voice.isCameraBusy()}
+            aria-label={
+              voice.isCameraBusy()
+                ? voice.isCameraEnabled()
+                  ? "Stopping camera"
+                  : "Starting camera"
+                : voice.isCameraEnabled()
+                  ? "Turn off camera"
+                  : "Turn on camera"
+            }
+            title={voice.isCameraEnabled() ? "Turn off camera" : "Turn on camera"}
+            disabled={voice.isCameraBusy()}
+            onClick={() => void handleToggleCamera()}
+          >
+            <Show
+              when={voice.isCameraEnabled()}
+              fallback={<CameraIcon size={14} aria-hidden="true" />}
+            >
+              <CameraOffIcon size={14} aria-hidden="true" />
+            </Show>
+          </button>
           <button
             type="button"
             class="p-1.5 rounded hover:bg-gray-700"
@@ -396,6 +546,16 @@ export default function VoiceChannel(props: { channel: Channel }) {
             </Show>
           </button>
         </div>
+        <Show when={voice.isCameraEnabled() || voice.isCameraBusy()}>
+          <p class="ml-6 mb-1 text-xs text-green-300" role="status">
+            <Show
+              when={!voice.isCameraBusy()}
+              fallback={voice.isCameraEnabled() ? "Stopping camera…" : "Starting camera…"}
+            >
+              Camera on
+            </Show>
+          </p>
+        </Show>
         <Show when={voice.isScreenSharing()}>
           <p class="ml-6 mb-1 text-xs text-green-300" role="status">
             Sharing screen

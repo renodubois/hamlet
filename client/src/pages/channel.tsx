@@ -15,7 +15,9 @@ import {
   SelectedPhotoPreviewList,
   createComposerPhotoSelection,
 } from "../components/composer-photo-selection";
+import LocalCameraTile from "../components/local-camera-tile";
 import MessageInput from "../components/message-input";
+import RemoteCameraTiles from "../components/remote-camera-tiles";
 import ScreenShareViewer from "../components/screen-share-viewer";
 import ThreadPanel from "../components/thread-panel";
 import TypingIndicator from "../components/typing-indicator";
@@ -209,6 +211,8 @@ export default function ChannelView() {
       </section>
 
       <ScreenShareViewer />
+      <LocalCameraTile />
+      <RemoteCameraTiles />
 
       <div class="flex-1 min-h-0 flex">
         <div class="min-w-0 flex-1 overflow-y-auto">

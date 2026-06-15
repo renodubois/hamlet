@@ -1,5 +1,6 @@
 import { http, HttpResponse } from "msw";
 import type {
+  CameraStream,
   Channel,
   CustomEmoji,
   Message,
@@ -62,6 +63,7 @@ export interface HandlerState {
   voiceTokensMinted: number[];
   voiceStatusUpdates: { muted: boolean; deafened: boolean }[];
   screenShareStreams: ScreenShareStream[];
+  cameraStreams: CameraStream[];
   customEmojis: CustomEmoji[];
   uploadedCustomEmojis: { name: string; size: number; type: string }[];
   renamedCustomEmojis: { id: number; name: string }[];
@@ -95,6 +97,7 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     voiceTokensMinted: [],
     voiceStatusUpdates: [],
     screenShareStreams: [],
+    cameraStreams: [],
     customEmojis: [],
     uploadedCustomEmojis: [],
     renamedCustomEmojis: [],
@@ -711,6 +714,16 @@ export function createHandlers(state: HandlerState) {
         channelId == null
           ? state.screenShareStreams
           : state.screenShareStreams.filter((stream) => String(stream.channel_id) === channelId);
+      return HttpResponse.json(streams);
+    }),
+
+    http.get(`${BASE}/voice/cameras`, ({ request }) => {
+      const url = new URL(request.url);
+      const channelId = url.searchParams.get("channel_id");
+      const streams =
+        channelId == null
+          ? state.cameraStreams
+          : state.cameraStreams.filter((stream) => String(stream.channel_id) === channelId);
       return HttpResponse.json(streams);
     }),
 

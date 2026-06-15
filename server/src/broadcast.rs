@@ -28,7 +28,7 @@ use crate::api::emoji::EmojiResponse;
 use crate::api::messages::{EmbedResponse, MessageResponse, ThreadSummary};
 use crate::error::AppError;
 use crate::reactions::ReactionSummary;
-use crate::voice::{ScreenShareStream, VoiceParticipant};
+use crate::voice::{CameraStream, ScreenShareStream, VoiceParticipant};
 
 #[derive(Debug)]
 pub struct Broadcaster {
@@ -177,6 +177,14 @@ pub struct ScreenShareStoppedEvent {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct CameraVideoStoppedEvent {
+    pub channel_id: i64,
+    pub sharer_user_id: i64,
+    pub participant_identity: String,
+    pub track_sid: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct UserTypingEvent {
     pub channel_id: i64,
     pub user_id: i64,
@@ -221,6 +229,8 @@ pub enum BroadcastEvent {
     VoiceParticipantStatusChanged(VoiceParticipantStatusEvent),
     ScreenShareStarted(ScreenShareStream),
     ScreenShareStopped(ScreenShareStoppedEvent),
+    CameraVideoStarted(CameraStream),
+    CameraVideoStopped(CameraVideoStoppedEvent),
     UserTyping(UserTypingEvent),
     ThreadReplyCreated(ThreadReplyCreatedEvent),
     ThreadReplyDeleted(ThreadReplyDeletedEvent),

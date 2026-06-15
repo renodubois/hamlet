@@ -57,16 +57,28 @@ pub struct VoiceStatus {
     pub deafened: bool,
 }
 
+pub const ACTIVE_MEDIA_SOURCE_CAMERA: &str = "camera";
+pub const ACTIVE_MEDIA_SOURCE_SCREEN_SHARE: &str = "screen_share";
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct ScreenShareKey {
+struct ActiveMediaStreamKey {
     channel_id: i64,
     sharer_user_id: i64,
     participant_identity: String,
+    source: String,
     track_sid: String,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct ScreenShareOwnerKey {
+struct ActiveMediaOwnerKey {
+    channel_id: i64,
+    sharer_user_id: i64,
+    participant_identity: String,
+    source: String,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ActiveMediaParticipantKey {
     channel_id: i64,
     sharer_user_id: i64,
     participant_identity: String,
@@ -86,18 +98,30 @@ pub struct ScreenShareStream {
     pub started_at: i64,
 }
 
+pub type CameraStream = ScreenShareStream;
+
 impl ScreenShareStream {
-    fn key(&self) -> ScreenShareKey {
-        ScreenShareKey {
+    fn key(&self) -> ActiveMediaStreamKey {
+        ActiveMediaStreamKey {
             channel_id: self.channel_id,
             sharer_user_id: self.sharer_user_id,
             participant_identity: self.participant_identity.clone(),
+            source: self.source.clone(),
             track_sid: self.track_sid.clone(),
         }
     }
 
-    fn owner_key(&self) -> ScreenShareOwnerKey {
-        ScreenShareOwnerKey {
+    fn owner_key(&self) -> ActiveMediaOwnerKey {
+        ActiveMediaOwnerKey {
+            channel_id: self.channel_id,
+            sharer_user_id: self.sharer_user_id,
+            participant_identity: self.participant_identity.clone(),
+            source: self.source.clone(),
+        }
+    }
+
+    fn participant_key(&self) -> ActiveMediaParticipantKey {
+        ActiveMediaParticipantKey {
             channel_id: self.channel_id,
             sharer_user_id: self.sharer_user_id,
             participant_identity: self.participant_identity.clone(),
@@ -124,19 +148,20 @@ pub struct VoiceState {
     // room so they can mute/deafen before joining and have the join event
     // reflect the current controls.
     statuses: Mutex<HashMap<i64, VoiceStatus>>,
-    // (channel_id, sharer_user_id, LiveKit participant identity, track sid) -> stream.
-    // At most one stream per (channel, sharer, participant identity) is kept;
-    // a new track from the same owner in the same room replaces the old one.
-    screen_shares: Mutex<HashMap<ScreenShareKey, ScreenShareStream>>,
-    // Exact tracks that have already stopped. LiveKit webhooks are delivered
-    // at-least-once and can arrive out of order, so a delayed publish for a
-    // track whose unpublish/participant cleanup already arrived must not
-    // resurrect a dead stream.
-    stopped_screen_shares: Mutex<HashSet<ScreenShareKey>>,
-    // Last participant-level disconnect/abort timestamp per screen-share owner.
-    // This catches delayed track_published webhooks that arrive after the
-    // participant has left but before we ever saw the matching track sid.
-    stopped_screen_share_owners: Mutex<HashMap<ScreenShareOwnerKey, i64>>,
+    // (channel_id, sharer_user_id, LiveKit participant identity, source, track sid) -> stream.
+    // At most one stream per (channel, sharer, participant identity, source)
+    // is kept; a new track from the same source owner in the same room
+    // replaces the old one without affecting other sources.
+    active_media_streams: Mutex<HashMap<ActiveMediaStreamKey, ScreenShareStream>>,
+    // Exact source-tagged tracks that have already stopped. LiveKit webhooks
+    // are delivered at-least-once and can arrive out of order, so a delayed
+    // publish for a track whose unpublish/participant cleanup already arrived
+    // must not resurrect a dead stream.
+    stopped_media_streams: Mutex<HashSet<ActiveMediaStreamKey>>,
+    // Last participant-level disconnect/abort timestamp per media owner. This
+    // catches delayed track_published webhooks that arrive after the participant
+    // has left but before we ever saw the matching track sid.
+    stopped_media_participants: Mutex<HashMap<ActiveMediaParticipantKey, i64>>,
 }
 
 impl VoiceState {
@@ -194,9 +219,9 @@ impl VoiceState {
         changed
     }
 
-    /// Record that a participant has connected. A fresh join after a previous
-    /// leave allows new screen-share tracks from the same identity while stale
-    /// joins older than the disconnect keep the participant-level stop marker.
+    /// Record that a participant has connected. A fresh join at or after a previous
+    /// leave allows new media tracks from the same identity while stale joins older
+    /// than the disconnect keep the participant-level stop marker.
     pub fn mark_participant_connected(
         &self,
         channel_id: i64,
@@ -204,20 +229,20 @@ impl VoiceState {
         participant_identity: &str,
         connected_at: i64,
     ) {
-        let owner_key = ScreenShareOwnerKey {
+        let participant_key = ActiveMediaParticipantKey {
             channel_id,
             sharer_user_id,
             participant_identity: participant_identity.to_owned(),
         };
-        let mut stopped_owners = match self.stopped_screen_share_owners.lock() {
+        let mut stopped_participants = match self.stopped_media_participants.lock() {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
-        let should_clear = stopped_owners
-            .get(&owner_key)
-            .is_some_and(|stopped_at| connected_at > *stopped_at);
+        let should_clear = stopped_participants
+            .get(&participant_key)
+            .is_some_and(|stopped_at| connected_at >= *stopped_at);
         if should_clear {
-            stopped_owners.remove(&owner_key);
+            stopped_participants.remove(&participant_key);
         }
     }
 
@@ -254,23 +279,25 @@ impl VoiceState {
     }
 
     pub fn screen_share_streams(&self, channel_id: Option<i64>) -> Vec<ScreenShareStream> {
-        let streams = match self.screen_shares.lock() {
+        self.streams_for_source(ACTIVE_MEDIA_SOURCE_SCREEN_SHARE, channel_id)
+    }
+
+    pub fn camera_streams(&self, channel_id: Option<i64>) -> Vec<CameraStream> {
+        self.streams_for_source(ACTIVE_MEDIA_SOURCE_CAMERA, channel_id)
+    }
+
+    fn streams_for_source(&self, source: &str, channel_id: Option<i64>) -> Vec<ScreenShareStream> {
+        let streams = match self.active_media_streams.lock() {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
         let mut out: Vec<ScreenShareStream> = streams
             .values()
+            .filter(|stream| stream.source == source)
             .filter(|stream| channel_id.is_none_or(|id| stream.channel_id == id))
             .cloned()
             .collect();
-        out.sort_by(|a, b| {
-            a.started_at
-                .cmp(&b.started_at)
-                .then_with(|| a.channel_id.cmp(&b.channel_id))
-                .then_with(|| a.sharer_user_id.cmp(&b.sharer_user_id))
-                .then_with(|| a.participant_identity.cmp(&b.participant_identity))
-                .then_with(|| a.track_sid.cmp(&b.track_sid))
-        });
+        sort_active_media_streams(&mut out);
         out
     }
 
@@ -278,14 +305,25 @@ impl VoiceState {
     ///
     /// Duplicate LiveKit publish webhooks for the exact same track are ignored.
     /// A different screen-share track from the same sharer in the same channel
-    /// replaces the previous one so a user cannot accumulate active streams.
+    /// replaces only the previous screen-share stream, so a user's camera can
+    /// coexist with their active screen share.
     pub fn add_screen_share_stream(&self, stream: ScreenShareStream) -> AddScreenShareStreamResult {
-        let mut streams = match self.screen_shares.lock() {
+        self.add_active_media_stream(stream)
+    }
+
+    /// Insert an active camera stream. Replacement is source-scoped, so a new
+    /// camera track from a participant does not replace their screen share.
+    pub fn add_camera_stream(&self, stream: CameraStream) -> AddScreenShareStreamResult {
+        self.add_active_media_stream(stream)
+    }
+
+    fn add_active_media_stream(&self, stream: ScreenShareStream) -> AddScreenShareStreamResult {
+        let mut streams = match self.active_media_streams.lock() {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
         let key = stream.key();
-        let stopped_tracks = match self.stopped_screen_shares.lock() {
+        let stopped_tracks = match self.stopped_media_streams.lock() {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
@@ -294,27 +332,35 @@ impl VoiceState {
         }
         drop(stopped_tracks);
 
-        let owner_key = stream.owner_key();
-        let stopped_owners = match self.stopped_screen_share_owners.lock() {
+        let participant_key = stream.participant_key();
+        let stopped_participants = match self.stopped_media_participants.lock() {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
-        if stopped_owners
-            .get(&owner_key)
+        if stopped_participants
+            .get(&participant_key)
             .is_some_and(|stopped_at| stream.started_at <= *stopped_at)
         {
             return AddScreenShareStreamResult::Unchanged;
         }
-        drop(stopped_owners);
+        drop(stopped_participants);
 
         if streams.contains_key(&key) {
             return AddScreenShareStreamResult::Unchanged;
         }
 
+        let owner_key = stream.owner_key();
         let replaced_key = streams.iter().find_map(|(existing_key, existing)| {
             (existing.owner_key() == owner_key).then(|| existing_key.clone())
         });
         let replaced = replaced_key.and_then(|existing_key| streams.remove(&existing_key));
+        if let Some(previous) = replaced.as_ref() {
+            let mut stopped_tracks = match self.stopped_media_streams.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            stopped_tracks.insert(previous.key());
+        }
         streams.insert(key, stream);
 
         match replaced {
@@ -323,10 +369,10 @@ impl VoiceState {
         }
     }
 
-    /// Remove an exact active stream. Duplicate/unordered unpublish webhooks
-    /// return `None` so callers can skip broadcasting redundant stop events.
-    /// The stopped track key is still remembered so a delayed publish for the
-    /// same track cannot resurrect a dead stream.
+    /// Remove an exact active screen-share stream. Duplicate/unordered
+    /// unpublish webhooks return `None` so callers can skip broadcasting
+    /// redundant stop events. The stopped track key is still remembered so a
+    /// delayed publish for the same track cannot resurrect a dead stream.
     pub fn remove_screen_share_stream(
         &self,
         channel_id: i64,
@@ -334,20 +380,54 @@ impl VoiceState {
         participant_identity: &str,
         track_sid: &str,
     ) -> Option<ScreenShareStream> {
-        let key = ScreenShareKey {
+        self.remove_active_media_stream(
+            ACTIVE_MEDIA_SOURCE_SCREEN_SHARE,
+            channel_id,
+            sharer_user_id,
+            participant_identity,
+            track_sid,
+        )
+    }
+
+    pub fn remove_camera_stream(
+        &self,
+        channel_id: i64,
+        sharer_user_id: i64,
+        participant_identity: &str,
+        track_sid: &str,
+    ) -> Option<CameraStream> {
+        self.remove_active_media_stream(
+            ACTIVE_MEDIA_SOURCE_CAMERA,
+            channel_id,
+            sharer_user_id,
+            participant_identity,
+            track_sid,
+        )
+    }
+
+    fn remove_active_media_stream(
+        &self,
+        source: &str,
+        channel_id: i64,
+        sharer_user_id: i64,
+        participant_identity: &str,
+        track_sid: &str,
+    ) -> Option<ScreenShareStream> {
+        let key = ActiveMediaStreamKey {
             channel_id,
             sharer_user_id,
             participant_identity: participant_identity.to_owned(),
+            source: source.to_owned(),
             track_sid: track_sid.to_owned(),
         };
         let removed = {
-            let mut streams = match self.screen_shares.lock() {
+            let mut streams = match self.active_media_streams.lock() {
                 Ok(g) => g,
                 Err(p) => p.into_inner(),
             };
             streams.remove(&key)
         };
-        let mut stopped = match self.stopped_screen_shares.lock() {
+        let mut stopped = match self.stopped_media_streams.lock() {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
@@ -355,53 +435,67 @@ impl VoiceState {
         removed
     }
 
-    /// Remove all active screen-share streams for a leaving/aborted participant
-    /// and remember both exact stopped tracks and a participant-level stop time.
-    pub fn remove_screen_share_streams_for_participant(
+    /// Remove all active camera and screen-share streams for a leaving/aborted
+    /// participant and remember both exact stopped tracks and a participant-level
+    /// stop time.
+    pub fn remove_media_streams_for_participant(
         &self,
         channel_id: i64,
         sharer_user_id: i64,
         participant_identity: &str,
         stopped_at: i64,
     ) -> Vec<ScreenShareStream> {
-        let owner_key = ScreenShareOwnerKey {
+        let participant_key = ActiveMediaParticipantKey {
             channel_id,
             sharer_user_id,
             participant_identity: participant_identity.to_owned(),
         };
-        let removed = {
-            let mut streams = match self.screen_shares.lock() {
+        let mut removed = {
+            let mut streams = match self.active_media_streams.lock() {
                 Ok(g) => g,
                 Err(p) => p.into_inner(),
             };
             let keys = streams
                 .iter()
-                .filter(|(_, stream)| stream.owner_key() == owner_key)
+                .filter(|(_, stream)| stream.participant_key() == participant_key)
                 .map(|(key, _)| key.clone())
                 .collect::<Vec<_>>();
             keys.into_iter()
                 .filter_map(|key| streams.remove(&key))
                 .collect::<Vec<_>>()
         };
+        sort_active_media_streams(&mut removed);
 
-        let mut stopped_tracks = match self.stopped_screen_shares.lock() {
+        let mut stopped_tracks = match self.stopped_media_streams.lock() {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
         stopped_tracks.extend(removed.iter().map(ScreenShareStream::key));
         drop(stopped_tracks);
 
-        let mut stopped_owners = match self.stopped_screen_share_owners.lock() {
+        let mut stopped_participants = match self.stopped_media_participants.lock() {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
-        stopped_owners
-            .entry(owner_key)
+        stopped_participants
+            .entry(participant_key)
             .and_modify(|existing| *existing = (*existing).max(stopped_at))
             .or_insert(stopped_at);
 
         removed
     }
+}
+
+fn sort_active_media_streams(streams: &mut [ScreenShareStream]) {
+    streams.sort_by(|a, b| {
+        a.started_at
+            .cmp(&b.started_at)
+            .then_with(|| a.channel_id.cmp(&b.channel_id))
+            .then_with(|| a.sharer_user_id.cmp(&b.sharer_user_id))
+            .then_with(|| a.participant_identity.cmp(&b.participant_identity))
+            .then_with(|| a.source.cmp(&b.source))
+            .then_with(|| a.track_sid.cmp(&b.track_sid))
+    });
 }
 
 /// Turn a channel id into the LiveKit room name. Kept as a function so the
@@ -442,7 +536,22 @@ mod tests {
             participant_identity: user_id.to_string(),
             track_sid: track_sid.to_owned(),
             track_name: "screen".to_owned(),
-            source: "screen_share".to_owned(),
+            source: ACTIVE_MEDIA_SOURCE_SCREEN_SHARE.to_owned(),
+            started_at: channel_id + user_id,
+        }
+    }
+
+    fn camera(channel_id: i64, user_id: i64, track_sid: &str) -> CameraStream {
+        CameraStream {
+            channel_id,
+            sharer_user_id: user_id,
+            username: format!("user{user_id}"),
+            display_name: None,
+            avatar_url: None,
+            participant_identity: user_id.to_string(),
+            track_sid: track_sid.to_owned(),
+            track_name: "camera".to_owned(),
+            source: ACTIVE_MEDIA_SOURCE_CAMERA.to_owned(),
             started_at: channel_id + user_id,
         }
     }
@@ -560,23 +669,96 @@ mod tests {
     }
 
     #[test]
+    fn camera_and_screen_share_streams_coexist_and_replace_per_source() {
+        let state = VoiceState::new();
+        let screen = screen_share(1, 10, "TR_screen");
+        let first_camera = camera(1, 10, "TR_camera_1");
+        let second_camera = camera(1, 10, "TR_camera_2");
+
+        assert_eq!(
+            state.add_screen_share_stream(screen.clone()),
+            AddScreenShareStreamResult::Added
+        );
+        assert_eq!(
+            state.add_camera_stream(first_camera.clone()),
+            AddScreenShareStreamResult::Added
+        );
+        assert_eq!(
+            state.add_camera_stream(second_camera),
+            AddScreenShareStreamResult::Replaced(first_camera)
+        );
+
+        let cameras = state.camera_streams(Some(1));
+        assert_eq!(cameras.len(), 1);
+        assert_eq!(cameras[0].track_sid, "TR_camera_2");
+        let screens = state.screen_share_streams(Some(1));
+        assert_eq!(screens, vec![screen.clone()]);
+
+        let second_screen = screen_share(1, 10, "TR_screen_2");
+        assert_eq!(
+            state.add_screen_share_stream(second_screen),
+            AddScreenShareStreamResult::Replaced(screen)
+        );
+        let cameras = state.camera_streams(Some(1));
+        assert_eq!(cameras.len(), 1);
+        assert_eq!(cameras[0].track_sid, "TR_camera_2");
+        let screens = state.screen_share_streams(Some(1));
+        assert_eq!(screens.len(), 1);
+        assert_eq!(screens[0].track_sid, "TR_screen_2");
+    }
+
+    #[test]
+    fn camera_stop_before_publish_does_not_resurrect_track_or_block_screen_share() {
+        let state = VoiceState::new();
+
+        assert!(
+            state
+                .remove_camera_stream(1, 10, "10", "TR_delayed")
+                .is_none()
+        );
+        assert_eq!(
+            state.add_camera_stream(camera(1, 10, "TR_delayed")),
+            AddScreenShareStreamResult::Unchanged
+        );
+        assert_eq!(
+            state.add_screen_share_stream(screen_share(1, 10, "TR_delayed")),
+            AddScreenShareStreamResult::Added
+        );
+        assert!(state.camera_streams(Some(1)).is_empty());
+        assert_eq!(state.screen_share_streams(Some(1)).len(), 1);
+    }
+
+    #[test]
     fn participant_cleanup_removes_streams_and_blocks_older_delayed_publishes() {
         let state = VoiceState::new();
-        let mut active = screen_share(1, 10, "TR_active");
-        active.started_at = 10;
+        let mut active_screen = screen_share(1, 10, "TR_active_screen");
+        active_screen.started_at = 10;
+        let mut active_camera = camera(1, 10, "TR_active_camera");
+        active_camera.started_at = 11;
         assert_eq!(
-            state.add_screen_share_stream(active.clone()),
+            state.add_screen_share_stream(active_screen.clone()),
+            AddScreenShareStreamResult::Added
+        );
+        assert_eq!(
+            state.add_camera_stream(active_camera.clone()),
             AddScreenShareStreamResult::Added
         );
 
-        let removed = state.remove_screen_share_streams_for_participant(1, 10, "10", 20);
-        assert_eq!(removed, vec![active]);
+        let removed = state.remove_media_streams_for_participant(1, 10, "10", 20);
+        assert_eq!(removed, vec![active_screen, active_camera]);
         assert!(state.screen_share_streams(Some(1)).is_empty());
+        assert!(state.camera_streams(Some(1)).is_empty());
 
-        let mut delayed = screen_share(1, 10, "TR_delayed_old");
-        delayed.started_at = 15;
+        let mut delayed_screen = screen_share(1, 10, "TR_delayed_screen_old");
+        delayed_screen.started_at = 15;
         assert_eq!(
-            state.add_screen_share_stream(delayed),
+            state.add_screen_share_stream(delayed_screen),
+            AddScreenShareStreamResult::Unchanged
+        );
+        let mut delayed_camera = camera(1, 10, "TR_delayed_camera_old");
+        delayed_camera.started_at = 16;
+        assert_eq!(
+            state.add_camera_stream(delayed_camera),
             AddScreenShareStreamResult::Unchanged
         );
 
@@ -584,6 +766,28 @@ mod tests {
         fresh.started_at = 25;
         assert_eq!(
             state.add_screen_share_stream(fresh),
+            AddScreenShareStreamResult::Added
+        );
+    }
+
+    #[test]
+    fn same_second_reconnect_allows_fresh_media_publishes() {
+        let state = VoiceState::new();
+        state.remove_media_streams_for_participant(1, 10, "10", 20);
+
+        let mut blocked_without_rejoin = camera(1, 10, "TR_before_rejoin");
+        blocked_without_rejoin.started_at = 20;
+        assert_eq!(
+            state.add_camera_stream(blocked_without_rejoin),
+            AddScreenShareStreamResult::Unchanged
+        );
+
+        state.mark_participant_connected(1, 10, "10", 20);
+
+        let mut fresh = camera(1, 10, "TR_after_same_second_rejoin");
+        fresh.started_at = 20;
+        assert_eq!(
+            state.add_camera_stream(fresh),
             AddScreenShareStreamResult::Added
         );
     }

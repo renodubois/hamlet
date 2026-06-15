@@ -10,6 +10,8 @@ import type {
   ThreadReplyDeleted,
 } from "./messages";
 import type {
+  CameraStream,
+  CameraVideoStopped,
   ScreenShareStopped,
   ScreenShareStream,
   VoiceParticipant,
@@ -36,6 +38,8 @@ export type SSEEvent =
   | { kind: "voice_participant_status_changed"; data: VoiceParticipantStatus }
   | { kind: "screen_share_started"; data: ScreenShareStream }
   | { kind: "screen_share_stopped"; data: ScreenShareStopped }
+  | { kind: "camera_video_started"; data: CameraStream }
+  | { kind: "camera_video_stopped"; data: CameraVideoStopped }
   | { kind: "user_typing"; data: UserTyping }
   | { kind: "thread_reply_created"; data: ThreadReplyCreated }
   | { kind: "thread_reply_deleted"; data: ThreadReplyDeleted };

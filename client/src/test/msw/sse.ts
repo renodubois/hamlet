@@ -1,4 +1,6 @@
 import type {
+  CameraStream,
+  CameraVideoStopped,
   Channel,
   Message,
   MessageDeleted,
@@ -61,6 +63,14 @@ export class FakeEventSource {
 
   pushScreenShareStopped(data: ScreenShareStopped) {
     this.push({ kind: "screen_share_stopped", data });
+  }
+
+  pushCameraVideoStarted(data: CameraStream) {
+    this.push({ kind: "camera_video_started", data });
+  }
+
+  pushCameraVideoStopped(data: CameraVideoStopped) {
+    this.push({ kind: "camera_video_stopped", data });
   }
 
   pushUserTyping(data: UserTyping) {

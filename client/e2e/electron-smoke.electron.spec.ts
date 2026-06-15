@@ -104,7 +104,7 @@ test("opens external links outside the app window and blocks unsafe navigation",
   await expect.poll(() => externalUrls(electronApp)).not.toContain(unsafeUrl);
 });
 
-test("allows trusted display capture through the Electron path while denying camera capture", async ({
+test("allows trusted display capture and camera capture through the Electron path", async ({
   appWindow,
 }) => {
   const resultPromise = appWindow.evaluate(
@@ -118,7 +118,7 @@ test("allows trusted display capture through the Electron path while denying cam
               stoppedVideoTracks: number;
             }
           | { ok: false; name: string };
-        camera: { ok: true; tracks: number } | { ok: false; name: string };
+        camera: { ok: true; tracks: number; stoppedTracks: number } | { ok: false; name: string };
         exposedGlobals: {
           require: string;
           process: string;
@@ -157,8 +157,10 @@ test("allows trusted display capture through the Electron path while denying cam
           const camera = await navigator.mediaDevices
             .getUserMedia({ video: true, audio: false })
             .then((stream) => {
-              const result = { ok: true as const, tracks: stream.getTracks().length };
-              stream.getTracks().forEach((track) => track.stop());
+              const tracks = stream.getTracks();
+              const result = { ok: true as const, tracks: tracks.length, stoppedTracks: 0 };
+              tracks.forEach((track) => track.stop());
+              result.stoppedTracks = tracks.filter((track) => track.readyState === "ended").length;
               return result;
             })
             .catch((error: unknown) => ({
@@ -198,7 +200,7 @@ test("allows trusted display capture through the Electron path while denying cam
     audioTracks: 0,
     stoppedVideoTracks: 1,
   });
-  expect(result.camera.ok).toBe(false);
+  expect(result.camera).toEqual({ ok: true, tracks: 1, stoppedTracks: 1 });
   expect(result.exposedGlobals).toEqual({
     require: "undefined",
     process: "undefined",
@@ -223,7 +225,9 @@ test("opens the voice settings media-permission path without crashing", async ({
     "true",
   );
   await expect(dialog.getByLabel(/input device/i)).toBeVisible();
+  await expect(dialog.getByLabel(/^camera$/i)).toBeVisible();
   await expect(dialog.getByRole("button", { name: /test microphone/i })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: /preview camera/i })).toBeVisible();
 
   await expect(
     dialog

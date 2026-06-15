@@ -21,8 +21,10 @@ import {
   renameCustomEmoji,
   deleteCustomEmoji,
   restoreCustomEmoji,
+  listCameraStreams,
   listScreenShareStreams,
   postVoiceStatus,
+  type CameraStream,
   type Channel,
   type CustomEmoji,
   type ScreenShareStream,
@@ -615,6 +617,39 @@ describe("apiFetch behavior", () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 401 }));
     await expect(listScreenShareStreams()).rejects.toThrow(/401/);
     expect(fetchMock.mock.calls[0][0]).toBe(`${DEFAULT_SERVER}/voice/screen-shares`);
+  });
+
+  test("listCameraStreams fetches active cameras for a channel", async () => {
+    const streams: CameraStream[] = [
+      {
+        channel_id: 42,
+        sharer_user_id: 7,
+        username: "alice",
+        display_name: "Alice",
+        avatar_url: null,
+        participant_identity: "7",
+        track_sid: "TR_camera",
+        track_name: "camera",
+        source: "camera",
+        started_at: 1_700_000_000,
+      },
+    ];
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(streams), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(listCameraStreams(42)).resolves.toEqual(streams);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${DEFAULT_SERVER}/voice/cameras?channel_id=42`);
+    expect(fetchMock.mock.calls[0][1].credentials).toBe("include");
+  });
+
+  test("listCameraStreams throws on non-2xx", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 401 }));
+    await expect(listCameraStreams()).rejects.toThrow(/401/);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${DEFAULT_SERVER}/voice/cameras`);
   });
 
   test("postVoiceStatus sends current mute and deafen bits", async () => {

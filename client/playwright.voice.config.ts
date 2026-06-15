@@ -25,7 +25,7 @@ export default defineConfig({
       name: "chromium",
       use: {
         ...devices["Desktop Chrome"],
-        permissions: ["microphone"],
+        permissions: ["microphone", "camera"],
         launchOptions: {
           executablePath: hamletEnv.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
           args: [

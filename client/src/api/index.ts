@@ -59,6 +59,9 @@ export {
   removeMessageReaction,
 } from "./messages";
 export type {
+  CameraSource,
+  CameraStream,
+  CameraVideoStopped,
   ScreenShareSource,
   ScreenShareStopped,
   ScreenShareStream,
@@ -70,6 +73,7 @@ export type {
 } from "./voice";
 export {
   getVoiceToken,
+  listCameraStreams,
   listScreenShareStreams,
   listVoiceParticipants,
   postVoiceSpeaking,

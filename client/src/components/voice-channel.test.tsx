@@ -3,6 +3,8 @@ import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-lib
 import userEvent from "@testing-library/user-event";
 import { createSignal } from "solid-js";
 import type {
+  CameraStream,
+  CameraVideoStopped,
   Channel,
   ScreenShareStopped,
   ScreenShareStream,
@@ -20,6 +22,8 @@ type SpeakingListener = (p: VoiceParticipantSpeaking) => void;
 type StatusListener = (p: VoiceParticipantStatus) => void;
 type ScreenShareStartedListener = (p: ScreenShareStream) => void;
 type ScreenShareStoppedListener = (p: ScreenShareStopped) => void;
+type CameraStartedListener = (p: CameraStream) => void;
+type CameraStoppedListener = (p: CameraVideoStopped) => void;
 
 interface MockVoiceChatApi {
   activeChannelId: () => number | null;
@@ -33,6 +37,12 @@ interface MockVoiceChatApi {
   setIsScreenSharing: (v: boolean) => void;
   isScreenShareStarting: () => boolean;
   setIsScreenShareStarting: (v: boolean) => void;
+  isCameraEnabled: () => boolean;
+  setIsCameraEnabled: (v: boolean) => void;
+  isCameraBusy: () => boolean;
+  setIsCameraBusy: (v: boolean) => void;
+  localCameraTrack: () => null;
+  remoteCameraTiles: () => readonly [];
   watchingScreenShare: () => ScreenShareStream | null;
   setWatchingScreenShare: (stream: ScreenShareStream | null) => void;
   watchingScreenShareTrack: () => null;
@@ -45,6 +55,9 @@ interface MockVoiceChatApi {
   toggleDeafened: ReturnType<typeof vi.fn>;
   startScreenShare: ReturnType<typeof vi.fn>;
   stopScreenShare: ReturnType<typeof vi.fn>;
+  startCamera: ReturnType<typeof vi.fn>;
+  stopCamera: ReturnType<typeof vi.fn>;
+  syncRemoteCameraStreams: ReturnType<typeof vi.fn>;
   watchScreenShare: ReturnType<typeof vi.fn>;
   stopWatchingScreenShare: ReturnType<typeof vi.fn>;
 }
@@ -56,6 +69,8 @@ const speakingListeners = new Set<SpeakingListener>();
 const statusListeners = new Set<StatusListener>();
 const screenShareStartedListeners = new Set<ScreenShareStartedListener>();
 const screenShareStoppedListeners = new Set<ScreenShareStoppedListener>();
+const cameraStartedListeners = new Set<CameraStartedListener>();
+const cameraStoppedListeners = new Set<CameraStoppedListener>();
 const [showEverywhere, setShowEverywhere] = createSignal(false);
 
 vi.mock("../contexts/voice-chat", () => ({
@@ -93,6 +108,14 @@ vi.mock("../contexts/events", () => ({
       screenShareStoppedListeners.add(cb);
       return () => screenShareStoppedListeners.delete(cb);
     },
+    onCameraVideoStarted: (cb: CameraStartedListener) => {
+      cameraStartedListeners.add(cb);
+      return () => cameraStartedListeners.delete(cb);
+    },
+    onCameraVideoStopped: (cb: CameraStoppedListener) => {
+      cameraStoppedListeners.add(cb);
+      return () => cameraStoppedListeners.delete(cb);
+    },
   }),
 }));
 
@@ -106,6 +129,8 @@ function makeVoiceMock(overrides?: Partial<MockVoiceChatApi>): MockVoiceChatApi 
   const [isDeafened, setIsDeafened] = createSignal(false);
   const [isScreenSharing, setIsScreenSharing] = createSignal(false);
   const [isScreenShareStarting, setIsScreenShareStarting] = createSignal(false);
+  const [isCameraEnabled, setIsCameraEnabled] = createSignal(false);
+  const [isCameraBusy, setIsCameraBusy] = createSignal(false);
   const [watchingScreenShare, setWatchingScreenShare] = createSignal<ScreenShareStream | null>(
     null,
   );
@@ -122,6 +147,12 @@ function makeVoiceMock(overrides?: Partial<MockVoiceChatApi>): MockVoiceChatApi 
     setIsScreenSharing,
     isScreenShareStarting,
     setIsScreenShareStarting,
+    isCameraEnabled,
+    setIsCameraEnabled,
+    isCameraBusy,
+    setIsCameraBusy,
+    localCameraTrack: () => null,
+    remoteCameraTiles: () => [],
     watchingScreenShare,
     setWatchingScreenShare,
     watchingScreenShareTrack: () => null,
@@ -134,6 +165,11 @@ function makeVoiceMock(overrides?: Partial<MockVoiceChatApi>): MockVoiceChatApi 
     toggleDeafened: vi.fn<() => Promise<void>>().mockResolvedValue(),
     startScreenShare: vi.fn<() => Promise<void>>().mockResolvedValue(),
     stopScreenShare: vi.fn<() => Promise<void>>().mockResolvedValue(),
+    startCamera: vi.fn<() => Promise<void>>().mockResolvedValue(),
+    stopCamera: vi.fn<() => Promise<void>>().mockResolvedValue(),
+    syncRemoteCameraStreams: vi
+      .fn<(channelId: number, streams: readonly CameraStream[]) => void>()
+      .mockReturnValue(undefined),
     watchScreenShare: vi.fn<(stream: ScreenShareStream) => Promise<void>>().mockResolvedValue(),
     stopWatchingScreenShare: vi.fn<() => Promise<void>>().mockResolvedValue(),
     ...overrides,
@@ -170,6 +206,22 @@ function makeScreenShare(overrides: Partial<ScreenShareStream> = {}): ScreenShar
   };
 }
 
+function makeCamera(overrides: Partial<CameraStream> = {}): CameraStream {
+  return {
+    channel_id: 42,
+    sharer_user_id: 2,
+    username: "bob",
+    display_name: null,
+    avatar_url: null,
+    participant_identity: "2",
+    track_sid: "TR_bob_camera",
+    track_name: "camera",
+    source: "camera",
+    started_at: 1_700_000_000,
+    ...overrides,
+  };
+}
+
 function stoppedFrom(stream: ScreenShareStream): ScreenShareStopped {
   return {
     channel_id: stream.channel_id,
@@ -179,7 +231,20 @@ function stoppedFrom(stream: ScreenShareStream): ScreenShareStopped {
   };
 }
 
-function setup(initial: VoiceParticipant[] = [], screenShares: ScreenShareStream[] = []) {
+function cameraStoppedFrom(stream: CameraStream): CameraVideoStopped {
+  return {
+    channel_id: stream.channel_id,
+    sharer_user_id: stream.sharer_user_id,
+    participant_identity: stream.participant_identity,
+    track_sid: stream.track_sid,
+  };
+}
+
+function setup(
+  initial: VoiceParticipant[] = [],
+  screenShares: ScreenShareStream[] = [],
+  cameras: CameraStream[] = [],
+) {
   const state = resetMswState();
   state.me = {
     id: 1,
@@ -191,12 +256,15 @@ function setup(initial: VoiceParticipant[] = [], screenShares: ScreenShareStream
   };
   state.voiceParticipants[String(CHANNEL.id)] = initial;
   state.screenShareStreams = screenShares;
+  state.cameraStreams = cameras;
   joinedListeners.clear();
   leftListeners.clear();
   speakingListeners.clear();
   statusListeners.clear();
   screenShareStartedListeners.clear();
   screenShareStoppedListeners.clear();
+  cameraStartedListeners.clear();
+  cameraStoppedListeners.clear();
   setShowEverywhere(false);
   mockVoice = makeVoiceMock();
   return state;
@@ -287,9 +355,10 @@ describe("<VoiceChannel>", () => {
     expect(mockVoice.join).not.toHaveBeenCalled();
   });
 
-  test("shows screen-share controls only when connected to this channel", () => {
+  test("shows camera and screen-share controls only when connected to this channel", () => {
     setup();
     const { unmount } = render(() => <VoiceChannel channel={CHANNEL} />);
+    expect(screen.queryByRole("button", { name: /Turn on camera/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Share screen/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Disconnect from voice/ })).toBeNull();
 
@@ -298,6 +367,7 @@ describe("<VoiceChannel>", () => {
     mockVoice.setActiveChannelId(42);
     render(() => <VoiceChannel channel={CHANNEL} />);
 
+    expect(screen.getByRole("button", { name: /Turn on camera/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Share screen/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Disconnect from voice/ })).toBeNull();
   });
@@ -370,6 +440,90 @@ describe("<VoiceChannel>", () => {
     expect(within(shelf).getByText("Join voice")).toBeInTheDocument();
     expect(within(shelf).queryByRole("button", { name: /watch Bobby's screen share/i })).toBeNull();
     expect(mockVoice.join).not.toHaveBeenCalled();
+  });
+
+  test("bootstraps active cameras, marks participants, and waits for join before syncing tiles", async () => {
+    const camera = makeCamera({ display_name: "Bobby" });
+    setup(
+      [makeParticipant(), makeParticipant({ user_id: 3, username: "carol" })],
+      [],
+      [
+        camera,
+        makeCamera({
+          channel_id: 999,
+          sharer_user_id: 9,
+          username: "ghost",
+          participant_identity: "9",
+          track_sid: "TR_ghost_camera",
+        }),
+      ],
+    );
+
+    render(() => <VoiceChannel channel={CHANNEL} />);
+
+    const cameraShelf = await screen.findByRole("region", { name: /active cameras in lobby/i });
+    await screen.findByText("bob");
+    expect(within(cameraShelf).getByText("1 camera live")).toBeInTheDocument();
+    expect(within(cameraShelf).getByText("Join voice to view cameras.")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /bob has camera on/i })).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: /carol has camera on/i })).toBeNull();
+    expect(mockVoice.syncRemoteCameraStreams).not.toHaveBeenCalled();
+
+    mockVoice.setActiveChannelId(42);
+
+    await waitFor(() =>
+      expect(mockVoice.syncRemoteCameraStreams).toHaveBeenLastCalledWith(42, [camera]),
+    );
+    expect(screen.queryByRole("region", { name: /active cameras in lobby/i })).toBeNull();
+  });
+
+  test("applies camera SSE start and stop updates with polite announcements", async () => {
+    const camera = makeCamera({ display_name: "Bobby" });
+    setup([makeParticipant()]);
+    mockVoice.setActiveChannelId(42);
+    render(() => <VoiceChannel channel={CHANNEL} />);
+
+    await screen.findByText("bob");
+    await waitFor(() => expect(cameraStartedListeners.size).toBe(1));
+
+    cameraStartedListeners.forEach((cb) => cb(camera));
+
+    await waitFor(() =>
+      expect(screen.getByRole("img", { name: /bob has camera on/i })).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(mockVoice.syncRemoteCameraStreams).toHaveBeenLastCalledWith(42, [camera]),
+    );
+    let status = screen.getByRole("status");
+    expect(status).toHaveAttribute("aria-live", "polite");
+    expect(status).toHaveTextContent("Bobby turned on camera in lobby.");
+
+    cameraStoppedListeners.forEach((cb) => cb(cameraStoppedFrom(camera)));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("img", { name: /bob has camera on/i })).toBeNull(),
+    );
+    await waitFor(() => expect(mockVoice.syncRemoteCameraStreams).toHaveBeenLastCalledWith(42, []));
+    status = screen.getByRole("status");
+    expect(status).toHaveAttribute("aria-live", "polite");
+    expect(status).toHaveTextContent("Bobby turned off camera in lobby.");
+  });
+
+  test("participant leave removes active cameras for that user", async () => {
+    const camera = makeCamera({ display_name: "Bobby" });
+    setup([makeParticipant()], [], [camera]);
+    mockVoice.setActiveChannelId(42);
+    render(() => <VoiceChannel channel={CHANNEL} />);
+
+    await screen.findByRole("img", { name: /bob has camera on/i });
+    await waitFor(() =>
+      expect(mockVoice.syncRemoteCameraStreams).toHaveBeenLastCalledWith(42, [camera]),
+    );
+
+    leftListeners.forEach((cb) => cb({ channel_id: 42, user_id: 2 }));
+
+    await waitFor(() => expect(screen.queryByText("bob")).toBeNull());
+    await waitFor(() => expect(mockVoice.syncRemoteCameraStreams).toHaveBeenLastCalledWith(42, []));
   });
 
   test("lists multiple active screen shares compactly", async () => {
@@ -540,6 +694,40 @@ describe("<VoiceChannel>", () => {
 
     await waitFor(() => expect(mockVoice.watchScreenShare).toHaveBeenCalledWith(stream));
     expect(mockVoice.join).not.toHaveBeenCalled();
+  });
+
+  test("camera button is keyboard reachable and exposes pressed and busy states", async () => {
+    const user = userEvent.setup();
+    setup();
+    mockVoice.setActiveChannelId(42);
+    render(() => <VoiceChannel channel={CHANNEL} />);
+
+    const channelButton = screen.getByRole("button", { name: /^leave voice channel lobby$/i });
+    const start = screen.getByRole("button", { name: /Turn on camera/ });
+    expect(start).toHaveAttribute("aria-pressed", "false");
+    expect(start).toHaveAttribute("aria-busy", "false");
+
+    await user.tab();
+    expect(channelButton).toHaveFocus();
+    await user.tab();
+    expect(start).toHaveFocus();
+
+    fireEvent.click(start);
+    expect(mockVoice.startCamera).toHaveBeenCalled();
+
+    mockVoice.setIsCameraBusy(true);
+    const busy = screen.getByRole("button", { name: /Starting camera/ });
+    expect(busy).toBeDisabled();
+    expect(busy).toHaveAttribute("aria-busy", "true");
+
+    mockVoice.setIsCameraBusy(false);
+    mockVoice.setIsCameraEnabled(true);
+    const stop = screen.getByRole("button", { name: /Turn off camera/ });
+    expect(stop).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(stop);
+
+    expect(mockVoice.stopCamera).toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("Camera on");
   });
 
   test("share buttons call the voice context", () => {

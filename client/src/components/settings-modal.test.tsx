@@ -129,6 +129,7 @@ describe("<SettingsModal>", () => {
       "true",
     );
     expect(screen.getByLabelText("Input device")).toBeInTheDocument();
+    expect(screen.getByLabelText("Camera")).toBeInTheDocument();
     expect(screen.getByLabelText("Output device")).toBeInTheDocument();
   });
 

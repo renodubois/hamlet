@@ -95,7 +95,7 @@ export function shouldAllowPermissionRequest(input: PermissionRequestDecisionInp
 
   switch (input.permission) {
     case "media":
-      return isAudioOnlyMediaRequest(input.mediaTypes);
+      return isAllowedMediaRequest(input.mediaTypes);
     case "display-capture":
     case "speaker-selection":
       return true;
@@ -221,18 +221,23 @@ function isTrustedPermissionOrigin(
   return isTrustedRendererUrl(origin ?? "");
 }
 
-function isAudioOnlyMediaRequest(mediaTypes: readonly string[] | undefined): boolean {
+function isAllowedMediaRequest(mediaTypes: readonly string[] | undefined): boolean {
   return (
     mediaTypes !== undefined &&
     mediaTypes.length > 0 &&
-    mediaTypes.every((type) => type === "audio")
+    mediaTypes.every((type) => type === "audio" || type === "video")
   );
 }
 
 function isMediaDeviceCheck(mediaType: string | undefined): boolean {
   // Electron reports device-enumeration checks as `unknown` (or leaves the
   // field absent in some Chromium paths). Allow those for the trusted renderer
-  // so Voice Settings can list devices, but keep capture requests constrained
-  // by the stricter request handler above.
-  return mediaType === undefined || mediaType === "audio" || mediaType === "unknown";
+  // so Voice & Video settings can list devices, while capture requests remain
+  // constrained by the stricter request handler above.
+  return (
+    mediaType === undefined ||
+    mediaType === "audio" ||
+    mediaType === "video" ||
+    mediaType === "unknown"
+  );
 }

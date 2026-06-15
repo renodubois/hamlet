@@ -9,6 +9,8 @@ export {
   HeadphoneOff as HeadphoneOffIcon,
   Headphones as HeadphonesIcon,
   PhoneOff as PhoneOffIcon,
+  Video as CameraIcon,
+  VideoOff as CameraOffIcon,
   ScreenShare as ScreenShareIcon,
   ScreenShareOff as ScreenShareOffIcon,
   Pencil as EditIcon,

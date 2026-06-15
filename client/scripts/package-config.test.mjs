@@ -63,7 +63,8 @@ describe("Electron alpha package metadata", () => {
       }).executableName,
     ).toBe("hamlet-electron-alpha");
     expect(options.usageDescription.Microphone).toContain("voice channels");
-    expect(options.usageDescription.Camera).toContain("does not capture camera video");
+    expect(options.usageDescription.Camera).toContain("explicit local previews");
+    expect(options.usageDescription.Camera).toContain("voice/video camera features");
     expect(options.win32metadata.ProductName).toBe("Hamlet Electron Alpha");
     expect(options.darwinDarkModeSupport).toBe(false);
   });

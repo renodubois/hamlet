@@ -11,20 +11,22 @@ use serde::{Deserialize, Serialize};
 use crate::api::avatars::avatar_url;
 use crate::auth::AuthUser;
 use crate::broadcast::{
-    BroadcastEvent, Broadcaster, ScreenShareStoppedEvent, VoiceParticipantLeftEvent,
-    VoiceParticipantSpeakingEvent, VoiceParticipantStatusEvent,
+    BroadcastEvent, Broadcaster, CameraVideoStoppedEvent, ScreenShareStoppedEvent,
+    VoiceParticipantLeftEvent, VoiceParticipantSpeakingEvent, VoiceParticipantStatusEvent,
 };
 use crate::entity;
 use crate::error::AppError;
 use crate::util::now_unix_secs;
 use crate::voice::{
-    AddScreenShareStreamResult, ScreenShareStream, VoiceConfig, VoiceParticipant, VoiceState,
-    VoiceStatus, parse_channel_id, room_name,
+    ACTIVE_MEDIA_SOURCE_CAMERA, ACTIVE_MEDIA_SOURCE_SCREEN_SHARE, AddScreenShareStreamResult,
+    ScreenShareStream, VoiceConfig, VoiceParticipant, VoiceState, VoiceStatus, parse_channel_id,
+    room_name,
 };
 
 const CHANNEL_TYPE_VOICE: &str = "voice";
 const LIVEKIT_TRACK_SOURCE_MICROPHONE: &str = "microphone";
-const LIVEKIT_TRACK_SOURCE_SCREEN_SHARE: &str = "screen_share";
+const LIVEKIT_TRACK_SOURCE_CAMERA: &str = ACTIVE_MEDIA_SOURCE_CAMERA;
+const LIVEKIT_TRACK_SOURCE_SCREEN_SHARE: &str = ACTIVE_MEDIA_SOURCE_SCREEN_SHARE;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ScreenShareStreamsQuery {
@@ -78,9 +80,10 @@ async fn mint_voice_token(
         room: room.clone(),
         can_publish: true,
         can_subscribe: true,
-        can_publish_data: true,
+        can_publish_data: false,
         can_publish_sources: vec![
             LIVEKIT_TRACK_SOURCE_MICROPHONE.to_owned(),
+            LIVEKIT_TRACK_SOURCE_CAMERA.to_owned(),
             LIVEKIT_TRACK_SOURCE_SCREEN_SHARE.to_owned(),
         ],
         ..Default::default()
@@ -116,6 +119,14 @@ async fn list_screen_share_streams(
     Ok(web::Json(
         voice_state.screen_share_streams(query.channel_id),
     ))
+}
+
+#[get("/voice/cameras")]
+async fn list_camera_streams(
+    voice_state: web::Data<VoiceState>,
+    query: web::Query<ScreenShareStreamsQuery>,
+) -> Result<impl Responder, AppError> {
+    Ok(web::Json(voice_state.camera_streams(query.channel_id)))
 }
 
 /// Broadcast a user's speaking-state transition to every SSE subscriber.
@@ -191,15 +202,16 @@ fn webhook_event_timestamp(event: &livekit_protocol::WebhookEvent) -> i64 {
     }
 }
 
-fn screen_share_source(track: &livekit_protocol::TrackInfo) -> Option<&'static str> {
+fn active_media_source(track: &livekit_protocol::TrackInfo) -> Option<&'static str> {
     let source = livekit_protocol::TrackSource::try_from(track.source).ok()?;
     match source {
+        livekit_protocol::TrackSource::Camera => Some(LIVEKIT_TRACK_SOURCE_CAMERA),
         livekit_protocol::TrackSource::ScreenShare => Some(LIVEKIT_TRACK_SOURCE_SCREEN_SHARE),
         _ => None,
     }
 }
 
-async fn screen_share_stream_from_webhook(
+async fn active_media_stream_from_webhook(
     db: &DatabaseConnection,
     event: &livekit_protocol::WebhookEvent,
     channel_id: i64,
@@ -211,7 +223,7 @@ async fn screen_share_stream_from_webhook(
     let Some(track) = event.track.as_ref() else {
         return Ok(None);
     };
-    let Some(source) = screen_share_source(track) else {
+    let Some(source) = active_media_source(track) else {
         return Ok(None);
     };
     if track.sid.is_empty() {
@@ -244,6 +256,58 @@ async fn screen_share_stream_from_webhook(
         source: source.to_owned(),
         started_at: webhook_event_timestamp(event),
     }))
+}
+
+async fn publish_media_started(
+    broadcaster: &Broadcaster,
+    stream: ScreenShareStream,
+) -> Result<(), AppError> {
+    match stream.source.as_str() {
+        LIVEKIT_TRACK_SOURCE_CAMERA => {
+            broadcaster
+                .publish(&BroadcastEvent::CameraVideoStarted(stream))
+                .await
+        }
+        LIVEKIT_TRACK_SOURCE_SCREEN_SHARE => {
+            broadcaster
+                .publish(&BroadcastEvent::ScreenShareStarted(stream))
+                .await
+        }
+        _ => Ok(()),
+    }
+}
+
+async fn publish_media_stopped(
+    broadcaster: &Broadcaster,
+    stream: ScreenShareStream,
+) -> Result<(), AppError> {
+    match stream.source.as_str() {
+        LIVEKIT_TRACK_SOURCE_CAMERA => {
+            broadcaster
+                .publish(&BroadcastEvent::CameraVideoStopped(
+                    CameraVideoStoppedEvent {
+                        channel_id: stream.channel_id,
+                        sharer_user_id: stream.sharer_user_id,
+                        participant_identity: stream.participant_identity,
+                        track_sid: stream.track_sid,
+                    },
+                ))
+                .await
+        }
+        LIVEKIT_TRACK_SOURCE_SCREEN_SHARE => {
+            broadcaster
+                .publish(&BroadcastEvent::ScreenShareStopped(
+                    ScreenShareStoppedEvent {
+                        channel_id: stream.channel_id,
+                        sharer_user_id: stream.sharer_user_id,
+                        participant_identity: stream.participant_identity,
+                        track_sid: stream.track_sid,
+                    },
+                ))
+                .await
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Apply a single parsed LiveKit webhook event to in-memory state and
@@ -295,23 +359,14 @@ pub async fn apply_voice_webhook(
             }
         }
         "participant_left" | "participant_connection_aborted" => {
-            let stopped_streams = voice_state.remove_screen_share_streams_for_participant(
+            let stopped_streams = voice_state.remove_media_streams_for_participant(
                 channel_id,
                 user_id,
                 &participant.identity,
                 webhook_event_timestamp(event),
             );
             for stream in stopped_streams {
-                broadcaster
-                    .publish(&BroadcastEvent::ScreenShareStopped(
-                        ScreenShareStoppedEvent {
-                            channel_id: stream.channel_id,
-                            sharer_user_id: stream.sharer_user_id,
-                            participant_identity: stream.participant_identity,
-                            track_sid: stream.track_sid,
-                        },
-                    ))
-                    .await?;
+                publish_media_stopped(broadcaster, stream).await?;
             }
             if voice_state
                 .remove_participant(channel_id, user_id)
@@ -329,30 +384,24 @@ pub async fn apply_voice_webhook(
         }
         "track_published" => {
             let Some(stream) =
-                screen_share_stream_from_webhook(db, event, channel_id, user_id).await?
+                active_media_stream_from_webhook(db, event, channel_id, user_id).await?
             else {
                 return Ok(());
             };
-            match voice_state.add_screen_share_stream(stream.clone()) {
+            let result = match stream.source.as_str() {
+                LIVEKIT_TRACK_SOURCE_CAMERA => voice_state.add_camera_stream(stream.clone()),
+                LIVEKIT_TRACK_SOURCE_SCREEN_SHARE => {
+                    voice_state.add_screen_share_stream(stream.clone())
+                }
+                _ => AddScreenShareStreamResult::Unchanged,
+            };
+            match result {
                 AddScreenShareStreamResult::Added => {
-                    broadcaster
-                        .publish(&BroadcastEvent::ScreenShareStarted(stream))
-                        .await?;
+                    publish_media_started(broadcaster, stream).await?;
                 }
                 AddScreenShareStreamResult::Replaced(previous) => {
-                    broadcaster
-                        .publish(&BroadcastEvent::ScreenShareStopped(
-                            ScreenShareStoppedEvent {
-                                channel_id: previous.channel_id,
-                                sharer_user_id: previous.sharer_user_id,
-                                participant_identity: previous.participant_identity,
-                                track_sid: previous.track_sid,
-                            },
-                        ))
-                        .await?;
-                    broadcaster
-                        .publish(&BroadcastEvent::ScreenShareStarted(stream))
-                        .await?;
+                    publish_media_stopped(broadcaster, previous).await?;
+                    publish_media_started(broadcaster, stream).await?;
                 }
                 AddScreenShareStreamResult::Unchanged => {}
             }
@@ -361,23 +410,29 @@ pub async fn apply_voice_webhook(
             let Some(track) = event.track.as_ref() else {
                 return Ok(());
             };
-            if screen_share_source(track).is_none() || track.sid.is_empty() {
+            let Some(source) = active_media_source(track) else {
+                return Ok(());
+            };
+            if track.sid.is_empty() {
                 return Ok(());
             }
-            if voice_state
-                .remove_screen_share_stream(channel_id, user_id, &participant.identity, &track.sid)
-                .is_some()
-            {
-                broadcaster
-                    .publish(&BroadcastEvent::ScreenShareStopped(
-                        ScreenShareStoppedEvent {
-                            channel_id,
-                            sharer_user_id: user_id,
-                            participant_identity: participant.identity.clone(),
-                            track_sid: track.sid.clone(),
-                        },
-                    ))
-                    .await?;
+            let stopped = match source {
+                LIVEKIT_TRACK_SOURCE_CAMERA => voice_state.remove_camera_stream(
+                    channel_id,
+                    user_id,
+                    &participant.identity,
+                    &track.sid,
+                ),
+                LIVEKIT_TRACK_SOURCE_SCREEN_SHARE => voice_state.remove_screen_share_stream(
+                    channel_id,
+                    user_id,
+                    &participant.identity,
+                    &track.sid,
+                ),
+                _ => None,
+            };
+            if let Some(stream) = stopped {
+                publish_media_stopped(broadcaster, stream).await?;
             }
         }
         _ => {}
@@ -428,6 +483,7 @@ pub fn configure_authed(cfg: &mut web::ServiceConfig) {
     cfg.service(mint_voice_token)
         .service(list_voice_participants)
         .service(list_screen_share_streams)
+        .service(list_camera_streams)
         .service(post_voice_speaking)
         .service(post_voice_status);
 }
@@ -540,7 +596,11 @@ mod tests {
             }),
             track: Some(livekit_protocol::TrackInfo {
                 sid: track_sid.to_owned(),
-                name: "screen".to_owned(),
+                name: match source {
+                    livekit_protocol::TrackSource::Camera => "camera".to_owned(),
+                    livekit_protocol::TrackSource::ScreenShare => "screen".to_owned(),
+                    _ => "track".to_owned(),
+                },
                 source: source as i32,
                 ..Default::default()
             }),
@@ -655,7 +715,7 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn test_voice_webhook_participant_leave_removes_screen_shares_and_broadcasts_stop() {
+    async fn test_voice_webhook_participant_leave_removes_media_streams_and_broadcasts_stop() {
         let (db, _text_chan_id) = setup_db().await;
         let voice_chan_id = insert_voice_channel(&db, "lounge").await;
         let user = auth::register_user(&db, "alice", "hunter2", None)
@@ -685,6 +745,18 @@ mod tests {
             source: LIVEKIT_TRACK_SOURCE_SCREEN_SHARE.to_owned(),
             started_at: 10,
         });
+        voice_state.add_camera_stream(ScreenShareStream {
+            channel_id: voice_chan_id,
+            sharer_user_id: user.id,
+            username: user.username.clone(),
+            display_name: None,
+            avatar_url: None,
+            participant_identity: user.id.to_string(),
+            track_sid: "TR_camera".to_owned(),
+            track_name: "camera".to_owned(),
+            source: LIVEKIT_TRACK_SOURCE_CAMERA.to_owned(),
+            started_at: 11,
+        });
 
         let mut event =
             make_webhook_event("participant_left", voice_chan_id, user.id, &user.username);
@@ -699,14 +771,23 @@ mod tests {
                 .screen_share_streams(Some(voice_chan_id))
                 .is_empty()
         );
+        assert!(voice_state.camera_streams(Some(voice_chan_id)).is_empty());
 
-        let stopped = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        let stopped_screen = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("timed out")
             .expect("channel closed");
-        let stopped = format!("{:?}", stopped);
-        assert!(stopped.contains("screen_share_stopped"));
-        assert!(stopped.contains("TR_screen"));
+        let stopped_screen = format!("{:?}", stopped_screen);
+        assert!(stopped_screen.contains("screen_share_stopped"));
+        assert!(stopped_screen.contains("TR_screen"));
+
+        let stopped_camera = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        let stopped_camera = format!("{:?}", stopped_camera);
+        assert!(stopped_camera.contains("camera_video_stopped"));
+        assert!(stopped_camera.contains("TR_camera"));
 
         let left = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
@@ -718,7 +799,7 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn test_voice_webhook_connection_abort_removes_screen_share_without_participant_cache() {
+    async fn test_voice_webhook_connection_abort_removes_media_without_participant_cache() {
         let (db, _text_chan_id) = setup_db().await;
         let voice_chan_id = insert_voice_channel(&db, "lounge").await;
         let user = auth::register_user(&db, "alice", "hunter2", None)
@@ -735,10 +816,22 @@ mod tests {
             display_name: None,
             avatar_url: None,
             participant_identity: user.id.to_string(),
-            track_sid: "TR_abort".to_owned(),
+            track_sid: "TR_abort_screen".to_owned(),
             track_name: "screen".to_owned(),
             source: LIVEKIT_TRACK_SOURCE_SCREEN_SHARE.to_owned(),
             started_at: 10,
+        });
+        voice_state.add_camera_stream(ScreenShareStream {
+            channel_id: voice_chan_id,
+            sharer_user_id: user.id,
+            username: user.username.clone(),
+            display_name: None,
+            avatar_url: None,
+            participant_identity: user.id.to_string(),
+            track_sid: "TR_abort_camera".to_owned(),
+            track_name: "camera".to_owned(),
+            source: LIVEKIT_TRACK_SOURCE_CAMERA.to_owned(),
+            started_at: 11,
         });
 
         let mut event = make_webhook_event(
@@ -757,13 +850,21 @@ mod tests {
                 .screen_share_streams(Some(voice_chan_id))
                 .is_empty()
         );
-        let stopped = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        assert!(voice_state.camera_streams(Some(voice_chan_id)).is_empty());
+        let stopped_screen = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("timed out")
             .expect("channel closed");
-        let stopped = format!("{:?}", stopped);
-        assert!(stopped.contains("screen_share_stopped"));
-        assert!(stopped.contains("TR_abort"));
+        let stopped_screen = format!("{:?}", stopped_screen);
+        assert!(stopped_screen.contains("screen_share_stopped"));
+        assert!(stopped_screen.contains("TR_abort_screen"));
+        let stopped_camera = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        let stopped_camera = format!("{:?}", stopped_camera);
+        assert!(stopped_camera.contains("camera_video_stopped"));
+        assert!(stopped_camera.contains("TR_abort_camera"));
         expect_no_broadcast(&mut rx).await;
     }
 
@@ -842,6 +943,125 @@ mod tests {
         assert!(resp.status().is_success());
         let body: serde_json::Value = test::read_body_json(resp).await;
         assert_eq!(body, serde_json::json!([]));
+    }
+
+    #[actix_web::test]
+    async fn test_list_camera_streams_requires_auth_starts_empty_and_filters_by_channel() {
+        let (db, _chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+        let voice_state = web::Data::new(VoiceState::new());
+
+        let app_deps = AppDeps {
+            db: web::Data::new(db),
+            broadcaster: web::Data::from(Broadcaster::new()),
+            voice_cfg: web::Data::new(None),
+            voice_state: voice_state.clone(),
+            embed_fetcher: web::Data::new(EmbedFetcher::Disabled),
+            emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
+                dir: std::env::temp_dir(),
+            }),
+        };
+        let app =
+            test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
+                .await;
+
+        let req = test::TestRequest::get().uri("/voice/cameras").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 401);
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::get()
+            .uri("/voice/cameras")
+            .insert_header((name.clone(), value.clone()))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body, serde_json::json!([]));
+
+        voice_state.add_camera_stream(ScreenShareStream {
+            channel_id: 42,
+            sharer_user_id: user.id,
+            username: user.username.clone(),
+            display_name: None,
+            avatar_url: None,
+            participant_identity: user.id.to_string(),
+            track_sid: "TR_camera_42".to_owned(),
+            track_name: "camera".to_owned(),
+            source: LIVEKIT_TRACK_SOURCE_CAMERA.to_owned(),
+            started_at: 1,
+        });
+        voice_state.add_camera_stream(ScreenShareStream {
+            channel_id: 99,
+            sharer_user_id: user.id,
+            username: user.username.clone(),
+            display_name: None,
+            avatar_url: None,
+            participant_identity: user.id.to_string(),
+            track_sid: "TR_camera_99".to_owned(),
+            track_name: "camera".to_owned(),
+            source: LIVEKIT_TRACK_SOURCE_CAMERA.to_owned(),
+            started_at: 2,
+        });
+
+        let req = test::TestRequest::get()
+            .uri("/voice/cameras?channel_id=42")
+            .insert_header((name, value))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["track_sid"], "TR_camera_42");
+        assert_eq!(body[0]["source"], LIVEKIT_TRACK_SOURCE_CAMERA);
+    }
+
+    #[actix_web::test]
+    async fn test_camera_track_publish_adds_stream_and_broadcasts() {
+        let (db, _text_chan_id) = setup_db().await;
+        let voice_chan_id = insert_voice_channel(&db, "lounge").await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let voice_state = VoiceState::new();
+        let event = make_track_webhook_event(
+            "track_published",
+            voice_chan_id,
+            user.id,
+            &user.username,
+            livekit_protocol::TrackSource::Camera,
+            "TR_camera_1",
+        );
+
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &event)
+            .await
+            .unwrap();
+
+        let streams = voice_state.camera_streams(Some(voice_chan_id));
+        assert_eq!(streams.len(), 1);
+        assert_eq!(streams[0].channel_id, voice_chan_id);
+        assert_eq!(streams[0].sharer_user_id, user.id);
+        assert_eq!(streams[0].username, "alice");
+        assert_eq!(streams[0].participant_identity, user.id.to_string());
+        assert_eq!(streams[0].track_sid, "TR_camera_1");
+        assert_eq!(streams[0].track_name, "camera");
+        assert_eq!(streams[0].source, LIVEKIT_TRACK_SOURCE_CAMERA);
+        assert_eq!(streams[0].started_at, 1_700_000_000);
+
+        let broadcast = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        let s = format!("{:?}", broadcast);
+        assert!(s.contains("camera_video_started"));
+        assert!(s.contains("TR_camera_1"));
+        assert!(s.contains("alice"));
     }
 
     #[actix_web::test]
@@ -953,6 +1173,178 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn test_camera_replacement_and_screen_share_coexistence_are_source_aware() {
+        let (db, _text_chan_id) = setup_db().await;
+        let voice_chan_id = insert_voice_channel(&db, "lounge").await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let voice_state = VoiceState::new();
+        let screen = make_track_webhook_event(
+            "track_published",
+            voice_chan_id,
+            user.id,
+            &user.username,
+            livekit_protocol::TrackSource::ScreenShare,
+            "TR_screen",
+        );
+        let first_camera = make_track_webhook_event(
+            "track_published",
+            voice_chan_id,
+            user.id,
+            &user.username,
+            livekit_protocol::TrackSource::Camera,
+            "TR_camera_1",
+        );
+        let second_camera = make_track_webhook_event(
+            "track_published",
+            voice_chan_id,
+            user.id,
+            &user.username,
+            livekit_protocol::TrackSource::Camera,
+            "TR_camera_2",
+        );
+
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &screen)
+            .await
+            .unwrap();
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &first_camera)
+            .await
+            .unwrap();
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &second_camera)
+            .await
+            .unwrap();
+
+        let cameras = voice_state.camera_streams(Some(voice_chan_id));
+        assert_eq!(cameras.len(), 1);
+        assert_eq!(cameras[0].track_sid, "TR_camera_2");
+        let screens = voice_state.screen_share_streams(Some(voice_chan_id));
+        assert_eq!(screens.len(), 1);
+        assert_eq!(screens[0].track_sid, "TR_screen");
+
+        let first = format!(
+            "{:?}",
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .expect("timed out")
+                .expect("channel closed")
+        );
+        let second = format!(
+            "{:?}",
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .expect("timed out")
+                .expect("channel closed")
+        );
+        let third = format!(
+            "{:?}",
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .expect("timed out")
+                .expect("channel closed")
+        );
+        let fourth = format!(
+            "{:?}",
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .expect("timed out")
+                .expect("channel closed")
+        );
+        assert!(first.contains("screen_share_started"));
+        assert!(first.contains("TR_screen"));
+        assert!(second.contains("camera_video_started"));
+        assert!(second.contains("TR_camera_1"));
+        assert!(third.contains("camera_video_stopped"));
+        assert!(third.contains("TR_camera_1"));
+        assert!(fourth.contains("camera_video_started"));
+        assert!(fourth.contains("TR_camera_2"));
+    }
+
+    #[actix_web::test]
+    async fn test_camera_track_unpublish_removes_exact_stream_and_broadcasts_stop() {
+        let (db, _text_chan_id) = setup_db().await;
+        let voice_chan_id = insert_voice_channel(&db, "lounge").await;
+        let alice = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let bob = auth::register_user(&db, "bob", "hunter2", None)
+            .await
+            .unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let voice_state = VoiceState::new();
+        voice_state.add_camera_stream(ScreenShareStream {
+            channel_id: voice_chan_id,
+            sharer_user_id: alice.id,
+            username: alice.username.clone(),
+            display_name: None,
+            avatar_url: None,
+            participant_identity: alice.id.to_string(),
+            track_sid: "TR_keep".to_owned(),
+            track_name: "camera-a".to_owned(),
+            source: LIVEKIT_TRACK_SOURCE_CAMERA.to_owned(),
+            started_at: 1,
+        });
+        voice_state.add_camera_stream(ScreenShareStream {
+            channel_id: voice_chan_id,
+            sharer_user_id: bob.id,
+            username: bob.username.clone(),
+            display_name: None,
+            avatar_url: None,
+            participant_identity: bob.id.to_string(),
+            track_sid: "TR_stop".to_owned(),
+            track_name: "camera-b".to_owned(),
+            source: LIVEKIT_TRACK_SOURCE_CAMERA.to_owned(),
+            started_at: 2,
+        });
+        voice_state.add_screen_share_stream(ScreenShareStream {
+            channel_id: voice_chan_id,
+            sharer_user_id: bob.id,
+            username: bob.username.clone(),
+            display_name: None,
+            avatar_url: None,
+            participant_identity: bob.id.to_string(),
+            track_sid: "TR_bob_screen".to_owned(),
+            track_name: "screen".to_owned(),
+            source: LIVEKIT_TRACK_SOURCE_SCREEN_SHARE.to_owned(),
+            started_at: 3,
+        });
+
+        let event = make_track_webhook_event(
+            "track_unpublished",
+            voice_chan_id,
+            bob.id,
+            &bob.username,
+            livekit_protocol::TrackSource::Camera,
+            "TR_stop",
+        );
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &event)
+            .await
+            .unwrap();
+
+        let cameras = voice_state.camera_streams(Some(voice_chan_id));
+        assert_eq!(cameras.len(), 1);
+        assert_eq!(cameras[0].track_sid, "TR_keep");
+        assert_eq!(cameras[0].sharer_user_id, alice.id);
+        let screens = voice_state.screen_share_streams(Some(voice_chan_id));
+        assert_eq!(screens.len(), 1);
+        assert_eq!(screens[0].track_sid, "TR_bob_screen");
+
+        let broadcast = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        let s = format!("{:?}", broadcast);
+        assert!(s.contains("camera_video_stopped"));
+        assert!(s.contains("TR_stop"));
+        assert!(s.contains(&bob.id.to_string()));
+    }
+
+    #[actix_web::test]
     async fn test_screen_share_track_unpublish_removes_exact_stream_and_broadcasts_stop() {
         let (db, _text_chan_id) = setup_db().await;
         let voice_chan_id = insert_voice_channel(&db, "lounge").await;
@@ -1016,6 +1408,88 @@ mod tests {
         assert!(s.contains("screen_share_stopped"));
         assert!(s.contains("TR_stop"));
         assert!(s.contains(&bob.id.to_string()));
+    }
+
+    #[actix_web::test]
+    async fn test_camera_track_webhooks_are_idempotent_and_out_of_order_safe() {
+        let (db, _text_chan_id) = setup_db().await;
+        let voice_chan_id = insert_voice_channel(&db, "lounge").await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let voice_state = VoiceState::new();
+        let published = make_track_webhook_event(
+            "track_published",
+            voice_chan_id,
+            user.id,
+            &user.username,
+            livekit_protocol::TrackSource::Camera,
+            "TR_once",
+        );
+
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &published)
+            .await
+            .unwrap();
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &published)
+            .await
+            .unwrap();
+        assert_eq!(voice_state.camera_streams(Some(voice_chan_id)).len(), 1);
+        let first = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        assert!(format!("{:?}", first).contains("camera_video_started"));
+        expect_no_broadcast(&mut rx).await;
+
+        let unpublished = make_track_webhook_event(
+            "track_unpublished",
+            voice_chan_id,
+            user.id,
+            &user.username,
+            livekit_protocol::TrackSource::Camera,
+            "TR_once",
+        );
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &unpublished)
+            .await
+            .unwrap();
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &unpublished)
+            .await
+            .unwrap();
+        assert!(voice_state.camera_streams(Some(voice_chan_id)).is_empty());
+        let first = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        assert!(format!("{:?}", first).contains("camera_video_stopped"));
+        expect_no_broadcast(&mut rx).await;
+
+        let unpublished_first = make_track_webhook_event(
+            "track_unpublished",
+            voice_chan_id,
+            user.id,
+            &user.username,
+            livekit_protocol::TrackSource::Camera,
+            "TR_out_of_order",
+        );
+        let published_late = make_track_webhook_event(
+            "track_published",
+            voice_chan_id,
+            user.id,
+            &user.username,
+            livekit_protocol::TrackSource::Camera,
+            "TR_out_of_order",
+        );
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &unpublished_first)
+            .await
+            .unwrap();
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &published_late)
+            .await
+            .unwrap();
+        assert!(voice_state.camera_streams(Some(voice_chan_id)).is_empty());
+        expect_no_broadcast(&mut rx).await;
     }
 
     #[actix_web::test]
@@ -1143,20 +1617,32 @@ mod tests {
             &user.username,
         );
         aborted.created_at = 30;
-        let mut delayed_publish = make_track_webhook_event(
+        let mut delayed_screen_publish = make_track_webhook_event(
             "track_published",
             voice_chan_id,
             user.id,
             &user.username,
             livekit_protocol::TrackSource::ScreenShare,
-            "TR_delayed_after_abort",
+            "TR_delayed_screen_after_abort",
         );
-        delayed_publish.created_at = 20;
+        delayed_screen_publish.created_at = 20;
+        let mut delayed_camera_publish = make_track_webhook_event(
+            "track_published",
+            voice_chan_id,
+            user.id,
+            &user.username,
+            livekit_protocol::TrackSource::Camera,
+            "TR_delayed_camera_after_abort",
+        );
+        delayed_camera_publish.created_at = 21;
 
         apply_voice_webhook(&db, &voice_state, &broadcaster, &aborted)
             .await
             .unwrap();
-        apply_voice_webhook(&db, &voice_state, &broadcaster, &delayed_publish)
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &delayed_screen_publish)
+            .await
+            .unwrap();
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &delayed_camera_publish)
             .await
             .unwrap();
 
@@ -1165,6 +1651,7 @@ mod tests {
                 .screen_share_streams(Some(voice_chan_id))
                 .is_empty()
         );
+        assert!(voice_state.camera_streams(Some(voice_chan_id)).is_empty());
         expect_no_broadcast(&mut rx).await;
     }
 
@@ -1189,6 +1676,18 @@ mod tests {
             "TR_audio",
         );
         apply_voice_webhook(&db, &voice_state, &broadcaster, &unsupported)
+            .await
+            .unwrap();
+
+        let microphone = make_track_webhook_event(
+            "track_published",
+            voice_chan_id,
+            user.id,
+            &user.username,
+            livekit_protocol::TrackSource::Microphone,
+            "TR_microphone",
+        );
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &microphone)
             .await
             .unwrap();
 
@@ -1260,6 +1759,7 @@ mod tests {
             .unwrap();
 
         assert!(voice_state.screen_share_streams(None).is_empty());
+        assert!(voice_state.camera_streams(None).is_empty());
         expect_no_broadcast(&mut rx).await;
     }
 
@@ -1359,16 +1859,17 @@ mod tests {
         assert!(claims.video.room_join);
         assert!(claims.video.can_subscribe);
         assert!(claims.video.can_publish);
-        assert!(claims.video.can_publish_data);
+        assert!(!claims.video.can_publish_data);
         assert_eq!(
             claims.video.can_publish_sources,
             vec![
                 LIVEKIT_TRACK_SOURCE_MICROPHONE.to_owned(),
+                LIVEKIT_TRACK_SOURCE_CAMERA.to_owned(),
                 LIVEKIT_TRACK_SOURCE_SCREEN_SHARE.to_owned(),
             ]
         );
         assert!(
-            !claims
+            claims
                 .video
                 .can_publish_sources
                 .iter()
