@@ -9,6 +9,7 @@ import type {
   VoiceParticipant,
   VoiceParticipantLeft,
   VoiceParticipantSpeaking,
+  VoiceParticipantStatus,
 } from "../api";
 import { mswState, resetMswState } from "../test/msw/server";
 import VoiceChannel from "./voice-channel";
@@ -16,6 +17,7 @@ import VoiceChannel from "./voice-channel";
 type JoinedListener = (p: VoiceParticipant) => void;
 type LeftListener = (p: VoiceParticipantLeft) => void;
 type SpeakingListener = (p: VoiceParticipantSpeaking) => void;
+type StatusListener = (p: VoiceParticipantStatus) => void;
 type ScreenShareStartedListener = (p: ScreenShareStream) => void;
 type ScreenShareStoppedListener = (p: ScreenShareStopped) => void;
 
@@ -51,6 +53,7 @@ let mockVoice: MockVoiceChatApi;
 const joinedListeners = new Set<JoinedListener>();
 const leftListeners = new Set<LeftListener>();
 const speakingListeners = new Set<SpeakingListener>();
+const statusListeners = new Set<StatusListener>();
 const screenShareStartedListeners = new Set<ScreenShareStartedListener>();
 const screenShareStoppedListeners = new Set<ScreenShareStoppedListener>();
 const [showEverywhere, setShowEverywhere] = createSignal(false);
@@ -77,6 +80,10 @@ vi.mock("../contexts/events", () => ({
     onVoiceParticipantSpeakingChanged: (cb: SpeakingListener) => {
       speakingListeners.add(cb);
       return () => speakingListeners.delete(cb);
+    },
+    onVoiceParticipantStatusChanged: (cb: StatusListener) => {
+      statusListeners.add(cb);
+      return () => statusListeners.delete(cb);
     },
     onScreenShareStarted: (cb: ScreenShareStartedListener) => {
       screenShareStartedListeners.add(cb);
@@ -135,6 +142,18 @@ function makeVoiceMock(overrides?: Partial<MockVoiceChatApi>): MockVoiceChatApi 
 
 const CHANNEL: Channel = { id: 42, name: "lobby", position: 0, type: "voice" };
 
+function makeParticipant(overrides: Partial<VoiceParticipant> = {}): VoiceParticipant {
+  return {
+    user_id: 2,
+    channel_id: 42,
+    username: "bob",
+    avatar_url: null,
+    muted: false,
+    deafened: false,
+    ...overrides,
+  };
+}
+
 function makeScreenShare(overrides: Partial<ScreenShareStream> = {}): ScreenShareStream {
   return {
     channel_id: 42,
@@ -175,6 +194,7 @@ function setup(initial: VoiceParticipant[] = [], screenShares: ScreenShareStream
   joinedListeners.clear();
   leftListeners.clear();
   speakingListeners.clear();
+  statusListeners.clear();
   screenShareStartedListeners.clear();
   screenShareStoppedListeners.clear();
   setShowEverywhere(false);
@@ -184,10 +204,7 @@ function setup(initial: VoiceParticipant[] = [], screenShares: ScreenShareStream
 
 describe("<VoiceChannel>", () => {
   test("fetches and renders the initial participant list", async () => {
-    setup([
-      { user_id: 2, channel_id: 42, username: "bob", avatar_url: null },
-      { user_id: 3, channel_id: 42, username: "carol", avatar_url: null },
-    ]);
+    setup([makeParticipant(), makeParticipant({ user_id: 3, username: "carol" })]);
 
     render(() => <VoiceChannel channel={CHANNEL} />);
 
@@ -205,11 +222,24 @@ describe("<VoiceChannel>", () => {
     // so the SSE-driven append isn't clobbered by the resource resolving.
     await waitFor(() => expect(mswState().voiceParticipants["42"]).toBeDefined());
 
-    joinedListeners.forEach((cb) =>
-      cb({ user_id: 7, channel_id: 42, username: "dave", avatar_url: null }),
-    );
+    joinedListeners.forEach((cb) => cb(makeParticipant({ user_id: 7, username: "dave" })));
 
     await waitFor(() => expect(screen.getByText("dave")).toBeInTheDocument());
+  });
+
+  test("renders participant mute/deafen status from fetch and SSE", async () => {
+    setup([makeParticipant({ muted: true })]);
+    render(() => <VoiceChannel channel={CHANNEL} />);
+
+    await waitFor(() => expect(screen.getByRole("img", { name: /bob is muted/i })).toBeVisible());
+    expect(screen.queryByRole("img", { name: /bob is deafened/i })).toBeNull();
+
+    statusListeners.forEach((cb) =>
+      cb({ channel_id: 42, user_id: 2, muted: false, deafened: true }),
+    );
+
+    await waitFor(() => expect(screen.queryByRole("img", { name: /bob is muted/i })).toBeNull());
+    expect(screen.getByRole("img", { name: /bob is deafened/i })).toBeVisible();
   });
 
   test("ignores SSE events for other channels", async () => {
@@ -218,7 +248,7 @@ describe("<VoiceChannel>", () => {
     await waitFor(() => expect(mswState().voiceParticipants["42"]).toBeDefined());
 
     joinedListeners.forEach((cb) =>
-      cb({ user_id: 9, channel_id: 999, username: "ghost", avatar_url: null }),
+      cb(makeParticipant({ user_id: 9, channel_id: 999, username: "ghost" })),
     );
 
     // Give the signal an event loop turn to propagate if it were going to.
@@ -227,7 +257,7 @@ describe("<VoiceChannel>", () => {
   });
 
   test("removes a participant on a left SSE event", async () => {
-    setup([{ user_id: 2, channel_id: 42, username: "bob", avatar_url: null }]);
+    setup([makeParticipant()]);
     render(() => <VoiceChannel channel={CHANNEL} />);
 
     await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
@@ -257,10 +287,9 @@ describe("<VoiceChannel>", () => {
     expect(mockVoice.join).not.toHaveBeenCalled();
   });
 
-  test("shows voice controls only when connected to this channel", () => {
+  test("shows call controls only when connected to this channel", () => {
     setup();
     const { unmount } = render(() => <VoiceChannel channel={CHANNEL} />);
-    expect(screen.queryByRole("button", { name: /Mute microphone/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Share screen/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Disconnect from voice/ })).toBeNull();
 
@@ -269,14 +298,12 @@ describe("<VoiceChannel>", () => {
     mockVoice.setActiveChannelId(42);
     render(() => <VoiceChannel channel={CHANNEL} />);
 
-    expect(screen.getByRole("button", { name: /Mute microphone/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Deafen/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Share screen/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Disconnect from voice/ })).toBeInTheDocument();
   });
 
   test("renders a speaking ring on the avatar for in-channel speakers", async () => {
-    setup([{ user_id: 2, channel_id: 42, username: "bob", avatar_url: null }]);
+    setup([makeParticipant()]);
     mockVoice.setActiveChannelId(42);
     render(() => <VoiceChannel channel={CHANNEL} />);
 
@@ -290,7 +317,7 @@ describe("<VoiceChannel>", () => {
   });
 
   test("does not show ring from SSE speaking events when not connected and setting off", async () => {
-    setup([{ user_id: 2, channel_id: 42, username: "bob", avatar_url: null }]);
+    setup([makeParticipant()]);
     // Not active — we're not connected to this channel.
     render(() => <VoiceChannel channel={CHANNEL} />);
     await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
@@ -303,7 +330,7 @@ describe("<VoiceChannel>", () => {
   });
 
   test("shows ring from SSE speaking events when setting is on and not connected", async () => {
-    setup([{ user_id: 2, channel_id: 42, username: "bob", avatar_url: null }]);
+    setup([makeParticipant()]);
     setShowEverywhere(true);
     render(() => <VoiceChannel channel={CHANNEL} />);
     await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
@@ -319,10 +346,7 @@ describe("<VoiceChannel>", () => {
 
   test("bootstraps active screen shares and marks sharing participants", async () => {
     setup(
-      [
-        { user_id: 2, channel_id: 42, username: "bob", avatar_url: null },
-        { user_id: 3, channel_id: 42, username: "carol", avatar_url: null },
-      ],
+      [makeParticipant(), makeParticipant({ user_id: 3, username: "carol" })],
       [
         makeScreenShare({ display_name: "Bobby" }),
         makeScreenShare({
@@ -403,7 +427,7 @@ describe("<VoiceChannel>", () => {
 
   test("applies screen-share SSE start and stop updates with polite announcements", async () => {
     const stream = makeScreenShare({ display_name: "Bobby" });
-    setup([{ user_id: 2, channel_id: 42, username: "bob", avatar_url: null }]);
+    setup([makeParticipant()]);
     render(() => <VoiceChannel channel={CHANNEL} />);
 
     await screen.findByText("bob");
@@ -430,7 +454,7 @@ describe("<VoiceChannel>", () => {
 
   test("stale start events after a stop do not resurrect dead screen shares", async () => {
     const stream = makeScreenShare({ display_name: "Bobby" });
-    setup([{ user_id: 2, channel_id: 42, username: "bob", avatar_url: null }]);
+    setup([makeParticipant()]);
     render(() => <VoiceChannel channel={CHANNEL} />);
 
     await waitFor(() => expect(screenShareStartedListeners.size).toBe(1));
@@ -460,7 +484,7 @@ describe("<VoiceChannel>", () => {
 
   test("participant left SSE closes a watched stream even when local stream state is already absent", async () => {
     const stream = makeScreenShare({ display_name: "Bobby" });
-    setup([{ user_id: 2, channel_id: 42, username: "bob", avatar_url: null }]);
+    setup([makeParticipant()]);
     mockVoice.setActiveChannelId(42);
     mockVoice.setWatchingScreenShare(stream);
     render(() => <VoiceChannel channel={CHANNEL} />);
@@ -474,7 +498,7 @@ describe("<VoiceChannel>", () => {
 
   test("screen-share SSE updates fan out to multiple mounted channel views", async () => {
     const stream = makeScreenShare({ display_name: "Bobby" });
-    setup([{ user_id: 2, channel_id: 42, username: "bob", avatar_url: null }]);
+    setup([makeParticipant()]);
     render(() => (
       <>
         <VoiceChannel channel={CHANNEL} />
@@ -518,16 +542,10 @@ describe("<VoiceChannel>", () => {
     expect(mockVoice.join).not.toHaveBeenCalled();
   });
 
-  test("mute/deafen/share/disconnect buttons call the voice context", () => {
+  test("share/disconnect buttons call the voice context", () => {
     setup();
     mockVoice.setActiveChannelId(42);
     render(() => <VoiceChannel channel={CHANNEL} />);
-
-    fireEvent.click(screen.getByRole("button", { name: /Mute microphone/ }));
-    expect(mockVoice.toggleMuted).toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: /Deafen/ }));
-    expect(mockVoice.toggleDeafened).toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: /Share screen/ }));
     expect(mockVoice.startScreenShare).toHaveBeenCalled();

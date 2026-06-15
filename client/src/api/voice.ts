@@ -5,6 +5,8 @@ export interface VoiceParticipant {
   channel_id: number;
   username: string;
   avatar_url: string | null;
+  muted: boolean;
+  deafened: boolean;
 }
 
 export interface VoiceParticipantLeft {
@@ -16,6 +18,13 @@ export interface VoiceParticipantSpeaking {
   channel_id: number;
   user_id: number;
   speaking: boolean;
+}
+
+export interface VoiceParticipantStatus {
+  channel_id: number;
+  user_id: number;
+  muted: boolean;
+  deafened: boolean;
 }
 
 export type ScreenShareSource = "screen_share";
@@ -72,5 +81,15 @@ export async function postVoiceSpeaking(channelId: number, speaking: boolean): P
     body: JSON.stringify({ channel_id: channelId, speaking }),
   }).catch(() => {
     // Best-effort — losing a transition just means a momentary stale indicator.
+  });
+}
+
+export async function postVoiceStatus(muted: boolean, deafened: boolean): Promise<void> {
+  await apiFetch(`/voice/status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ muted, deafened }),
+  }).catch(() => {
+    // Best-effort — the local controls still work if a transient update is lost.
   });
 }

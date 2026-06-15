@@ -60,6 +60,7 @@ export interface HandlerState {
   displayNameUpdates: (string | null)[];
   voiceParticipants: Record<string, VoiceParticipant[]>;
   voiceTokensMinted: number[];
+  voiceStatusUpdates: { muted: boolean; deafened: boolean }[];
   screenShareStreams: ScreenShareStream[];
   customEmojis: CustomEmoji[];
   uploadedCustomEmojis: { name: string; size: number; type: string }[];
@@ -92,6 +93,7 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     displayNameUpdates: [],
     voiceParticipants: {},
     voiceTokensMinted: [],
+    voiceStatusUpdates: [],
     screenShareStreams: [],
     customEmojis: [],
     uploadedCustomEmojis: [],
@@ -725,6 +727,12 @@ export function createHandlers(state: HandlerState) {
         token: "fake-jwt",
         room: `channel-${id}`,
       });
+    }),
+
+    http.post(`${BASE}/voice/status`, async ({ request }) => {
+      const body = (await request.json()) as { muted: boolean; deafened: boolean };
+      state.voiceStatusUpdates.push(body);
+      return new HttpResponse(null, { status: 204 });
     }),
   ];
 }

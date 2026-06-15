@@ -32,6 +32,10 @@ vi.mock("./settings-modal", () => ({
   ),
 }));
 
+vi.mock("./voice-status-controls", () => ({
+  default: () => <div data-testid="voice-status-controls-stub" />,
+}));
+
 // VoiceChannel pulls in livekit-client transitively and needs the
 // VoiceChatProvider. Stub it out so the sidebar's own behavior stays testable
 // without standing up the whole voice stack — it has dedicated coverage in

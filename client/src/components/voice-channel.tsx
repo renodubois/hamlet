@@ -13,8 +13,6 @@ import { showSpeakingIndicatorsEverywhere } from "../voice/settings";
 import { isSameScreenShare, screenShareDisplayName, screenShareKey } from "../voice/screen-share";
 import {
   HeadphoneOffIcon,
-  HeadphonesIcon,
-  MicIcon,
   MicOffIcon,
   PhoneOffIcon,
   ScreenShareIcon,
@@ -26,7 +24,7 @@ import {
  * Everything the sidebar needs to render a single voice channel: the channel
  * row itself, the live participant list beneath it, active screen-share
  * discovery, and (when this is the channel we're connected to)
- * mute/deafen/disconnect controls.
+ * screen-share/disconnect controls.
  *
  * Participant and screen-share state are fetched once on mount and kept current
  * by listening for SSE events — the server is the source of truth, driven by
@@ -132,8 +130,9 @@ export default function VoiceChannel(props: { channel: Channel }) {
     const unsubJoined = events.onVoiceParticipantJoined((p) => {
       if (p.channel_id !== props.channel.id) return;
       setParticipants((prev) => {
-        if (prev.some((x) => x.user_id === p.user_id)) return prev;
-        return [...prev, p];
+        const existing = prev.findIndex((x) => x.user_id === p.user_id);
+        if (existing < 0) return [...prev, p];
+        return prev.map((participant, index) => (index === existing ? p : participant));
       });
     });
     const unsubLeft = events.onVoiceParticipantLeft((p) => {
@@ -170,6 +169,16 @@ export default function VoiceChannel(props: { channel: Channel }) {
         else next.delete(s.user_id);
         return next;
       });
+    });
+    const unsubStatus = events.onVoiceParticipantStatusChanged((s) => {
+      if (s.channel_id !== props.channel.id) return;
+      setParticipants((prev) =>
+        prev.map((participant) =>
+          participant.user_id === s.user_id
+            ? { ...participant, muted: s.muted, deafened: s.deafened }
+            : participant,
+        ),
+      );
     });
     const unsubScreenShareStarted = events.onScreenShareStarted((stream) => {
       if (stream.channel_id !== props.channel.id) return;
@@ -213,6 +222,7 @@ export default function VoiceChannel(props: { channel: Channel }) {
       unsubJoined();
       unsubLeft();
       unsubSpeaking();
+      unsubStatus();
       unsubScreenShareStarted();
       unsubScreenShareStopped();
     });
@@ -261,6 +271,26 @@ export default function VoiceChannel(props: { channel: Channel }) {
                   isSpeaking={speakingIds().has(p.user_id)}
                 />
                 <span class="truncate">{p.username}</span>
+                <Show when={p.muted}>
+                  <span
+                    class="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-gray-900/70 text-red-300"
+                    role="img"
+                    aria-label={`${p.username} is muted`}
+                    title={`${p.username} is muted`}
+                  >
+                    <MicOffIcon size={12} aria-hidden="true" />
+                  </span>
+                </Show>
+                <Show when={p.deafened}>
+                  <span
+                    class="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-gray-900/70 text-red-300"
+                    role="img"
+                    aria-label={`${p.username} is deafened`}
+                    title={`${p.username} is deafened`}
+                  >
+                    <HeadphoneOffIcon size={12} aria-hidden="true" />
+                  </span>
+                </Show>
                 <Show when={sharingUserIds().has(p.user_id)}>
                   <span
                     class="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-green-900/60 text-green-300"
@@ -347,39 +377,6 @@ export default function VoiceChannel(props: { channel: Channel }) {
           role="group"
           aria-label="Voice controls"
         >
-          <button
-            type="button"
-            class="p-1.5 rounded hover:bg-gray-700"
-            classList={{
-              "text-red-400 bg-gray-700": voice.isMuted(),
-              "text-gray-300": !voice.isMuted(),
-            }}
-            aria-pressed={voice.isMuted()}
-            aria-label={voice.isMuted() ? "Unmute microphone" : "Mute microphone"}
-            onClick={() => void voice.toggleMuted()}
-          >
-            <Show when={voice.isMuted()} fallback={<MicIcon size={14} aria-hidden="true" />}>
-              <MicOffIcon size={14} aria-hidden="true" />
-            </Show>
-          </button>
-          <button
-            type="button"
-            class="p-1.5 rounded hover:bg-gray-700"
-            classList={{
-              "text-red-400 bg-gray-700": voice.isDeafened(),
-              "text-gray-300": !voice.isDeafened(),
-            }}
-            aria-pressed={voice.isDeafened()}
-            aria-label={voice.isDeafened() ? "Undeafen" : "Deafen"}
-            onClick={voice.toggleDeafened}
-          >
-            <Show
-              when={voice.isDeafened()}
-              fallback={<HeadphonesIcon size={14} aria-hidden="true" />}
-            >
-              <HeadphoneOffIcon size={14} aria-hidden="true" />
-            </Show>
-          </button>
           <button
             type="button"
             class="p-1.5 rounded hover:bg-gray-700"

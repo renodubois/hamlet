@@ -161,6 +161,14 @@ pub struct VoiceParticipantSpeakingEvent {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct VoiceParticipantStatusEvent {
+    pub channel_id: i64,
+    pub user_id: i64,
+    pub muted: bool,
+    pub deafened: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct ScreenShareStoppedEvent {
     pub channel_id: i64,
     pub sharer_user_id: i64,
@@ -210,6 +218,7 @@ pub enum BroadcastEvent {
     VoiceParticipantJoined(VoiceParticipant),
     VoiceParticipantLeft(VoiceParticipantLeftEvent),
     VoiceParticipantSpeakingChanged(VoiceParticipantSpeakingEvent),
+    VoiceParticipantStatusChanged(VoiceParticipantStatusEvent),
     ScreenShareStarted(ScreenShareStream),
     ScreenShareStopped(ScreenShareStoppedEvent),
     UserTyping(UserTypingEvent),

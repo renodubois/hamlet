@@ -30,6 +30,7 @@ function fakeEvents(): {
     onVoiceParticipantJoined: () => () => {},
     onVoiceParticipantLeft: () => () => {},
     onVoiceParticipantSpeakingChanged: () => () => {},
+    onVoiceParticipantStatusChanged: () => () => {},
     onScreenShareStarted: () => () => {},
     onScreenShareStopped: () => () => {},
     onUserTyping: (cb) => {
@@ -221,6 +222,7 @@ describe("<TypingIndicator>", () => {
       onVoiceParticipantJoined: () => () => {},
       onVoiceParticipantLeft: () => () => {},
       onVoiceParticipantSpeakingChanged: () => () => {},
+      onVoiceParticipantStatusChanged: () => () => {},
       onScreenShareStarted: () => () => {},
       onScreenShareStopped: () => () => {},
       onUserTyping: () => unsub,

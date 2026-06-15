@@ -15,6 +15,7 @@ import type {
   VoiceParticipant,
   VoiceParticipantLeft,
   VoiceParticipantSpeaking,
+  VoiceParticipantStatus,
 } from "./voice";
 import type { UserTyping } from "./typing";
 
@@ -32,6 +33,7 @@ export type SSEEvent =
   | { kind: "voice_participant_joined"; data: VoiceParticipant }
   | { kind: "voice_participant_left"; data: VoiceParticipantLeft }
   | { kind: "voice_participant_speaking_changed"; data: VoiceParticipantSpeaking }
+  | { kind: "voice_participant_status_changed"; data: VoiceParticipantStatus }
   | { kind: "screen_share_started"; data: ScreenShareStream }
   | { kind: "screen_share_stopped"; data: ScreenShareStopped }
   | { kind: "user_typing"; data: UserTyping }

@@ -47,6 +47,14 @@ pub struct VoiceParticipant {
     pub channel_id: i64,
     pub username: String,
     pub avatar_url: Option<String>,
+    pub muted: bool,
+    pub deafened: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct VoiceStatus {
+    pub muted: bool,
+    pub deafened: bool,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -112,6 +120,10 @@ pub enum AddScreenShareStreamResult {
 pub struct VoiceState {
     // channel_id -> user_id -> participant
     rooms: Mutex<HashMap<i64, HashMap<i64, VoiceParticipant>>>,
+    // user_id -> preferred/status bits. Kept even when a user is not in a
+    // room so they can mute/deafen before joining and have the join event
+    // reflect the current controls.
+    statuses: Mutex<HashMap<i64, VoiceStatus>>,
     // (channel_id, sharer_user_id, LiveKit participant identity, track sid) -> stream.
     // At most one stream per (channel, sharer, participant identity) is kept;
     // a new track from the same owner in the same room replaces the old one.
@@ -141,6 +153,45 @@ impl VoiceState {
             .get(&channel_id)
             .map(|m| m.values().cloned().collect())
             .unwrap_or_default()
+    }
+
+    pub fn user_status(&self, user_id: i64) -> VoiceStatus {
+        let statuses = match self.statuses.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        statuses.get(&user_id).copied().unwrap_or_default()
+    }
+
+    /// Store a user's current mute/deafen status and update any active room
+    /// entries. Returns the participants whose visible state changed so callers
+    /// can fan out SSE updates without broadcasting no-op transitions.
+    pub fn set_user_status(&self, user_id: i64, status: VoiceStatus) -> Vec<VoiceParticipant> {
+        {
+            let mut statuses = match self.statuses.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            statuses.insert(user_id, status);
+        }
+
+        let mut changed = Vec::new();
+        let mut rooms = match self.rooms.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        for participants in rooms.values_mut() {
+            let Some(participant) = participants.get_mut(&user_id) else {
+                continue;
+            };
+            if participant.muted == status.muted && participant.deafened == status.deafened {
+                continue;
+            }
+            participant.muted = status.muted;
+            participant.deafened = status.deafened;
+            changed.push(participant.clone());
+        }
+        changed
     }
 
     /// Record that a participant has connected. A fresh join after a previous
@@ -376,6 +427,8 @@ mod tests {
             channel_id,
             username: format!("user{user_id}"),
             avatar_url: None,
+            muted: false,
+            deafened: false,
         }
     }
 

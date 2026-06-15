@@ -65,6 +65,7 @@ export type {
   VoiceParticipant,
   VoiceParticipantLeft,
   VoiceParticipantSpeaking,
+  VoiceParticipantStatus,
   VoiceToken,
 } from "./voice";
 export {
@@ -72,6 +73,7 @@ export {
   listScreenShareStreams,
   listVoiceParticipants,
   postVoiceSpeaking,
+  postVoiceStatus,
 } from "./voice";
 export type { UserTyping } from "./typing";
 export { sendTyping } from "./typing";

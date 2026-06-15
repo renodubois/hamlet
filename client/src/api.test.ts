@@ -22,6 +22,7 @@ import {
   deleteCustomEmoji,
   restoreCustomEmoji,
   listScreenShareStreams,
+  postVoiceStatus,
   type Channel,
   type CustomEmoji,
   type ScreenShareStream,
@@ -614,6 +615,19 @@ describe("apiFetch behavior", () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 401 }));
     await expect(listScreenShareStreams()).rejects.toThrow(/401/);
     expect(fetchMock.mock.calls[0][0]).toBe(`${DEFAULT_SERVER}/voice/screen-shares`);
+  });
+
+  test("postVoiceStatus sends current mute and deafen bits", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+    await expect(postVoiceStatus(true, false)).resolves.toBeUndefined();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/voice/status`);
+    expect(init.method).toBe("POST");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init.credentials).toBe("include");
+    expect(JSON.parse(init.body)).toEqual({ muted: true, deafened: false });
   });
 
   test("uses the stored server URL for subsequent calls", async () => {

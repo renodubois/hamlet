@@ -7,6 +7,7 @@ import Avatar from "./avatar";
 import { SettingsIcon } from "./icons";
 import SettingsModal from "./settings-modal";
 import VoiceChannel from "./voice-channel";
+import VoiceStatusControls from "./voice-status-controls";
 
 export default function ChannelSidebar(props: {
   user: User;
@@ -145,6 +146,7 @@ export default function ChannelSidebar(props: {
         <span class="text-gray-300 text-sm truncate flex-1 min-w-0">
           {props.user.display_name ?? props.user.username}
         </span>
+        <VoiceStatusControls />
         <button
           type="button"
           aria-label="Settings"

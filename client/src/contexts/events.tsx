@@ -16,6 +16,7 @@ import {
   type VoiceParticipant,
   type VoiceParticipantLeft,
   type VoiceParticipantSpeaking,
+  type VoiceParticipantStatus,
 } from "../api";
 
 type Listener<T> = (value: T) => void;
@@ -37,6 +38,7 @@ export interface EventsContextValue {
   onVoiceParticipantJoined: (cb: Listener<VoiceParticipant>) => () => void;
   onVoiceParticipantLeft: (cb: Listener<VoiceParticipantLeft>) => () => void;
   onVoiceParticipantSpeakingChanged: (cb: Listener<VoiceParticipantSpeaking>) => () => void;
+  onVoiceParticipantStatusChanged: (cb: Listener<VoiceParticipantStatus>) => () => void;
   onScreenShareStarted: (cb: Listener<ScreenShareStream>) => () => void;
   onScreenShareStopped: (cb: Listener<ScreenShareStopped>) => () => void;
   onUserTyping: (cb: Listener<UserTyping>) => () => void;
@@ -106,6 +108,7 @@ export function EventsProvider(props: { children: JSX.Element }) {
     onVoiceParticipantJoined: (cb) => subscribe("voice_participant_joined", cb),
     onVoiceParticipantLeft: (cb) => subscribe("voice_participant_left", cb),
     onVoiceParticipantSpeakingChanged: (cb) => subscribe("voice_participant_speaking_changed", cb),
+    onVoiceParticipantStatusChanged: (cb) => subscribe("voice_participant_status_changed", cb),
     onScreenShareStarted: (cb) => subscribe("screen_share_started", cb),
     onScreenShareStopped: (cb) => subscribe("screen_share_stopped", cb),
     onUserTyping: (cb) => subscribe("user_typing", cb),

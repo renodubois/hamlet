@@ -12,14 +12,14 @@ use crate::api::avatars::avatar_url;
 use crate::auth::AuthUser;
 use crate::broadcast::{
     BroadcastEvent, Broadcaster, ScreenShareStoppedEvent, VoiceParticipantLeftEvent,
-    VoiceParticipantSpeakingEvent,
+    VoiceParticipantSpeakingEvent, VoiceParticipantStatusEvent,
 };
 use crate::entity;
 use crate::error::AppError;
 use crate::util::now_unix_secs;
 use crate::voice::{
     AddScreenShareStreamResult, ScreenShareStream, VoiceConfig, VoiceParticipant, VoiceState,
-    parse_channel_id, room_name,
+    VoiceStatus, parse_channel_id, room_name,
 };
 
 const CHANNEL_TYPE_VOICE: &str = "voice";
@@ -43,6 +43,12 @@ pub struct VoiceTokenResponse {
 pub struct VoiceSpeakingRequest {
     pub channel_id: i64,
     pub speaking: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct VoiceStatusRequest {
+    pub muted: bool,
+    pub deafened: bool,
 }
 
 #[post("/voice/token/{channel_id}")]
@@ -144,6 +150,39 @@ async fn post_voice_speaking(
     Ok(HttpResponse::NoContent().finish())
 }
 
+/// Store the caller's current mute/deafen controls. This is accepted even when
+/// the caller is not in a LiveKit room so pre-call mute/deafen is reflected in
+/// the subsequent participant_joined event. If the user is currently present in
+/// any voice channel, changed bits are also broadcast via SSE.
+#[post("/voice/status")]
+async fn post_voice_status(
+    voice_state: web::Data<VoiceState>,
+    broadcaster: web::Data<Broadcaster>,
+    body: web::Json<VoiceStatusRequest>,
+    user: AuthUser,
+) -> Result<impl Responder, AppError> {
+    let changed = voice_state.set_user_status(
+        user.id,
+        VoiceStatus {
+            muted: body.muted,
+            deafened: body.deafened,
+        },
+    );
+    for participant in changed {
+        broadcaster
+            .publish(&BroadcastEvent::VoiceParticipantStatusChanged(
+                VoiceParticipantStatusEvent {
+                    channel_id: participant.channel_id,
+                    user_id: participant.user_id,
+                    muted: participant.muted,
+                    deafened: participant.deafened,
+                },
+            ))
+            .await?;
+    }
+    Ok(HttpResponse::NoContent().finish())
+}
+
 fn webhook_event_timestamp(event: &livekit_protocol::WebhookEvent) -> i64 {
     if event.created_at > 0 {
         event.created_at
@@ -240,11 +279,14 @@ pub async fn apply_voice_webhook(
                 &participant.identity,
                 webhook_event_timestamp(event),
             );
+            let status = voice_state.user_status(user_id);
             let p = VoiceParticipant {
                 user_id,
                 channel_id,
                 username: user.username,
                 avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
+                muted: status.muted,
+                deafened: status.deafened,
             };
             if voice_state.add_participant(p.clone()) {
                 broadcaster
@@ -386,7 +428,8 @@ pub fn configure_authed(cfg: &mut web::ServiceConfig) {
     cfg.service(mint_voice_token)
         .service(list_voice_participants)
         .service(list_screen_share_streams)
-        .service(post_voice_speaking);
+        .service(post_voice_speaking)
+        .service(post_voice_status);
 }
 
 pub fn configure_public_webhook(cfg: &mut web::ServiceConfig) {
@@ -535,6 +578,8 @@ mod tests {
         assert_eq!(participants.len(), 1);
         assert_eq!(participants[0].user_id, user.id);
         assert_eq!(participants[0].username, "alice");
+        assert!(!participants[0].muted);
+        assert!(!participants[0].deafened);
 
         let broadcast = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
@@ -543,6 +588,44 @@ mod tests {
         let s = format!("{:?}", broadcast);
         assert!(s.contains("voice_participant_joined"));
         assert!(s.contains("alice"));
+    }
+
+    #[actix_web::test]
+    async fn test_voice_webhook_join_uses_pre_call_status() {
+        let (db, chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let voice_state = VoiceState::new();
+        voice_state.set_user_status(
+            user.id,
+            VoiceStatus {
+                muted: true,
+                deafened: true,
+            },
+        );
+
+        let event = make_webhook_event("participant_joined", chan_id, user.id, &user.username);
+        apply_voice_webhook(&db, &voice_state, &broadcaster, &event)
+            .await
+            .unwrap();
+
+        let participants = voice_state.participants(chan_id);
+        assert_eq!(participants.len(), 1);
+        assert!(participants[0].muted);
+        assert!(participants[0].deafened);
+
+        let broadcast = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        let s = format!("{:?}", broadcast);
+        assert!(s.contains("voice_participant_joined"));
+        assert!(s.contains("muted"));
+        assert!(s.contains("deafened"));
     }
 
     #[actix_web::test]
@@ -559,6 +642,8 @@ mod tests {
             channel_id: chan_id,
             username: user.username.clone(),
             avatar_url: None,
+            muted: false,
+            deafened: false,
         });
 
         let event = make_webhook_event("participant_left", chan_id, user.id, &user.username);
@@ -585,6 +670,8 @@ mod tests {
             channel_id: voice_chan_id,
             username: user.username.clone(),
             avatar_url: None,
+            muted: false,
+            deafened: false,
         });
         voice_state.add_screen_share_stream(ScreenShareStream {
             channel_id: voice_chan_id,
@@ -1338,6 +1425,107 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn test_post_voice_status_updates_members_and_broadcasts() {
+        let (db, chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let voice_state = web::Data::new(VoiceState::new());
+        voice_state.add_participant(VoiceParticipant {
+            user_id: user.id,
+            channel_id: chan_id,
+            username: user.username.clone(),
+            avatar_url: None,
+            muted: false,
+            deafened: false,
+        });
+
+        let app_deps = AppDeps {
+            db: web::Data::new(db),
+            broadcaster: web::Data::from(broadcaster),
+            voice_cfg: web::Data::new(None),
+            voice_state: voice_state.clone(),
+            embed_fetcher: web::Data::new(EmbedFetcher::Disabled),
+            emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
+                dir: std::env::temp_dir(),
+            }),
+        };
+        let app =
+            test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
+                .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::post()
+            .uri("/voice/status")
+            .insert_header((name, value))
+            .set_json(serde_json::json!({ "muted": true, "deafened": false }))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 204);
+
+        let participants = voice_state.participants(chan_id);
+        assert_eq!(participants.len(), 1);
+        assert!(participants[0].muted);
+        assert!(!participants[0].deafened);
+
+        let broadcast = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        let s = format!("{:?}", broadcast);
+        assert!(s.contains("voice_participant_status_changed"));
+        assert!(s.contains(&user.id.to_string()));
+        assert!(s.contains("muted"));
+    }
+
+    #[actix_web::test]
+    async fn test_post_voice_status_stores_pre_call_without_broadcast() {
+        let (db, _chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let voice_state = web::Data::new(VoiceState::new());
+        let app_deps = AppDeps {
+            db: web::Data::new(db),
+            broadcaster: web::Data::from(broadcaster),
+            voice_cfg: web::Data::new(None),
+            voice_state: voice_state.clone(),
+            embed_fetcher: web::Data::new(EmbedFetcher::Disabled),
+            emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
+                dir: std::env::temp_dir(),
+            }),
+        };
+        let app =
+            test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
+                .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::post()
+            .uri("/voice/status")
+            .insert_header((name, value))
+            .set_json(serde_json::json!({ "muted": true, "deafened": true }))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 204);
+        assert_eq!(
+            voice_state.user_status(user.id),
+            VoiceStatus {
+                muted: true,
+                deafened: true,
+            }
+        );
+        expect_no_broadcast(&mut rx).await;
+    }
+
+    #[actix_web::test]
     async fn test_post_voice_speaking_broadcasts_for_members() {
         let (db, chan_id) = setup_db().await;
         let user = auth::register_user(&db, "alice", "hunter2", None)
@@ -1353,6 +1541,8 @@ mod tests {
             channel_id: chan_id,
             username: user.username.clone(),
             avatar_url: None,
+            muted: false,
+            deafened: false,
         });
 
         let app_deps = AppDeps {

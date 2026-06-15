@@ -5,6 +5,7 @@ import { Show } from "solid-js";
 const apiMock = vi.hoisted(() => ({
   getVoiceToken: vi.fn(),
   postVoiceSpeaking: vi.fn(),
+  postVoiceStatus: vi.fn(),
 }));
 
 const audioMock = vi.hoisted(() => ({
@@ -242,6 +243,7 @@ vi.mock("livekit-client", () => livekitMock);
 vi.mock("../api", () => ({
   getVoiceToken: apiMock.getVoiceToken,
   postVoiceSpeaking: apiMock.postVoiceSpeaking,
+  postVoiceStatus: apiMock.postVoiceStatus,
 }));
 
 vi.mock("../voice/audio-routing", () => ({
@@ -382,6 +384,7 @@ beforeEach(() => {
   livekitMock.reset();
   apiMock.getVoiceToken.mockReset();
   apiMock.postVoiceSpeaking.mockReset();
+  apiMock.postVoiceStatus.mockReset();
   audioMock.router.attach.mockClear();
   audioMock.router.detach.mockClear();
   audioMock.router.detachAll.mockClear();
@@ -392,9 +395,34 @@ beforeEach(() => {
     room: `channel-${channelId}`,
   }));
   apiMock.postVoiceSpeaking.mockResolvedValue(undefined);
+  apiMock.postVoiceStatus.mockResolvedValue(undefined);
 });
 
 describe("VoiceChatProvider screen sharing", () => {
+  test("supports muting and deafening before joining a voice channel", async () => {
+    renderVoiceHarness();
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle mute" }));
+    fireEvent.click(screen.getByRole("button", { name: "Toggle deafen" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("muted")).toHaveTextContent("muted");
+      expect(screen.getByTestId("deafened")).toHaveTextContent("deafened");
+    });
+    expect(apiMock.postVoiceStatus).toHaveBeenCalledWith(true, false);
+    expect(apiMock.postVoiceStatus).toHaveBeenCalledWith(true, true);
+
+    const room = await joinVoiceChannel();
+
+    expect(room.localParticipant.setMicrophoneEnabled).toHaveBeenLastCalledWith(false);
+    expect(apiMock.postVoiceStatus).toHaveBeenCalledWith(true, true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Leave" }));
+    await waitFor(() => expect(screen.getByTestId("active-channel")).toHaveTextContent("none"));
+    expect(screen.getByTestId("muted")).toHaveTextContent("muted");
+    expect(screen.getByTestId("deafened")).toHaveTextContent("deafened");
+  });
+
   test("joins voice with manual remote subscriptions for microphone audio only", async () => {
     const micTrack = new livekitMock.FakeRemoteAudioTrack();
     const screenTrack = new livekitMock.FakeRemoteVideoTrack();

@@ -11,7 +11,7 @@ import {
   RoomEvent,
   Track,
 } from "livekit-client";
-import { getVoiceToken, postVoiceSpeaking, type ScreenShareStream } from "../api";
+import { getVoiceToken, postVoiceSpeaking, postVoiceStatus, type ScreenShareStream } from "../api";
 import {
   VOICE_INPUT_STORAGE_KEY,
   getInputGain,
@@ -326,8 +326,6 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     clearWatchedScreenShareState();
     audio.detachAll();
     setActiveChannelId(null);
-    setIsMuted(false);
-    setIsDeafened(false);
     speakingById.clear();
     setSpeakingUserIds(new Set<number>());
     if (lastLocalSpeaking && leavingChannelId != null) {
@@ -342,6 +340,10 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     try {
       // Auto-leave any current session before switching.
       if (room) await leave();
+
+      // Publish current controls before connecting so LiveKit's join webhook
+      // can include pre-call mute/deafen status in the SSE join payload.
+      await postVoiceStatus(isMuted(), isDeafened());
 
       const { url, token } = await getVoiceToken(channelId);
 
@@ -413,8 +415,6 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
         clearWatchedScreenShareState();
         audio.detachAll();
         setActiveChannelId(null);
-        setIsMuted(false);
-        setIsDeafened(false);
         speakingById.clear();
         setSpeakingUserIds(new Set<number>());
         lastLocalSpeaking = false;
@@ -480,9 +480,10 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
         }
       });
 
+      audio.setDeafened(isDeafened());
       await newRoom.connect(url, token, { autoSubscribe: false });
       updateAllRemotePublicationSubscriptions(newRoom);
-      await newRoom.localParticipant.setMicrophoneEnabled(true);
+      await newRoom.localParticipant.setMicrophoneEnabled(!isMuted());
 
       // Identity on the local participant is only populated after connect
       // resolves, so we wire these listeners here. Remote participants that
@@ -507,16 +508,20 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
   }
 
   async function toggleMuted(): Promise<void> {
-    if (!room) return;
+    const currentRoom = room;
     const next = !isMuted();
-    await room.localParticipant.setMicrophoneEnabled(!next);
+    if (currentRoom) {
+      await currentRoom.localParticipant.setMicrophoneEnabled(!next);
+    }
     setIsMuted(next);
+    await postVoiceStatus(next, isDeafened());
   }
 
   function toggleDeafened(): void {
     const next = !isDeafened();
     audio.setDeafened(next);
     setIsDeafened(next);
+    void postVoiceStatus(isMuted(), next);
   }
 
   onCleanup(() => {
