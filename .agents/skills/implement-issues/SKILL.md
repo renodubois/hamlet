@@ -125,6 +125,7 @@ Project: <tag>
 Integration worktree: <INTEGRATION_REPO> (<main-working-branch>)
 Initial base: <INITIAL_INTEGRATION_HEAD>
 Tracker dir: <TRACKER_DIR>
+Final squash: after completion, collapse this run into one `Added <feature>` commit
 Wave 1: #1 Title, #2 Title (parallel)
 Wave 2: #3 Title (after #1/#2)
 Blocked/HITL: #4 Title — needs human decision
@@ -225,13 +226,13 @@ After all runnable waves finish:
 2. Re-run `it list --dir "$TRACKER_DIR" --tag <project-tag>` to verify statuses.
 3. Do not claim an issue is complete unless its tracker status is `completed` in the central `TRACKER_DIR` and its acceptance criteria were verified.
 
-### 9. Final feature-history cleanup
+### 9. Mandatory final feature-history squash
 
-After final verification passes and every issue in the selected project tag is completed, rewrite the integration branch's local history so the project appears as one feature commit instead of a stack of `Merge issue #<id>` commits.
+This cleanup is required for every successful `implement-issues` run. Do not leave a completed run with a stack of `Merge issue #<id>` commits on the integration branch. Once final verification passes and every issue in the selected project tag is completed, rewrite the integration branch's local history so the project appears as one feature commit.
 
-Skip this cleanup and ask the user how to proceed if any project issue is still blocked, HITL, failed, or incomplete; if the user explicitly asked to preserve per-issue history; if the integration worktree is dirty; if the current branch/ref is not the recorded main working branch; or if the commits after `INITIAL_INTEGRATION_HEAD` include unrelated work that was not produced by this skill run.
+If the squash cannot safely run, do not silently skip it or finish as successful. Stop, report the exact blocker, and ask the user how to proceed. Blockers include: any project issue still blocked, HITL, failed, or incomplete; the user explicitly asked to preserve per-issue history; the integration worktree is dirty; the current branch/ref is not the recorded main working branch; or the commits after `INITIAL_INTEGRATION_HEAD` include unrelated work that was not produced by this skill run.
 
-Cleanup procedure:
+Required cleanup procedure:
 
 1. In `INTEGRATION_REPO`, confirm the branch is clean and still on the recorded main working branch:
 
@@ -254,10 +255,10 @@ Cleanup procedure:
 
    ```bash
    git reset --soft "$INITIAL_INTEGRATION_HEAD"
-   git commit -m "Implement <human-readable project name>"
+   git commit -m "Added <human-readable project name>"
    ```
 
-   Use a user-provided commit message if one was given. Otherwise, derive the message from the project tag by removing a leading `project-`, replacing hyphens with spaces, and title/lowercasing naturally, e.g. `project-photo-upload` becomes `Implement photo upload`.
+   Use a user-provided commit message if one was given. Otherwise, derive the message from the project tag by removing a leading `project-`, replacing hyphens with spaces, and lowercasing naturally, e.g. `project-photo-upload` becomes `Added photo upload` and `project-screen-sharing` becomes `Added screen sharing`.
 
 5. Verify the cleaned history and worktree:
 
@@ -266,7 +267,7 @@ Cleanup procedure:
    git log --oneline --decorate --graph "$INITIAL_INTEGRATION_HEAD"..HEAD
    ```
 
-   The range should contain the single `Implement <feature>` commit and no `Merge issue #<id>` commits.
+   The range must contain a single `Added <feature>` commit and no `Merge issue #<id>` commits. If merge commits remain, fix the squash before reporting success.
 
 Do not push after rewriting history unless the user explicitly asks. If the branch was already pushed, report that publishing the cleanup requires `git push --force-with-lease`.
 
@@ -279,6 +280,6 @@ Report concisely:
 - tracker dir
 - completed issues
 - issues left blocked or HITL, with reasons
-- final feature commit message and backup branch created, if history cleanup ran
+- mandatory final squash status: feature commit message and backup branch created, or the exact blocker if the squash could not run
 - files/areas changed
 - checks/tests run
