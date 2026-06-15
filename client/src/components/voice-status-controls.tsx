@@ -1,12 +1,12 @@
 import { Show } from "solid-js";
 import { useVoiceChat } from "../contexts/voice-chat";
-import { HeadphoneOffIcon, HeadphonesIcon, MicIcon, MicOffIcon } from "./icons";
+import { HeadphoneOffIcon, HeadphonesIcon, MicIcon, MicOffIcon, PhoneOffIcon } from "./icons";
 
 export default function VoiceStatusControls() {
   const voice = useVoiceChat();
 
   return (
-    <div class="flex items-center gap-1" role="group" aria-label="Mute and deafen controls">
+    <div class="flex items-center gap-1" role="group" aria-label="Voice status controls">
       <button
         type="button"
         class="p-1 rounded hover:bg-gray-700"
@@ -33,12 +33,23 @@ export default function VoiceStatusControls() {
         aria-pressed={voice.isDeafened()}
         aria-label={voice.isDeafened() ? "Undeafen" : "Deafen"}
         title={voice.isDeafened() ? "Undeafen" : "Deafen"}
-        onClick={voice.toggleDeafened}
+        onClick={() => void voice.toggleDeafened()}
       >
         <Show when={voice.isDeafened()} fallback={<HeadphonesIcon size={16} aria-hidden="true" />}>
           <HeadphoneOffIcon size={16} aria-hidden="true" />
         </Show>
       </button>
+      <Show when={voice.activeChannelId() != null}>
+        <button
+          type="button"
+          class="p-1 rounded hover:bg-gray-700 text-red-400 hover:text-red-300"
+          aria-label="Disconnect from voice"
+          title="Disconnect from voice"
+          onClick={() => void voice.leave()}
+        >
+          <PhoneOffIcon size={16} aria-hidden="true" />
+        </button>
+      </Show>
     </div>
   );
 }

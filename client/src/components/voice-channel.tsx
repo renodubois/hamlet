@@ -14,7 +14,6 @@ import { isSameScreenShare, screenShareDisplayName, screenShareKey } from "../vo
 import {
   HeadphoneOffIcon,
   MicOffIcon,
-  PhoneOffIcon,
   ScreenShareIcon,
   ScreenShareOffIcon,
   VoiceChannelIcon,
@@ -395,14 +394,6 @@ export default function VoiceChannel(props: { channel: Channel }) {
             >
               <ScreenShareOffIcon size={14} aria-hidden="true" />
             </Show>
-          </button>
-          <button
-            type="button"
-            class="p-1.5 rounded hover:bg-gray-700 text-red-400 ml-auto"
-            aria-label="Disconnect from voice"
-            onClick={() => void voice.leave()}
-          >
-            <PhoneOffIcon size={14} aria-hidden="true" />
           </button>
         </div>
         <Show when={voice.isScreenSharing()}>

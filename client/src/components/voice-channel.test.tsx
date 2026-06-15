@@ -131,7 +131,7 @@ function makeVoiceMock(overrides?: Partial<MockVoiceChatApi>): MockVoiceChatApi 
     join: vi.fn<(id: number) => Promise<void>>().mockResolvedValue(),
     leave: vi.fn<() => Promise<void>>().mockResolvedValue(),
     toggleMuted: vi.fn<() => Promise<void>>().mockResolvedValue(),
-    toggleDeafened: vi.fn<() => void>().mockImplementation(() => {}),
+    toggleDeafened: vi.fn<() => Promise<void>>().mockResolvedValue(),
     startScreenShare: vi.fn<() => Promise<void>>().mockResolvedValue(),
     stopScreenShare: vi.fn<() => Promise<void>>().mockResolvedValue(),
     watchScreenShare: vi.fn<(stream: ScreenShareStream) => Promise<void>>().mockResolvedValue(),
@@ -287,7 +287,7 @@ describe("<VoiceChannel>", () => {
     expect(mockVoice.join).not.toHaveBeenCalled();
   });
 
-  test("shows call controls only when connected to this channel", () => {
+  test("shows screen-share controls only when connected to this channel", () => {
     setup();
     const { unmount } = render(() => <VoiceChannel channel={CHANNEL} />);
     expect(screen.queryByRole("button", { name: /Share screen/ })).toBeNull();
@@ -299,7 +299,7 @@ describe("<VoiceChannel>", () => {
     render(() => <VoiceChannel channel={CHANNEL} />);
 
     expect(screen.getByRole("button", { name: /Share screen/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Disconnect from voice/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Disconnect from voice/ })).toBeNull();
   });
 
   test("renders a speaking ring on the avatar for in-channel speakers", async () => {
@@ -542,7 +542,7 @@ describe("<VoiceChannel>", () => {
     expect(mockVoice.join).not.toHaveBeenCalled();
   });
 
-  test("share/disconnect buttons call the voice context", () => {
+  test("share buttons call the voice context", () => {
     setup();
     mockVoice.setActiveChannelId(42);
     render(() => <VoiceChannel channel={CHANNEL} />);
@@ -554,8 +554,5 @@ describe("<VoiceChannel>", () => {
     fireEvent.click(screen.getByRole("button", { name: /Stop sharing screen/ }));
     expect(mockVoice.stopScreenShare).toHaveBeenCalled();
     expect(screen.getByRole("status")).toHaveTextContent("Sharing screen");
-
-    fireEvent.click(screen.getByRole("button", { name: /Disconnect from voice/ }));
-    expect(mockVoice.leave).toHaveBeenCalled();
   });
 });

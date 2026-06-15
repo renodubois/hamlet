@@ -4,12 +4,15 @@ import { createSignal } from "solid-js";
 import VoiceStatusControls from "./voice-status-controls";
 
 interface MockVoiceChatApi {
+  activeChannelId: () => number | null;
+  setActiveChannelId: (id: number | null) => void;
   isMuted: () => boolean;
   setIsMuted: (v: boolean) => void;
   isDeafened: () => boolean;
   setIsDeafened: (v: boolean) => void;
   toggleMuted: ReturnType<typeof vi.fn>;
   toggleDeafened: ReturnType<typeof vi.fn>;
+  leave: ReturnType<typeof vi.fn>;
 }
 
 let mockVoice: MockVoiceChatApi;
@@ -19,9 +22,12 @@ vi.mock("../contexts/voice-chat", () => ({
 }));
 
 function setup() {
+  const [activeChannelId, setActiveChannelId] = createSignal<number | null>(null);
   const [isMuted, setIsMuted] = createSignal(false);
   const [isDeafened, setIsDeafened] = createSignal(false);
   mockVoice = {
+    activeChannelId,
+    setActiveChannelId,
     isMuted,
     setIsMuted,
     isDeafened,
@@ -29,9 +35,10 @@ function setup() {
     toggleMuted: vi.fn<() => Promise<void>>().mockImplementation(async () => {
       setIsMuted(!isMuted());
     }),
-    toggleDeafened: vi.fn<() => void>().mockImplementation(() => {
+    toggleDeafened: vi.fn<() => Promise<void>>().mockImplementation(async () => {
       setIsDeafened(!isDeafened());
     }),
+    leave: vi.fn<() => Promise<void>>().mockResolvedValue(),
   };
 }
 
@@ -42,6 +49,7 @@ describe("<VoiceStatusControls>", () => {
 
     const mute = screen.getByRole("button", { name: "Mute microphone" });
     const deafen = screen.getByRole("button", { name: "Deafen" });
+    expect(screen.queryByRole("button", { name: "Disconnect from voice" })).toBeNull();
     expect(mute).toHaveAttribute("aria-pressed", "false");
     expect(deafen).toHaveAttribute("aria-pressed", "false");
 
@@ -58,5 +66,18 @@ describe("<VoiceStatusControls>", () => {
       "aria-pressed",
       "true",
     );
+  });
+
+  test("shows disconnect only while connected to voice", async () => {
+    setup();
+    render(() => <VoiceStatusControls />);
+
+    expect(screen.queryByRole("button", { name: "Disconnect from voice" })).toBeNull();
+
+    mockVoice.setActiveChannelId(42);
+    const disconnect = await screen.findByRole("button", { name: "Disconnect from voice" });
+    fireEvent.click(disconnect);
+
+    expect(mockVoice.leave).toHaveBeenCalled();
   });
 });

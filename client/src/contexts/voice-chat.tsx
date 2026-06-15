@@ -35,7 +35,7 @@ interface VoiceChatContextValue {
   join: (channelId: number) => Promise<void>;
   leave: () => Promise<void>;
   toggleMuted: () => Promise<void>;
-  toggleDeafened: () => void;
+  toggleDeafened: () => Promise<void>;
   startScreenShare: () => Promise<void>;
   stopScreenShare: () => Promise<void>;
   watchScreenShare: (stream: ScreenShareStream) => Promise<void>;
@@ -100,6 +100,19 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
   // user_id → speaking (true). Absent keys are not speaking. Rebuilt into the
   // reactive speakingUserIds signal on every transition.
   const speakingById = new Map<number, boolean>();
+  // The control mutations touch LiveKit and the server, so serialize them and
+  // keep the latest requested state outside Solid signals. That prevents rapid
+  // mute/deafen clicks from posting stale status bits out of order.
+  let desiredMuted = false;
+  let desiredDeafened = false;
+  let mutedBeforeDeafen: boolean | null = null;
+  let controlUpdate: Promise<void> = Promise.resolve();
+
+  function enqueueControlUpdate(update: () => Promise<void>): Promise<void> {
+    const run = controlUpdate.catch(() => {}).then(update);
+    controlUpdate = run.catch(() => {});
+    return run;
+  }
 
   function clearScreenShareState(): void {
     cleanupScreenShareTrackEnded?.();
@@ -343,7 +356,10 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
 
       // Publish current controls before connecting so LiveKit's join webhook
       // can include pre-call mute/deafen status in the SSE join payload.
-      await postVoiceStatus(isMuted(), isDeafened());
+      const effectiveMuted = desiredMuted || desiredDeafened;
+      if (effectiveMuted !== desiredMuted) desiredMuted = effectiveMuted;
+      if (effectiveMuted !== isMuted()) setIsMuted(effectiveMuted);
+      await postVoiceStatus(effectiveMuted, desiredDeafened);
 
       const { url, token } = await getVoiceToken(channelId);
 
@@ -480,10 +496,10 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
         }
       });
 
-      audio.setDeafened(isDeafened());
+      audio.setDeafened(desiredDeafened);
       await newRoom.connect(url, token, { autoSubscribe: false });
       updateAllRemotePublicationSubscriptions(newRoom);
-      await newRoom.localParticipant.setMicrophoneEnabled(!isMuted());
+      await newRoom.localParticipant.setMicrophoneEnabled(!effectiveMuted);
 
       // Identity on the local participant is only populated after connect
       // resolves, so we wire these listeners here. Remote participants that
@@ -508,20 +524,89 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
   }
 
   async function toggleMuted(): Promise<void> {
-    const currentRoom = room;
-    const next = !isMuted();
-    if (currentRoom) {
-      await currentRoom.localParticipant.setMicrophoneEnabled(!next);
-    }
-    setIsMuted(next);
-    await postVoiceStatus(next, isDeafened());
+    return enqueueControlUpdate(async () => {
+      const currentRoom = room;
+      const previousMuted = desiredMuted;
+      const previousDeafened = desiredDeafened;
+      const previousMutedBeforeDeafen = mutedBeforeDeafen;
+      const nextMuted = !previousMuted;
+      const nextDeafened = previousDeafened && nextMuted;
+
+      desiredMuted = nextMuted;
+      desiredDeafened = nextDeafened;
+      if (!nextDeafened && previousDeafened) mutedBeforeDeafen = null;
+
+      const undeafenBeforeEnablingMic = previousDeafened && !nextDeafened && !nextMuted;
+      if (undeafenBeforeEnablingMic) {
+        audio.setDeafened(false);
+        setIsDeafened(false);
+      }
+
+      try {
+        if (currentRoom) {
+          await currentRoom.localParticipant.setMicrophoneEnabled(!nextMuted);
+        }
+      } catch (e) {
+        desiredMuted = previousMuted;
+        desiredDeafened = previousDeafened;
+        mutedBeforeDeafen = previousMutedBeforeDeafen;
+        if (undeafenBeforeEnablingMic) {
+          audio.setDeafened(previousDeafened);
+          setIsDeafened(previousDeafened);
+        }
+        throw e;
+      }
+
+      if (previousDeafened !== nextDeafened && !undeafenBeforeEnablingMic) {
+        audio.setDeafened(nextDeafened);
+        setIsDeafened(nextDeafened);
+      }
+      setIsMuted(nextMuted);
+      await postVoiceStatus(nextMuted, nextDeafened);
+    });
   }
 
-  function toggleDeafened(): void {
-    const next = !isDeafened();
-    audio.setDeafened(next);
-    setIsDeafened(next);
-    void postVoiceStatus(isMuted(), next);
+  async function toggleDeafened(): Promise<void> {
+    return enqueueControlUpdate(async () => {
+      const currentRoom = room;
+      const previousMuted = desiredMuted;
+      const previousDeafened = desiredDeafened;
+      const previousMutedBeforeDeafen = mutedBeforeDeafen;
+      const nextDeafened = !previousDeafened;
+      const nextMuted = nextDeafened ? true : (mutedBeforeDeafen ?? previousMuted);
+
+      desiredMuted = nextMuted;
+      desiredDeafened = nextDeafened;
+      mutedBeforeDeafen = nextDeafened ? previousMuted : null;
+
+      const undeafenBeforeEnablingMic = previousDeafened && !nextDeafened && !nextMuted;
+      if (undeafenBeforeEnablingMic) {
+        audio.setDeafened(false);
+        setIsDeafened(false);
+      }
+
+      try {
+        if (currentRoom && nextMuted !== previousMuted) {
+          await currentRoom.localParticipant.setMicrophoneEnabled(!nextMuted);
+        }
+      } catch (e) {
+        desiredMuted = previousMuted;
+        desiredDeafened = previousDeafened;
+        mutedBeforeDeafen = previousMutedBeforeDeafen;
+        if (undeafenBeforeEnablingMic) {
+          audio.setDeafened(previousDeafened);
+          setIsDeafened(previousDeafened);
+        }
+        throw e;
+      }
+
+      if (!undeafenBeforeEnablingMic) {
+        audio.setDeafened(nextDeafened);
+        setIsDeafened(nextDeafened);
+      }
+      setIsMuted(nextMuted);
+      await postVoiceStatus(nextMuted, nextDeafened);
+    });
   }
 
   onCleanup(() => {

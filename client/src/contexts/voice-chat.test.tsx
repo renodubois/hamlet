@@ -286,7 +286,7 @@ function VoiceHarness() {
       <button type="button" onClick={() => void voice.toggleMuted()}>
         Toggle mute
       </button>
-      <button type="button" onClick={voice.toggleDeafened}>
+      <button type="button" onClick={() => void voice.toggleDeafened()}>
         Toggle deafen
       </button>
       <button type="button" onClick={() => void voice.startScreenShare().catch(() => {})}>
@@ -406,8 +406,8 @@ describe("VoiceChatProvider screen sharing", () => {
     fireEvent.click(screen.getByRole("button", { name: "Toggle deafen" }));
 
     await waitFor(() => {
-      expect(screen.getByTestId("muted")).toHaveTextContent("muted");
-      expect(screen.getByTestId("deafened")).toHaveTextContent("deafened");
+      expect(screen.getByTestId("muted")).toHaveTextContent(/^muted$/);
+      expect(screen.getByTestId("deafened")).toHaveTextContent(/^deafened$/);
     });
     expect(apiMock.postVoiceStatus).toHaveBeenCalledWith(true, false);
     expect(apiMock.postVoiceStatus).toHaveBeenCalledWith(true, true);
@@ -419,8 +419,59 @@ describe("VoiceChatProvider screen sharing", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Leave" }));
     await waitFor(() => expect(screen.getByTestId("active-channel")).toHaveTextContent("none"));
-    expect(screen.getByTestId("muted")).toHaveTextContent("muted");
-    expect(screen.getByTestId("deafened")).toHaveTextContent("deafened");
+    expect(screen.getByTestId("muted")).toHaveTextContent(/^muted$/);
+    expect(screen.getByTestId("deafened")).toHaveTextContent(/^deafened$/);
+  });
+
+  test("deafening an unmuted call also disables the microphone", async () => {
+    renderVoiceHarness();
+    const room = await joinVoiceChannel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle deafen" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("muted")).toHaveTextContent(/^muted$/);
+      expect(screen.getByTestId("deafened")).toHaveTextContent(/^deafened$/);
+    });
+    expect(room.localParticipant.setMicrophoneEnabled).toHaveBeenLastCalledWith(false);
+    expect(audioMock.router.setDeafened).toHaveBeenLastCalledWith(true);
+    expect(apiMock.postVoiceStatus).toHaveBeenCalledWith(true, true);
+  });
+
+  test("undeafening restores the prior mute state", async () => {
+    renderVoiceHarness();
+    const room = await joinVoiceChannel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle deafen" }));
+    await waitFor(() => expect(screen.getByTestId("deafened")).toHaveTextContent(/^deafened$/));
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle deafen" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("muted")).toHaveTextContent(/^unmuted$/);
+      expect(screen.getByTestId("deafened")).toHaveTextContent(/^undeafened$/);
+    });
+    expect(room.localParticipant.setMicrophoneEnabled).toHaveBeenLastCalledWith(true);
+    expect(audioMock.router.setDeafened).toHaveBeenLastCalledWith(false);
+    expect(apiMock.postVoiceStatus).toHaveBeenCalledWith(false, false);
+  });
+
+  test("unmuting while deafened also undeafens", async () => {
+    renderVoiceHarness();
+    const room = await joinVoiceChannel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle deafen" }));
+    await waitFor(() => expect(screen.getByTestId("deafened")).toHaveTextContent(/^deafened$/));
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle mute" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("muted")).toHaveTextContent(/^unmuted$/);
+      expect(screen.getByTestId("deafened")).toHaveTextContent(/^undeafened$/);
+    });
+    expect(room.localParticipant.setMicrophoneEnabled).toHaveBeenLastCalledWith(true);
+    expect(audioMock.router.setDeafened).toHaveBeenLastCalledWith(false);
+    expect(apiMock.postVoiceStatus).toHaveBeenCalledWith(false, false);
   });
 
   test("joins voice with manual remote subscriptions for microphone audio only", async () => {
@@ -646,8 +697,8 @@ describe("VoiceChatProvider screen sharing", () => {
     fireEvent.click(screen.getByRole("button", { name: "Toggle mute" }));
     fireEvent.click(screen.getByRole("button", { name: "Toggle deafen" }));
     await waitFor(() => {
-      expect(screen.getByTestId("muted")).toHaveTextContent("muted");
-      expect(screen.getByTestId("deafened")).toHaveTextContent("deafened");
+      expect(screen.getByTestId("muted")).toHaveTextContent(/^muted$/);
+      expect(screen.getByTestId("deafened")).toHaveTextContent(/^deafened$/);
     });
 
     const denied = new Error("Permission denied");
@@ -660,8 +711,8 @@ describe("VoiceChatProvider screen sharing", () => {
       expect(screen.getByTestId("sharing")).toHaveTextContent("not-sharing");
     });
     expect(screen.getByTestId("active-channel")).toHaveTextContent("42");
-    expect(screen.getByTestId("muted")).toHaveTextContent("muted");
-    expect(screen.getByTestId("deafened")).toHaveTextContent("deafened");
+    expect(screen.getByTestId("muted")).toHaveTextContent(/^muted$/);
+    expect(screen.getByTestId("deafened")).toHaveTextContent(/^deafened$/);
     expect(room.disconnect).not.toHaveBeenCalled();
     expect(room.localParticipant.setCameraEnabled).not.toHaveBeenCalled();
     expect(room.localParticipant.setMicrophoneEnabled).toHaveBeenCalledTimes(2);
