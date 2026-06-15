@@ -104,6 +104,109 @@ test("opens external links outside the app window and blocks unsafe navigation",
   await expect.poll(() => externalUrls(electronApp)).not.toContain(unsafeUrl);
 });
 
+test("allows trusted display capture through the Electron path while denying camera capture", async ({
+  appWindow,
+}) => {
+  const resultPromise = appWindow.evaluate(
+    () =>
+      new Promise<{
+        display:
+          | {
+              ok: true;
+              videoTracks: number;
+              audioTracks: number;
+              stoppedVideoTracks: number;
+            }
+          | { ok: false; name: string };
+        camera: { ok: true; tracks: number } | { ok: false; name: string };
+        exposedGlobals: {
+          require: string;
+          process: string;
+          ipcRenderer: string;
+          desktopCapturer: string;
+        };
+      }>((resolve) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = "display capture smoke";
+        button.setAttribute("data-testid", "display-capture-smoke");
+        button.addEventListener("click", async () => {
+          const display = await navigator.mediaDevices
+            .getDisplayMedia({ video: true, audio: false })
+            .then((stream) => {
+              const videoTracks = stream.getVideoTracks();
+              const result = {
+                ok: true as const,
+                videoTracks: videoTracks.length,
+                audioTracks: stream.getAudioTracks().length,
+                stoppedVideoTracks: 0,
+              };
+              stream.getTracks().forEach((track) => track.stop());
+              result.stoppedVideoTracks = videoTracks.filter(
+                (track) => track.readyState === "ended",
+              ).length;
+              return result;
+            })
+            .catch((error: unknown) => ({
+              ok: false as const,
+              name:
+                error instanceof DOMException || error instanceof Error
+                  ? error.name
+                  : String(error),
+            }));
+          const camera = await navigator.mediaDevices
+            .getUserMedia({ video: true, audio: false })
+            .then((stream) => {
+              const result = { ok: true as const, tracks: stream.getTracks().length };
+              stream.getTracks().forEach((track) => track.stop());
+              return result;
+            })
+            .catch((error: unknown) => ({
+              ok: false as const,
+              name:
+                error instanceof DOMException || error instanceof Error
+                  ? error.name
+                  : String(error),
+            }));
+          const global = globalThis as typeof globalThis & {
+            require?: unknown;
+            process?: unknown;
+            ipcRenderer?: unknown;
+            desktopCapturer?: unknown;
+          };
+          resolve({
+            display,
+            camera,
+            exposedGlobals: {
+              require: typeof global.require,
+              process: typeof global.process,
+              ipcRenderer: typeof global.ipcRenderer,
+              desktopCapturer: typeof global.desktopCapturer,
+            },
+          });
+        });
+        document.body.append(button);
+      }),
+  );
+
+  await appWindow.getByTestId("display-capture-smoke").click();
+  const result = await resultPromise;
+
+  expect(result.display).toEqual({
+    ok: true,
+    videoTracks: 1,
+    audioTracks: 0,
+    stoppedVideoTracks: 1,
+  });
+  expect(result.camera.ok).toBe(false);
+  expect(result.exposedGlobals).toEqual({
+    require: "undefined",
+    process: "undefined",
+    ipcRenderer: "undefined",
+    desktopCapturer: "undefined",
+  });
+});
+
 test("opens the voice settings media-permission path without crashing", async ({
   electronApp,
   appWindow,

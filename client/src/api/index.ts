@@ -59,12 +59,20 @@ export {
   removeMessageReaction,
 } from "./messages";
 export type {
+  ScreenShareSource,
+  ScreenShareStopped,
+  ScreenShareStream,
   VoiceParticipant,
   VoiceParticipantLeft,
   VoiceParticipantSpeaking,
   VoiceToken,
 } from "./voice";
-export { getVoiceToken, listVoiceParticipants, postVoiceSpeaking } from "./voice";
+export {
+  getVoiceToken,
+  listScreenShareStreams,
+  listVoiceParticipants,
+  postVoiceSpeaking,
+} from "./voice";
 export type { UserTyping } from "./typing";
 export { sendTyping } from "./typing";
 export type { SSEEvent } from "./events";

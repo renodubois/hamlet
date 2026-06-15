@@ -7,6 +7,8 @@ import {
   type MessageDeleted,
   type MessageEmbedsUpdated,
   type MessageReactionsUpdated,
+  type ScreenShareStopped,
+  type ScreenShareStream,
   type SSEEvent,
   type ThreadReplyCreated,
   type ThreadReplyDeleted,
@@ -35,6 +37,8 @@ export interface EventsContextValue {
   onVoiceParticipantJoined: (cb: Listener<VoiceParticipant>) => () => void;
   onVoiceParticipantLeft: (cb: Listener<VoiceParticipantLeft>) => () => void;
   onVoiceParticipantSpeakingChanged: (cb: Listener<VoiceParticipantSpeaking>) => () => void;
+  onScreenShareStarted: (cb: Listener<ScreenShareStream>) => () => void;
+  onScreenShareStopped: (cb: Listener<ScreenShareStopped>) => () => void;
   onUserTyping: (cb: Listener<UserTyping>) => () => void;
   onThreadReplyCreated: (cb: Listener<ThreadReplyCreated>) => () => void;
   onThreadReplyDeleted: (cb: Listener<ThreadReplyDeleted>) => () => void;
@@ -102,6 +106,8 @@ export function EventsProvider(props: { children: JSX.Element }) {
     onVoiceParticipantJoined: (cb) => subscribe("voice_participant_joined", cb),
     onVoiceParticipantLeft: (cb) => subscribe("voice_participant_left", cb),
     onVoiceParticipantSpeakingChanged: (cb) => subscribe("voice_participant_speaking_changed", cb),
+    onScreenShareStarted: (cb) => subscribe("screen_share_started", cb),
+    onScreenShareStopped: (cb) => subscribe("screen_share_stopped", cb),
     onUserTyping: (cb) => subscribe("user_typing", cb),
     onThreadReplyCreated: (cb) => subscribe("thread_reply_created", cb),
     onThreadReplyDeleted: (cb) => subscribe("thread_reply_deleted", cb),

@@ -1,8 +1,18 @@
-import { describe, expect, test } from "vitest";
-import { getThread, listMessages, sendMessage, sendThreadReply, type Message } from "../../api";
+import { describe, expect, test, vi } from "vitest";
+import {
+  getThread,
+  listMessages,
+  listScreenShareStreams,
+  sendMessage,
+  sendThreadReply,
+  type Message,
+} from "../../api";
+import { makeScreenShareStream } from "../fixtures";
 import { tinyPngFile, tinyWebpFile } from "../image-fixtures";
 import { DEV_USER } from "./handlers";
+import { startMswScreenShare, stoppedScreenShareFrom, stopMswScreenShare } from "./screen-share";
 import { resetMswState } from "./server";
+import { FakeEventSource } from "./sse";
 
 function seedThreadRoot(): { state: ReturnType<typeof resetMswState>; root: Message } {
   const state = resetMswState({ me: DEV_USER });
@@ -23,6 +33,48 @@ function seedThreadRoot(): { state: ReturnType<typeof resetMswState>; root: Mess
   state.messages["100"] = [root];
   return { state, root };
 }
+
+describe("MSW screen share handlers", () => {
+  test("return current streams and support channel filtering", async () => {
+    const first = makeScreenShareStream({ channel_id: 100, sharer_user_id: 1, track_sid: "TR_a" });
+    const second = makeScreenShareStream({ channel_id: 200, sharer_user_id: 2, track_sid: "TR_b" });
+    resetMswState({ me: DEV_USER, screenShareStreams: [first, second] });
+
+    await expect(listScreenShareStreams()).resolves.toEqual([first, second]);
+    await expect(listScreenShareStreams(100)).resolves.toEqual([first]);
+  });
+
+  test("fixtures keep active streams and SSE start/stop events in sync", async () => {
+    const state = resetMswState({ me: DEV_USER });
+    const stream = makeScreenShareStream({
+      channel_id: 100,
+      sharer_user_id: 1,
+      track_sid: "TR_fixture",
+    });
+    const eventSource = new FakeEventSource("http://127.0.0.1:3030/messages/subscribe");
+    const onmessage = vi.fn<(event: MessageEvent<string>) => void>();
+    eventSource.onmessage = onmessage;
+
+    startMswScreenShare(state, stream);
+
+    await expect(listScreenShareStreams(100)).resolves.toEqual([stream]);
+    expect(onmessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: JSON.stringify({ kind: "screen_share_started", data: stream }),
+      }),
+    );
+
+    const stopped = stoppedScreenShareFrom(stream);
+    stopMswScreenShare(state, stopped);
+
+    await expect(listScreenShareStreams(100)).resolves.toEqual([]);
+    expect(onmessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: JSON.stringify({ kind: "screen_share_stopped", data: stopped }),
+      }),
+    );
+  });
+});
 
 describe("MSW message upload handlers", () => {
   test("preserve JSON text-only channel sends while storing the returned message", async () => {

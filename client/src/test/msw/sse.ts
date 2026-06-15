@@ -4,6 +4,8 @@ import type {
   MessageDeleted,
   MessageEmbedsUpdated,
   MessageReactionsUpdated,
+  ScreenShareStopped,
+  ScreenShareStream,
   SSEEvent,
   ThreadReplyCreated,
   ThreadReplyDeleted,
@@ -51,6 +53,14 @@ export class FakeEventSource {
 
   pushChannelCreated(channel: Channel) {
     this.push({ kind: "channel_created", data: channel });
+  }
+
+  pushScreenShareStarted(data: ScreenShareStream) {
+    this.push({ kind: "screen_share_started", data });
+  }
+
+  pushScreenShareStopped(data: ScreenShareStopped) {
+    this.push({ kind: "screen_share_stopped", data });
   }
 
   pushUserTyping(data: UserTyping) {

@@ -9,6 +9,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { rendererOriginPattern, serverUrl } from "./test-config";
 
+const DISPLAY_CAPTURE_TEST_AUTOMATION_ENV = "HAMLET_ELECTRON_TEST_DISPLAY_CAPTURE";
+const DISPLAY_CAPTURE_UNDER_TEST_ENV = "HAMLET_ELECTRON_UNDER_TEST";
+
 export const clientElectronRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const builtAppPath = clientElectronRoot;
@@ -33,6 +36,8 @@ export async function launchBuiltElectronApp(userDataDir: string): Promise<Launc
       args: [...electronMediaSwitches, builtAppPath],
       env: electronEnvironment({
         ELECTRON_DISABLE_SECURITY_WARNINGS: "true",
+        [DISPLAY_CAPTURE_TEST_AUTOMATION_ENV]: "hamlet-window",
+        [DISPLAY_CAPTURE_UNDER_TEST_ENV]: "1",
         HAMLET_DATA_DIR: userDataDir,
         HAMLET_RENDERER_URL: undefined,
       }),

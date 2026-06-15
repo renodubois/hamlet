@@ -44,10 +44,10 @@ const SECURITY_HEADERS = {
   "Referrer-Policy": "strict-origin-when-cross-origin",
   "X-Frame-Options": "DENY",
   "Permissions-Policy": [
-    "camera=(self)",
+    "camera=()",
     "microphone=(self)",
     "speaker-selection=(self)",
-    "display-capture=()",
+    "display-capture=(self)",
     "geolocation=()",
     "midi=()",
     "payment=()",

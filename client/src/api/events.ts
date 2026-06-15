@@ -9,7 +9,13 @@ import type {
   ThreadReplyCreated,
   ThreadReplyDeleted,
 } from "./messages";
-import type { VoiceParticipant, VoiceParticipantLeft, VoiceParticipantSpeaking } from "./voice";
+import type {
+  ScreenShareStopped,
+  ScreenShareStream,
+  VoiceParticipant,
+  VoiceParticipantLeft,
+  VoiceParticipantSpeaking,
+} from "./voice";
 import type { UserTyping } from "./typing";
 
 export type SSEEvent =
@@ -26,6 +32,8 @@ export type SSEEvent =
   | { kind: "voice_participant_joined"; data: VoiceParticipant }
   | { kind: "voice_participant_left"; data: VoiceParticipantLeft }
   | { kind: "voice_participant_speaking_changed"; data: VoiceParticipantSpeaking }
+  | { kind: "screen_share_started"; data: ScreenShareStream }
+  | { kind: "screen_share_stopped"; data: ScreenShareStopped }
   | { kind: "user_typing"; data: UserTyping }
   | { kind: "thread_reply_created"; data: ThreadReplyCreated }
   | { kind: "thread_reply_deleted"; data: ThreadReplyDeleted };

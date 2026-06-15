@@ -1,4 +1,4 @@
-import type { Message, MessageAttachment } from "../api";
+import type { Message, MessageAttachment, ScreenShareStream } from "../api";
 
 /// Build a `Message` fixture with media/embed fields filled in with sensible
 /// defaults. Every test message has `suppress_embeds: false`, no attachments,
@@ -15,6 +15,22 @@ export function makeMessage(
     attachments: [],
     embeds: [],
     reactions: [],
+    ...partial,
+  };
+}
+
+export function makeScreenShareStream(
+  partial: Partial<ScreenShareStream> &
+    Pick<ScreenShareStream, "channel_id" | "sharer_user_id" | "track_sid">,
+): ScreenShareStream {
+  return {
+    username: `user${partial.sharer_user_id}`,
+    display_name: null,
+    avatar_url: null,
+    participant_identity: String(partial.sharer_user_id),
+    track_name: "screen",
+    source: "screen_share",
+    started_at: 1_700_000_000,
     ...partial,
   };
 }

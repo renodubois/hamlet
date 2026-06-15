@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import net from "node:net";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
@@ -8,6 +8,9 @@ import { setTimeout as delay } from "node:timers/promises";
 const repoRoot = new URL("../..", import.meta.url);
 const clientDir = new URL("..", import.meta.url);
 const serverDir = new URL("../../server/", import.meta.url);
+const serverTargetDir = new URL("../../server/target/", import.meta.url);
+const serverUploadsDir = new URL("../../server/uploads/", import.meta.url);
+const serverPrivateUploadsDir = new URL("../../server/private-uploads/", import.meta.url);
 loadLocalEnv();
 const composeProjectName = process.env.HAMLET_VOICE_COMPOSE_PROJECT ?? "hamlet_voice_e2e";
 const keepCompose = process.env.HAMLET_VOICE_KEEP_COMPOSE === "1";
@@ -87,6 +90,12 @@ async function main() {
   console.log(`[voice-e2e] repo root: ${repoRoot.pathname}`);
   console.log(
     `[voice-e2e] starting server + LiveKit with docker compose project ${composeProjectName}`,
+  );
+  // Docker creates bind-mount placeholders as root when these paths are absent.
+  // Pre-create them so follow-up host cargo commands (for example Electron
+  // E2E's `cargo run`) stay user-writable.
+  [serverTargetDir, serverUploadsDir, serverPrivateUploadsDir].forEach((dir) =>
+    mkdirSync(dir, { recursive: true }),
   );
   await compose(["up", "-d", "--build", "--remove-orphans"]);
 

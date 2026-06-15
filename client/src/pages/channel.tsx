@@ -16,6 +16,7 @@ import {
   createComposerPhotoSelection,
 } from "../components/composer-photo-selection";
 import MessageInput from "../components/message-input";
+import ScreenShareViewer from "../components/screen-share-viewer";
 import ThreadPanel from "../components/thread-panel";
 import TypingIndicator from "../components/typing-indicator";
 import { listMessages, sendMessage, sendTyping, type Message } from "../api";
@@ -206,6 +207,8 @@ export default function ChannelView() {
       <section class="bg-gray-100 text-gray-700 p-4 flex-shrink-0">
         <h1 class="text-2xl font-bold"># {channel()?.name ?? params.id}</h1>
       </section>
+
+      <ScreenShareViewer />
 
       <div class="flex-1 min-h-0 flex">
         <div class="min-w-0 flex-1 overflow-y-auto">

@@ -21,8 +21,10 @@ import {
   renameCustomEmoji,
   deleteCustomEmoji,
   restoreCustomEmoji,
+  listScreenShareStreams,
   type Channel,
   type CustomEmoji,
+  type ScreenShareStream,
 } from "./api";
 import { tinyPngFile, tinyWebpFile } from "./test/image-fixtures";
 
@@ -579,6 +581,39 @@ describe("apiFetch behavior", () => {
   test("deleteMessage throws on non-2xx", async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 403 }));
     await expect(deleteMessage(42)).rejects.toThrow(/403/);
+  });
+
+  test("listScreenShareStreams fetches active streams for a channel", async () => {
+    const streams: ScreenShareStream[] = [
+      {
+        channel_id: 42,
+        sharer_user_id: 7,
+        username: "alice",
+        display_name: "Alice",
+        avatar_url: null,
+        participant_identity: "7",
+        track_sid: "TR_screen",
+        track_name: "screen",
+        source: "screen_share",
+        started_at: 1_700_000_000,
+      },
+    ];
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(streams), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(listScreenShareStreams(42)).resolves.toEqual(streams);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${DEFAULT_SERVER}/voice/screen-shares?channel_id=42`);
+    expect(fetchMock.mock.calls[0][1].credentials).toBe("include");
+  });
+
+  test("listScreenShareStreams throws on non-2xx", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 401 }));
+    await expect(listScreenShareStreams()).rejects.toThrow(/401/);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${DEFAULT_SERVER}/voice/screen-shares`);
   });
 
   test("uses the stored server URL for subsequent calls", async () => {

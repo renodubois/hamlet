@@ -166,6 +166,21 @@ describe("Electron permission policy", () => {
     ).toBe(false);
   });
 
+  it("allows trusted display capture permission prompts for the Electron capture handler", () => {
+    expect(
+      shouldAllowPermissionRequest({
+        ...trustedRequest,
+        permission: "display-capture",
+      }),
+    ).toBe(true);
+    expect(
+      shouldAllowPermissionCheck({
+        permission: "display-capture",
+        requestingOrigin: TRUSTED_RENDERER_ORIGIN,
+      }),
+    ).toBe(true);
+  });
+
   it("allows trusted speaker selection requests for recoverable output-device settings", () => {
     expect(
       shouldAllowPermissionRequest({
@@ -184,7 +199,6 @@ describe("Electron permission policy", () => {
   it("denies trusted origins for unrelated capabilities by default", () => {
     for (const permission of [
       "clipboard-read",
-      "display-capture",
       "fullscreen",
       "geolocation",
       "notifications",
@@ -208,7 +222,7 @@ describe("Electron permission policy", () => {
     }
   });
 
-  it("denies media permissions from untrusted origins", () => {
+  it("denies media and display-capture permissions from untrusted origins", () => {
     expect(
       shouldAllowPermissionRequest({
         permission: "media",
@@ -222,6 +236,19 @@ describe("Electron permission policy", () => {
         permission: "media",
         requestingOrigin: "https://evil.example",
         mediaType: "audio",
+      }),
+    ).toBe(false);
+    expect(
+      shouldAllowPermissionRequest({
+        permission: "display-capture",
+        requestingUrl: "https://evil.example/share",
+        securityOrigin: "https://evil.example",
+      }),
+    ).toBe(false);
+    expect(
+      shouldAllowPermissionCheck({
+        permission: "display-capture",
+        requestingOrigin: "https://evil.example",
       }),
     ).toBe(false);
   });
@@ -268,6 +295,7 @@ describe("Electron permission policy", () => {
     let checkHandler: CapturedPermissionCheckHandler | null | undefined;
     let deviceDecision: boolean | undefined;
     let displayDecision: unknown;
+    let displayOptions: unknown;
 
     const fakeSession: SessionPermissionPolicy = {
       setPermissionRequestHandler: (handler) => {
@@ -279,7 +307,8 @@ describe("Electron permission policy", () => {
       setDevicePermissionHandler: (handler) => {
         deviceDecision = handler?.({} as never);
       },
-      setDisplayMediaRequestHandler: (handler) => {
+      setDisplayMediaRequestHandler: (handler, options) => {
+        displayOptions = options;
         handler?.(
           {
             frame: null,
@@ -318,6 +347,43 @@ describe("Electron permission policy", () => {
     ).toBe(false);
     expect(deviceDecision).toBe(false);
     expect(displayDecision).toEqual({});
+    expect(displayOptions).toEqual({ useSystemPicker: false });
+  });
+
+  it("installs a trusted display-media handler with system-picker preference", () => {
+    let displayDecision: unknown;
+    let displayOptions: unknown;
+
+    const fakeSession: SessionPermissionPolicy = {
+      setPermissionRequestHandler: () => {},
+      setPermissionCheckHandler: () => {},
+      setDevicePermissionHandler: () => {},
+      setDisplayMediaRequestHandler: (handler, options) => {
+        displayOptions = options;
+        handler?.(
+          {
+            frame: null,
+            securityOrigin: TRUSTED_RENDERER_ORIGIN,
+            videoRequested: true,
+            audioRequested: false,
+            userGesture: true,
+          },
+          (streams) => {
+            displayDecision = streams;
+          },
+        );
+      },
+    };
+
+    installSessionPermissionPolicy(fakeSession, {
+      displayMediaRequestHandler: (_request, callback) => {
+        callback({ video: { id: "screen:1:0", name: "Screen 1" } });
+      },
+      useSystemPicker: true,
+    });
+
+    expect(displayDecision).toEqual({ video: { id: "screen:1:0", name: "Screen 1" } });
+    expect(displayOptions).toEqual({ useSystemPicker: true });
   });
 });
 

@@ -40,32 +40,52 @@ shell does not proxy application APIs through Electron IPC.
 
 Run commands from `client/` unless noted.
 
-| Goal                             | Command                                   | Notes                                                                                                                                                                        |
-| -------------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Renderer-only browser dev        | `npm run dev`                             | Starts Vite on `http://127.0.0.1:${HAMLET_RENDERER_PORT:-1422}` with `strictPort`. Open that URL in a normal browser.                                                        |
-| Renderer-only built preview      | `npm run build:renderer && npm run serve` | Serves built renderer assets on the same configured loopback origin for browser-only checks.                                                                                 |
-| Electron dev launch              | `npm run electron:dev`                    | Builds main/preload, starts Vite, waits for the configured renderer URL, then launches Electron with `HAMLET_RENDERER_URL` pointing at Vite. Server must already be running. |
-| Build everything                 | `npm run build`                           | Builds renderer output in `dist/` and Electron main/preload output in `dist-electron/`.                                                                                      |
-| Electron-only build              | `npm run electron:build`                  | Builds only main/preload. Useful before launching multiple dev profiles against an already-running Vite server.                                                              |
-| Local unpacked package           | `npm run package:unpacked`                | Runs `npm run build`, then writes `release/Hamlet Electron Alpha-<platform>-<arch>/`.                                                                                        |
-| Launch unpacked package          | `npm run package:launch`                  | Rebuilds/repackages, clears `HAMLET_RENDERER_URL`, and launches the unpacked app against the packaged loopback static renderer.                                              |
-| Package smoke                    | `npm run package:smoke`                   | Rebuilds/repackages, then Playwright launches the unpacked package and verifies the configured renderer origin.                                                              |
-| Full public package              | `npm run package:full`                    | Intentionally fails with a deferral message. Signing, notarization, installers, auto-update, and public distribution are not configured for the alpha.                       |
-| Format                           | `npm run fmt` / `npm run fmt:check`       | Formatter check/fix for the Electron client tree.                                                                                                                            |
-| Lint                             | `npm run lint`                            | Oxlint.                                                                                                                                                                      |
-| Typecheck                        | `npm run typecheck`                       | Renderer TypeScript plus `tsconfig.electron.json` for main/preload.                                                                                                          |
-| Unit/component/integration tests | `npm run test`                            | Vitest, MSW, fake SSE, axe/component coverage.                                                                                                                               |
-| Browser E2E                      | `npm run test:e2e:renderer`               | Playwright Chromium against renderer-only Vite. The config starts `server` with `cargo run`.                                                                                 |
-| Browser voice E2E                | `npm run test:e2e:voice:browser`          | Playwright Chromium + Firefox against renderer-only Vite and the server-side Docker Compose LiveKit stack.                                                                   |
-| Electron E2E                     | `npm run test:e2e:electron`               | Builds, starts `server` with `cargo run`, then launches Electron through Playwright.                                                                                         |
-| All E2E                          | `npm run test:e2e`                        | Runs browser renderer E2E, then Electron shell E2E.                                                                                                                          |
-| Size budget                      | `npm run size`                            | Builds, then checks gzip JS/CSS renderer budgets in `.size-limit.json`. Electron package/artifact size is not budgeted yet.                                                  |
+| Goal                             | Command                                   | Notes                                                                                                                                                                                                                          |
+| -------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Renderer-only browser dev        | `npm run dev`                             | Starts Vite on `http://127.0.0.1:${HAMLET_RENDERER_PORT:-1422}` with `strictPort`. Open that URL in a normal browser.                                                                                                          |
+| Renderer-only built preview      | `npm run build:renderer && npm run serve` | Serves built renderer assets on the same configured loopback origin for browser-only checks.                                                                                                                                   |
+| Electron dev launch              | `npm run electron:dev`                    | Builds main/preload, starts Vite, waits for the configured renderer URL, then launches Electron with `HAMLET_RENDERER_URL` pointing at Vite. Server must already be running.                                                   |
+| Build everything                 | `npm run build`                           | Builds renderer output in `dist/` and Electron main/preload output in `dist-electron/`.                                                                                                                                        |
+| Electron-only build              | `npm run electron:build`                  | Builds only main/preload. Useful before launching multiple dev profiles against an already-running Vite server.                                                                                                                |
+| Local unpacked package           | `npm run package:unpacked`                | Runs `npm run build`, then writes `release/Hamlet Electron Alpha-<platform>-<arch>/`.                                                                                                                                          |
+| Launch unpacked package          | `npm run package:launch`                  | Rebuilds/repackages, clears `HAMLET_RENDERER_URL`, and launches the unpacked app against the packaged loopback static renderer.                                                                                                |
+| Package smoke                    | `npm run package:smoke`                   | Rebuilds/repackages, then Playwright launches the unpacked package and verifies the configured renderer origin.                                                                                                                |
+| Full public package              | `npm run package:full`                    | Intentionally fails with a deferral message. Signing, notarization, installers, auto-update, and public distribution are not configured for the alpha.                                                                         |
+| Format                           | `npm run fmt` / `npm run fmt:check`       | Formatter check/fix for the Electron client tree.                                                                                                                                                                              |
+| Lint                             | `npm run lint`                            | Oxlint.                                                                                                                                                                                                                        |
+| Typecheck                        | `npm run typecheck`                       | Renderer TypeScript plus `tsconfig.electron.json` for main/preload.                                                                                                                                                            |
+| Unit/component/integration tests | `npm run test`                            | Vitest, MSW, fake SSE, axe/component coverage.                                                                                                                                                                                 |
+| Browser E2E                      | `npm run test:e2e:renderer`               | Playwright Chromium against renderer-only Vite. The config starts `server` with `cargo run`.                                                                                                                                   |
+| Browser voice E2E                | `npm run test:e2e:voice:browser`          | Playwright Chromium + Firefox against renderer-only Vite and the server-side Docker Compose LiveKit stack; Chromium also runs screen-share start/stop and two-client smoke paths when desktop-capture automation is available. |
+| Electron E2E                     | `npm run test:e2e:electron`               | Builds, starts `server` with `cargo run`, then launches Electron through Playwright.                                                                                                                                           |
+| All E2E                          | `npm run test:e2e`                        | Runs browser renderer E2E, then Electron shell E2E.                                                                                                                                                                            |
+| Size budget                      | `npm run size`                            | Builds, then checks gzip JS/CSS renderer budgets in `.size-limit.json`. Electron package/artifact size is not budgeted yet.                                                                                                    |
 
 From the repository root, repo-level checks can target this client with:
 
 ```bash
 scripts/check.sh client
 scripts/check.sh client --e2e
+```
+
+## Screen-share automated QA slice
+
+Screen-share regression coverage is split across fast fixtures and practical E2E smoke tests so CI does not depend on native OS picker automation:
+
+- Vitest/MSW: `npm run test` covers active `/voice/screen-shares` fixture state, screen-share start/stop SSE delivery, discovery, watch/stop-watching, switching, and ended/unpublished cleanup.
+- Browser voice E2E: `npm run test:e2e:voice:browser` starts the server-side Docker Compose LiveKit stack, joins voice, and in Chromium attempts screen-share start/stop plus a two-client discover/watch/stop-watching/live-stop smoke path. The screen-share portions skip when Chromium desktop-capture automation is unavailable.
+- Electron E2E: `npm run test:e2e:electron` launches Electron with `HAMLET_ELECTRON_UNDER_TEST=1` and `HAMLET_ELECTRON_TEST_DISPLAY_CAPTURE=hamlet-window`, exercising the trusted display-media path with a test-selected source instead of the native OS picker. Those environment variables are set only by the Playwright helper and are ignored outside the under-test flag.
+- Server checks for this slice remain the normal Rust gates (`cargo fmt`, `cargo clippy -- -D warnings`, `cargo test`) because screen-share discovery/SSE state is driven by the LiveKit webhook handlers.
+
+Manual platform QA and release/operator notes for this feature live in [`../docs/screen-sharing-support-manual-qa.md`](../docs/screen-sharing-support-manual-qa.md). Keep issue #43 open until those checks have actually been executed on macOS, Windows, and Linux.
+
+Before running this slice from a worktree, source the worktree environment so the server, renderer, and LiveKit ports line up:
+
+```bash
+source ../.hamlet-worktree.env  # from client/
+npm run fmt && npm run lint && npm run typecheck && npm run test
+npm run test:e2e:voice:browser
+npm run test:e2e:electron
 ```
 
 ## Fixed origins, server URLs, and port behavior
@@ -203,7 +223,9 @@ Support/product notes:
 ## Manual QA runbook
 
 Before dogfooding an alpha package, run the automated checks that are practical
-for the target machine, then complete the platform smoke areas below.
+for the target machine, then complete the platform smoke areas below. For the
+screen-sharing MVP, also complete the dedicated checklist in
+[`../docs/screen-sharing-support-manual-qa.md`](../docs/screen-sharing-support-manual-qa.md).
 
 ### Common setup
 

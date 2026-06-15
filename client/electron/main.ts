@@ -1,7 +1,12 @@
-import { app, BrowserWindow, dialog, nativeTheme, shell, session } from "electron";
+import { app, BrowserWindow, desktopCapturer, dialog, nativeTheme, shell, session } from "electron";
 import path from "node:path";
 import { forceLightAppearance } from "./appearance";
 import { ELECTRON_WINDOW_TITLE } from "./constants";
+import {
+  createTrustedDisplayMediaRequestHandler,
+  resolveDisplayCaptureTestAutomation,
+} from "./display-capture";
+import { createFallbackDisplayCapturePicker } from "./display-capture-picker";
 import {
   configureSingleInstanceLock,
   configureUserDataDirectory,
@@ -72,7 +77,15 @@ async function startApp(): Promise<void> {
   }
 
   await app.whenReady();
-  installSessionPermissionPolicy(session.defaultSession);
+  const displayCaptureTestAutomation = resolveDisplayCaptureTestAutomation();
+  installSessionPermissionPolicy(session.defaultSession, {
+    displayMediaRequestHandler: createTrustedDisplayMediaRequestHandler({
+      getSources: (options) => desktopCapturer.getSources(options),
+      picker: createFallbackDisplayCapturePicker(() => mainWindow),
+      testAutomation: displayCaptureTestAutomation,
+    }),
+    useSystemPicker: displayCaptureTestAutomation === null,
+  });
   if (shouldServeStaticRenderer()) {
     staticRendererServer = await startStaticRendererServer({
       rootDir: resolveRendererDistPath(app.getAppPath()),

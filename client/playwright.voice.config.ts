@@ -31,6 +31,9 @@ export default defineConfig({
           args: [
             "--use-fake-device-for-media-stream",
             "--use-fake-ui-for-media-stream",
+            "--enable-usermedia-screen-capturing",
+            "--auto-select-desktop-capture-source=Entire screen",
+            "--allow-http-screen-capture",
             "--autoplay-policy=no-user-gesture-required",
             // The browser repro is explicitly 127.0.0.1-based. Make any
             // accidental LiveKit `localhost` signaling URL fail like it does

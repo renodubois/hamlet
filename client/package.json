@@ -18,7 +18,7 @@
     "package:launch": "npm run package:unpacked && node scripts/launch-unpacked.mjs",
     "package:smoke": "npm run package:unpacked && playwright test -c playwright.package.config.ts",
     "package:full": "node scripts/package-full-deferred.mjs package:full",
-    "lint": "oxlint",
+    "lint": "oxlint -c oxlint.config.ts",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "typecheck": "tsc --noEmit && npm run electron:typecheck",

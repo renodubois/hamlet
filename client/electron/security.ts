@@ -29,6 +29,10 @@ export interface PermissionCheckDecisionInput {
   mediaType?: string;
 }
 
+export type DisplayMediaRequestHandler = NonNullable<
+  Parameters<Session["setDisplayMediaRequestHandler"]>[0]
+>;
+
 export type SessionPermissionPolicy = Pick<
   Session,
   | "setDevicePermissionHandler"
@@ -36,6 +40,11 @@ export type SessionPermissionPolicy = Pick<
   | "setPermissionCheckHandler"
   | "setPermissionRequestHandler"
 >;
+
+export interface SessionPermissionPolicyOptions {
+  displayMediaRequestHandler?: DisplayMediaRequestHandler;
+  useSystemPicker?: boolean;
+}
 
 export function resolveRendererUrl(env: RendererEnvironment = process.env): URL {
   const trustedOrigin = resolveConfiguredRendererOrigin(env);
@@ -87,6 +96,7 @@ export function shouldAllowPermissionRequest(input: PermissionRequestDecisionInp
   switch (input.permission) {
     case "media":
       return isAudioOnlyMediaRequest(input.mediaTypes);
+    case "display-capture":
     case "speaker-selection":
       return true;
     default:
@@ -100,6 +110,7 @@ export function shouldAllowPermissionCheck(input: PermissionCheckDecisionInput):
   switch (input.permission) {
     case "media":
       return isMediaDeviceCheck(input.mediaType);
+    case "display-capture":
     case "speaker-selection":
       return true;
     default:
@@ -107,7 +118,10 @@ export function shouldAllowPermissionCheck(input: PermissionCheckDecisionInput):
   }
 }
 
-export function installSessionPermissionPolicy(session: SessionPermissionPolicy): void {
+export function installSessionPermissionPolicy(
+  session: SessionPermissionPolicy,
+  options: SessionPermissionPolicyOptions = {},
+): void {
   session.setPermissionRequestHandler((_webContents, permission, callback, details) => {
     const mediaDetails = details as {
       requestingUrl?: string;
@@ -134,13 +148,14 @@ export function installSessionPermissionPolicy(session: SessionPermissionPolicy)
     }),
   );
 
-  // Device APIs such as HID/USB/serial and screen capture are not needed for
-  // Hamlet voice. Keep them denied even if Chromium reaches these specialized
+  // Device APIs such as HID/USB/serial are not needed for Hamlet voice or
+  // screen sharing. Keep them denied even if Chromium reaches these specialized
   // handlers without first consulting the generic permission handlers above.
   session.setDevicePermissionHandler(() => false);
-  session.setDisplayMediaRequestHandler((_request, callback) => {
-    callback({});
-  });
+  session.setDisplayMediaRequestHandler(
+    options.displayMediaRequestHandler ?? denyDisplayMediaRequest,
+    { useSystemPicker: options.useSystemPicker ?? false },
+  );
 }
 
 export function createSecureWebPreferences(preloadPath: string): WebPreferences {
@@ -171,6 +186,10 @@ export function createMainWindowOptions(
     webPreferences: createSecureWebPreferences(preloadPath),
   };
 }
+
+const denyDisplayMediaRequest: DisplayMediaRequestHandler = (_request, callback) => {
+  callback({});
+};
 
 function parseRendererUrl(value: string): URL {
   try {

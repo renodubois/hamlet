@@ -86,6 +86,11 @@ describe("static renderer server", () => {
     expect(response.headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
     expect(response.headers["x-frame-options"]).toBe("DENY");
     expect(response.headers["permissions-policy"]).toContain("microphone=(self)");
+    expect(response.headers["permissions-policy"]).toContain("speaker-selection=(self)");
+    expect(response.headers["permissions-policy"]).toContain("display-capture=(self)");
+    expect(response.headers["permissions-policy"]).toContain("camera=()");
+    expect(response.headers["permissions-policy"]).toContain("geolocation=()");
+    expect(response.headers["permissions-policy"]).not.toContain("display-capture=*");
   });
 
   it("rejects path traversal before serving or falling back", async () => {

@@ -5,6 +5,7 @@ import type {
   Message,
   MessageAttachment,
   ParticipatedThreadPreview,
+  ScreenShareStream,
   Thread,
   User,
   VoiceParticipant,
@@ -59,6 +60,7 @@ export interface HandlerState {
   displayNameUpdates: (string | null)[];
   voiceParticipants: Record<string, VoiceParticipant[]>;
   voiceTokensMinted: number[];
+  screenShareStreams: ScreenShareStream[];
   customEmojis: CustomEmoji[];
   uploadedCustomEmojis: { name: string; size: number; type: string }[];
   renamedCustomEmojis: { id: number; name: string }[];
@@ -90,6 +92,7 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     displayNameUpdates: [],
     voiceParticipants: {},
     voiceTokensMinted: [],
+    screenShareStreams: [],
     customEmojis: [],
     uploadedCustomEmojis: [],
     renamedCustomEmojis: [],
@@ -697,6 +700,16 @@ export function createHandlers(state: HandlerState) {
     http.get(`${BASE}/voice/participants/:id`, ({ params }) => {
       const id = String(params.id);
       return HttpResponse.json(state.voiceParticipants[id] ?? []);
+    }),
+
+    http.get(`${BASE}/voice/screen-shares`, ({ request }) => {
+      const url = new URL(request.url);
+      const channelId = url.searchParams.get("channel_id");
+      const streams =
+        channelId == null
+          ? state.screenShareStreams
+          : state.screenShareStreams.filter((stream) => String(stream.channel_id) === channelId);
+      return HttpResponse.json(streams);
     }),
 
     http.post(`${BASE}/typing/:id`, ({ params }) => {

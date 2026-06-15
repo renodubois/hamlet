@@ -18,6 +18,28 @@ export interface VoiceParticipantSpeaking {
   speaking: boolean;
 }
 
+export type ScreenShareSource = "screen_share";
+
+export interface ScreenShareStream {
+  channel_id: number;
+  sharer_user_id: number;
+  username: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  participant_identity: string;
+  track_sid: string;
+  track_name: string;
+  source: ScreenShareSource;
+  started_at: number;
+}
+
+export interface ScreenShareStopped {
+  channel_id: number;
+  sharer_user_id: number;
+  participant_identity: string;
+  track_sid: string;
+}
+
 export interface VoiceToken {
   url: string;
   token: string;
@@ -34,6 +56,13 @@ export async function listVoiceParticipants(channelId: number): Promise<VoicePar
   const res = await apiFetch(`/voice/participants/${channelId}`);
   if (!res.ok) throw new Error(`Voice participants fetch failed (${res.status})`);
   return res.json() as Promise<VoiceParticipant[]>;
+}
+
+export async function listScreenShareStreams(channelId?: number): Promise<ScreenShareStream[]> {
+  const query = channelId == null ? "" : `?channel_id=${encodeURIComponent(String(channelId))}`;
+  const res = await apiFetch(`/voice/screen-shares${query}`);
+  if (!res.ok) throw new Error(`Screen share streams fetch failed (${res.status})`);
+  return res.json() as Promise<ScreenShareStream[]>;
 }
 
 export async function postVoiceSpeaking(channelId: number, speaking: boolean): Promise<void> {
