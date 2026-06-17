@@ -295,6 +295,17 @@ describe("apiFetch behavior", () => {
     expect(JSON.parse(init.body)).toEqual({ text: "hi" });
   });
 
+  test("sendMessage includes the inline reply target only when provided", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    await sendMessage("42", "reply body", [], { replyToMessageId: 7 });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/message/42`);
+    expect(init.method).toBe("POST");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(JSON.parse(init.body)).toEqual({ text: "reply body", reply_to_message_id: 7 });
+  });
+
   test("sendMessage uses FormData with repeated photos when photos are supplied", async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
     const first = tinyPngFile("first.png");
@@ -309,7 +320,25 @@ describe("apiFetch behavior", () => {
     expect(init.body).toBeInstanceOf(FormData);
     const body = init.body as FormData;
     expect(body.get("text")).toBe("caption");
+    expect(body.get("reply_to_message_id")).toBeNull();
     expect(body.getAll("photos")).toEqual([first, second]);
+  });
+
+  test("sendMessage includes inline reply targets in multipart photo sends", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    const photo = tinyPngFile("reply.png");
+
+    await sendMessage("42", "", [photo], { replyToMessageId: 7 });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/message/42`);
+    expect(init.method).toBe("POST");
+    expect(init.headers).toBeUndefined();
+    expect(init.body).toBeInstanceOf(FormData);
+    const body = init.body as FormData;
+    expect(body.get("text")).toBe("");
+    expect(body.get("reply_to_message_id")).toBe("7");
+    expect(body.getAll("photos")).toEqual([photo]);
   });
 
   test("sendMessage rejects invalid photos before making a request", async () => {

@@ -12,6 +12,7 @@ pub struct Model {
     pub user_id: i64,
     pub channel_id: i64,
     pub parent_id: Option<i64>,
+    pub reply_to_message_id: Option<i64>,
     pub created_at: i64,
     pub deleted_at: Option<i64>,
     #[sea_orm(column_type = "Text")]

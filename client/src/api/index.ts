@@ -33,6 +33,7 @@ export type {
   EmbedType,
   Message,
   MessageAttachment,
+  MessageReference,
   MessageDeleted,
   MessageEmbedsUpdated,
   MessageReactionsUpdated,
@@ -41,12 +42,15 @@ export type {
   Thread,
   ParticipatedThreadPreview,
   ThreadPageOptions,
+  SendMessageOptions,
   ThreadReplyCreated,
   ThreadReplyDeleted,
   ThreadSummary,
 } from "./messages";
 export {
   messageDisplayName,
+  messageReferenceFromMessage,
+  messageReferencesTarget,
   listMessages,
   sendMessage,
   listParticipatedThreads,

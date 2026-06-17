@@ -16,6 +16,33 @@ import type {
 
 type Listener = (ev: MessageEvent<string>) => void;
 
+function withReplyMetadataDefaults(message: Message): Message {
+  return {
+    ...message,
+    reply_to_message_id: message.reply_to_message_id ?? null,
+    reply_to: message.reply_to
+      ? {
+          ...message.reply_to,
+          deleted_at: message.reply_to.deleted_at ?? null,
+          attachment_count: message.reply_to.attachment_count ?? 0,
+        }
+      : null,
+  };
+}
+
+function withMessageDefaultsForEvent(event: SSEEvent): SSEEvent {
+  if (event.kind === "message" || event.kind === "message_updated") {
+    return { ...event, data: withReplyMetadataDefaults(event.data) };
+  }
+  if (event.kind === "thread_reply_created") {
+    return {
+      ...event,
+      data: { ...event.data, reply: withReplyMetadataDefaults(event.data.reply) },
+    };
+  }
+  return event;
+}
+
 export class FakeEventSource {
   static instances: FakeEventSource[] = [];
   onmessage: Listener | null = null;
@@ -30,7 +57,9 @@ export class FakeEventSource {
 
   push(event: SSEEvent) {
     if (this.closed || !this.onmessage) return;
-    this.onmessage(new MessageEvent("message", { data: JSON.stringify(event) }));
+    this.onmessage(
+      new MessageEvent("message", { data: JSON.stringify(withMessageDefaultsForEvent(event)) }),
+    );
   }
 
   pushMessage(msg: Message) {

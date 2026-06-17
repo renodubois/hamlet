@@ -19,6 +19,18 @@ pub enum AppError {
     NotFound,
     #[error("invalid request")]
     InvalidRequest,
+    #[error("reply target message was not found")]
+    ReplyTargetNotFound,
+    #[error("reply target must be in the same channel")]
+    ReplyTargetCrossChannel,
+    #[error("reply target must be a top-level channel message")]
+    ReplyTargetNotTopLevel,
+    #[error("reply target message was deleted")]
+    ReplyTargetDeleted,
+    #[error("reply target id must be a safe positive integer")]
+    ReplyTargetUnsafe,
+    #[error("thread replies cannot include an inline reply target")]
+    ThreadInlineReplyNotAllowed,
     #[error("unauthorized")]
     Unauthorized,
     #[error("invalid credentials")]
@@ -68,6 +80,12 @@ impl AppError {
             AppError::NoChannelFound => "no_channel_found",
             AppError::NotFound => "not_found",
             AppError::InvalidRequest => "invalid_request",
+            AppError::ReplyTargetNotFound => "reply_target_not_found",
+            AppError::ReplyTargetCrossChannel => "reply_target_cross_channel",
+            AppError::ReplyTargetNotTopLevel => "reply_target_not_top_level",
+            AppError::ReplyTargetDeleted => "reply_target_deleted",
+            AppError::ReplyTargetUnsafe => "reply_target_unsafe",
+            AppError::ThreadInlineReplyNotAllowed => "thread_inline_reply_not_allowed",
             AppError::Unauthorized => "unauthorized",
             AppError::InvalidCredentials => "invalid_credentials",
             AppError::UsernameTaken => "username_taken",
@@ -117,6 +135,11 @@ impl ResponseError for AppError {
         match self {
             AppError::NoChannelFound
             | AppError::InvalidRequest
+            | AppError::ReplyTargetCrossChannel
+            | AppError::ReplyTargetNotTopLevel
+            | AppError::ReplyTargetDeleted
+            | AppError::ReplyTargetUnsafe
+            | AppError::ThreadInlineReplyNotAllowed
             | AppError::EmojiNameRequired
             | AppError::InvalidEmojiName
             | AppError::EmojiFileRequired
@@ -127,7 +150,7 @@ impl ResponseError for AppError {
             | AppError::PhotoDimensionsTooLarge => StatusCode::BAD_REQUEST,
             AppError::Unauthorized | AppError::InvalidCredentials => StatusCode::UNAUTHORIZED,
             AppError::Forbidden => StatusCode::FORBIDDEN,
-            AppError::NotFound => StatusCode::NOT_FOUND,
+            AppError::NotFound | AppError::ReplyTargetNotFound => StatusCode::NOT_FOUND,
             AppError::UsernameTaken | AppError::EmojiNameTaken => StatusCode::CONFLICT,
             AppError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             AppError::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,

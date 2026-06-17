@@ -45,6 +45,7 @@ export interface MessageInputProps {
   onChange: (value: string) => void;
   placeholder?: string;
   ariaLabel?: string;
+  describedBy?: string;
   class?: string;
   inputClass?: string;
   emojiButtonClass?: string;
@@ -896,6 +897,7 @@ export default function MessageInput(props: MessageInputProps) {
               : DEFAULT_INPUT_CLASS
           }
           aria-label={props.ariaLabel ?? "Message input"}
+          aria-describedby={props.describedBy}
           aria-placeholder={props.placeholder}
           autocorrect="off"
           contenteditable="true"

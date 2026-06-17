@@ -9,8 +9,8 @@ use actix_web::http::header::CONTENT_TYPE;
 use actix_web::{HttpResponse, Responder, delete, get, guard, post, put, web};
 use futures_util::TryStreamExt;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, EntityTrait, QueryFilter,
-    QueryOrder, QuerySelect, Set, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, EntityTrait, PaginatorTrait,
+    QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 
@@ -42,10 +42,13 @@ const MAX_EMBEDS_PER_MESSAGE: usize = 5;
 const DEFAULT_THREAD_REPLY_LIMIT: u64 = 50;
 const MAX_THREAD_REPLY_LIMIT: u64 = 100;
 const MULTIPART_TEXT_MAX_BYTES: usize = 64 * 1024;
+const MAX_SAFE_MESSAGE_ID: i64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SendMessageRequest {
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to_message_id: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -77,11 +80,26 @@ pub struct SuppressEmbedsRequest {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct MessageReferenceResponse {
+    pub id: i64,
+    pub user_id: i64,
+    pub channel_id: i64,
+    pub created_at: i64,
+    pub deleted_at: Option<i64>,
+    pub text: String,
+    pub attachment_count: u64,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct MessageResponse {
     pub id: i64,
     pub user_id: i64,
     pub channel_id: i64,
     pub parent_id: Option<i64>,
+    pub reply_to_message_id: Option<i64>,
     pub created_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<i64>,
@@ -95,6 +113,7 @@ pub struct MessageResponse {
     pub reactions: Vec<ReactionSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_summary: Option<ThreadSummary>,
+    pub reply_to: Option<MessageReferenceResponse>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -220,6 +239,10 @@ async fn get_messages(
     let attachments_by_message = load_attachments_for_messages(db.get_ref(), &message_ids).await?;
     let reactions_by_message = load_reaction_summaries(db.get_ref(), &message_ids, user.id).await?;
     let summaries_by_message = load_thread_summaries_for_roots(db.get_ref(), &message_ids).await?;
+    let response_messages: Vec<entity::message::Model> =
+        rows.iter().map(|(message, _)| message.clone()).collect();
+    let reply_refs_by_message =
+        load_reply_references_for_messages(db.get_ref(), &response_messages).await?;
 
     let messages: Vec<MessageResponse> = rows
         .into_iter()
@@ -230,7 +253,9 @@ async fn get_messages(
                 .cloned()
                 .unwrap_or_default();
             let reactions = reactions_by_message.get(&m.id).cloned().unwrap_or_default();
-            let mut response = message_response_from_model(m, u, embeds, attachments, reactions);
+            let reply_to = reply_refs_by_message.get(&m.id).cloned();
+            let mut response =
+                message_response_from_model(m, u, embeds, attachments, reactions, reply_to);
             response.thread_summary = summaries_by_message.get(&response.id).cloned();
             response
         })
@@ -315,10 +340,154 @@ async fn load_thread_summaries_for_roots(
     Ok(summaries)
 }
 
+async fn has_incoming_inline_reply_references(
+    db: &DatabaseConnection,
+    target_id: i64,
+) -> Result<bool, AppError> {
+    let count = entity::message::Entity::find()
+        .filter(entity::message::Column::ReplyToMessageId.eq(target_id))
+        .filter(entity::message::Column::DeletedAt.is_null())
+        .count(db)
+        .await?;
+    Ok(count > 0)
+}
+
+fn message_reference_from_model(
+    message: entity::message::Model,
+    user: Option<entity::user::Model>,
+    attachment_count: u64,
+) -> MessageReferenceResponse {
+    let (username, display_name, avatar_url) = match user {
+        Some(u) => (
+            u.username,
+            u.display_name,
+            avatar_url(u.avatar_path.as_deref(), u.avatar_updated_at),
+        ),
+        None => ("[deleted]".into(), None, None),
+    };
+
+    MessageReferenceResponse {
+        id: message.id,
+        user_id: message.user_id,
+        channel_id: message.channel_id,
+        created_at: message.created_at,
+        deleted_at: message.deleted_at,
+        text: message.text,
+        attachment_count,
+        username,
+        display_name,
+        avatar_url,
+    }
+}
+
+async fn load_attachment_counts_for_messages(
+    db: &DatabaseConnection,
+    ids: &[i64],
+) -> Result<HashMap<i64, u64>, AppError> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rows = entity::message_attachment::Entity::find()
+        .filter(entity::message_attachment::Column::MessageId.is_in(ids.iter().copied()))
+        .all(db)
+        .await?;
+    let mut out: HashMap<i64, u64> = HashMap::new();
+    for row in rows {
+        *out.entry(row.message_id).or_default() += 1;
+    }
+    Ok(out)
+}
+
+async fn load_reply_references_for_messages(
+    db: &DatabaseConnection,
+    messages: &[entity::message::Model],
+) -> Result<HashMap<i64, MessageReferenceResponse>, AppError> {
+    let mut target_ids: Vec<i64> = messages
+        .iter()
+        .filter(|message| message.deleted_at.is_none())
+        .filter_map(|message| message.reply_to_message_id)
+        .collect();
+    if target_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    target_ids.sort_unstable();
+    target_ids.dedup();
+
+    let target_rows = entity::message::Entity::find()
+        .filter(entity::message::Column::Id.is_in(target_ids.iter().copied()))
+        .find_also_related(entity::user::Entity)
+        .all(db)
+        .await?;
+    let target_row_ids: Vec<i64> = target_rows.iter().map(|(target, _)| target.id).collect();
+    let attachment_counts = load_attachment_counts_for_messages(db, &target_row_ids).await?;
+    let refs_by_target_id: HashMap<i64, MessageReferenceResponse> = target_rows
+        .into_iter()
+        .map(|(target, user)| {
+            let attachment_count = attachment_counts.get(&target.id).copied().unwrap_or(0);
+            (
+                target.id,
+                message_reference_from_model(target, user, attachment_count),
+            )
+        })
+        .collect();
+
+    let mut refs_by_message_id = HashMap::new();
+    for message in messages {
+        let Some(target_id) = message.reply_to_message_id else {
+            continue;
+        };
+        let Some(reference) = refs_by_target_id.get(&target_id) else {
+            continue;
+        };
+        refs_by_message_id.insert(message.id, reference.clone());
+    }
+
+    Ok(refs_by_message_id)
+}
+
+fn validate_reply_target_id(target_id: i64) -> Result<(), AppError> {
+    if !(1..=MAX_SAFE_MESSAGE_ID).contains(&target_id) {
+        return Err(AppError::ReplyTargetUnsafe);
+    }
+    Ok(())
+}
+
+async fn validated_inline_reply_target(
+    db: &DatabaseConnection,
+    channel_id: i64,
+    target_id: i64,
+) -> Result<MessageReferenceResponse, AppError> {
+    validate_reply_target_id(target_id)?;
+    let (target, user) = entity::message::Entity::find_by_id(target_id)
+        .find_also_related(entity::user::Entity)
+        .one(db)
+        .await?
+        .ok_or(AppError::ReplyTargetNotFound)?;
+
+    if target.channel_id != channel_id {
+        return Err(AppError::ReplyTargetCrossChannel);
+    }
+    if target.parent_id.is_some() {
+        return Err(AppError::ReplyTargetNotTopLevel);
+    }
+    if target.deleted_at.is_some() {
+        return Err(AppError::ReplyTargetDeleted);
+    }
+
+    let attachment_count = load_attachment_counts_for_messages(db, &[target.id])
+        .await?
+        .remove(&target.id)
+        .unwrap_or(0);
+
+    Ok(message_reference_from_model(target, user, attachment_count))
+}
+
 #[derive(Debug)]
 struct MultipartMessageCreate {
     text: String,
     photos: Vec<UploadedPhoto>,
+    reply_to_message_id: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -339,6 +508,17 @@ struct PendingAttachmentInsert {
 
 #[derive(Clone, Copy, Debug)]
 enum MessageCreateTarget {
+    TopLevel {
+        channel_id: i64,
+        reply_to_message_id: Option<i64>,
+    },
+    ThreadReply {
+        root_message_id: i64,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MultipartMessageCreateTarget {
     TopLevel { channel_id: i64 },
     ThreadReply { root_message_id: i64 },
 }
@@ -349,21 +529,25 @@ async fn create_message_json(
     broadcaster: web::Data<Broadcaster>,
     embed_fetcher: web::Data<EmbedFetcher>,
     path: web::Path<i64>,
-    body: web::Json<SendMessageRequest>,
+    body: web::Bytes,
     user: AuthUser,
 ) -> Result<impl Responder, AppError> {
     let channel_id = path.into_inner();
+    let body = parse_send_message_request(&body)?;
     let message_id = generate_id();
-    let (inserted, attachments) = insert_message_rows(
+    let (inserted, attachments, reply_to) = insert_message_rows(
         db.get_ref(),
         message_id,
         user.id,
-        MessageCreateTarget::TopLevel { channel_id },
-        body.text.clone(),
+        MessageCreateTarget::TopLevel {
+            channel_id,
+            reply_to_message_id: body.reply_to_message_id,
+        },
+        body.text,
         Vec::new(),
     )
     .await?;
-    let resp = created_message_response(&inserted, &user, attachments);
+    let resp = created_message_response(&inserted, &user, attachments, reply_to);
     publish_created_message(db, broadcaster, embed_fetcher, inserted, resp).await
 }
 
@@ -383,7 +567,7 @@ async fn create_message_multipart(
         storage,
         broadcaster,
         embed_fetcher,
-        MessageCreateTarget::TopLevel { channel_id },
+        MultipartMessageCreateTarget::TopLevel { channel_id },
         payload,
         user,
     )
@@ -400,11 +584,21 @@ async fn create_multipart_message(
     storage: web::Data<AttachmentStorage>,
     broadcaster: web::Data<Broadcaster>,
     embed_fetcher: web::Data<EmbedFetcher>,
-    target: MessageCreateTarget,
+    target: MultipartMessageCreateTarget,
     payload: Multipart,
     user: AuthUser,
 ) -> Result<web::Json<MessageResponse>, AppError> {
     let multipart = read_multipart_message_create(payload).await?;
+    let target = match target {
+        MultipartMessageCreateTarget::TopLevel { channel_id } => MessageCreateTarget::TopLevel {
+            channel_id,
+            reply_to_message_id: multipart.reply_to_message_id,
+        },
+        MultipartMessageCreateTarget::ThreadReply { root_message_id } => {
+            ensure_thread_reply_has_no_inline_target(multipart.reply_to_message_id)?;
+            MessageCreateTarget::ThreadReply { root_message_id }
+        }
+    };
     if multipart.text.trim().is_empty() && multipart.photos.is_empty() {
         return Err(AppError::MessageContentRequired);
     }
@@ -422,14 +616,14 @@ async fn create_multipart_message(
         pending,
     )
     .await;
-    let (inserted, attachments) = match rows {
+    let (inserted, attachments, reply_to) = match rows {
         Ok(rows) => rows,
         Err(err) => {
             cleanup_attachment_files(&storage.dir, &pending_paths).await;
             return Err(err);
         }
     };
-    let resp = created_message_response(&inserted, &user, attachments);
+    let resp = created_message_response(&inserted, &user, attachments, reply_to);
     publish_created_message(db, broadcaster, embed_fetcher, inserted, resp).await
 }
 
@@ -451,11 +645,26 @@ fn request_content_type(ctx: &guard::GuardContext<'_>) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
+fn parse_send_message_request(body: &[u8]) -> Result<SendMessageRequest, AppError> {
+    serde_json::from_slice(body).map_err(|_| AppError::InvalidRequest)
+}
+
+fn ensure_thread_reply_has_no_inline_target(
+    reply_to_message_id: Option<i64>,
+) -> Result<(), AppError> {
+    if reply_to_message_id.is_some() {
+        return Err(AppError::ThreadInlineReplyNotAllowed);
+    }
+    Ok(())
+}
+
 async fn read_multipart_message_create(
     mut payload: Multipart,
 ) -> Result<MultipartMessageCreate, AppError> {
     let mut text = String::new();
     let mut photos = Vec::new();
+    let mut reply_to_message_id = None;
+    let mut saw_reply_to_message_id = false;
 
     while let Some(field) = payload
         .try_next()
@@ -470,6 +679,14 @@ async fn read_multipart_message_create(
 
         match field_name.as_str() {
             "text" => text = read_multipart_text_field(field).await?,
+            "reply_to_message_id" => {
+                if saw_reply_to_message_id {
+                    return Err(AppError::InvalidRequest);
+                }
+                saw_reply_to_message_id = true;
+                let raw = read_multipart_text_field(field).await?;
+                reply_to_message_id = parse_multipart_reply_target_id(&raw)?;
+            }
             "photo" | "photos" => {
                 if photos.len() >= MAX_MESSAGE_PHOTOS {
                     return Err(AppError::TooManyAttachments);
@@ -488,7 +705,31 @@ async fn read_multipart_message_create(
         }
     }
 
-    Ok(MultipartMessageCreate { text, photos })
+    Ok(MultipartMessageCreate {
+        text,
+        photos,
+        reply_to_message_id,
+    })
+}
+
+fn parse_multipart_reply_target_id(raw: &str) -> Result<Option<i64>, AppError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
+        return Ok(None);
+    }
+    if let Some(rest) = trimmed.strip_prefix('-')
+        && rest.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return Err(AppError::ReplyTargetUnsafe);
+    }
+    if !trimmed.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(AppError::InvalidRequest);
+    }
+    let id = trimmed
+        .parse::<i64>()
+        .map_err(|_| AppError::ReplyTargetUnsafe)?;
+    validate_reply_target_id(id)?;
+    Ok(Some(id))
 }
 
 async fn read_multipart_text_field(mut field: actix_multipart::Field) -> Result<String, AppError> {
@@ -688,15 +929,30 @@ async fn insert_message_rows(
     target: MessageCreateTarget,
     text: String,
     attachments: Vec<PendingAttachmentInsert>,
-) -> Result<(entity::message::Model, Vec<AttachmentResponse>), AppError> {
-    let (channel_id, parent_id) = match target {
-        MessageCreateTarget::TopLevel { channel_id } => {
+) -> Result<
+    (
+        entity::message::Model,
+        Vec<AttachmentResponse>,
+        Option<MessageReferenceResponse>,
+    ),
+    AppError,
+> {
+    let (channel_id, parent_id, reply_to_message_id, reply_to) = match target {
+        MessageCreateTarget::TopLevel {
+            channel_id,
+            reply_to_message_id,
+        } => {
             ensure_channel_exists(db, channel_id).await?;
-            (channel_id, None)
+            let reply_to = if let Some(target_id) = reply_to_message_id {
+                Some(validated_inline_reply_target(db, channel_id, target_id).await?)
+            } else {
+                None
+            };
+            (channel_id, None, reply_to_message_id, reply_to)
         }
         MessageCreateTarget::ThreadReply { root_message_id } => {
             let root = validated_thread_root(db, root_message_id).await?;
-            (root.channel_id, Some(root_message_id))
+            (root.channel_id, Some(root_message_id), None, None)
         }
     };
 
@@ -706,6 +962,7 @@ async fn insert_message_rows(
         user_id: Set(user_id),
         channel_id: Set(channel_id),
         parent_id: Set(parent_id),
+        reply_to_message_id: Set(reply_to_message_id),
         created_at: Set(now_unix_micros()),
         deleted_at: Set(None),
         text: Set(text),
@@ -737,19 +994,21 @@ async fn insert_message_rows(
     }
     txn.commit().await?;
 
-    Ok((inserted, saved_attachments))
+    Ok((inserted, saved_attachments, reply_to))
 }
 
 fn created_message_response(
     inserted: &entity::message::Model,
     user: &AuthUser,
     attachments: Vec<AttachmentResponse>,
+    reply_to: Option<MessageReferenceResponse>,
 ) -> MessageResponse {
     MessageResponse {
         id: inserted.id,
         user_id: inserted.user_id,
         channel_id: inserted.channel_id,
         parent_id: inserted.parent_id,
+        reply_to_message_id: inserted.reply_to_message_id,
         created_at: inserted.created_at,
         deleted_at: inserted.deleted_at,
         text: inserted.text.clone(),
@@ -761,6 +1020,7 @@ fn created_message_response(
         embeds: Vec::new(),
         reactions: Vec::new(),
         thread_summary: None,
+        reply_to,
     }
 }
 
@@ -871,6 +1131,16 @@ async fn get_participated_threads(
         load_attachments_for_messages(db.get_ref(), &preview_message_ids).await?;
     let reactions_by_message =
         load_reaction_summaries(db.get_ref(), &preview_message_ids, user.id).await?;
+    let mut response_messages = Vec::new();
+    for (root, _) in &root_rows {
+        response_messages.push(root.clone());
+        if let Some(replies) = replies_by_root.get(&root.id) {
+            let start = replies.len().saturating_sub(3);
+            response_messages.extend(replies[start..].iter().map(|(reply, _)| reply.clone()));
+        }
+    }
+    let reply_refs_by_message =
+        load_reply_references_for_messages(db.get_ref(), &response_messages).await?;
 
     let mut previews_with_sort_key = Vec::new();
     for (root, root_user) in root_rows {
@@ -913,12 +1183,14 @@ async fn get_participated_threads(
                     .get(&reply.id)
                     .cloned()
                     .unwrap_or_default();
+                let reply_to = reply_refs_by_message.get(&reply.id).cloned();
                 message_response_from_model(
                     reply.clone(),
                     reply_user.clone(),
                     embeds,
                     attachments,
                     reactions,
+                    reply_to,
                 )
             })
             .collect();
@@ -931,6 +1203,7 @@ async fn get_participated_threads(
             .get(&root.id)
             .cloned()
             .unwrap_or_default();
+        let root_reply_to = reply_refs_by_message.get(&root.id).cloned();
         let preview = ParticipatedThreadPreview {
             channel: ChannelResponse::from(channel.clone()),
             root: message_response_from_model(
@@ -939,6 +1212,7 @@ async fn get_participated_threads(
                 root_embeds,
                 root_attachments,
                 root_reactions,
+                root_reply_to,
             ),
             reply_count: replies.len() as u64,
             last_reply_created_at: last_reply.created_at,
@@ -1013,10 +1287,16 @@ async fn get_thread(
     let embeds_by_message = load_embeds_for_messages(db.get_ref(), &message_ids).await?;
     let attachments_by_message = load_attachments_for_messages(db.get_ref(), &message_ids).await?;
     let reactions_by_message = load_reaction_summaries(db.get_ref(), &message_ids, user.id).await?;
+    let mut response_messages: Vec<entity::message::Model> =
+        rows.iter().map(|(message, _)| message.clone()).collect();
+    response_messages.push(root.clone());
+    let reply_refs_by_message =
+        load_reply_references_for_messages(db.get_ref(), &response_messages).await?;
 
     let root_user = entity::user::Entity::find_by_id(root.user_id)
         .one(db.get_ref())
         .await?;
+    let root_reply_to = reply_refs_by_message.get(&root.id).cloned();
     let root_response = message_response_from_model(
         root,
         root_user,
@@ -1032,6 +1312,7 @@ async fn get_thread(
             .get(&root_message_id)
             .cloned()
             .unwrap_or_default(),
+        root_reply_to,
     );
     let replies = rows
         .into_iter()
@@ -1042,7 +1323,8 @@ async fn get_thread(
                 .cloned()
                 .unwrap_or_default();
             let reactions = reactions_by_message.get(&m.id).cloned().unwrap_or_default();
-            message_response_from_model(m, u, embeds, attachments, reactions)
+            let reply_to = reply_refs_by_message.get(&m.id).cloned();
+            message_response_from_model(m, u, embeds, attachments, reactions, reply_to)
         })
         .collect();
 
@@ -1059,21 +1341,23 @@ async fn create_thread_reply_json(
     embed_fetcher: web::Data<EmbedFetcher>,
     broadcaster: web::Data<Broadcaster>,
     path: web::Path<i64>,
-    body: web::Json<SendMessageRequest>,
+    body: web::Bytes,
     user: AuthUser,
 ) -> Result<impl Responder, AppError> {
     let root_message_id = path.into_inner();
+    let body = parse_send_message_request(&body)?;
+    ensure_thread_reply_has_no_inline_target(body.reply_to_message_id)?;
     let message_id = generate_id();
-    let (inserted, attachments) = insert_message_rows(
+    let (inserted, attachments, reply_to) = insert_message_rows(
         db.get_ref(),
         message_id,
         user.id,
         MessageCreateTarget::ThreadReply { root_message_id },
-        body.text.clone(),
+        body.text,
         Vec::new(),
     )
     .await?;
-    let resp = created_message_response(&inserted, &user, attachments);
+    let resp = created_message_response(&inserted, &user, attachments, reply_to);
     publish_created_message(db, broadcaster, embed_fetcher, inserted, resp).await
 }
 
@@ -1096,7 +1380,7 @@ async fn create_thread_reply_multipart(
         storage,
         broadcaster,
         embed_fetcher,
-        MessageCreateTarget::ThreadReply { root_message_id },
+        MultipartMessageCreateTarget::ThreadReply { root_message_id },
         payload,
         user,
     )
@@ -1137,6 +1421,7 @@ fn message_response_from_model(
     embeds: Vec<EmbedResponse>,
     attachments: Vec<AttachmentResponse>,
     reactions: Vec<ReactionSummary>,
+    reply_to: Option<MessageReferenceResponse>,
 ) -> MessageResponse {
     let is_deleted = message.deleted_at.is_some();
     let (username, display_name, avatar_url) = match user {
@@ -1152,6 +1437,7 @@ fn message_response_from_model(
         user_id: message.user_id,
         channel_id: message.channel_id,
         parent_id: message.parent_id,
+        reply_to_message_id: message.reply_to_message_id,
         created_at: message.created_at,
         deleted_at: message.deleted_at,
         text: message.text,
@@ -1163,6 +1449,7 @@ fn message_response_from_model(
         embeds: if is_deleted { Vec::new() } else { embeds },
         reactions: if is_deleted { Vec::new() } else { reactions },
         thread_summary: None,
+        reply_to: if is_deleted { None } else { reply_to },
     }
 }
 
@@ -1214,12 +1501,16 @@ async fn update_message(
         .await?
         .remove(&updated.id)
         .unwrap_or_default();
+    let reply_to = load_reply_references_for_messages(db.get_ref(), std::slice::from_ref(&updated))
+        .await?
+        .remove(&updated.id);
 
     let resp = MessageResponse {
         id: updated.id,
         user_id: updated.user_id,
         channel_id,
         parent_id: updated.parent_id,
+        reply_to_message_id: updated.reply_to_message_id,
         created_at: updated.created_at,
         deleted_at: updated.deleted_at,
         text: updated.text.clone(),
@@ -1231,6 +1522,7 @@ async fn update_message(
         embeds: existing_embeds,
         reactions,
         thread_summary,
+        reply_to,
     };
     broadcaster
         .publish(&BroadcastEvent::MessageUpdated(resp.clone()))
@@ -1397,6 +1689,9 @@ async fn delete_message(
     } else {
         None
     };
+    let has_inline_references = parent_id.is_none()
+        && has_incoming_inline_reply_references(db.get_ref(), message_id).await?;
+    let should_tombstone = parent_id.is_none() && (root_summary.is_some() || has_inline_references);
     let attachment_rows = entity::message_attachment::Entity::find()
         .filter(entity::message_attachment::Column::MessageId.eq(message_id))
         .all(db.get_ref())
@@ -1417,7 +1712,7 @@ async fn delete_message(
         .exec(&txn)
         .await?;
 
-    if parent_id.is_none() && root_summary.is_some() {
+    if should_tombstone {
         let mut active: entity::message::ActiveModel = existing.into();
         active.text = Set(String::new());
         active.deleted_at = Set(Some(now_unix_micros()));
@@ -1437,6 +1732,7 @@ async fn delete_message(
                 user_id: updated.user_id,
                 channel_id,
                 parent_id: updated.parent_id,
+                reply_to_message_id: updated.reply_to_message_id,
                 created_at: updated.created_at,
                 deleted_at: updated.deleted_at,
                 text: updated.text,
@@ -1448,6 +1744,7 @@ async fn delete_message(
                 embeds: Vec::new(),
                 reactions: Vec::new(),
                 thread_summary: root_summary,
+                reply_to: None,
             }))
             .await?;
     } else {
@@ -1714,6 +2011,7 @@ mod tests {
             .set_payload(
                 serde_json::to_string(&SendMessageRequest {
                     text: "hello".into(),
+                    reply_to_message_id: None,
                 })
                 .unwrap(),
             )
@@ -1734,6 +2032,68 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn test_inline_reply_create_broadcasts_reference_metadata_to_clients() {
+        let (db, chan_id) = setup_db().await;
+        let user = auth::register_user(&db, "alice", "hunter2", None)
+            .await
+            .unwrap();
+        let session = auth::create_session(&db, user.id).await.unwrap();
+
+        let target_id = generate_id();
+        entity::message::ActiveModel {
+            id: Set(target_id),
+            user_id: Set(user.id),
+            channel_id: Set(chan_id),
+            parent_id: Set(None),
+            reply_to_message_id: Set(None),
+            created_at: Set(now_unix_micros()),
+            deleted_at: Set(None),
+            text: Set("original target".into()),
+            suppress_embeds: Set(false),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.test_client();
+        let app_deps = deps(db, broadcaster);
+        let app =
+            test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
+                .await;
+
+        let (name, value) = session_cookie_header(&session.token);
+        let req = test::TestRequest::post()
+            .uri(&format!("/message/{}", chan_id))
+            .insert_header(ContentType::json())
+            .insert_header((name, value))
+            .set_payload(
+                serde_json::to_string(&SendMessageRequest {
+                    text: "inline over sse".into(),
+                    reply_to_message_id: Some(target_id),
+                })
+                .unwrap(),
+            )
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out — broadcast was never sent")
+            .expect("channel closed");
+
+        let event_str = format!("{:?}", event);
+        assert!(event_str.contains("kind\\\":\\\"message\\\""));
+        assert!(event_str.contains("inline over sse"));
+        assert!(event_str.contains(&format!("\\\"reply_to_message_id\\\":{}", target_id)));
+        assert!(event_str.contains("\\\"reply_to\\\""));
+        assert!(event_str.contains(&format!("\\\"id\\\":{}", target_id)));
+        assert!(event_str.contains("original target"));
+        assert!(event_str.contains("alice"));
+    }
+
+    #[actix_web::test]
     async fn test_message_reaction_add_broadcasts_update_event_to_clients() {
         let (db, chan_id) = setup_db().await;
         let user = auth::register_user(&db, "alice", "hunter2", None)
@@ -1747,6 +2107,7 @@ mod tests {
             user_id: Set(user.id),
             channel_id: Set(chan_id),
             parent_id: Set(None),
+            reply_to_message_id: Set(None),
             created_at: Set(now_unix_micros()),
             deleted_at: Set(None),
             text: Set("react here".into()),
@@ -1804,6 +2165,7 @@ mod tests {
             user_id: Set(user.id),
             channel_id: Set(chan_id),
             parent_id: Set(None),
+            reply_to_message_id: Set(None),
             created_at: Set(now_unix_micros()),
             deleted_at: Set(None),
             text: Set("root".into()),
@@ -1818,6 +2180,7 @@ mod tests {
             user_id: Set(user.id),
             channel_id: Set(chan_id),
             parent_id: Set(Some(root_id)),
+            reply_to_message_id: Set(None),
             created_at: Set(now_unix_micros()),
             deleted_at: Set(None),
             text: Set("reply".into()),
@@ -1872,6 +2235,7 @@ mod tests {
             user_id: Set(user.id),
             channel_id: Set(chan_id),
             parent_id: Set(None),
+            reply_to_message_id: Set(None),
             created_at: Set(now_unix_micros()),
             deleted_at: Set(None),
             text: Set("react here".into()),
@@ -1940,6 +2304,7 @@ mod tests {
             user_id: Set(user.id),
             channel_id: Set(chan_id),
             parent_id: Set(None),
+            reply_to_message_id: Set(None),
             created_at: Set(now_unix_micros()),
             deleted_at: Set(None),
             text: Set("root".into()),
@@ -1964,6 +2329,7 @@ mod tests {
             .set_payload(
                 serde_json::to_string(&SendMessageRequest {
                     text: "reply over sse".into(),
+                    reply_to_message_id: None,
                 })
                 .unwrap(),
             )
@@ -2000,6 +2366,7 @@ mod tests {
             user_id: Set(user.id),
             channel_id: Set(chan_id),
             parent_id: Set(None),
+            reply_to_message_id: Set(None),
             created_at: Set(now_unix_micros()),
             deleted_at: Set(None),
             text: Set("root".into()),
@@ -2014,6 +2381,7 @@ mod tests {
             user_id: Set(user.id),
             channel_id: Set(chan_id),
             parent_id: Set(Some(root_id)),
+            reply_to_message_id: Set(None),
             created_at: Set(now_unix_micros()),
             deleted_at: Set(None),
             text: Set("reply".into()),
@@ -2120,6 +2488,7 @@ mod tests {
             user_id: Set(user.id),
             channel_id: Set(chan_id),
             parent_id: Set(None),
+            reply_to_message_id: Set(None),
             created_at: Set(now_unix_micros()),
             deleted_at: Set(None),
             text: Set("bye".into()),

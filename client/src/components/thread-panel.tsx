@@ -14,6 +14,8 @@ import {
   editMessage,
   getThread,
   messageDisplayName,
+  messageReferenceFromMessage,
+  messageReferencesTarget,
   removeMessageReaction,
   sendThreadReply,
   setMessageEmbedsSuppressed,
@@ -42,6 +44,7 @@ import EmojiPicker from "./emoji-picker";
 import { DeleteIcon, EditIcon, EmojiIcon } from "./icons";
 import MessageEmbed from "./message-embed";
 import MessageInput from "./message-input";
+import MessageReferencePreview from "./message-reference-preview";
 import Modal from "./modal";
 import ReactionRow from "./reaction-row";
 
@@ -117,6 +120,12 @@ function ThreadMessage(props: {
       <div class="min-w-0 flex-1">
         <Show when={!isDeletedMessage(props.message)}>
           <div class="font-bold">{messageDisplayName(props.message)}</div>
+          <Show when={props.message.reply_to ?? props.message.reply_to_message_id ?? null}>
+            <MessageReferencePreview
+              reference={props.message.reply_to ?? null}
+              targetId={props.message.reply_to_message_id ?? props.message.reply_to?.id}
+            />
+          </Show>
         </Show>
         <Show when={props.editing} fallback={<MessageBody message={props.message} />}>
           <form
@@ -273,10 +282,33 @@ export default function ThreadPanel(props: {
   const updateMessageInThread = (message: Message) => {
     mutate((current) => {
       if (!current) return current;
-      if (current.root.id === message.id) return { ...current, root: message };
+      const reference = messageReferenceFromMessage(message);
+      const patchReference = (candidate: Message) =>
+        messageReferencesTarget(candidate, message.id)
+          ? { ...candidate, reply_to_message_id: message.id, reply_to: reference }
+          : candidate;
+      const root = current.root.id === message.id ? message : patchReference(current.root);
       return {
         ...current,
-        replies: current.replies.map((reply) => (reply.id === message.id ? message : reply)),
+        root,
+        replies: current.replies.map((reply) =>
+          reply.id === message.id ? message : patchReference(reply),
+        ),
+      };
+    });
+  };
+
+  const markReferencedMessageUnavailable = (messageId: number) => {
+    mutate((current) => {
+      if (!current) return current;
+      const patchReference = (candidate: Message) =>
+        messageReferencesTarget(candidate, messageId)
+          ? { ...candidate, reply_to_message_id: messageId, reply_to: null }
+          : candidate;
+      return {
+        ...current,
+        root: patchReference(current.root),
+        replies: current.replies.map((reply) => patchReference(reply)),
       };
     });
   };
@@ -399,8 +431,11 @@ export default function ThreadPanel(props: {
     });
     const unsubscribeUpdated = events.onMessageUpdated((message) => {
       if (message.channel_id !== props.channelId) return;
-      if (message.id !== props.rootMessageId && message.parent_id !== props.rootMessageId) return;
       updateMessageInThread(message);
+    });
+    const unsubscribeMessageDeleted = events.onMessageDeleted((event) => {
+      if (event.channel_id !== props.channelId) return;
+      markReferencedMessageUnavailable(event.id);
     });
     const unsubscribeEmbeds = events.onMessageEmbedsUpdated((event) => {
       if (event.channel_id !== props.channelId) return;
@@ -469,6 +504,7 @@ export default function ThreadPanel(props: {
       unsubscribeCreated();
       unsubscribeDeleted();
       unsubscribeUpdated();
+      unsubscribeMessageDeleted();
       unsubscribeEmbeds();
       unsubscribeReactions();
     });

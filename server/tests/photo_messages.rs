@@ -7,9 +7,9 @@ use std::io::Cursor;
 use actix_web::http::header::{CONTENT_TYPE, ContentType};
 use actix_web::{App, http::StatusCode, test, web};
 use common::{TestCtx, insert_message, make_tmp_uploads_dir};
-use hamlet::{AttachmentStorage, configure_app, entity};
+use hamlet::{AttachmentStorage, configure_app, entity, generate_id, now_unix_micros};
 use image::{ImageFormat, Rgb, RgbImage, Rgba, RgbaImage};
-use sea_orm::EntityTrait;
+use sea_orm::{ActiveModelTrait, EntityTrait, Set};
 
 struct MultipartPart {
     name: &'static str,
@@ -19,8 +19,16 @@ struct MultipartPart {
 }
 
 fn text_part(value: &str) -> MultipartPart {
+    field_part("text", value)
+}
+
+fn reply_to_part(value: &str) -> MultipartPart {
+    field_part("reply_to_message_id", value)
+}
+
+fn field_part(name: &'static str, value: &str) -> MultipartPart {
     MultipartPart {
-        name: "text",
+        name,
         filename: None,
         content_type: None,
         bytes: value.as_bytes().to_vec(),
@@ -34,6 +42,30 @@ fn photo_part(bytes: Vec<u8>, content_type: &'static str) -> MultipartPart {
         content_type: Some(content_type),
         bytes,
     }
+}
+
+async fn insert_attachment(db: &sea_orm::DatabaseConnection, message_id: i64) -> i64 {
+    let id = generate_id();
+    entity::message_attachment::ActiveModel {
+        id: Set(id),
+        message_id: Set(message_id),
+        position: Set(0),
+        content_type: Set("image/webp".to_owned()),
+        byte_size: Set(12_345),
+        width: Set(640),
+        height: Set(480),
+        storage_path: Set(format!("attachments/{id}/full.webp")),
+        thumbnail_content_type: Set("image/webp".to_owned()),
+        thumbnail_byte_size: Set(2_345),
+        thumbnail_width: Set(320),
+        thumbnail_height: Set(240),
+        thumbnail_storage_path: Set(format!("attachments/{id}/thumb.webp")),
+        created_at: Set(now_unix_micros()),
+    }
+    .insert(db)
+    .await
+    .unwrap();
+    id
 }
 
 fn multipart_payload(parts: Vec<MultipartPart>) -> (String, Vec<u8>) {
@@ -62,6 +94,14 @@ fn multipart_payload(parts: Vec<MultipartPart>) -> (String, Vec<u8>) {
     }
     body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
     (format!("multipart/form-data; boundary={boundary}"), body)
+}
+
+fn assert_reply_metadata_null(message: &serde_json::Value) {
+    assert_eq!(
+        message.get("reply_to_message_id"),
+        Some(&serde_json::Value::Null)
+    );
+    assert_eq!(message.get("reply_to"), Some(&serde_json::Value::Null));
 }
 
 fn tiny_image(width: u32, height: u32, format: ImageFormat) -> Vec<u8> {
@@ -200,6 +240,7 @@ async fn test_multipart_create_requires_auth() {
     .await;
     let (content_type, body) = multipart_payload(vec![
         text_part("hello"),
+        reply_to_part("123"),
         photo_part(tiny_png(4, 2), "image/png"),
     ]);
 
@@ -355,6 +396,238 @@ async fn test_multipart_text_plus_photo_creates_served_attachment_and_sse_payloa
 }
 
 #[actix_web::test]
+async fn test_multipart_inline_reply_persists_reference_and_attachment() {
+    let ctx = TestCtx::new().await;
+    let alice = ctx.register("alice", "hunter2").await;
+    let target_id =
+        insert_message(&ctx.db, alice.user_id, ctx.channel_id, "photo reply target").await;
+    let private_dir = make_tmp_uploads_dir();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(AttachmentStorage {
+                dir: private_dir.clone(),
+            }))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
+    let (content_type, body) = multipart_payload(vec![
+        text_part("photo inline reply"),
+        reply_to_part(&target_id.to_string()),
+        photo_part(tiny_png(4, 4), "image/png"),
+    ]);
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{}", ctx.channel_id))
+        .insert_header((CONTENT_TYPE, content_type))
+        .insert_header(alice.cookie_header())
+        .set_payload(body)
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let created: serde_json::Value = test::read_body_json(resp).await;
+    let created_id = created["id"].as_i64().unwrap();
+
+    assert_eq!(created["parent_id"], serde_json::Value::Null);
+    assert_eq!(created["reply_to_message_id"], target_id);
+    assert_eq!(created["reply_to"]["id"], target_id);
+    assert_eq!(created["reply_to"]["text"], "photo reply target");
+    assert_eq!(created["attachments"].as_array().unwrap().len(), 1);
+
+    let stored = entity::message::Entity::find_by_id(created_id)
+        .one(&ctx.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.parent_id, None);
+    assert_eq!(stored.reply_to_message_id, Some(target_id));
+
+    let history_req = test::TestRequest::get()
+        .uri(&format!("/messages/{}", ctx.channel_id))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, history_req).await).await;
+    let created_row = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == created_id)
+        .unwrap();
+    assert_eq!(created_row["reply_to"]["id"], target_id);
+    assert_eq!(created_row["attachments"].as_array().unwrap().len(), 1);
+
+    std::fs::remove_dir_all(&private_dir).ok();
+}
+
+#[actix_web::test]
+async fn test_multipart_inline_reply_rejects_invalid_targets_with_clear_errors() {
+    let ctx = TestCtx::new().await;
+    let alice = ctx.register("alice", "hunter2").await;
+    let other_channel_id = generate_id();
+    entity::channel::ActiveModel {
+        id: Set(other_channel_id),
+        name: Set("random".to_owned()),
+        position: Set(1),
+        channel_type: Set("text".to_owned()),
+    }
+    .insert(&ctx.db)
+    .await
+    .unwrap();
+    let same_channel_target =
+        insert_message(&ctx.db, alice.user_id, ctx.channel_id, "target").await;
+    let cross_channel_target =
+        insert_message(&ctx.db, alice.user_id, other_channel_id, "cross").await;
+    let thread_reply_target = generate_id();
+    entity::message::ActiveModel {
+        id: Set(thread_reply_target),
+        user_id: Set(alice.user_id),
+        channel_id: Set(ctx.channel_id),
+        parent_id: Set(Some(same_channel_target)),
+        reply_to_message_id: Set(None),
+        created_at: Set(1_700_000_000_000_000),
+        deleted_at: Set(None),
+        text: Set("thread reply target".to_owned()),
+        suppress_embeds: Set(false),
+    }
+    .insert(&ctx.db)
+    .await
+    .unwrap();
+    let deleted_target = generate_id();
+    entity::message::ActiveModel {
+        id: Set(deleted_target),
+        user_id: Set(alice.user_id),
+        channel_id: Set(ctx.channel_id),
+        parent_id: Set(None),
+        reply_to_message_id: Set(None),
+        created_at: Set(1_700_000_001_000_000),
+        deleted_at: Set(Some(1_700_000_002_000_000)),
+        text: Set(String::new()),
+        suppress_embeds: Set(true),
+    }
+    .insert(&ctx.db)
+    .await
+    .unwrap();
+    let private_dir = make_tmp_uploads_dir();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(AttachmentStorage {
+                dir: private_dir.clone(),
+            }))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
+
+    for (raw_target, status, kind) in [
+        (
+            "not-a-number".to_owned(),
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+        ),
+        (
+            "0".to_owned(),
+            StatusCode::BAD_REQUEST,
+            "reply_target_unsafe",
+        ),
+        (
+            "-1".to_owned(),
+            StatusCode::BAD_REQUEST,
+            "reply_target_unsafe",
+        ),
+        (
+            "9007199254740992".to_owned(),
+            StatusCode::BAD_REQUEST,
+            "reply_target_unsafe",
+        ),
+        (
+            "9000000000000000".to_owned(),
+            StatusCode::NOT_FOUND,
+            "reply_target_not_found",
+        ),
+        (
+            cross_channel_target.to_string(),
+            StatusCode::BAD_REQUEST,
+            "reply_target_cross_channel",
+        ),
+        (
+            thread_reply_target.to_string(),
+            StatusCode::BAD_REQUEST,
+            "reply_target_not_top_level",
+        ),
+        (
+            deleted_target.to_string(),
+            StatusCode::BAD_REQUEST,
+            "reply_target_deleted",
+        ),
+    ] {
+        let (content_type, body) = multipart_payload(vec![
+            text_part("bad multipart target"),
+            reply_to_part(&raw_target),
+        ]);
+        let req = test::TestRequest::post()
+            .uri(&format!("/message/{}", ctx.channel_id))
+            .insert_header((CONTENT_TYPE, content_type))
+            .insert_header(alice.cookie_header())
+            .set_payload(body)
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), status);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["error"]["kind"], kind);
+    }
+
+    std::fs::remove_dir_all(&private_dir).ok();
+}
+
+#[actix_web::test]
+async fn test_multipart_thread_reply_rejects_inline_reply_target() {
+    let ctx = TestCtx::new().await;
+    let alice = ctx.register("alice", "hunter2").await;
+    let root_id = insert_message(&ctx.db, alice.user_id, ctx.channel_id, "root").await;
+    let target_id = insert_message(&ctx.db, alice.user_id, ctx.channel_id, "target").await;
+    let private_dir = make_tmp_uploads_dir();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(AttachmentStorage {
+                dir: private_dir.clone(),
+            }))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
+
+    let (content_type, body) = multipart_payload(vec![
+        text_part("thread reply with inline target"),
+        reply_to_part(&target_id.to_string()),
+    ]);
+    let req = test::TestRequest::post()
+        .uri(&format!("/thread/{root_id}/reply"))
+        .insert_header((CONTENT_TYPE, content_type))
+        .insert_header(alice.cookie_header())
+        .set_payload(body)
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = test::read_body_json(resp).await;
+    assert_eq!(body["error"]["kind"], "thread_inline_reply_not_allowed");
+
+    let (content_type, body) = multipart_payload(vec![
+        text_part("ordinary thread reply"),
+        reply_to_part("null"),
+    ]);
+    let req = test::TestRequest::post()
+        .uri(&format!("/thread/{root_id}/reply"))
+        .insert_header((CONTENT_TYPE, content_type))
+        .insert_header(alice.cookie_header())
+        .set_payload(body)
+        .to_request();
+    let created: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(created["parent_id"], root_id);
+    assert_reply_metadata_null(&created);
+
+    std::fs::remove_dir_all(&private_dir).ok();
+}
+
+#[actix_web::test]
 async fn test_multipart_photo_only_message_succeeds_and_history_reloads_attachment() {
     let ctx = TestCtx::new().await;
     let alice = ctx.register("alice", "hunter2").await;
@@ -393,6 +666,140 @@ async fn test_multipart_photo_only_message_succeeds_and_history_reloads_attachme
         history[0]["attachments"][0]["url"],
         format!("/attachments/{attachment_id}")
     );
+
+    std::fs::remove_dir_all(&private_dir).ok();
+}
+
+#[actix_web::test]
+async fn test_multipart_inline_reply_text_plus_photo_hydrates_reference_and_sse_payload() {
+    let ctx = TestCtx::new().await;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob = ctx.register("bob", "hunter2").await;
+    let target_id = insert_message(&ctx.db, bob.user_id, ctx.channel_id, "target caption").await;
+    let private_dir = make_tmp_uploads_dir();
+    let mut rx = ctx.broadcaster.test_client();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(AttachmentStorage {
+                dir: private_dir.clone(),
+            }))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
+    let (content_type, body) = multipart_payload(vec![
+        text_part("reply caption"),
+        reply_to_part(&target_id.to_string()),
+        photo_part(tiny_png(8, 4), "image/png"),
+    ]);
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{}", ctx.channel_id))
+        .insert_header((CONTENT_TYPE, content_type))
+        .insert_header(alice.cookie_header())
+        .set_payload(body)
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let created: serde_json::Value = test::read_body_json(resp).await;
+    let created_id = created["id"].as_i64().unwrap();
+    let attachment_id = created["attachments"][0]["id"].as_i64().unwrap();
+
+    assert_eq!(created["parent_id"], serde_json::Value::Null);
+    assert_eq!(created["reply_to_message_id"], target_id);
+    assert_eq!(created["reply_to"]["id"], target_id);
+    assert_eq!(created["reply_to"]["text"], "target caption");
+    assert_eq!(created["reply_to"]["username"], "bob");
+    assert_eq!(created["text"], "reply caption");
+    assert_eq!(created["attachments"][0]["message_id"], created_id);
+
+    let stored = entity::message::Entity::find_by_id(created_id)
+        .one(&ctx.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.parent_id, None);
+    assert_eq!(stored.reply_to_message_id, Some(target_id));
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for multipart inline reply SSE")
+        .expect("broadcast channel closed");
+    let event_str = format!("{:?}", event);
+    assert!(event_str.contains("kind\\\":\\\"message\\\""));
+    assert!(event_str.contains(&format!("\\\"reply_to_message_id\\\":{target_id}")));
+    assert!(event_str.contains("\\\"reply_to\\\":{"));
+    assert!(event_str.contains(&format!("\\\"id\\\":{attachment_id}")));
+
+    let history_req = test::TestRequest::get()
+        .uri(&format!("/messages/{}", ctx.channel_id))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, history_req).await).await;
+    let created_history = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["id"] == created_id)
+        .unwrap();
+    assert_eq!(created_history["reply_to"]["id"], target_id);
+    assert_eq!(created_history["attachments"][0]["id"], attachment_id);
+
+    std::fs::remove_dir_all(&private_dir).ok();
+}
+
+#[actix_web::test]
+async fn test_multipart_photo_only_inline_reply_to_attachment_target_hydrates_metadata() {
+    let ctx = TestCtx::new().await;
+    let alice = ctx.register("alice", "hunter2").await;
+    let target_id = insert_message(&ctx.db, alice.user_id, ctx.channel_id, "").await;
+    insert_attachment(&ctx.db, target_id).await;
+    let private_dir = make_tmp_uploads_dir();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(AttachmentStorage {
+                dir: private_dir.clone(),
+            }))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
+    let (content_type, body) = multipart_payload(vec![
+        reply_to_part(&target_id.to_string()),
+        photo_part(tiny_png(3, 5), "image/png"),
+    ]);
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{}", ctx.channel_id))
+        .insert_header((CONTENT_TYPE, content_type))
+        .insert_header(alice.cookie_header())
+        .set_payload(body)
+        .to_request();
+    let created: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let created_id = created["id"].as_i64().unwrap();
+    let attachment_id = created["attachments"][0]["id"].as_i64().unwrap();
+
+    assert_eq!(created["text"], "");
+    assert_eq!(created["reply_to_message_id"], target_id);
+    assert_eq!(created["reply_to"]["id"], target_id);
+    assert_eq!(created["reply_to"]["text"], "");
+    assert_eq!(created["reply_to"]["attachment_count"], 1);
+    assert_eq!(created["attachments"][0]["message_id"], created_id);
+
+    let history_req = test::TestRequest::get()
+        .uri(&format!("/messages/{}", ctx.channel_id))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, history_req).await).await;
+    let created_history = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["id"] == created_id)
+        .unwrap();
+    assert_eq!(created_history["reply_to"]["attachment_count"], 1);
+    assert_eq!(created_history["attachments"][0]["id"], attachment_id);
 
     std::fs::remove_dir_all(&private_dir).ok();
 }

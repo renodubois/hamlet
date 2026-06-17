@@ -77,6 +77,7 @@ function mount(
   currentUserId: number | null,
   onOpenThread?: (message: Message, options?: { focusComposer?: boolean }) => void,
   onReactionsChange?: (messageId: number, reactions: import("../api").ReactionSummary[]) => void,
+  onReplyToMessage?: (message: Message) => void,
 ) {
   return render(() => (
     <ChannelMessages
@@ -86,6 +87,7 @@ function mount(
       currentUserId={currentUserId}
       onOpenThread={onOpenThread}
       onReactionsChange={onReactionsChange}
+      onReplyToMessage={onReplyToMessage}
     />
   ));
 }
@@ -931,6 +933,113 @@ describe("<ChannelMessages> hover action toolbar", () => {
     expect(onOpenThread).toHaveBeenCalledWith(otherMessage, { focusComposer: true });
   });
 
+  test("renders inline Reply for own and other top-level messages without replacing thread Reply", () => {
+    const onOpenThread = vi.fn();
+    const onReplyToMessage = vi.fn();
+    mount([ownMessage, otherMessage], SELF_ID, onOpenThread, undefined, onReplyToMessage);
+
+    fireEvent.click(screen.getByRole("button", { name: /reply inline to message by me/i }));
+    fireEvent.click(screen.getByRole("button", { name: /reply inline to message by them/i }));
+
+    expect(onReplyToMessage).toHaveBeenNthCalledWith(1, ownMessage);
+    expect(onReplyToMessage).toHaveBeenNthCalledWith(2, otherMessage);
+    expect(
+      screen.getByRole("button", { name: /reply in thread to message by me/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /reply in thread to message by them/i }),
+    ).toBeInTheDocument();
+    expect(onOpenThread).not.toHaveBeenCalled();
+  });
+
+  test("reply toolbar labels identify rich referenced messages and pass axe", async () => {
+    localStorage.setItem("hamlet.serverUrl", "http://hamlet.test:4040");
+    const onOpenThread = vi.fn();
+    const onReplyToMessage = vi.fn();
+    const richMessage = makeMessage({
+      ...otherMessage,
+      id: 703,
+      text: "message with photos, embeds, reactions, and a thread",
+      attachments: [makeAttachment({ id: 8701, message_id: 703 })],
+      embeds: [
+        {
+          id: 9701,
+          message_id: 703,
+          url: "https://example.com/rich",
+          title: "Rich embed",
+          description: "An embedded preview",
+          image_url: null,
+          site_name: "Example",
+          embed_type: "link",
+          iframe_url: null,
+          iframe_width: null,
+          iframe_height: null,
+        },
+      ],
+      reactions: [{ kind: "native", emoji: "👍", count: 1, me_reacted: false }],
+      thread_summary: { reply_count: 2, last_reply_created_at: 1_700_000_000_000_000 },
+    });
+    const { container } = mount([richMessage], SELF_ID, onOpenThread, undefined, onReplyToMessage);
+
+    const toolbar = screen.getByRole("toolbar", {
+      name: /message actions for message by them: message with photos, embeds, reactions, and a thread/i,
+    });
+    const inlineReply = within(toolbar).getByRole("button", {
+      name: /reply inline to message by them: message with photos, embeds, reactions, and a thread/i,
+    });
+    const threadReply = within(toolbar).getByRole("button", {
+      name: /reply in thread to message by them: message with photos, embeds, reactions, and a thread/i,
+    });
+
+    expect(inlineReply).toHaveTextContent("Reply");
+    expect(threadReply).toHaveTextContent("Thread");
+    fireEvent.click(inlineReply);
+    fireEvent.click(threadReply);
+
+    expect(onReplyToMessage).toHaveBeenCalledWith(richMessage);
+    expect(onOpenThread).toHaveBeenCalledWith(richMessage, { focusComposer: true });
+    await expectNoA11yViolations(container, "rich message reply toolbar");
+  });
+
+  test("inline Reply action is keyboard focusable and activatable", async () => {
+    const user = userEvent.setup();
+    const onReplyToMessage = vi.fn();
+    mount([otherMessage], SELF_ID, undefined, undefined, onReplyToMessage);
+    const button = screen.getByRole("button", { name: /reply inline to message by them/i });
+
+    button.focus();
+    expect(document.activeElement).toBe(button);
+
+    await user.keyboard("{Enter}");
+    expect(onReplyToMessage).toHaveBeenCalledWith(otherMessage);
+
+    await user.keyboard(" ");
+    expect(onReplyToMessage).toHaveBeenCalledTimes(2);
+  });
+
+  test("does not render inline Reply for deleted messages or thread replies", () => {
+    const onReplyToMessage = vi.fn();
+    mount(
+      [
+        makeMessage({
+          id: 701,
+          user_id: OTHER_ID,
+          channel_id: 1,
+          text: "",
+          username: "them",
+          deleted_at: 1_700_000_100,
+        }),
+        { ...otherMessage, id: 702, parent_id: ownMessage.id },
+      ],
+      SELF_ID,
+      undefined,
+      undefined,
+      onReplyToMessage,
+    );
+
+    expect(screen.queryByRole("button", { name: /reply inline/i })).toBeNull();
+  });
+
   test("reply-in-thread action is keyboard focusable", async () => {
     mount([otherMessage], SELF_ID, vi.fn());
     const button = screen.getByRole("button", { name: /reply in thread to message by them/i });
@@ -999,7 +1108,183 @@ describe("<ChannelMessages> hover action toolbar", () => {
     expect(screen.queryByRole("toolbar", { name: /message actions/i })).toBeNull();
   });
 
-  test("renders message content in text, attachments, embeds, reactions, thread summary order", () => {
+  test("renders inline reply preview before the reply body and passes axe", async () => {
+    const reply = makeMessage({
+      id: 609,
+      user_id: SELF_ID,
+      channel_id: 1,
+      text: "reply body",
+      username: "me",
+      reply_to_message_id: otherMessage.id,
+      reply_to: {
+        id: otherMessage.id,
+        user_id: otherMessage.user_id,
+        channel_id: otherMessage.channel_id,
+        created_at: 1_700_000_000_000_000,
+        deleted_at: null,
+        text: "target text that is previewed",
+        attachment_count: 0,
+        username: otherMessage.username,
+        display_name: otherMessage.display_name,
+        avatar_url: otherMessage.avatar_url,
+      },
+    });
+    const { container } = mount([otherMessage, reply], SELF_ID);
+
+    const preview = screen.getByLabelText(/replying to them/i);
+    const body = screen.getByText("reply body");
+
+    expect(preview).toHaveTextContent("them");
+    expect(preview).toHaveTextContent("target text that is previewed");
+    expect(preview.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await expectNoA11yViolations(container, "inline reply preview");
+  });
+
+  test("can inline-reply to an inline reply and renders only the direct target", () => {
+    const original = makeMessage({
+      id: 611,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "original text should not be in the nested preview",
+      username: "them",
+    });
+    const inlineTarget = makeMessage({
+      id: 612,
+      user_id: SELF_ID,
+      channel_id: 1,
+      parent_id: null,
+      text: "direct inline target",
+      username: "me",
+      reply_to_message_id: original.id,
+      reply_to: {
+        id: original.id,
+        user_id: original.user_id,
+        channel_id: original.channel_id,
+        created_at: 1_700_000_000_000_000,
+        text: original.text,
+        username: original.username,
+        display_name: original.display_name,
+        avatar_url: original.avatar_url,
+      },
+    });
+    const nestedReply = makeMessage({
+      id: 613,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      parent_id: null,
+      text: "nested inline body",
+      username: "them",
+      reply_to_message_id: inlineTarget.id,
+      reply_to: {
+        id: inlineTarget.id,
+        user_id: inlineTarget.user_id,
+        channel_id: inlineTarget.channel_id,
+        created_at: 1_700_000_001_000_000,
+        text: inlineTarget.text,
+        username: inlineTarget.username,
+        display_name: inlineTarget.display_name,
+        avatar_url: inlineTarget.avatar_url,
+      },
+    });
+    const onReplyToMessage = vi.fn();
+    mount([inlineTarget, nestedReply], SELF_ID, undefined, undefined, onReplyToMessage);
+
+    fireEvent.click(screen.getByRole("button", { name: /reply inline to message by me/i }));
+    const preview = screen.getByLabelText(/replying to me/i);
+
+    expect(onReplyToMessage).toHaveBeenCalledWith(inlineTarget);
+    expect(preview).toHaveTextContent("direct inline target");
+    expect(preview).not.toHaveTextContent("original text should not be in the nested preview");
+  });
+
+  test("uses an attachment fallback for attachment-only inline reply previews", () => {
+    const reply = makeMessage({
+      id: 614,
+      user_id: SELF_ID,
+      channel_id: 1,
+      text: "replying to a photo",
+      username: "me",
+      reply_to_message_id: otherMessage.id,
+      reply_to: {
+        id: otherMessage.id,
+        user_id: otherMessage.user_id,
+        channel_id: otherMessage.channel_id,
+        created_at: 1_700_000_000_000_000,
+        text: "",
+        attachment_count: 1,
+        username: otherMessage.username,
+        display_name: otherMessage.display_name,
+        avatar_url: otherMessage.avatar_url,
+      },
+    });
+    mount([reply], SELF_ID);
+
+    const preview = screen.getByLabelText(/replying to them: attachment/i);
+    expect(preview).toHaveTextContent("Attachment");
+    expect(preview).not.toHaveTextContent("No text");
+  });
+
+  test("renders deleted and unavailable inline reply preview fallbacks", () => {
+    const deletedTargetReply = makeMessage({
+      id: 615,
+      user_id: SELF_ID,
+      channel_id: 1,
+      text: "reply to deleted",
+      username: "me",
+      reply_to_message_id: otherMessage.id,
+      reply_to: {
+        id: otherMessage.id,
+        user_id: otherMessage.user_id,
+        channel_id: otherMessage.channel_id,
+        created_at: 1_700_000_000_000_000,
+        deleted_at: 1_700_000_100_000_000,
+        text: "hidden target text",
+        username: otherMessage.username,
+        display_name: otherMessage.display_name,
+        avatar_url: otherMessage.avatar_url,
+      },
+    });
+    const missingTargetReply = makeMessage({
+      id: 616,
+      user_id: SELF_ID,
+      channel_id: 1,
+      text: "reply to missing",
+      username: "me",
+      reply_to_message_id: 999,
+      reply_to: null,
+    });
+    const deletedReplyWithReference = makeMessage({
+      id: 617,
+      user_id: SELF_ID,
+      channel_id: 1,
+      text: "",
+      username: "me",
+      deleted_at: 1_700_000_200_000_000,
+      reply_to_message_id: otherMessage.id,
+      reply_to: {
+        id: otherMessage.id,
+        user_id: otherMessage.user_id,
+        channel_id: otherMessage.channel_id,
+        created_at: 1_700_000_000_000_000,
+        text: "should not render",
+        username: otherMessage.username,
+        display_name: otherMessage.display_name,
+        avatar_url: otherMessage.avatar_url,
+      },
+    });
+    mount([deletedTargetReply, missingTargetReply, deletedReplyWithReference], SELF_ID);
+
+    expect(screen.getByLabelText(/replying to deleted message by them/i)).toHaveTextContent(
+      "Original message deleted",
+    );
+    expect(screen.getByLabelText(/replying to unavailable message 999/i)).toHaveTextContent(
+      "Original message unavailable",
+    );
+    expect(screen.queryByText("hidden target text")).toBeNull();
+    expect(screen.queryByText("should not render")).toBeNull();
+  });
+
+  test("renders message content in reference, text, attachments, embeds, reactions, thread summary order", () => {
     localStorage.setItem("hamlet.serverUrl", "http://hamlet.test:4040");
     const placed = makeMessage({
       id: 610,
@@ -1008,6 +1293,17 @@ describe("<ChannelMessages> hover action toolbar", () => {
       text: "body before attachments",
       username: "them",
       display_name: "Riley",
+      reply_to_message_id: 700,
+      reply_to: {
+        id: 700,
+        user_id: 70,
+        channel_id: 1,
+        created_at: 1_700_000_000_000_000,
+        text: "referenced caption",
+        username: "morgan",
+        display_name: "Morgan",
+        avatar_url: null,
+      },
       attachments: [makeAttachment({ id: 7001, message_id: 610 })],
       embeds: [
         {
@@ -1029,6 +1325,7 @@ describe("<ChannelMessages> hover action toolbar", () => {
     });
     mount([placed], SELF_ID, vi.fn());
 
+    const preview = screen.getByLabelText(/replying to morgan: referenced caption/i);
     const body = screen.getByText("body before attachments");
     const attachments = screen.getByRole("list", { name: /1 photo attachment/i });
     const image = screen.getByRole("img", { name: /photo attachment from riley/i });
@@ -1041,6 +1338,7 @@ describe("<ChannelMessages> hover action toolbar", () => {
 
     expect(image).toHaveAttribute("src", "http://hamlet.test:4040/attachments/7001/thumbnail");
     expect(fullImageButton).toBeEnabled();
+    expect(preview.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(
       body.compareDocumentPosition(attachments) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();

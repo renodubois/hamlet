@@ -39,6 +39,19 @@ export interface MessageAttachment {
   thumbnail_height: number;
 }
 
+export interface MessageReference {
+  id: number;
+  user_id: number;
+  channel_id: number;
+  created_at: number;
+  deleted_at?: number | null;
+  text: string;
+  attachment_count?: number;
+  username: string;
+  display_name: string | null;
+  avatar_url: string | null;
+}
+
 export type ReactionSummary =
   | {
       kind: "native";
@@ -85,6 +98,8 @@ export interface Message {
   user_id: number;
   channel_id: number;
   parent_id?: number | null;
+  reply_to_message_id?: number | null;
+  reply_to?: MessageReference | null;
   created_at?: number;
   deleted_at?: number | null;
   text: string;
@@ -116,6 +131,10 @@ export interface ThreadPageOptions {
   limit?: number;
   beforeCreatedAt?: number;
   beforeId?: number;
+}
+
+export interface SendMessageOptions {
+  replyToMessageId?: number | null;
 }
 
 export interface MessageDeleted {
@@ -157,6 +176,25 @@ export function messageDisplayName(msg: Pick<Message, "username" | "display_name
   return msg.display_name ?? msg.username;
 }
 
+export function messageReferenceFromMessage(message: Message): MessageReference {
+  return {
+    id: message.id,
+    user_id: message.user_id,
+    channel_id: message.channel_id,
+    created_at: message.created_at ?? message.id,
+    deleted_at: message.deleted_at ?? null,
+    text: message.text,
+    attachment_count: message.attachments.length,
+    username: message.username,
+    display_name: message.display_name,
+    avatar_url: message.avatar_url,
+  };
+}
+
+export function messageReferencesTarget(message: Message, targetId: number): boolean {
+  return message.reply_to_message_id === targetId || message.reply_to?.id === targetId;
+}
+
 export async function listMessages(channelId: string): Promise<Message[]> {
   const res = await apiFetch(`/messages/${channelId}`);
   return res.json() as Promise<Message[]>;
@@ -166,12 +204,15 @@ export async function sendMessage(
   channelId: string,
   text: string,
   photos: readonly File[] = [],
+  options: SendMessageOptions = {},
 ): Promise<Response> {
   if (photos.length === 0) {
+    const body: { text: string; reply_to_message_id?: number } = { text };
+    if (options.replyToMessageId != null) body.reply_to_message_id = options.replyToMessageId;
     return apiFetch(`/message/${channelId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(body),
     });
   }
 
@@ -179,6 +220,9 @@ export async function sendMessage(
 
   const body = new FormData();
   body.append("text", text);
+  if (options.replyToMessageId != null) {
+    body.append("reply_to_message_id", String(options.replyToMessageId));
+  }
   for (const photo of photos) body.append("photos", photo, photo.name);
 
   return apiFetch(`/message/${channelId}`, {

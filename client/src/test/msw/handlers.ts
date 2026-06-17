@@ -13,6 +13,7 @@ import type {
 } from "../../api";
 
 const BASE = import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL ?? "http://127.0.0.1:3030";
+const MAX_SAFE_MESSAGE_ID = Number.MAX_SAFE_INTEGER;
 
 export const DEV_USER: User = {
   id: 1,
@@ -33,6 +34,7 @@ export interface HandlerState {
   messages: Record<string, Message[]>;
   validCredentials: { username: string; password: string };
   sentMessages: { channel: string; text: string }[];
+  sentInlineReplies: { channel: string; text: string; replyToMessageId: number }[];
   sentMessagePhotos: {
     channel: string;
     text: string;
@@ -80,6 +82,7 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     messages: { "100": [] },
     validCredentials: { username: "baipas", password: "password" },
     sentMessages: [],
+    sentInlineReplies: [],
     sentMessagePhotos: [],
     threadReplies: {},
     sentThreadReplies: [],
@@ -132,6 +135,24 @@ function attachmentFromUploadedPhoto(
   };
 }
 
+function withReplyMetadataDefaults(message: Message): Message {
+  return {
+    ...message,
+    reply_to_message_id: message.reply_to_message_id ?? null,
+    reply_to: message.reply_to
+      ? {
+          ...message.reply_to,
+          deleted_at: message.reply_to.deleted_at ?? null,
+          attachment_count: message.reply_to.attachment_count ?? 0,
+        }
+      : null,
+  };
+}
+
+function withReplyMetadataDefaultsList(messages: Message[]): Message[] {
+  return messages.map((message) => withReplyMetadataDefaults(message));
+}
+
 function findMessageById(currentState: HandlerState, id: number): Message | undefined {
   for (const list of Object.values(currentState.messages)) {
     const message = list.find((m) => m.id === id);
@@ -142,6 +163,99 @@ function findMessageById(currentState: HandlerState, id: number): Message | unde
     if (message) return message;
   }
   return undefined;
+}
+
+function errorJson(kind: string, message: string, status: number): Response {
+  return HttpResponse.json({ error: { kind, message } }, { status });
+}
+
+type ReplyTargetResult =
+  | { ok: true; replyToMessageId: number | null }
+  | { ok: false; response: Response };
+
+function parseJsonReplyTarget(value: unknown): ReplyTargetResult {
+  if (value == null) return { ok: true, replyToMessageId: null };
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    return {
+      ok: false,
+      response: errorJson(
+        Number.isFinite(value) ? "reply_target_unsafe" : "invalid_request",
+        "reply target id must be a safe positive integer",
+        400,
+      ),
+    };
+  }
+  return { ok: true, replyToMessageId: value };
+}
+
+function parseFormReplyTarget(value: FormDataEntryValue | null): ReplyTargetResult {
+  if (value === null) return { ok: true, replyToMessageId: null };
+  if (typeof value !== "string") {
+    return { ok: false, response: errorJson("invalid_request", "invalid request", 400) };
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.toLowerCase() === "null") {
+    return { ok: true, replyToMessageId: null };
+  }
+  if (/^-\d+$/.test(trimmed)) {
+    return {
+      ok: false,
+      response: errorJson(
+        "reply_target_unsafe",
+        "reply target id must be a safe positive integer",
+        400,
+      ),
+    };
+  }
+  if (!/^\d+$/.test(trimmed)) {
+    return { ok: false, response: errorJson("invalid_request", "invalid request", 400) };
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > MAX_SAFE_MESSAGE_ID) {
+    return {
+      ok: false,
+      response: errorJson(
+        "reply_target_unsafe",
+        "reply target id must be a safe positive integer",
+        400,
+      ),
+    };
+  }
+  return { ok: true, replyToMessageId: parsed };
+}
+
+function validateInlineReplyTarget(
+  currentState: HandlerState,
+  channelId: number,
+  replyToMessageId: number | null,
+): Response | null {
+  if (replyToMessageId === null) return null;
+  const target = findMessageById(currentState, replyToMessageId);
+  if (!target) {
+    return errorJson("reply_target_not_found", "reply target message was not found", 404);
+  }
+  if (target.channel_id !== channelId) {
+    return errorJson("reply_target_cross_channel", "reply target must be in the same channel", 400);
+  }
+  if (target.parent_id != null) {
+    return errorJson(
+      "reply_target_not_top_level",
+      "reply target must be a top-level channel message",
+      400,
+    );
+  }
+  if (target.deleted_at != null) {
+    return errorJson("reply_target_deleted", "reply target message was deleted", 400);
+  }
+  return null;
+}
+
+function threadInlineReplyTargetError(): Response {
+  return errorJson(
+    "thread_inline_reply_not_allowed",
+    "thread replies cannot include an inline reply target",
+    400,
+  );
 }
 
 export function createHandlers(state: HandlerState) {
@@ -304,23 +418,44 @@ export function createHandlers(state: HandlerState) {
 
     http.get(`${BASE}/messages/:id`, ({ params }) => {
       const id = String(params.id);
-      return HttpResponse.json(state.messages[id] ?? []);
+      return HttpResponse.json(withReplyMetadataDefaultsList(state.messages[id] ?? []));
     }),
 
     http.post(`${BASE}/message/:id`, async ({ request, params }) => {
+      if (!state.me) return new HttpResponse(null, { status: 401 });
       const channel = String(params.id);
       const channelId = Number(params.id);
       const requestContentType = request.headers.get("content-type")?.toLowerCase() ?? "";
       let text = "";
       let uploadedPhotos: File[] = [];
+      let replyToMessageId: number | null = null;
 
       if (requestContentType.startsWith("multipart/form-data")) {
         const form = await request.formData();
         const rawText = form.get("text");
+        const parsedTarget = parseFormReplyTarget(form.get("reply_to_message_id"));
+        if (!parsedTarget.ok) return parsedTarget.response;
         text = typeof rawText === "string" ? rawText : "";
+        replyToMessageId = parsedTarget.replyToMessageId;
         uploadedPhotos = form
           .getAll("photos")
           .filter((value): value is File => value instanceof File);
+      } else {
+        const body = (await request.json()) as { text: string; reply_to_message_id?: unknown };
+        const parsedTarget = parseJsonReplyTarget(body.reply_to_message_id);
+        if (!parsedTarget.ok) return parsedTarget.response;
+        text = body.text;
+        replyToMessageId = parsedTarget.replyToMessageId;
+      }
+
+      const validationError = validateInlineReplyTarget(state, channelId, replyToMessageId);
+      if (validationError) return validationError;
+
+      state.sentMessages.push({ channel, text });
+      if (replyToMessageId !== null) {
+        state.sentInlineReplies.push({ channel, text, replyToMessageId });
+      }
+      if (uploadedPhotos.length > 0) {
         state.sentMessagePhotos.push({
           channel,
           text,
@@ -330,18 +465,33 @@ export function createHandlers(state: HandlerState) {
             type: file.type,
           })),
         });
-      } else {
-        const body = (await request.json()) as { text: string };
-        text = body.text;
       }
-
-      state.sentMessages.push({ channel, text });
+      const replyTo =
+        replyToMessageId === null ? undefined : findMessageById(state, replyToMessageId);
+      const replyReference = replyTo
+        ? {
+            id: replyTo.id,
+            user_id: replyTo.user_id,
+            channel_id: replyTo.channel_id,
+            created_at: replyTo.created_at ?? replyTo.id,
+            ...(replyTo.deleted_at != null ? { deleted_at: replyTo.deleted_at } : {}),
+            text: replyTo.text,
+            ...(replyTo.attachments.length > 0
+              ? { attachment_count: replyTo.attachments.length }
+              : {}),
+            username: replyTo.username,
+            display_name: replyTo.display_name,
+            avatar_url: replyTo.avatar_url,
+          }
+        : undefined;
       const messageId = Math.floor(Math.random() * 1000) + 1000;
       const message: Message = {
         id: messageId,
         user_id: state.me?.id ?? 1,
         channel_id: channelId,
         parent_id: null,
+        reply_to_message_id: replyToMessageId,
+        reply_to: replyReference ?? null,
         text,
         username: state.me?.username ?? "baipas",
         display_name: state.me?.display_name ?? null,
@@ -354,7 +504,7 @@ export function createHandlers(state: HandlerState) {
         reactions: [],
       };
       state.messages[channel] = [...(state.messages[channel] ?? []), message];
-      return HttpResponse.json(message);
+      return HttpResponse.json(withReplyMetadataDefaults(message));
     }),
 
     http.get(`${BASE}/threads/participated`, () => {
@@ -379,10 +529,12 @@ export function createHandlers(state: HandlerState) {
           const lastReply = replies[replies.length - 1];
           previews.push({
             channel,
-            root,
+            root: withReplyMetadataDefaults(root),
             reply_count: replies.length,
             last_reply_created_at: lastReply.created_at ?? lastReply.id,
-            recent_replies: replies.slice(Math.max(replies.length - 3, 0)),
+            recent_replies: withReplyMetadataDefaultsList(
+              replies.slice(Math.max(replies.length - 3, 0)),
+            ),
           });
         }
       }
@@ -433,8 +585,8 @@ export function createHandlers(state: HandlerState) {
                 });
           const replies = eligibleReplies.slice(Math.max(eligibleReplies.length - limit, 0));
           const thread: Thread = {
-            root,
-            replies,
+            root: withReplyMetadataDefaults(root),
+            replies: withReplyMetadataDefaultsList(replies),
             has_more_replies: eligibleReplies.length > replies.length,
           };
           return HttpResponse.json(thread);
@@ -444,6 +596,7 @@ export function createHandlers(state: HandlerState) {
     }),
 
     http.post(`${BASE}/thread/:id/reply`, async ({ request, params }) => {
+      if (!state.me) return new HttpResponse(null, { status: 401 });
       const rootId = Number(params.id);
       const requestContentType = request.headers.get("content-type")?.toLowerCase() ?? "";
       let text = "";
@@ -451,22 +604,19 @@ export function createHandlers(state: HandlerState) {
 
       if (requestContentType.startsWith("multipart/form-data")) {
         const form = await request.formData();
+        const parsedTarget = parseFormReplyTarget(form.get("reply_to_message_id"));
+        if (!parsedTarget.ok) return parsedTarget.response;
+        if (parsedTarget.replyToMessageId !== null) return threadInlineReplyTargetError();
         const rawText = form.get("text");
         text = typeof rawText === "string" ? rawText : "";
         uploadedPhotos = form
           .getAll("photos")
           .filter((value): value is File => value instanceof File);
-        state.sentThreadReplyPhotos.push({
-          rootId,
-          text,
-          photos: uploadedPhotos.map((file) => ({
-            name: file.name,
-            size: file.size,
-            type: file.type,
-          })),
-        });
       } else {
-        const body = (await request.json()) as { text: string };
+        const body = (await request.json()) as { text: string; reply_to_message_id?: unknown };
+        const parsedTarget = parseJsonReplyTarget(body.reply_to_message_id);
+        if (!parsedTarget.ok) return parsedTarget.response;
+        if (parsedTarget.replyToMessageId !== null) return threadInlineReplyTargetError();
         text = body.text;
       }
 
@@ -483,6 +633,8 @@ export function createHandlers(state: HandlerState) {
         user_id: state.me?.id ?? 1,
         channel_id: root.channel_id,
         parent_id: rootId,
+        reply_to_message_id: null,
+        reply_to: null,
         text,
         username: state.me?.username ?? "baipas",
         display_name: state.me?.display_name ?? null,
@@ -495,8 +647,19 @@ export function createHandlers(state: HandlerState) {
         reactions: [],
       };
       state.sentThreadReplies.push({ rootId, text });
+      if (uploadedPhotos.length > 0) {
+        state.sentThreadReplyPhotos.push({
+          rootId,
+          text,
+          photos: uploadedPhotos.map((file) => ({
+            name: file.name,
+            size: file.size,
+            type: file.type,
+          })),
+        });
+      }
       state.threadReplies[String(rootId)] = [...replies, reply];
-      return HttpResponse.json(reply);
+      return HttpResponse.json(withReplyMetadataDefaults(reply));
     }),
 
     http.put(`${BASE}/message/:id`, async ({ request, params }) => {
@@ -525,7 +688,7 @@ export function createHandlers(state: HandlerState) {
         }
       }
       if (!updated) return new HttpResponse(null, { status: 404 });
-      return HttpResponse.json(updated);
+      return HttpResponse.json(withReplyMetadataDefaults(updated));
     }),
 
     http.post(`${BASE}/message/:id/reactions`, async ({ request, params }) => {

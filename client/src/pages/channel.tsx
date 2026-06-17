@@ -1,6 +1,7 @@
 import { useLocation, useNavigate, useParams } from "@solidjs/router";
 import {
   createEffect,
+  Show,
   createMemo,
   createResource,
   createSignal,
@@ -17,16 +18,31 @@ import {
 } from "../components/composer-photo-selection";
 import LocalCameraTile from "../components/local-camera-tile";
 import MessageInput from "../components/message-input";
+import MessageReferencePreview, {
+  messageReferencePreviewText,
+} from "../components/message-reference-preview";
 import RemoteCameraTiles from "../components/remote-camera-tiles";
 import ScreenShareViewer from "../components/screen-share-viewer";
 import ThreadPanel from "../components/thread-panel";
 import TypingIndicator from "../components/typing-indicator";
-import { listMessages, sendMessage, sendTyping, type Message } from "../api";
+import {
+  listMessages,
+  messageDisplayName,
+  messageReferenceFromMessage,
+  messageReferencesTarget,
+  sendMessage,
+  sendTyping,
+  type Message,
+} from "../api";
 import { useChannels } from "../contexts/channels";
 import { useEvents } from "../contexts/events";
 import { useAuth } from "../contexts/auth";
 import { TYPING_PING_INTERVAL_MS } from "../constants";
 import { mergeReactionUpdateForViewer } from "../reactions/reaction-summaries";
+
+function inlineReplyPreviewText(target: Message): string {
+  return messageReferencePreviewText(target);
+}
 
 function parseThreadId(value: string | string[] | undefined): number | null {
   const raw = Array.isArray(value) ? value[0] : value;
@@ -45,8 +61,10 @@ export default function ChannelView() {
   const channel = () => channels()?.find((c) => String(c.id) === params.id);
   const [message, setMessage] = createSignal("");
   const [submitting, setSubmitting] = createSignal(false);
+  const [replyTarget, setReplyTarget] = createSignal<Message | null>(null);
   const photoSelection = createComposerPhotoSelection();
   const photoSelectionErrorId = createUniqueId();
+  const replyBannerId = createUniqueId();
   const [focusComposerRootId, setFocusComposerRootId] = createSignal<number | null>(null);
   const openThreadRootId = createMemo(() => parseThreadId(location.query.thread));
   // The Resource owns loading/error state for the initial fetch; the Store
@@ -97,6 +115,21 @@ export default function ChannelView() {
     navigate(channelPath(), { scroll: false });
   };
 
+  const selectInlineReplyTarget = (target: Message) => {
+    if (target.deleted_at != null || target.parent_id != null) return;
+    setReplyTarget(target);
+    queueMicrotask(() => composerRef?.focus());
+  };
+
+  const dismissInlineReplyTarget = () => {
+    setReplyTarget(null);
+    queueMicrotask(() => composerRef?.focus());
+  };
+
+  createEffect(() => {
+    if (params.id) setReplyTarget(null);
+  });
+
   createEffect(() => {
     const rootId = openThreadRootId();
     if (rootId === null) {
@@ -122,16 +155,27 @@ export default function ChannelView() {
 
   const hasDraftContent = () => message().trim().length > 0 || photoSelection.photos().length > 0;
 
+  const patchVisibleReplyReferences = (targetId: number, target: Message | null) => {
+    setMessages((existing) => messageReferencesTarget(existing, targetId), {
+      reply_to_message_id: targetId,
+      reply_to: target ? messageReferenceFromMessage(target) : null,
+    });
+  };
+
   const submitMessage = async () => {
     if (submitting() || !hasDraftContent()) return;
 
     const text = message();
     const photos = photoSelection.photos().map((photo) => photo.file);
+    const target = replyTarget();
     setSubmitting(true);
     try {
-      const response = await sendMessage(params.id, text, photos);
+      const response = await sendMessage(params.id, text, photos, {
+        replyToMessageId: target?.id,
+      });
       if (!response.ok) return;
       setMessage("");
+      setReplyTarget(null);
       photoSelection.clearPhotos();
       lastTypingSentAt = 0;
       queueMicrotask(() => composerRef?.focus());
@@ -150,10 +194,16 @@ export default function ChannelView() {
     const unsubUpdated = events.onMessageUpdated((m) => {
       if (String(m.channel_id) !== params.id) return;
       setMessages((existing) => existing.id === m.id, m);
+      patchVisibleReplyReferences(m.id, m);
+      if (replyTarget()?.id === m.id) {
+        setReplyTarget(m.deleted_at == null ? m : null);
+      }
     });
     const unsubDeleted = events.onMessageDeleted((d) => {
       if (String(d.channel_id) !== params.id) return;
       setMessages((arr) => arr.filter((existing) => existing.id !== d.id));
+      patchVisibleReplyReferences(d.id, null);
+      if (replyTarget()?.id === d.id) setReplyTarget(null);
     });
     const unsubEmbeds = events.onMessageEmbedsUpdated((e) => {
       if (String(e.channel_id) !== params.id) return;
@@ -222,6 +272,7 @@ export default function ChannelView() {
             error={resource.error}
             currentUserId={user()?.id ?? null}
             onOpenThread={openThread}
+            onReplyToMessage={selectInlineReplyTarget}
             onReactionsChange={(messageId, reactions) => {
               setMessages((existing) => existing.id === messageId, { reactions });
             }}
@@ -258,6 +309,32 @@ export default function ChannelView() {
             disabled={submitting()}
             onRemove={photoSelection.removePhoto}
           />
+          <Show when={replyTarget()}>
+            {(target) => (
+              <MessageReferencePreview
+                id={replyBannerId}
+                reference={target()}
+                class="mb-2 flex min-w-0 items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-950"
+                authorClass="shrink-0 font-semibold"
+                textClass="min-w-0 flex-1 truncate text-blue-900"
+                authorPrefix="Replying to "
+                ariaLabelPrefix="Inline reply target: "
+                role="status"
+                ariaLive="polite"
+              >
+                <button
+                  type="button"
+                  class="rounded px-2 py-1 text-sm font-medium text-blue-700 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                  aria-label={`Dismiss inline reply to message by ${messageDisplayName(
+                    target(),
+                  )}: ${inlineReplyPreviewText(target())}`}
+                  onClick={dismissInlineReplyTarget}
+                >
+                  Cancel
+                </button>
+              </MessageReferencePreview>
+            )}
+          </Show>
           <div class="flex items-center gap-2">
             <PhotoAttachControl
               onFilesSelected={photoSelection.addFiles}
@@ -269,6 +346,7 @@ export default function ChannelView() {
               onChange={handleMessageChange}
               ariaLabel="New message"
               placeholder="Send a new message..."
+              describedBy={replyTarget() ? replyBannerId : undefined}
               inputRef={(el) => {
                 composerRef = el;
               }}

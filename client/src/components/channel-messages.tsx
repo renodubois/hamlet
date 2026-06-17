@@ -23,6 +23,7 @@ import EmojiPicker from "./emoji-picker";
 import { DeleteIcon, EditIcon, EmojiIcon } from "./icons";
 import MessageEmbed from "./message-embed";
 import MessageInput from "./message-input";
+import MessageReferencePreview, { messageReferencePreviewText } from "./message-reference-preview";
 import Modal from "./modal";
 import ReactionRow from "./reaction-row";
 
@@ -79,12 +80,17 @@ function replyCountLabel(count: number): string {
   return count === 1 ? "1 reply" : `${count} replies`;
 }
 
+function referencedMessageLabel(message: Message): string {
+  return `message by ${messageDisplayName(message)}: ${messageReferencePreviewText(message)}`;
+}
+
 const ChannelMessages: Component<{
   messages: readonly Message[];
   loading: boolean;
   error: unknown;
   currentUserId: number | null;
   onOpenThread?: (message: Message, options?: { focusComposer?: boolean }) => void;
+  onReplyToMessage?: (message: Message) => void;
   onReactionsChange?: (messageId: number, reactions: ReactionSummary[]) => void;
 }> = (props) => {
   const customEmojis = useOptionalCustomEmojis();
@@ -255,9 +261,13 @@ const ChannelMessages: Component<{
   const canOpenThread = (msg: Message) =>
     !isDeletedMessage(msg) && msg.parent_id == null && props.onOpenThread !== undefined;
 
+  const canInlineReply = (msg: Message) =>
+    !isDeletedMessage(msg) && msg.parent_id == null && props.onReplyToMessage !== undefined;
+
   const canReact = (msg: Message) => !isDeletedMessage(msg) && props.currentUserId !== null;
 
-  const hasAnyAction = (msg: Message) => canReact(msg) || isOwnMessage(msg) || canOpenThread(msg);
+  const hasAnyAction = (msg: Message) =>
+    canReact(msg) || isOwnMessage(msg) || canOpenThread(msg) || canInlineReply(msg);
 
   const handleContextMenu = (e: MouseEvent, msg: Message) => {
     if (!isOwnMessage(msg)) return;
@@ -294,6 +304,12 @@ const ChannelMessages: Component<{
                 }
               >
                 <div class="font-bold">{messageDisplayName(message)}</div>
+                <Show when={message.reply_to ?? message.reply_to_message_id ?? null}>
+                  <MessageReferencePreview
+                    reference={message.reply_to ?? null}
+                    targetId={message.reply_to_message_id ?? message.reply_to?.id}
+                  />
+                </Show>
                 <Show
                   when={editingId() === message.id}
                   fallback={
@@ -405,7 +421,7 @@ const ChannelMessages: Component<{
             <Show when={hasAnyAction(message) && editingId() !== message.id}>
               <div
                 role="toolbar"
-                aria-label="Message actions"
+                aria-label={`Message actions for ${referencedMessageLabel(message)}`}
                 class="absolute -top-3 right-2 flex gap-1 rounded-md border border-gray-200 bg-white shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
               >
                 <Show when={canReact(message)}>
@@ -413,7 +429,7 @@ const ChannelMessages: Component<{
                     type="button"
                     aria-label={`Add reaction to message by ${messageDisplayName(message)}`}
                     title="Add reaction"
-                    class="p-1.5 rounded-md hover:bg-gray-100"
+                    class="p-1.5 rounded-md hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
                     onClick={(event) => {
                       event.stopPropagation();
                       setReactionPicker({ messageId: message.id, anchor: event.currentTarget });
@@ -422,15 +438,26 @@ const ChannelMessages: Component<{
                     <EmojiIcon size={14} />
                   </button>
                 </Show>
+                <Show when={canInlineReply(message)}>
+                  <button
+                    type="button"
+                    aria-label={`Reply inline to ${referencedMessageLabel(message)}`}
+                    title="Reply inline"
+                    class="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    onClick={() => props.onReplyToMessage?.(message)}
+                  >
+                    Reply
+                  </button>
+                </Show>
                 <Show when={canOpenThread(message)}>
                   <button
                     type="button"
-                    aria-label={`Reply in thread to message by ${messageDisplayName(message)}`}
+                    aria-label={`Reply in thread to ${referencedMessageLabel(message)}`}
                     title="Reply in thread"
-                    class="p-1.5 rounded-md text-xs hover:bg-gray-100"
+                    class="rounded-md bg-purple-50 px-2 py-1 text-xs font-medium text-purple-700 hover:bg-purple-100 focus:outline-none focus:ring-2 focus:ring-purple-400"
                     onClick={() => props.onOpenThread?.(message, { focusComposer: true })}
                   >
-                    Reply
+                    Thread
                   </button>
                 </Show>
                 <Show when={isOwnMessage(message)}>
@@ -438,7 +465,7 @@ const ChannelMessages: Component<{
                     type="button"
                     aria-label="Edit"
                     title="Edit"
-                    class="p-1.5 rounded-md hover:bg-gray-100"
+                    class="p-1.5 rounded-md hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
                     onClick={() => startEditing(message)}
                   >
                     <EditIcon size={14} />
@@ -447,7 +474,7 @@ const ChannelMessages: Component<{
                     type="button"
                     aria-label="Delete"
                     title="Delete"
-                    class="p-1.5 rounded-md text-red-600 hover:bg-red-50"
+                    class="p-1.5 rounded-md text-red-600 hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-400"
                     onClick={() => requestDelete(message.id)}
                   >
                     <DeleteIcon size={14} />

@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@solidjs/testing-library";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
 import { http, HttpResponse } from "msw";
 import { AuthProvider } from "../contexts/auth";
@@ -2010,6 +2011,280 @@ describe("Channel view integration", () => {
     }
   });
 
+  test("inline reply target selection preserves selected photos and shows attachment-only previews", async () => {
+    const urls = mockObjectUrls();
+    const user = userEvent.setup();
+    const state = seedAuthed();
+    state.messages["100"][1] = {
+      ...state.messages["100"][1],
+      text: "",
+      attachments: [makeAttachment({ id: 8101, message_id: 2 })],
+    };
+    const { container, unmount } = mountAt("/channel/100");
+
+    try {
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+      fireEvent.input(input, { target: { value: "draft with photo" } });
+      fireEvent.change(fileInput(), { target: { files: [photoFile("keep.png")] } });
+      await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+
+      const aliceReplyButton = screen.getByRole("button", {
+        name: /reply inline to message by alice: hello/i,
+      });
+      aliceReplyButton.focus();
+      await user.keyboard("{Enter}");
+      let banner = await screen.findByLabelText(/inline reply target/i);
+      expect(banner).toHaveAccessibleName(/inline reply target: replying to alice: hello/i);
+      expect(input).toHaveAttribute("aria-describedby", banner.id);
+      expect(within(banner).getByText("hello")).toBeInTheDocument();
+      expect(screen.getByRole("img", { name: /selected photo 1: keep\.png/i })).toHaveAttribute(
+        "src",
+        "blob:keep.png-0",
+      );
+      expect(input.value).toBe("draft with photo");
+
+      fireEvent.click(screen.getByRole("button", { name: /reply inline to message by bob/i }));
+      banner = screen.getByLabelText(/inline reply target/i);
+      expect(banner).toHaveAccessibleName(/inline reply target: replying to bob: attachment/i);
+      expect(within(banner).getByText(/replying to bob/i)).toBeInTheDocument();
+      expect(within(banner).getByText("Attachment")).toBeInTheDocument();
+      expect(within(banner).queryByText("hello")).toBeNull();
+      expect(screen.getByRole("img", { name: /selected photo 1: keep\.png/i })).toBeInTheDocument();
+      expect(input.value).toBe("draft with photo");
+
+      await expectNoA11yViolations(container, "inline reply composer banner");
+
+      const dismissButton = within(banner).getByRole("button", {
+        name: /dismiss inline reply to message by bob: attachment/i,
+      });
+      dismissButton.focus();
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(screen.queryByLabelText(/inline reply target/i)).toBeNull());
+      expect(screen.getByRole("img", { name: /selected photo 1: keep\.png/i })).toBeInTheDocument();
+      expect(input.value).toBe("draft with photo");
+      await waitFor(() => expect(document.activeElement).toBe(input));
+      expect(urls.revokeObjectURL).not.toHaveBeenCalled();
+    } finally {
+      unmount();
+      urls.restore();
+    }
+  });
+
+  test("successful photo inline replies clear composer state, refocus, and render SSE previews", async () => {
+    const urls = mockObjectUrls();
+    const state = seedAuthed();
+    const { unmount } = mountAt("/channel/100");
+
+    try {
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+      const photo = photoFile("inline-success.png");
+      fireEvent.change(fileInput(), { target: { files: [photo] } });
+      await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+      fireEvent.click(screen.getByRole("button", { name: /reply inline to message by alice/i }));
+      await screen.findByLabelText(/inline reply target/i);
+
+      fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+
+      await waitFor(() => {
+        expect(state.sentInlineReplies).toContainEqual({
+          channel: "100",
+          text: "",
+          replyToMessageId: 1,
+        });
+        expect(state.sentMessagePhotos).toContainEqual({
+          channel: "100",
+          text: "",
+          photos: [{ name: "inline-success.png", size: photo.size, type: "image/png" }],
+        });
+        expect(screen.queryByLabelText(/inline reply target/i)).toBeNull();
+        expect(screen.queryByRole("img", { name: /inline-success\.png/i })).toBeNull();
+        expect(urls.revokeObjectURL).toHaveBeenCalledWith("blob:inline-success.png-0");
+        expect(input.value).toBe("");
+        expect(document.activeElement).toBe(input);
+      });
+
+      await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+      const created = assertExists(
+        state.messages["100"].find((message) => message.reply_to_message_id === 1),
+        "created photo inline reply",
+      );
+      assertExists(latestFakeEventSource(), "latestFakeEventSource").pushMessage(created);
+
+      const preview = await screen.findByLabelText(/replying to alice/i);
+      expect(preview).toHaveTextContent("hello");
+      expect(screen.getByRole("img", { name: /photo attachment from baipas/i })).toHaveAttribute(
+        "src",
+        expect.stringContaining("/attachments/"),
+      );
+    } finally {
+      unmount();
+      urls.restore();
+    }
+  });
+
+  test("failed photo inline replies preserve target, draft, and photos", async () => {
+    const urls = mockObjectUrls();
+    const state = seedAuthed();
+    server.use(
+      http.post(`${TEST_SERVER}/message/:id`, async ({ request }) => {
+        const form = await request.formData();
+        const rawText = form.get("text");
+        const rawReplyTarget = form.get("reply_to_message_id");
+        const file = form.get("photos");
+        state.sentInlineReplies.push({
+          channel: "100",
+          text: typeof rawText === "string" ? rawText : "",
+          replyToMessageId: typeof rawReplyTarget === "string" ? Number(rawReplyTarget) : 0,
+        });
+        state.sentMessagePhotos.push({
+          channel: "100",
+          text: typeof rawText === "string" ? rawText : "",
+          photos:
+            file instanceof File ? [{ name: file.name, size: file.size, type: file.type }] : [],
+        });
+        return new HttpResponse(null, { status: 500 });
+      }),
+    );
+    const { unmount } = mountAt("/channel/100");
+
+    try {
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+      fireEvent.input(input, { target: { value: "retry inline caption" } });
+      fireEvent.change(fileInput(), {
+        target: { files: [photoFile("retry-inline.webp", "image/webp")] },
+      });
+      await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+      fireEvent.click(screen.getByRole("button", { name: /reply inline to message by alice/i }));
+      const banner = await screen.findByLabelText(/inline reply target/i);
+
+      fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+
+      await waitFor(() => {
+        expect(state.sentInlineReplies).toContainEqual({
+          channel: "100",
+          text: "retry inline caption",
+          replyToMessageId: 1,
+        });
+        expect(state.sentMessagePhotos).toContainEqual({
+          channel: "100",
+          text: "retry inline caption",
+          photos: [
+            {
+              name: "retry-inline.webp",
+              size: photoFile("retry-inline.webp", "image/webp").size,
+              type: "image/webp",
+            },
+          ],
+        });
+        expect(screen.getByLabelText(/inline reply target/i)).toBe(banner);
+        expect(
+          screen.getByRole("img", { name: /selected photo 1: retry-inline\.webp/i }),
+        ).toHaveAttribute("src", "blob:retry-inline.webp-0");
+        expect(input.value).toBe("retry inline caption");
+        expect(screen.getByRole("button", { name: /^send$/i })).not.toBeDisabled();
+      });
+      expect(urls.revokeObjectURL).not.toHaveBeenCalled();
+    } finally {
+      unmount();
+      urls.restore();
+    }
+  });
+
+  test("channel switching clears inline reply target without clearing draft or selected photos", async () => {
+    const urls = mockObjectUrls();
+    const state = seedAuthed();
+    state.channels.push({ id: 200, name: "random", position: 1, type: "text" });
+    state.messages["200"] = [
+      {
+        id: 2001,
+        user_id: 2,
+        channel_id: 200,
+        text: "different channel",
+        username: "carol",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        attachments: [],
+        embeds: [],
+      },
+    ];
+    const { history, unmount } = mountAt("/channel/100");
+
+    try {
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+      fireEvent.input(input, { target: { value: "carry this draft" } });
+      fireEvent.change(fileInput(), { target: { files: [photoFile("carry.png")] } });
+      await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+      fireEvent.click(screen.getByRole("button", { name: /reply inline to message by alice/i }));
+      await screen.findByLabelText(/inline reply target/i);
+
+      history.set({ value: "/channel/200" });
+
+      await waitFor(() => {
+        expect(screen.getByText("different channel")).toBeInTheDocument();
+        expect(screen.queryByLabelText(/inline reply target/i)).toBeNull();
+        expect(input.value).toBe("carry this draft");
+        expect(screen.getByRole("img", { name: /selected photo 1: carry\.png/i })).toHaveAttribute(
+          "src",
+          "blob:carry.png-0",
+        );
+      });
+      expect(urls.revokeObjectURL).not.toHaveBeenCalled();
+    } finally {
+      unmount();
+      urls.restore();
+    }
+  });
+
+  test("live target deletion and tombstone updates clear inline reply target without clearing draft or photos", async () => {
+    const urls = mockObjectUrls();
+    const state = seedAuthed();
+    const { unmount } = mountAt("/channel/100");
+
+    try {
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+      fireEvent.input(input, { target: { value: "keep after deletion" } });
+      fireEvent.change(fileInput(), { target: { files: [photoFile("delete-keep.png")] } });
+      await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+      await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+      const eventSource = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+
+      fireEvent.click(screen.getByRole("button", { name: /reply inline to message by alice/i }));
+      await screen.findByLabelText(/inline reply target/i);
+
+      eventSource.pushMessageDeleted({ id: 1, channel_id: 100 });
+
+      await waitFor(() => {
+        expect(screen.queryByLabelText(/inline reply target/i)).toBeNull();
+        expect(input.value).toBe("keep after deletion");
+        expect(
+          screen.getByRole("img", { name: /selected photo 1: delete-keep\.png/i }),
+        ).toHaveAttribute("src", "blob:delete-keep.png-0");
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: /reply inline to message by bob/i }));
+      await screen.findByLabelText(/inline reply target/i);
+
+      eventSource.pushMessageUpdated({
+        ...state.messages["100"][1],
+        deleted_at: 1_700_000_100_000_000,
+      });
+
+      await waitFor(() => {
+        expect(screen.queryByLabelText(/inline reply target/i)).toBeNull();
+        expect(screen.getByLabelText(/original message deleted/i)).toBeInTheDocument();
+        expect(input.value).toBe("keep after deletion");
+        expect(
+          screen.getByRole("img", { name: /selected photo 1: delete-keep\.png/i }),
+        ).toHaveAttribute("src", "blob:delete-keep.png-0");
+      });
+      expect(urls.revokeObjectURL).not.toHaveBeenCalled();
+    } finally {
+      unmount();
+      urls.restore();
+    }
+  });
+
   test("thread reply photos preview, remove, and submit photo-only multipart", async () => {
     const urls = mockObjectUrls();
     const state = seedAuthed();
@@ -2159,6 +2434,496 @@ describe("Channel view integration", () => {
       });
     });
     await waitFor(() => expect(input.value).toBe(""));
+  });
+
+  test("selects an inline reply target, preserves the draft, and renders the SSE reply preview", async () => {
+    const state = seedAuthed();
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "draft reply body" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /reply inline to message by alice/i }));
+    let banner = await screen.findByLabelText(/inline reply target/i);
+    expect(within(banner).getByText(/replying to alice/i)).toBeInTheDocument();
+    expect(within(banner).getByText("hello")).toBeInTheDocument();
+    expect(input.value).toBe("draft reply body");
+
+    fireEvent.click(screen.getByRole("button", { name: /reply inline to message by bob/i }));
+    banner = screen.getByLabelText(/inline reply target/i);
+    expect(within(banner).getByText(/replying to bob/i)).toBeInTheDocument();
+    expect(within(banner).getByText("world")).toBeInTheDocument();
+    expect(within(banner).queryByText("hello")).toBeNull();
+    expect(input.value).toBe("draft reply body");
+
+    fireEvent.click(within(banner).getByRole("button", { name: /dismiss inline reply/i }));
+    expect(screen.queryByLabelText(/inline reply target/i)).toBeNull();
+    expect(input.value).toBe("draft reply body");
+
+    fireEvent.click(screen.getByRole("button", { name: /reply inline to message by alice/i }));
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+
+    await waitFor(() => {
+      expect(state.sentInlineReplies).toContainEqual({
+        channel: "100",
+        text: "draft reply body",
+        replyToMessageId: 1,
+      });
+      expect(input.value).toBe("");
+      expect(screen.queryByLabelText(/inline reply target/i)).toBeNull();
+    });
+
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessage({
+      id: 777,
+      user_id: DEV_USER.id,
+      channel_id: 100,
+      parent_id: null,
+      created_at: 1_700_000_050_000_000,
+      reply_to_message_id: 1,
+      reply_to: {
+        id: 1,
+        user_id: 1,
+        channel_id: 100,
+        created_at: 1_700_000_000_000_000,
+        text: "hello",
+        username: "alice",
+        display_name: null,
+        avatar_url: null,
+      },
+      text: "draft reply body",
+      username: DEV_USER.username,
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      attachments: [],
+      embeds: [],
+    });
+
+    const preview = await screen.findByLabelText(/replying to alice/i);
+    const body = await findRenderedMessageText("draft reply body");
+    expect(preview).toHaveTextContent("hello");
+    expect(preview.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("complementary", { name: /thread panel/i })).toBeNull();
+  });
+
+  test("message_updated SSE preserves an edited inline reply preview while replacing the message", async () => {
+    const state = seedAuthed();
+    state.messages["100"] = [
+      {
+        id: 21,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: null,
+        reply_to_message_id: null,
+        reply_to: null,
+        created_at: 1_700_000_000_000_000,
+        text: "original target for edit",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        attachments: [],
+        embeds: [],
+      },
+      {
+        id: 22,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        parent_id: null,
+        reply_to_message_id: 21,
+        created_at: 1_700_000_001_000_000,
+        text: "inline before live edit",
+        username: DEV_USER.username,
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        attachments: [],
+        embeds: [],
+        reply_to: {
+          id: 21,
+          user_id: 2,
+          channel_id: 100,
+          created_at: 1_700_000_000_000_000,
+          deleted_at: null,
+          text: "original target for edit",
+          attachment_count: 0,
+          username: "bob",
+          display_name: null,
+          avatar_url: null,
+        },
+      },
+    ];
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("inline before live edit")).toBeInTheDocument());
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessageUpdated({
+      id: 22,
+      user_id: DEV_USER.id,
+      channel_id: 100,
+      parent_id: null,
+      reply_to_message_id: 21,
+      created_at: 1_700_000_001_000_000,
+      text: "inline after live edit",
+      username: DEV_USER.username,
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      attachments: [],
+      embeds: [],
+      reply_to: {
+        id: 21,
+        user_id: 2,
+        channel_id: 100,
+        created_at: 1_700_000_000_000_000,
+        deleted_at: null,
+        text: "original target for edit",
+        attachment_count: 0,
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("inline after live edit")).toBeInTheDocument();
+      expect(screen.queryByText("inline before live edit")).toBeNull();
+      expect(screen.getByLabelText(/replying to bob/i)).toHaveTextContent(
+        "original target for edit",
+      );
+    });
+  });
+
+  test("message_updated and message_deleted SSE patch visible inline reply references", async () => {
+    const state = seedAuthed();
+    state.messages["100"] = [
+      {
+        id: 31,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: null,
+        reply_to_message_id: null,
+        reply_to: null,
+        created_at: 1_700_000_000_000_000,
+        text: "target before live patch",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        attachments: [],
+        embeds: [],
+      },
+      {
+        id: 32,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        parent_id: null,
+        reply_to_message_id: 31,
+        created_at: 1_700_000_001_000_000,
+        text: "reply watching target",
+        username: DEV_USER.username,
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        attachments: [],
+        embeds: [],
+        reply_to: {
+          id: 31,
+          user_id: 2,
+          channel_id: 100,
+          created_at: 1_700_000_000_000_000,
+          deleted_at: null,
+          text: "target before live patch",
+          attachment_count: 0,
+          username: "bob",
+          display_name: null,
+          avatar_url: null,
+        },
+      },
+    ];
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("reply watching target")).toBeInTheDocument());
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+
+    es.pushMessageUpdated({
+      ...state.messages["100"][0],
+      text: "target after live patch",
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/replying to bob/i)).toHaveTextContent(
+        "target after live patch",
+      );
+    });
+
+    es.pushMessageUpdated({
+      ...state.messages["100"][0],
+      text: "",
+      deleted_at: 1_700_000_002_000_000,
+      suppress_embeds: true,
+      attachments: [],
+      embeds: [],
+      reactions: [],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/replying to deleted message by bob/i)).toHaveTextContent(
+        "Original message deleted",
+      );
+    });
+
+    es.pushMessageDeleted({ id: 31, channel_id: 100 });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/replying to unavailable message 31/i)).toHaveTextContent(
+        "Original message unavailable",
+      );
+      expect(screen.getByText("reply watching target")).toBeInTheDocument();
+    });
+  });
+
+  test("thread panel patches root reply previews from referenced target updates", async () => {
+    const state = seedAuthed();
+    state.messages["100"] = [
+      {
+        id: 41,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: null,
+        reply_to_message_id: null,
+        reply_to: null,
+        created_at: 1_700_000_000_000_000,
+        text: "thread target before edit",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        attachments: [],
+        embeds: [],
+      },
+      {
+        id: 42,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        parent_id: null,
+        reply_to_message_id: 41,
+        created_at: 1_700_000_001_000_000,
+        text: "inline root with open thread",
+        username: DEV_USER.username,
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        attachments: [],
+        embeds: [],
+        thread_summary: { reply_count: 1, last_reply_created_at: 1_700_000_002_000_000 },
+        reply_to: {
+          id: 41,
+          user_id: 2,
+          channel_id: 100,
+          created_at: 1_700_000_000_000_000,
+          deleted_at: null,
+          text: "thread target before edit",
+          attachment_count: 0,
+          username: "bob",
+          display_name: null,
+          avatar_url: null,
+        },
+      },
+    ];
+    state.threadReplies["42"] = [
+      {
+        id: 43,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 42,
+        reply_to_message_id: null,
+        reply_to: null,
+        created_at: 1_700_000_002_000_000,
+        text: "thread reply under inline root",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        attachments: [],
+        embeds: [],
+      },
+    ];
+    mountAt("/channel/100?thread=42");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() =>
+      expect(within(panel).getByText("thread reply under inline root")).toBeInTheDocument(),
+    );
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+
+    es.pushMessageUpdated({
+      ...state.messages["100"][0],
+      text: "thread target after edit",
+    });
+
+    await waitFor(() => {
+      expect(within(panel).getByLabelText(/replying to bob/i)).toHaveTextContent(
+        "thread target after edit",
+      );
+    });
+
+    es.pushMessageUpdated({
+      ...state.messages["100"][0],
+      text: "",
+      deleted_at: 1_700_000_003_000_000,
+      suppress_embeds: true,
+      attachments: [],
+      embeds: [],
+      reactions: [],
+    });
+
+    await waitFor(() => {
+      expect(within(panel).getByLabelText(/replying to deleted message by bob/i)).toHaveTextContent(
+        "Original message deleted",
+      );
+      expect(within(panel).getByText("thread reply under inline root")).toBeInTheDocument();
+    });
+  });
+
+  test("channel history reload renders inline replies as chronological top-level messages", async () => {
+    const state = seedAuthed();
+    state.messages["100"] = [
+      {
+        id: 21,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: null,
+        created_at: 1_700_000_000_000_000,
+        text: "original history message",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        attachments: [],
+        embeds: [],
+      },
+      {
+        id: 22,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        parent_id: null,
+        reply_to_message_id: 21,
+        created_at: 1_700_000_001_000_000,
+        text: "history inline reply",
+        username: DEV_USER.username,
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        attachments: [],
+        embeds: [],
+        reply_to: {
+          id: 21,
+          user_id: 2,
+          channel_id: 100,
+          created_at: 1_700_000_000_000_000,
+          text: "original history message",
+          username: "bob",
+          display_name: null,
+          avatar_url: null,
+        },
+      },
+    ];
+    mountAt("/channel/100");
+
+    const original = await findRenderedMessageText("original history message");
+    const reply = await findRenderedMessageText("history inline reply");
+    const preview = screen.getByLabelText(/replying to bob/i);
+
+    expect(original.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(preview).toHaveTextContent("original history message");
+    expect(preview.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  test("channel history reload renders tombstoned and hard-deleted reply fallbacks", async () => {
+    const state = seedAuthed();
+    state.messages["100"] = [
+      {
+        id: 51,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: null,
+        created_at: 1_700_000_000_000_000,
+        deleted_at: 1_700_000_002_000_000,
+        text: "",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: true,
+        attachments: [],
+        embeds: [],
+        reactions: [],
+      },
+      {
+        id: 52,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        parent_id: null,
+        reply_to_message_id: 51,
+        created_at: 1_700_000_003_000_000,
+        text: "reply after tombstone reload",
+        username: DEV_USER.username,
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        attachments: [],
+        embeds: [],
+        reply_to: {
+          id: 51,
+          user_id: 2,
+          channel_id: 100,
+          created_at: 1_700_000_000_000_000,
+          deleted_at: 1_700_000_002_000_000,
+          text: "",
+          attachment_count: 0,
+          username: "bob",
+          display_name: null,
+          avatar_url: null,
+        },
+      },
+      {
+        id: 54,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        parent_id: null,
+        reply_to_message_id: 53,
+        created_at: 1_700_000_004_000_000,
+        text: "reply after hard delete reload",
+        username: DEV_USER.username,
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        attachments: [],
+        embeds: [],
+        reply_to: null,
+      },
+    ];
+    mountAt("/channel/100");
+
+    await waitFor(() => {
+      expect(screen.getByText("reply after tombstone reload")).toBeInTheDocument();
+      expect(screen.getByText("reply after hard delete reload")).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText(/replying to deleted message by bob/i)).toHaveTextContent(
+      "Original message deleted",
+    );
+    expect(screen.getByLabelText(/replying to unavailable message 53/i)).toHaveTextContent(
+      "Original message unavailable",
+    );
+    expect(screen.queryByText("secret before delete")).toBeNull();
+    expect(screen.queryByRole("img", { name: /photo attachment from bob/i })).toBeNull();
   });
 
   test("channel composer commits native emoji autocomplete before sending", async () => {

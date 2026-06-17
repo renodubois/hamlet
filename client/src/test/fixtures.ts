@@ -11,6 +11,8 @@ export function makeMessage(
     display_name: null,
     avatar_url: null,
     parent_id: null,
+    reply_to_message_id: null,
+    reply_to: null,
     suppress_embeds: false,
     attachments: [],
     embeds: [],

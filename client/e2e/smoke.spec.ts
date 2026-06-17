@@ -36,6 +36,10 @@ async function expectEditorValue(input: Locator, expected: string) {
     .toBe(expected);
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 async function loginAndOpenGeneral(page: Page) {
   await page.goto("/");
   await page.getByPlaceholder("Server URL").fill(serverUrl);
@@ -68,6 +72,46 @@ test("sends a message and sees it render in the channel", async ({ page }) => {
   await expect(
     page.locator(".whitespace-pre-wrap:not([role='textbox'])").filter({ hasText: marker }).last(),
   ).toBeVisible({ timeout: 10_000 });
+});
+
+test("sends an inline reply and renders its compact preview in the channel", async ({ page }) => {
+  await loginAndOpenGeneral(page);
+
+  const unique = Date.now();
+  const targetText = `inline reply target ${unique}`;
+  const replyText = `inline reply body ${unique}`;
+  const input = page.getByPlaceholder(/send a new message/i);
+
+  await input.fill(targetText);
+  await input.press("Enter");
+
+  const targetRow = page.locator(".group").filter({ hasText: targetText }).last();
+  await expect(targetRow).toBeVisible({ timeout: 10_000 });
+  await targetRow.hover();
+  await targetRow
+    .getByRole("button", {
+      name: new RegExp(`reply inline to message by baipas: ${escapeRegExp(targetText)}`, "i"),
+    })
+    .click();
+
+  const banner = page.getByRole("status", {
+    name: new RegExp(`inline reply target: replying to baipas: ${escapeRegExp(targetText)}`, "i"),
+  });
+  await expect(banner).toBeVisible();
+  const bannerId = await banner.getAttribute("id");
+  expect(bannerId).toBeTruthy();
+  if (!bannerId) throw new Error("inline reply banner is missing an id");
+  await expect(input).toHaveAttribute("aria-describedby", bannerId);
+
+  await input.fill(replyText);
+  await input.press("Enter");
+
+  await expect(banner).toBeHidden({ timeout: 10_000 });
+  const replyRow = page.locator(".group").filter({ hasText: replyText }).last();
+  await expect(replyRow).toBeVisible({ timeout: 10_000 });
+  await expect(
+    replyRow.getByLabel(new RegExp(`replying to baipas: ${escapeRegExp(targetText)}`, "i")),
+  ).toBeVisible();
 });
 
 test("sends a multiline message with Shift+Enter and renders both lines", async ({ page }) => {

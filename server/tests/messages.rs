@@ -25,6 +25,33 @@ async fn insert_message_with_parent(
         user_id: Set(user_id),
         channel_id: Set(channel_id),
         parent_id: Set(parent_id),
+        reply_to_message_id: Set(None),
+        created_at: Set(created_at),
+        deleted_at: Set(None),
+        text: Set(text.to_owned()),
+        suppress_embeds: Set(false),
+    }
+    .insert(db)
+    .await
+    .unwrap();
+    id
+}
+
+async fn insert_inline_reply_with_target(
+    db: &sea_orm::DatabaseConnection,
+    user_id: i64,
+    channel_id: i64,
+    target_id: i64,
+    created_at: i64,
+    text: &str,
+) -> i64 {
+    let id = generate_id();
+    entity::message::ActiveModel {
+        id: Set(id),
+        user_id: Set(user_id),
+        channel_id: Set(channel_id),
+        parent_id: Set(None),
+        reply_to_message_id: Set(Some(target_id)),
         created_at: Set(created_at),
         deleted_at: Set(None),
         text: Set(text.to_owned()),
@@ -176,6 +203,26 @@ fn assert_empty_attachments(message: &serde_json::Value) {
     assert_eq!(message["attachments"], serde_json::json!([]));
 }
 
+fn assert_reply_metadata_null(message: &serde_json::Value) {
+    assert_eq!(
+        message.get("reply_to_message_id"),
+        Some(&serde_json::Value::Null)
+    );
+    assert_eq!(message.get("reply_to"), Some(&serde_json::Value::Null));
+}
+
+async fn assert_error_response<B>(
+    resp: actix_web::dev::ServiceResponse<B>,
+    status: StatusCode,
+    kind: &str,
+) where
+    B: actix_web::body::MessageBody,
+{
+    assert_eq!(resp.status(), status);
+    let body: serde_json::Value = test::read_body_json(resp).await;
+    assert_eq!(body["error"]["kind"], kind);
+}
+
 #[actix_web::test]
 async fn test_message_create_requires_auth() {
     let ctx = TestCtx::new().await;
@@ -207,6 +254,761 @@ async fn test_message_create() {
         .set_payload(serde_json::json!({"text": "test message!"}).to_string())
         .to_request();
     assert!(test::call_service(&app, req).await.status().is_success());
+}
+
+#[actix_web::test]
+async fn test_message_create_without_inline_reply_returns_explicit_null_reply_fields() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{chan_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"text": "plain top-level"}).to_string())
+        .to_request();
+    let created: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+
+    assert_eq!(created["text"], "plain top-level");
+    assert_reply_metadata_null(&created);
+}
+
+#[actix_web::test]
+async fn test_inline_reply_create_persists_reference_and_hydrates_history() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob = ctx.register("bob", "hunter2").await;
+    set_display_name(&ctx.db, bob.user_id, "Bobby Tables").await;
+    let target_id = insert_message_with_parent(
+        &ctx.db,
+        bob.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        "target message text",
+    )
+    .await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{chan_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(
+            serde_json::json!({"text": "inline reply body", "reply_to_message_id": target_id})
+                .to_string(),
+        )
+        .to_request();
+    let created: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let created_id = created["id"].as_i64().unwrap();
+
+    assert_eq!(created["parent_id"], serde_json::Value::Null);
+    assert_eq!(created["reply_to_message_id"], target_id);
+    assert_eq!(created["reply_to"]["id"], target_id);
+    assert_eq!(created["reply_to"]["user_id"], bob.user_id);
+    assert_eq!(created["reply_to"]["channel_id"], chan_id);
+    assert_eq!(created["reply_to"]["text"], "target message text");
+    assert_eq!(created["reply_to"]["username"], "bob");
+    assert_eq!(created["reply_to"]["display_name"], "Bobby Tables");
+
+    let stored = entity::message::Entity::find_by_id(created_id)
+        .one(&ctx.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.parent_id, None);
+    assert_eq!(stored.reply_to_message_id, Some(target_id));
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let rows = history.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["id"], target_id);
+    assert_reply_metadata_null(&rows[0]);
+    assert_eq!(rows[1]["id"], created_id);
+    assert_eq!(rows[1]["parent_id"], serde_json::Value::Null);
+    assert_eq!(rows[1]["reply_to"]["id"], target_id);
+    assert_eq!(rows[1]["reply_to"]["text"], "target message text");
+}
+
+#[actix_web::test]
+async fn test_reply_reference_loader_compacts_duplicates_deleted_missing_and_author_data() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob = ctx.register("bob", "hunter2").await;
+    set_display_name(&ctx.db, bob.user_id, "Bobby Tables").await;
+
+    let target_id = insert_message_with_parent(
+        &ctx.db,
+        bob.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        "target with rich extras",
+    )
+    .await;
+    insert_message_attachment(&ctx.db, target_id, 0).await;
+    entity::embed::ActiveModel {
+        id: Set(generate_id()),
+        message_id: Set(target_id),
+        url: Set("https://example.com".into()),
+        title: Set(Some("Example".into())),
+        description: Set(Some("rich description".into())),
+        image_url: Set(None),
+        site_name: Set(Some("Example".into())),
+        embed_type: Set("link".into()),
+        iframe_url: Set(None),
+        iframe_width: Set(None),
+        iframe_height: Set(None),
+    }
+    .insert(&ctx.db)
+    .await
+    .unwrap();
+    insert_native_reaction(&ctx.db, target_id, alice.user_id, "👍").await;
+    insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(target_id),
+        1_700_000_010_000_000,
+        "thread reply creates target summary",
+    )
+    .await;
+
+    let first_reply_id = insert_inline_reply_with_target(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        target_id,
+        1_700_000_020_000_000,
+        "first duplicate reference",
+    )
+    .await;
+    let second_reply_id = insert_inline_reply_with_target(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        target_id,
+        1_700_000_030_000_000,
+        "second duplicate reference",
+    )
+    .await;
+
+    let deleted_target_id = generate_id();
+    entity::message::ActiveModel {
+        id: Set(deleted_target_id),
+        user_id: Set(bob.user_id),
+        channel_id: Set(chan_id),
+        parent_id: Set(None),
+        reply_to_message_id: Set(None),
+        created_at: Set(1_700_000_040_000_000),
+        deleted_at: Set(Some(1_700_000_041_000_000)),
+        text: Set(String::new()),
+        suppress_embeds: Set(true),
+    }
+    .insert(&ctx.db)
+    .await
+    .unwrap();
+    let reply_to_deleted_id = insert_inline_reply_with_target(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        deleted_target_id,
+        1_700_000_050_000_000,
+        "reply to deleted target",
+    )
+    .await;
+
+    let missing_target_id = generate_id();
+    let reply_to_missing_id = insert_inline_reply_with_target(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        missing_target_id,
+        1_700_000_060_000_000,
+        "reply to missing target",
+    )
+    .await;
+
+    let deleted_reply_id = generate_id();
+    entity::message::ActiveModel {
+        id: Set(deleted_reply_id),
+        user_id: Set(alice.user_id),
+        channel_id: Set(chan_id),
+        parent_id: Set(None),
+        reply_to_message_id: Set(Some(target_id)),
+        created_at: Set(1_700_000_070_000_000),
+        deleted_at: Set(Some(1_700_000_071_000_000)),
+        text: Set(String::new()),
+        suppress_embeds: Set(true),
+    }
+    .insert(&ctx.db)
+    .await
+    .unwrap();
+
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let rows = history.as_array().unwrap();
+    let find_row = |id: i64| rows.iter().find(|row| row["id"] == id).unwrap();
+
+    for reply_id in [first_reply_id, second_reply_id] {
+        let reply = find_row(reply_id);
+        let reference = &reply["reply_to"];
+        assert_eq!(reply["reply_to_message_id"], target_id);
+        assert_eq!(reference["id"], target_id);
+        assert_eq!(reference["user_id"], bob.user_id);
+        assert_eq!(reference["channel_id"], chan_id);
+        assert_eq!(reference["created_at"], 1_700_000_000_000_000_i64);
+        assert_eq!(reference["text"], "target with rich extras");
+        assert_eq!(reference["username"], "bob");
+        assert_eq!(reference["display_name"], "Bobby Tables");
+        assert_eq!(reference["attachment_count"], 1);
+        assert!(reference.get("attachments").is_none());
+        assert!(reference.get("embeds").is_none());
+        assert!(reference.get("reactions").is_none());
+        assert!(reference.get("thread_summary").is_none());
+        assert!(reference.get("reply_to").is_none());
+    }
+
+    let deleted_target_reply = find_row(reply_to_deleted_id);
+    assert_eq!(deleted_target_reply["reply_to"]["id"], deleted_target_id);
+    assert_eq!(
+        deleted_target_reply["reply_to"]["deleted_at"],
+        1_700_000_041_000_000_i64
+    );
+    assert_eq!(deleted_target_reply["reply_to"]["username"], "bob");
+    assert_eq!(
+        deleted_target_reply["reply_to"]["display_name"],
+        "Bobby Tables"
+    );
+
+    let missing_target_reply = find_row(reply_to_missing_id);
+    assert_eq!(
+        missing_target_reply["reply_to_message_id"],
+        missing_target_id
+    );
+    assert_eq!(
+        missing_target_reply.get("reply_to"),
+        Some(&serde_json::Value::Null)
+    );
+
+    let deleted_reply = find_row(deleted_reply_id);
+    assert_eq!(deleted_reply["deleted_at"], 1_700_000_071_000_000_i64);
+    assert_eq!(deleted_reply["reply_to_message_id"], target_id);
+    assert_eq!(
+        deleted_reply.get("reply_to"),
+        Some(&serde_json::Value::Null)
+    );
+}
+
+#[actix_web::test]
+async fn test_thread_and_participated_surfaces_include_reply_metadata_or_explicit_nulls() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob = ctx.register("bob", "hunter2").await;
+    let target_id = insert_message_with_parent(
+        &ctx.db,
+        bob.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        "referenced from thread root",
+    )
+    .await;
+    let root_id = insert_inline_reply_with_target(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        target_id,
+        1_700_000_010_000_000,
+        "inline root with thread replies",
+    )
+    .await;
+    let older_reply_id = insert_message_with_parent(
+        &ctx.db,
+        bob.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_020_000_000,
+        "older thread reply",
+    )
+    .await;
+    let newer_reply_id = insert_message_with_parent(
+        &ctx.db,
+        bob.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_030_000_000,
+        "newer thread reply",
+    )
+    .await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/thread/{root_id}?limit=1"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let newest_page: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(newest_page["root"]["reply_to_message_id"], target_id);
+    assert_eq!(newest_page["root"]["reply_to"]["id"], target_id);
+    assert_eq!(
+        newest_page["root"]["reply_to"]["text"],
+        "referenced from thread root"
+    );
+    assert_eq!(newest_page["replies"].as_array().unwrap().len(), 1);
+    assert_eq!(newest_page["replies"][0]["id"], newer_reply_id);
+    assert_reply_metadata_null(&newest_page["replies"][0]);
+    assert_eq!(newest_page["has_more_replies"], true);
+
+    let cursor_created_at = newest_page["replies"][0]["created_at"].as_i64().unwrap();
+    let req = test::TestRequest::get()
+        .uri(&format!(
+            "/thread/{root_id}?limit=1&before_created_at={cursor_created_at}&before_id={newer_reply_id}"
+        ))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let older_page: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(older_page["root"]["reply_to_message_id"], target_id);
+    assert_eq!(older_page["root"]["reply_to"]["id"], target_id);
+    assert_eq!(older_page["replies"][0]["id"], older_reply_id);
+    assert_reply_metadata_null(&older_page["replies"][0]);
+    assert_eq!(older_page["has_more_replies"], false);
+
+    let req = test::TestRequest::get()
+        .uri("/threads/participated")
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let previews: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let preview = previews
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["root"]["id"] == root_id)
+        .unwrap();
+    assert_eq!(preview["root"]["reply_to_message_id"], target_id);
+    assert_eq!(preview["root"]["reply_to"]["id"], target_id);
+    assert_eq!(preview["recent_replies"].as_array().unwrap().len(), 2);
+    assert_reply_metadata_null(&preview["recent_replies"][0]);
+    assert_reply_metadata_null(&preview["recent_replies"][1]);
+}
+
+#[actix_web::test]
+async fn test_message_edit_preserves_inline_reply_metadata_in_response_and_broadcast() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob = ctx.register("bob", "hunter2").await;
+    set_display_name(&ctx.db, bob.user_id, "Bobby Tables").await;
+    let target_id = insert_message_with_parent(
+        &ctx.db,
+        bob.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        "edit target text",
+    )
+    .await;
+    let reply_id = insert_inline_reply_with_target(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        target_id,
+        1_700_000_010_000_000,
+        "inline before edit",
+    )
+    .await;
+    let mut rx = ctx.broadcaster.test_client();
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::put()
+        .uri(&format!("/message/{reply_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"text": "inline after edit"}).to_string())
+        .to_request();
+    let edited: serde_json::Value = test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(edited["id"], reply_id);
+    assert_eq!(edited["text"], "inline after edit");
+    assert_eq!(edited["reply_to_message_id"], target_id);
+    assert_eq!(edited["reply_to"]["id"], target_id);
+    assert_eq!(edited["reply_to"]["text"], "edit target text");
+    assert_eq!(edited["reply_to"]["username"], "bob");
+    assert_eq!(edited["reply_to"]["display_name"], "Bobby Tables");
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for edit broadcast")
+        .expect("broadcast channel closed");
+    let event_str = format!("{:?}", event);
+    assert!(event_str.contains("kind\\\":\\\"message_updated\\\""));
+    assert!(event_str.contains(&format!("\\\"id\\\":{reply_id}")));
+    assert!(event_str.contains(&format!("\\\"reply_to_message_id\\\":{target_id}")));
+    assert!(event_str.contains("edit target text"));
+    assert!(event_str.contains("Bobby Tables"));
+}
+
+#[actix_web::test]
+async fn test_tombstoned_inline_reply_root_preserves_durable_reply_target_field() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob = ctx.register("bob", "hunter2").await;
+    let target_id = insert_message_with_parent(
+        &ctx.db,
+        bob.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        "target that survives inline root tombstone",
+    )
+    .await;
+    let root_id = insert_inline_reply_with_target(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        target_id,
+        1_700_000_010_000_000,
+        "inline root to tombstone",
+    )
+    .await;
+    insert_message_with_parent(
+        &ctx.db,
+        bob.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_020_000_000,
+        "reply preserving tombstone root",
+    )
+    .await;
+    let mut rx = ctx.broadcaster.test_client();
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::delete()
+        .uri(&format!("/message/{root_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for tombstone broadcast")
+        .expect("broadcast channel closed");
+    let event_str = format!("{:?}", event);
+    assert!(event_str.contains("kind\\\":\\\"message_updated\\\""));
+    assert!(event_str.contains(&format!("\\\"id\\\":{root_id}")));
+    assert!(event_str.contains(&format!("\\\"reply_to_message_id\\\":{target_id}")));
+    assert!(event_str.contains("\\\"reply_to\\\":null"));
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let tombstone = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == root_id)
+        .unwrap();
+    assert!(tombstone["deleted_at"].as_i64().is_some());
+    assert_eq!(tombstone["reply_to_message_id"], target_id);
+    assert_eq!(tombstone.get("reply_to"), Some(&serde_json::Value::Null));
+}
+
+#[actix_web::test]
+async fn test_inline_reply_create_rejects_invalid_json_targets_with_clear_errors() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let other_channel_id = generate_id();
+    entity::channel::ActiveModel {
+        id: Set(other_channel_id),
+        name: Set("random".to_owned()),
+        position: Set(1),
+        channel_type: Set("text".to_owned()),
+    }
+    .insert(&ctx.db)
+    .await
+    .unwrap();
+
+    let same_channel_target = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        "same channel target",
+    )
+    .await;
+    let cross_channel_target = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        other_channel_id,
+        None,
+        1_700_000_001_000_000,
+        "cross channel target",
+    )
+    .await;
+    let thread_reply_target = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(same_channel_target),
+        1_700_000_002_000_000,
+        "thread reply target",
+    )
+    .await;
+    let deleted_target = generate_id();
+    entity::message::ActiveModel {
+        id: Set(deleted_target),
+        user_id: Set(alice.user_id),
+        channel_id: Set(chan_id),
+        parent_id: Set(None),
+        reply_to_message_id: Set(None),
+        created_at: Set(1_700_000_003_000_000),
+        deleted_at: Set(Some(1_700_000_004_000_000)),
+        text: Set(String::new()),
+        suppress_embeds: Set(true),
+    }
+    .insert(&ctx.db)
+    .await
+    .unwrap();
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{chan_id}"))
+        .insert_header(ContentType::json())
+        .set_payload(
+            serde_json::json!({"text": "unauth", "reply_to_message_id": same_channel_target})
+                .to_string(),
+        )
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{chan_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"text": "null", "reply_to_message_id": null}).to_string())
+        .to_request();
+    let created: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(created["text"], "null");
+    assert_reply_metadata_null(&created);
+
+    for payload in [
+        serde_json::json!({"text": "malformed", "reply_to_message_id": "nope"}),
+        serde_json::json!({"text": "zero", "reply_to_message_id": 0}),
+        serde_json::json!({"text": "negative", "reply_to_message_id": -1}),
+        serde_json::json!({"text": "unsafe", "reply_to_message_id": 9_007_199_254_740_992_i64}),
+    ] {
+        let req = test::TestRequest::post()
+            .uri(&format!("/message/{chan_id}"))
+            .insert_header(ContentType::json())
+            .insert_header(alice.cookie_header())
+            .set_payload(payload.to_string())
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        let expected_kind = if payload["reply_to_message_id"].is_string() {
+            "invalid_request"
+        } else {
+            "reply_target_unsafe"
+        };
+        assert_error_response(resp, StatusCode::BAD_REQUEST, expected_kind).await;
+    }
+
+    for (target_id, status, kind) in [
+        (
+            9_000_000_000_000_000_i64,
+            StatusCode::NOT_FOUND,
+            "reply_target_not_found",
+        ),
+        (
+            cross_channel_target,
+            StatusCode::BAD_REQUEST,
+            "reply_target_cross_channel",
+        ),
+        (
+            thread_reply_target,
+            StatusCode::BAD_REQUEST,
+            "reply_target_not_top_level",
+        ),
+        (
+            deleted_target,
+            StatusCode::BAD_REQUEST,
+            "reply_target_deleted",
+        ),
+    ] {
+        let req = test::TestRequest::post()
+            .uri(&format!("/message/{chan_id}"))
+            .insert_header(ContentType::json())
+            .insert_header(alice.cookie_header())
+            .set_payload(
+                serde_json::json!({"text": "bad target", "reply_to_message_id": target_id})
+                    .to_string(),
+            )
+            .to_request();
+        assert_error_response(test::call_service(&app, req).await, status, kind).await;
+    }
+}
+
+#[actix_web::test]
+async fn test_inline_reply_can_target_an_inline_reply_without_recursive_reference() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let original_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        "original message",
+    )
+    .await;
+    let inline_target_id = generate_id();
+    entity::message::ActiveModel {
+        id: Set(inline_target_id),
+        user_id: Set(alice.user_id),
+        channel_id: Set(chan_id),
+        parent_id: Set(None),
+        reply_to_message_id: Set(Some(original_id)),
+        created_at: Set(1_700_000_001_000_000),
+        deleted_at: Set(None),
+        text: Set("first inline reply".to_owned()),
+        suppress_embeds: Set(false),
+    }
+    .insert(&ctx.db)
+    .await
+    .unwrap();
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{chan_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(
+            serde_json::json!({"text": "second inline reply", "reply_to_message_id": inline_target_id})
+                .to_string(),
+        )
+        .to_request();
+    let created: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+
+    assert_eq!(created["parent_id"], serde_json::Value::Null);
+    assert_eq!(created["reply_to_message_id"], inline_target_id);
+    assert_eq!(created["reply_to"]["id"], inline_target_id);
+    assert_eq!(created["reply_to"]["text"], "first inline reply");
+    assert!(created["reply_to"].get("reply_to_message_id").is_none());
+    assert!(created["reply_to"].get("reply_to").is_none());
+}
+
+#[actix_web::test]
+async fn test_inline_replies_do_not_change_thread_summaries_or_thread_pages() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let root_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        "root with one thread reply",
+    )
+    .await;
+    let thread_reply_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_010_000_000,
+        "real thread reply",
+    )
+    .await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{chan_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(
+            serde_json::json!({"text": "inline reply outside thread", "reply_to_message_id": root_id})
+                .to_string(),
+        )
+        .to_request();
+    let inline: serde_json::Value = test::read_body_json(test::call_service(&app, req).await).await;
+    let inline_id = inline["id"].as_i64().unwrap();
+    assert_eq!(inline["parent_id"], serde_json::Value::Null);
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let rows = history.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    let root = rows.iter().find(|row| row["id"] == root_id).unwrap();
+    let inline_row = rows.iter().find(|row| row["id"] == inline_id).unwrap();
+    assert_eq!(root["thread_summary"]["reply_count"], 1);
+    assert_eq!(
+        root["thread_summary"]["last_reply_created_at"],
+        1_700_000_010_000_000_i64
+    );
+    assert!(inline_row.get("thread_summary").is_none());
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/thread/{root_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let thread: serde_json::Value = test::read_body_json(test::call_service(&app, req).await).await;
+    let replies = thread["replies"].as_array().unwrap();
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0]["id"], thread_reply_id);
+
+    let req = test::TestRequest::get()
+        .uri("/threads/participated")
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let previews: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let preview = previews
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["root"]["id"] == root_id)
+        .unwrap();
+    assert_eq!(preview["reply_count"], 1);
+    assert_eq!(preview["last_reply_created_at"], 1_700_000_010_000_000_i64);
+    assert_eq!(preview["recent_replies"].as_array().unwrap().len(), 1);
+    assert_eq!(preview["recent_replies"][0]["id"], thread_reply_id);
 }
 
 #[actix_web::test]
@@ -1124,6 +1926,7 @@ async fn test_participated_threads_include_root_and_recent_reply_attachments_and
         user_id: Set(alice.user_id),
         channel_id: Set(chan_id),
         parent_id: Set(None),
+        reply_to_message_id: Set(None),
         created_at: Set(1_700_000_020_000_000),
         deleted_at: Set(Some(1_700_000_021_000_000)),
         text: Set(String::new()),
@@ -1835,6 +2638,314 @@ async fn test_deleting_root_with_replies_tombstones_root_and_preserves_thread() 
 }
 
 #[actix_web::test]
+async fn test_deleting_message_with_inline_references_tombstones_and_hydrates_deleted_fallbacks() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob = ctx.register("bob", "hunter2").await;
+    let target_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        "referenced secret text",
+    )
+    .await;
+    let private_dir = make_tmp_uploads_dir();
+    let (attachment_id, full_path, thumbnail_path) =
+        insert_message_attachment_with_files(&ctx.db, &private_dir, target_id, 0).await;
+    entity::embed::ActiveModel {
+        id: Set(generate_id()),
+        message_id: Set(target_id),
+        url: Set("https://example.com/secret".into()),
+        title: Set(Some("Secret preview".into())),
+        description: Set(Some("Secret description".into())),
+        image_url: Set(None),
+        site_name: Set(None),
+        embed_type: Set("link".into()),
+        iframe_url: Set(None),
+        iframe_width: Set(None),
+        iframe_height: Set(None),
+    }
+    .insert(&ctx.db)
+    .await
+    .unwrap();
+    insert_native_reaction(&ctx.db, target_id, bob.user_id, "👍").await;
+    let reply_id = insert_inline_reply_with_target(
+        &ctx.db,
+        bob.user_id,
+        chan_id,
+        target_id,
+        1_700_000_010_000_000,
+        "reply preserving deleted original",
+    )
+    .await;
+
+    let mut rx = ctx.broadcaster.test_client();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(AttachmentStorage {
+                dir: private_dir.clone(),
+            }))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
+
+    let req = test::TestRequest::delete()
+        .uri(&format!("/message/{target_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for inline-reference tombstone broadcast")
+        .expect("broadcast channel closed");
+    let event_str = format!("{event:?}");
+    assert!(event_str.contains("kind\\\":\\\"message_updated\\\""));
+    assert!(event_str.contains(&format!("\\\"id\\\":{target_id}")));
+    assert!(event_str.contains("\\\"text\\\":\\\"\\\""));
+    assert!(event_str.contains("\\\"attachments\\\":[]"));
+    assert!(event_str.contains("\\\"embeds\\\":[]"));
+    assert!(event_str.contains("\\\"reactions\\\":[]"));
+    assert!(!event_str.contains("referenced secret text"));
+    assert!(!event_str.contains("Secret preview"));
+
+    let stored = entity::message::Entity::find_by_id(target_id)
+        .one(&ctx.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stored.deleted_at.is_some());
+    assert_eq!(stored.text, "");
+    assert!(stored.suppress_embeds);
+    assert!(
+        entity::message_attachment::Entity::find_by_id(attachment_id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(!private_dir.join(full_path).exists());
+    assert!(!private_dir.join(thumbnail_path).exists());
+    assert!(
+        entity::embed::Entity::find()
+            .filter(entity::embed::Column::MessageId.eq(target_id))
+            .all(&ctx.db)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        entity::message_reaction::Entity::find()
+            .filter(entity::message_reaction::Column::MessageId.eq(target_id))
+            .all(&ctx.db)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(bob.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let rows = history.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    let tombstone = rows.iter().find(|row| row["id"] == target_id).unwrap();
+    assert!(tombstone["deleted_at"].as_i64().is_some());
+    assert_eq!(tombstone["text"], "");
+    assert_empty_attachments(tombstone);
+    assert!(tombstone["embeds"].as_array().unwrap().is_empty());
+    assert!(tombstone["reactions"].as_array().unwrap().is_empty());
+
+    let reply = rows.iter().find(|row| row["id"] == reply_id).unwrap();
+    assert_eq!(reply["reply_to_message_id"], target_id);
+    assert_eq!(reply["reply_to"]["id"], target_id);
+    assert!(reply["reply_to"]["deleted_at"].as_i64().is_some());
+    assert_eq!(reply["reply_to"]["text"], "");
+    assert_eq!(reply["reply_to"]["attachment_count"], 0);
+    assert_eq!(reply["text"], "reply preserving deleted original");
+    let serialized = serde_json::to_string(&history).unwrap();
+    assert!(!serialized.contains("referenced secret text"));
+    assert!(!serialized.contains(&format!("/attachments/{attachment_id}")));
+    assert!(!serialized.contains("Secret preview"));
+
+    std::fs::remove_dir_all(&private_dir).ok();
+}
+
+#[actix_web::test]
+async fn test_unreferenced_inline_reply_hard_deletes_normally() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let target_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        "original survives",
+    )
+    .await;
+    let inline_reply_id = insert_inline_reply_with_target(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        target_id,
+        1_700_000_010_000_000,
+        "unreferenced inline reply",
+    )
+    .await;
+    let mut rx = ctx.broadcaster.test_client();
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::delete()
+        .uri(&format!("/message/{inline_reply_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for inline hard-delete broadcast")
+        .expect("broadcast channel closed");
+    let event_str = format!("{event:?}");
+    assert!(event_str.contains("kind\\\":\\\"message_deleted\\\""));
+    assert!(event_str.contains(&format!("\\\"id\\\":{inline_reply_id}")));
+
+    assert!(
+        entity::message::Entity::find_by_id(inline_reply_id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        entity::message::Entity::find_by_id(target_id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let rows = history.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], target_id);
+}
+
+#[actix_web::test]
+async fn test_deleting_referenced_inline_reply_tombstones_and_preserves_incoming_reference() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob = ctx.register("bob", "hunter2").await;
+    let original_id = insert_message_with_parent(
+        &ctx.db,
+        bob.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        "original target remains visible",
+    )
+    .await;
+    let referenced_inline_id = insert_inline_reply_with_target(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        original_id,
+        1_700_000_010_000_000,
+        "inline reply secret text",
+    )
+    .await;
+    let incoming_reply_id = insert_inline_reply_with_target(
+        &ctx.db,
+        bob.user_id,
+        chan_id,
+        referenced_inline_id,
+        1_700_000_020_000_000,
+        "reply to the inline reply",
+    )
+    .await;
+    insert_native_reaction(&ctx.db, referenced_inline_id, bob.user_id, "👍").await;
+
+    let mut rx = ctx.broadcaster.test_client();
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::delete()
+        .uri(&format!("/message/{referenced_inline_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for referenced inline tombstone broadcast")
+        .expect("broadcast channel closed");
+    let event_str = format!("{event:?}");
+    assert!(event_str.contains("kind\\\":\\\"message_updated\\\""));
+    assert!(event_str.contains(&format!("\\\"id\\\":{referenced_inline_id}")));
+    assert!(event_str.contains(&format!("\\\"reply_to_message_id\\\":{original_id}")));
+    assert!(event_str.contains("\\\"reply_to\\\":null"));
+    assert!(event_str.contains("\\\"reactions\\\":[]"));
+    assert!(!event_str.contains("inline reply secret text"));
+
+    let stored = entity::message::Entity::find_by_id(referenced_inline_id)
+        .one(&ctx.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stored.deleted_at.is_some());
+    assert_eq!(stored.text, "");
+    assert_eq!(stored.reply_to_message_id, Some(original_id));
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let rows = history.as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    let tombstone = rows
+        .iter()
+        .find(|row| row["id"] == referenced_inline_id)
+        .unwrap();
+    assert!(tombstone["deleted_at"].as_i64().is_some());
+    assert_eq!(tombstone["reply_to_message_id"], original_id);
+    assert_eq!(tombstone.get("reply_to"), Some(&serde_json::Value::Null));
+
+    let incoming = rows
+        .iter()
+        .find(|row| row["id"] == incoming_reply_id)
+        .unwrap();
+    assert_eq!(incoming["text"], "reply to the inline reply");
+    assert_eq!(incoming["reply_to_message_id"], referenced_inline_id);
+    assert_eq!(incoming["reply_to"]["id"], referenced_inline_id);
+    assert!(incoming["reply_to"]["deleted_at"].as_i64().is_some());
+    assert_eq!(incoming["reply_to"]["text"], "");
+    let serialized = serde_json::to_string(&history).unwrap();
+    assert!(!serialized.contains("inline reply secret text"));
+}
+
+#[actix_web::test]
 async fn test_participated_threads_filters_sorts_truncates_and_includes_tombstones() {
     let ctx = TestCtx::new().await;
     let general_id = ctx.channel_id;
@@ -1858,6 +2969,7 @@ async fn test_participated_threads_filters_sorts_truncates_and_includes_tombston
         user_id: Set(alice.user_id),
         channel_id: Set(general_id),
         parent_id: Set(None),
+        reply_to_message_id: Set(None),
         created_at: Set(1_700_000_000_000_000),
         deleted_at: Set(Some(1_700_000_005_000_000)),
         text: Set(String::new()),
@@ -1964,6 +3076,44 @@ async fn test_participated_threads_filters_sorts_truncates_and_includes_tombston
 }
 
 #[actix_web::test]
+async fn test_thread_reply_json_rejects_inline_reply_target() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let root_id = insert_message(&ctx.db, alice.user_id, chan_id, "root").await;
+    let target_id = insert_message(&ctx.db, alice.user_id, chan_id, "target").await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/thread/{root_id}/reply"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(
+            serde_json::json!({"text": "nested inline should fail", "reply_to_message_id": target_id})
+                .to_string(),
+        )
+        .to_request();
+    assert_error_response(
+        test::call_service(&app, req).await,
+        StatusCode::BAD_REQUEST,
+        "thread_inline_reply_not_allowed",
+    )
+    .await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/thread/{root_id}/reply"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(
+            serde_json::json!({"text": "plain thread", "reply_to_message_id": null}).to_string(),
+        )
+        .to_request();
+    let reply: serde_json::Value = test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(reply["parent_id"], root_id);
+    assert_reply_metadata_null(&reply);
+}
+
+#[actix_web::test]
 async fn test_thread_reply_rejects_missing_root() {
     let ctx = TestCtx::new().await;
     let alice = ctx.register("alice", "hunter2").await;
@@ -1991,6 +3141,7 @@ async fn test_thread_reply_rejects_reply_as_root() {
         user_id: Set(alice.user_id),
         channel_id: Set(chan_id),
         parent_id: Set(Some(root_id)),
+        reply_to_message_id: Set(None),
         created_at: Set(now_unix_micros()),
         deleted_at: Set(None),
         text: Set("existing reply".to_owned()),

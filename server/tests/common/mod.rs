@@ -160,6 +160,7 @@ pub async fn insert_message(
         user_id: Set(user_id),
         channel_id: Set(channel_id),
         parent_id: Set(None),
+        reply_to_message_id: Set(None),
         created_at: Set(now_unix_micros()),
         deleted_at: Set(None),
         text: Set(text.to_owned()),
