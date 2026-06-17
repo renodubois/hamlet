@@ -1934,9 +1934,9 @@ mod tests {
 
     use std::time::Duration;
 
+    use crate::database::connect_initialized_database_url;
     use actix_web::http::header::ContentType;
     use actix_web::{App, http::StatusCode, test};
-    use sea_orm::Database;
 
     use super::*;
     use crate::auth;
@@ -1948,11 +1948,7 @@ mod tests {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let url = format!("sqlite:file:hamlet_messages_test_{n}?mode=memory&cache=shared");
-        let db = Database::connect(&url).await.unwrap();
-        db.get_schema_registry("hamlet::entity::*")
-            .sync(&db)
-            .await
-            .unwrap();
+        let db = connect_initialized_database_url(&url).await.unwrap();
 
         let chan_id = generate_id();
         entity::channel::ActiveModel {

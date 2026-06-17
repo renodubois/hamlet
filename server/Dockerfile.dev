@@ -4,6 +4,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-watch --locked --version ^8
 WORKDIR /app
-ENV HAMLET_BIND_ADDR=0.0.0.0:3030
+RUN mkdir -p \
+        /var/lib/hamlet \
+        /var/lib/hamlet/uploads \
+        /var/lib/hamlet/private-uploads/message-attachments \
+        /app/uploads \
+        /app/private-uploads/message-attachments
+ENV HAMLET_BIND_ADDR=0.0.0.0:3030 \
+    HAMLET_DATA_DIR=/var/lib/hamlet \
+    HAMLET_UPLOADS_DIR=/var/lib/hamlet/uploads \
+    HAMLET_MESSAGE_ATTACHMENTS_DIR=/var/lib/hamlet/private-uploads/message-attachments
 EXPOSE 3030
 CMD ["cargo", "watch", "-q", "-c", "-w", "src", "-w", "Cargo.toml", "-x", "run"]

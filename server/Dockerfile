@@ -26,8 +26,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd -m -u 1000 hamlet
 WORKDIR /app
 COPY --from=builder /app/target/release/hamlet /usr/local/bin/hamlet
-RUN mkdir -p /app/uploads && chown -R hamlet:hamlet /app
+RUN mkdir -p \
+        /var/lib/hamlet \
+        /var/lib/hamlet/uploads \
+        /var/lib/hamlet/private-uploads/message-attachments \
+        /app/uploads \
+        /app/private-uploads/message-attachments \
+    && chown -R hamlet:hamlet /app /var/lib/hamlet
 USER hamlet
-ENV HAMLET_BIND_ADDR=0.0.0.0:3030
+ENV HAMLET_BIND_ADDR=0.0.0.0:3030 \
+    HAMLET_DATA_DIR=/var/lib/hamlet \
+    HAMLET_UPLOADS_DIR=/var/lib/hamlet/uploads \
+    HAMLET_MESSAGE_ATTACHMENTS_DIR=/var/lib/hamlet/private-uploads/message-attachments
 EXPOSE 3030
 CMD ["hamlet"]

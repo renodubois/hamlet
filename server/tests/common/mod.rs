@@ -1,15 +1,15 @@
-#![allow(dead_code, clippy::unwrap_used)]
+#![allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use actix_web::web;
-use sea_orm::{ActiveModelTrait, Database, DatabaseConnection, Set};
+use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 
 use hamlet::voice::{VoiceConfig, VoiceState};
 use hamlet::{
-    AppDeps, AvatarStorage, EmbedFetcher, EmojiStorage, auth, broadcast::Broadcaster, entity,
-    generate_id, now_unix_micros,
+    AppDeps, AvatarStorage, EmbedFetcher, EmojiStorage, auth, broadcast::Broadcaster,
+    connect_initialized_database_url, entity, generate_id, now_unix_micros,
 };
 
 /// Bag of state every integration test needs: the DB, a seeded text channel,
@@ -119,11 +119,7 @@ pub async fn setup_db() -> (DatabaseConnection, i64) {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let url = format!("sqlite:file:hamlet_api_test_{n}?mode=memory&cache=shared");
-    let db = Database::connect(&url).await.unwrap();
-    db.get_schema_registry("hamlet::entity::*")
-        .sync(&db)
-        .await
-        .unwrap();
+    let db = connect_initialized_database_url(&url).await.unwrap();
 
     let chan_id = generate_id();
     entity::channel::ActiveModel {

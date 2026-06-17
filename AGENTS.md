@@ -53,10 +53,10 @@ cd server
 docker compose up          # dev mode (default): cargo-watch, hot reload on src changes
 docker compose up --build  # force rebuild after Cargo.toml / Dockerfile edits
 docker compose down        # stop
-docker compose down -v     # stop + wipe cargo cache and uploads volumes
+docker compose down -v     # stop + wipe data (database + uploads) and cargo cache volumes
 ```
 
-`docker-compose.override.yml` is picked up automatically and swaps the server image for `Dockerfile.dev`, bind-mounts `server/` into the container, and runs `cargo watch -x run`. Cargo's registry, git cache, and `target/` live in named volumes so rebuilds are incremental (first build is slow, subsequent edits recompile in seconds).
+`docker-compose.override.yml` is picked up automatically and swaps the server image for `Dockerfile.dev`, bind-mounts `server/` into the container, explicitly enables development seed data, and runs `cargo watch -x run`. The server database, public uploads, and private uploads live together in the `hamlet_data` named volume at `/var/lib/hamlet`, so container replacement preserves them and `docker compose down -v` resets them together. Cargo's registry, git cache, and `target/` live in named volumes so rebuilds are incremental (first build is slow, subsequent edits recompile in seconds).
 
 To run the production image instead (fresh multi-stage build, no hot reload):
 
@@ -67,7 +67,7 @@ docker compose -f docker-compose.yml up --build
 
 LiveKit listens on `ws://127.0.0.1:7880` with dev credentials `devkey` / `devsecretdevsecretdevsecretdevsecret` (see `livekit.yaml`). In Compose, the LiveKit container uses host networking so it can auto-advertise a non-loopback ICE address that browsers such as Firefox can use for local WebRTC. UDP media ports `50000-50100` are controlled by `livekit.yaml`; widen that range if you hit port exhaustion.
 
-The server binds to whatever `HAMLET_BIND_ADDR` is set to (default `127.0.0.1:3030` for `cargo run`; Compose sets it to `0.0.0.0:3030` so the port is reachable from the host).
+The server binds to whatever `HAMLET_BIND_ADDR` is set to (default `127.0.0.1:3030` for `cargo run`; Compose sets it to `0.0.0.0:3030` so the port is reachable from the host). Persistent SQLite defaults, reset workflows, and migration expectations are documented in `docs/persistent-sqlite.md`.
 
 ## How the two parts connect
 
@@ -77,9 +77,9 @@ Real-time messaging uses SSE: the server exposes `GET /messages/subscribe`, and 
 
 ## Data model
 
-SeaORM entities in `server/src/entity/`: `user`, `channel`, `message`, `credential`, `session`. IDs are random 15-digit integers (not autoincrement; 15 digits stays inside JS `Number.MAX_SAFE_INTEGER` so the browser can round-trip them as JSON numbers). The database is in-memory and resets on every server restart; dev data (a `general` text channel, a `voice` voice channel, and two dev users — `baipas`/`password` and `teo`/`password`) is seeded on startup along with a fixed session token for `baipas` printed to stdout.
+SeaORM entities in `server/src/entity/`: `user`, `channel`, `message`, `credential`, `session`, attachments, embeds, custom emoji, and reactions. IDs are random 15-digit integers (not autoincrement; 15 digits stays inside JS `Number.MAX_SAFE_INTEGER` so the browser can round-trip them as JSON numbers). The default database is file-backed SQLite under the local application data directory (or `HAMLET_DATA_DIR`); explicit `DATABASE_URL` overrides can still use in-memory SQLite for tests or clean-room runs. Startup initializes schema, applies explicit migration/integrity steps, bootstraps the default `general` text channel and `voice` voice channel when the channel table is empty and `HAMLET_BOOTSTRAP_DEFAULT_CHANNELS` is enabled, and only seeds local development users (`baipas`/`password` and `teo`/`password`) when `HAMLET_SEED_DEV_DATA` is enabled. When dev seed data is enabled, a fixed `baipas` session token is printed to stdout.
 
-The in-memory database is a temporary choice for ease of local development and testing. The plan is to migrate to a persistent SQLite file, but that work hasn't happened yet. When designing new features, assume data will eventually need to survive server restarts — avoid patterns that rely on the reset-on-restart behavior (e.g. hardcoded session tokens, seed-only data, schema changes that would be painful to migrate).
+When designing new features, assume data must survive server restarts — avoid patterns that rely on reset-on-restart behavior (e.g. hardcoded session tokens, seed-only data, schema changes that would be painful to migrate). Schema changes for persistent data should go through migration-shaped startup steps with tests against existing rows; do not rely on deleting local DBs or ad hoc schema sync alone.
 
 ## Auth
 

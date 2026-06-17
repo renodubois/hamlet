@@ -5,9 +5,10 @@
 
 pub mod api;
 pub mod auth;
+pub mod bootstrap;
 pub mod broadcast;
 pub mod config;
-pub mod database;
+mod database;
 pub mod embeds;
 pub mod entity;
 pub mod error;
@@ -25,8 +26,9 @@ pub use api::attachments::AttachmentStorage;
 pub use api::avatars::AvatarStorage;
 pub use api::emoji::EmojiStorage;
 pub use api::messages::EmbedFetcher;
+pub use bootstrap::{DefaultChannelBootstrapOutcome, bootstrap_default_channels};
 pub use config::Config;
-pub use database::connect_database;
+pub use database::{DatabaseSetupError, connect_database, connect_initialized_database_url};
 pub use error::AppError;
 pub use seed::seed_development_data;
 pub use startup::{AppDeps, configure_app, deps_for_tests, start_server};

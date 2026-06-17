@@ -217,9 +217,10 @@ Support/product notes:
   process on the configured renderer port.
 - A login that works in one run but not another is often server lifecycle or host
   spelling (`localhost` vs `127.0.0.1`) rather than Electron storage loss.
-- Server data may reset when the current development server restarts; do not
-  interpret missing seeded messages/users as an Electron packaging bug without
-  checking server state.
+- Server data is persistent by default. If channels, messages, sessions, or
+  seeded users are missing, check the server `DATABASE_URL`/`HAMLET_DATA_DIR`,
+  reset history, and `HAMLET_SEED_DEV_DATA` setting before treating it as an
+  Electron packaging bug.
 
 ## Manual QA runbook
 
