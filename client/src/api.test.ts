@@ -3,6 +3,7 @@ import {
   getServerUrl,
   setServerUrl,
   login,
+  searchUsers,
   listChannels,
   reorderChannels,
   sendMessage,
@@ -27,6 +28,7 @@ import {
   type CameraStream,
   type Channel,
   type CustomEmoji,
+  type PublicUser,
   type ScreenShareStream,
 } from "./api";
 import { tinyPngFile, tinyWebpFile } from "./test/image-fixtures";
@@ -68,6 +70,51 @@ describe("apiFetch behavior", () => {
     expect(init.credentials).toBe("include");
     expect(init.headers).toEqual({ "Content-Type": "application/json" });
     expect(JSON.parse(init.body)).toEqual({ username: "alice", password: "hunter2" });
+  });
+
+  test("searchUsers serializes empty query and limit", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(searchUsers({ query: "", limit: 5 })).resolves.toEqual([]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${DEFAULT_SERVER}/users?q=&limit=5`);
+    expect(fetchMock.mock.calls[0][1].credentials).toBe("include");
+  });
+
+  test("searchUsers serializes typed query and parses public user DTOs", async () => {
+    const users: PublicUser[] = [
+      {
+        id: 1,
+        username: "alice",
+        display_name: "Alice",
+        avatar_url: "/uploads/avatars/1.webp?v=1",
+      },
+    ];
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(users), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(searchUsers({ query: "Ali & Bob" })).resolves.toEqual(users);
+
+    const [url] = fetchMock.mock.calls[0];
+    const parsed = new URL(url);
+    expect(`${parsed.origin}${parsed.pathname}`).toBe(`${DEFAULT_SERVER}/users`);
+    expect(parsed.searchParams.get("q")).toBe("Ali & Bob");
+    expect(parsed.searchParams.has("limit")).toBe(false);
+  });
+
+  test("searchUsers throws on non-2xx", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 401 }));
+    await expect(searchUsers({ query: "alice" })).rejects.toThrow(/401/);
   });
 
   test("listChannels parses JSON array", async () => {
@@ -364,6 +411,7 @@ describe("apiFetch behavior", () => {
           display_name: null,
           avatar_url: null,
           suppress_embeds: false,
+          mentions: [],
           attachments: [],
           embeds: [],
         },
@@ -395,6 +443,7 @@ describe("apiFetch behavior", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -440,6 +489,7 @@ describe("apiFetch behavior", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
     };
@@ -469,6 +519,7 @@ describe("apiFetch behavior", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
     };

@@ -1,6 +1,7 @@
 import { assertValidMessagePhotos } from "../photo-validation";
 import { apiFetch } from "./client";
 import type { Channel } from "./channels";
+import type { PublicUser } from "./users";
 
 export type EmbedType = "link" | "photo" | "video" | "rich";
 
@@ -93,6 +94,8 @@ function reactionRequestBody(
     : { kind: "custom", emoji_id: reaction.emoji_id };
 }
 
+export type MentionUser = PublicUser;
+
 export interface Message {
   id: number;
   user_id: number;
@@ -107,6 +110,7 @@ export interface Message {
   display_name: string | null;
   avatar_url: string | null;
   suppress_embeds: boolean;
+  mentions: MentionUser[];
   attachments: MessageAttachment[];
   embeds: Embed[];
   reactions?: ReactionSummary[];

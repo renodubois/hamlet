@@ -39,6 +39,11 @@ ON "credential" ("provider", "external_id")"#,
 ON "message_reaction" ("message_id", "user_id", "emoji_key")"#,
     },
     SqliteIndexDefinition {
+        name: "ux_message_mention_message_user",
+        sql: r#"CREATE UNIQUE INDEX IF NOT EXISTS "ux_message_mention_message_user"
+ON "message_mention" ("message_id", "user_id")"#,
+    },
+    SqliteIndexDefinition {
         name: "ux_emoji_active_normalized_name",
         sql: r#"CREATE UNIQUE INDEX IF NOT EXISTS "ux_emoji_active_normalized_name"
 ON "emoji" ("normalized_name")
@@ -78,6 +83,16 @@ ON "embed" ("message_id", "id")"#,
         name: "idx_message_reaction_message_created_id",
         sql: r#"CREATE INDEX IF NOT EXISTS "idx_message_reaction_message_created_id"
 ON "message_reaction" ("message_id", "created_at", "id")"#,
+    },
+    SqliteIndexDefinition {
+        name: "idx_message_mention_message_position_user",
+        sql: r#"CREATE INDEX IF NOT EXISTS "idx_message_mention_message_position_user"
+ON "message_mention" ("message_id", "position", "user_id")"#,
+    },
+    SqliteIndexDefinition {
+        name: "idx_message_mention_user_message",
+        sql: r#"CREATE INDEX IF NOT EXISTS "idx_message_mention_user_message"
+ON "message_mention" ("user_id", "message_id")"#,
     },
 ];
 
@@ -544,6 +559,17 @@ mod tests {
         .await;
         assert!(duplicate_reaction.is_err());
 
+        let duplicate_mention = entity::message_mention::ActiveModel {
+            id: Set(ids.mention_id + 1),
+            message_id: Set(ids.message_id),
+            user_id: Set(ids.user_id),
+            position: Set(1),
+            created_at: Set(0),
+        }
+        .insert(&db)
+        .await;
+        assert!(duplicate_mention.is_err());
+
         let duplicate_active_emoji = entity::emoji::ActiveModel {
             id: Set(ids.emoji_id + 1),
             image_path: Set("emoji/active-duplicate.webp".to_owned()),
@@ -778,6 +804,7 @@ mod tests {
         embed_id: i64,
         attachment_id: i64,
         reaction_id: i64,
+        mention_id: i64,
         emoji_id: i64,
     }
 
@@ -791,6 +818,7 @@ mod tests {
             embed_id: generate_id(),
             attachment_id: generate_id(),
             reaction_id: generate_id(),
+            mention_id: generate_id(),
             emoji_id: generate_id(),
         };
         let now = now_unix_micros();
@@ -904,6 +932,17 @@ mod tests {
         .await
         .unwrap();
 
+        entity::message_mention::ActiveModel {
+            id: Set(ids.mention_id),
+            message_id: Set(ids.message_id),
+            user_id: Set(ids.user_id),
+            position: Set(0),
+            created_at: Set(now),
+        }
+        .insert(db)
+        .await
+        .unwrap();
+
         entity::emoji::ActiveModel {
             id: Set(ids.emoji_id),
             image_path: Set("emoji/persisted.webp".to_owned()),
@@ -948,6 +987,13 @@ mod tests {
         );
         assert_eq!(
             entity::message_reaction::Entity::find()
+                .count(db)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            entity::message_mention::Entity::find()
                 .count(db)
                 .await
                 .unwrap(),

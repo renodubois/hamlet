@@ -8,6 +8,7 @@ import { FakeEventSource } from "../test/msw/sse";
 import { resetMswState } from "../test/msw/server";
 import { makeAttachment } from "../test/fixtures";
 import { DEV_USER } from "../test/msw/handlers";
+import { assertExists } from "../test/render";
 import ChannelView from "./channel";
 import ThreadsView from "./threads";
 
@@ -66,6 +67,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: true,
+        mentions: [],
         attachments: [makeAttachment({ id: 9010, message_id: 10 })],
         embeds: [],
       },
@@ -80,6 +82,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -96,6 +99,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [makeAttachment({ id: 9001, message_id: 20 })],
         embeds: [],
         reactions: [{ kind: "native", emoji: "👍", count: 4, me_reacted: true }],
@@ -119,6 +123,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -134,6 +139,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: true,
+        mentions: [],
         attachments: [makeAttachment({ id: 9011, message_id: 12 })],
         embeds: [],
       },
@@ -150,6 +156,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -164,6 +171,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -178,6 +186,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [makeAttachment({ id: 9002, message_id: 23 })],
         embeds: [],
       },
@@ -192,6 +201,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -206,6 +216,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [makeAttachment({ id: 9003, message_id: 25 })],
         embeds: [],
         reactions: [{ kind: "native", emoji: "🔥", count: 2, me_reacted: false }],
@@ -223,6 +234,7 @@ function seedParticipatedThreads() {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -232,6 +244,238 @@ function seedParticipatedThreads() {
 }
 
 describe("Threads view integration", () => {
+  test("renders hydrated mention labels in participated thread previews", async () => {
+    const state = resetMswState();
+    state.me = DEV_USER;
+    state.channels = [{ id: 100, name: "general", position: 0, type: "text" }];
+    const bob = {
+      id: 2,
+      username: "bob",
+      display_name: "Bobby <Tables>",
+      avatar_url: null,
+    };
+    state.messages = {
+      "100": [
+        {
+          id: 10,
+          user_id: DEV_USER.id,
+          channel_id: 100,
+          parent_id: null,
+          created_at: 1_700_000_000_000_000,
+          text: "root preview <@2>",
+          username: DEV_USER.username,
+          display_name: null,
+          avatar_url: null,
+          suppress_embeds: false,
+          mentions: [bob],
+          attachments: [],
+          embeds: [],
+        },
+      ],
+    };
+    state.threadReplies = {
+      "10": [
+        {
+          id: 11,
+          user_id: 2,
+          channel_id: 100,
+          parent_id: 10,
+          created_at: 1_700_000_010_000_000,
+          text: "reply preview <@2>",
+          username: "bob",
+          display_name: null,
+          avatar_url: null,
+          suppress_embeds: false,
+          mentions: [bob],
+          attachments: [],
+          embeds: [],
+        },
+      ],
+    };
+    mountAt();
+
+    const article = await screen.findByRole("article");
+    expect(
+      within(article).getByText(
+        (_, element) => element?.textContent === "root preview @Bobby <Tables>",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(article).getByText(
+        (_, element) => element?.textContent === "reply preview @Bobby <Tables>",
+      ),
+    ).toBeInTheDocument();
+    const mentionLabels = within(article).getAllByText("@Bobby <Tables>");
+    expect(mentionLabels).toHaveLength(2);
+    expect(mentionLabels[0]).toHaveAttribute("title", "@bob");
+    expect(within(article).queryByText("<@2>")).toBeNull();
+  });
+
+  test("emphasizes participated previews from non-deleted root and recent-reply mention metadata", async () => {
+    const state = resetMswState();
+    state.me = DEV_USER;
+    state.channels = [{ id: 100, name: "general", position: 0, type: "text" }];
+    const selfUser = {
+      id: DEV_USER.id,
+      username: DEV_USER.username,
+      display_name: DEV_USER.display_name,
+      avatar_url: DEV_USER.avatar_url,
+    };
+    state.messages = {
+      "100": [
+        {
+          id: 40,
+          user_id: 2,
+          channel_id: 100,
+          parent_id: null,
+          created_at: 1_700_000_020_000_000,
+          text: "root ping <@1>",
+          username: "bob",
+          display_name: null,
+          avatar_url: null,
+          suppress_embeds: false,
+          mentions: [selfUser],
+          attachments: [],
+          embeds: [],
+        },
+        {
+          id: 50,
+          user_id: DEV_USER.id,
+          channel_id: 100,
+          parent_id: null,
+          created_at: 1_700_000_030_000_000,
+          deleted_at: 1_700_000_031_000_000,
+          text: "deleted root ping <@1>",
+          username: DEV_USER.username,
+          display_name: null,
+          avatar_url: null,
+          suppress_embeds: true,
+          mentions: [selfUser],
+          attachments: [],
+          embeds: [],
+        },
+      ],
+    };
+    state.threadReplies = {
+      "40": [
+        {
+          id: 41,
+          user_id: DEV_USER.id,
+          channel_id: 100,
+          parent_id: 40,
+          created_at: 1_700_000_021_000_000,
+          text: "participant reply",
+          username: DEV_USER.username,
+          display_name: null,
+          avatar_url: null,
+          suppress_embeds: false,
+          mentions: [],
+          attachments: [],
+          embeds: [],
+        },
+        {
+          id: 42,
+          user_id: 2,
+          channel_id: 100,
+          parent_id: 40,
+          created_at: 1_700_000_022_000_000,
+          text: "recent ping <@1>",
+          username: "bob",
+          display_name: null,
+          avatar_url: null,
+          suppress_embeds: false,
+          mentions: [selfUser],
+          attachments: [],
+          embeds: [],
+        },
+      ],
+      "50": [
+        {
+          id: 51,
+          user_id: 2,
+          channel_id: 100,
+          parent_id: 50,
+          created_at: 1_700_000_032_000_000,
+          text: "normal reply",
+          username: "bob",
+          display_name: null,
+          avatar_url: null,
+          suppress_embeds: false,
+          mentions: [],
+          attachments: [],
+          embeds: [],
+        },
+        {
+          id: 52,
+          user_id: 2,
+          channel_id: 100,
+          parent_id: 50,
+          created_at: 1_700_000_033_000_000,
+          deleted_at: 1_700_000_034_000_000,
+          text: "deleted reply ping <@1>",
+          username: "bob",
+          display_name: null,
+          avatar_url: null,
+          suppress_embeds: true,
+          mentions: [selfUser],
+          attachments: [],
+          embeds: [],
+        },
+      ],
+    };
+    mountAt();
+
+    const rootText = await screen.findByText(
+      (_, element) => element?.textContent === "root ping @baipas",
+    );
+    const rootPreview = assertExists(
+      rootText.closest('[data-message-id="40"]') as HTMLElement | null,
+      "mentioned root preview",
+    );
+    const mentionedArticle = assertExists(
+      rootText.closest("article") as HTMLElement | null,
+      "mentioned preview article",
+    );
+    await waitFor(() => {
+      expect(mentionedArticle).toHaveAttribute("data-mentioned-current-user", "true");
+      expect(rootPreview).toHaveAttribute("data-mentioned-current-user", "true");
+    });
+    expect(mentionedArticle).toHaveClass("border-yellow-300", "bg-yellow-50/40");
+    expect(rootPreview).toHaveClass("bg-yellow-50", "ring-yellow-300");
+    expect(
+      within(rootPreview).getByRole("button", { name: "Mention baipas (@baipas)" }),
+    ).toHaveClass("bg-yellow-100", "font-semibold");
+
+    const recentText = await screen.findByText(
+      (_, element) => element?.textContent === "recent ping @baipas",
+    );
+    const recentPreview = assertExists(
+      recentText.closest('[data-message-id="42"]') as HTMLElement | null,
+      "mentioned recent reply preview",
+    );
+    expect(recentPreview).toHaveAttribute("data-mentioned-current-user", "true");
+    expect(recentPreview).toHaveClass("bg-yellow-50", "ring-yellow-300");
+
+    const quietArticle = assertExists(
+      (await screen.findByText("normal reply")).closest("article") as HTMLElement | null,
+      "preview with only deleted mention metadata",
+    );
+    expect(quietArticle).not.toHaveAttribute("data-mentioned-current-user");
+    const deletedRoot = assertExists(
+      screen
+        .getByText(/original message deleted/i)
+        .closest('[data-message-id="50"]') as HTMLElement | null,
+      "deleted root preview",
+    );
+    expect(deletedRoot).not.toHaveAttribute("data-mentioned-current-user");
+    const deletedReply = assertExists(
+      screen.getByText(/reply deleted/i).closest('[data-message-id="52"]') as HTMLElement | null,
+      "deleted reply preview",
+    );
+    expect(deletedReply).not.toHaveAttribute("data-mentioned-current-user");
+    expect(within(quietArticle).queryByRole("button", { name: /mention baipas/i })).toBeNull();
+  });
+
   test("lists participated threads with previews and opens the selected full thread", async () => {
     const state = seedParticipatedThreads();
     const { history } = mountAt();

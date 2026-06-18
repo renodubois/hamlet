@@ -55,6 +55,7 @@ function fakeMessage(
     display_name: null,
     avatar_url: null,
     suppress_embeds: false,
+    mentions: [],
     attachments: [],
     embeds: [],
     ...overrides,

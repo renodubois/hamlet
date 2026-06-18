@@ -15,7 +15,7 @@ import { makeAttachment } from "../test/fixtures";
 import { tinyJpegFile, tinyPngFile, tinyWebpFile } from "../test/image-fixtures";
 import { assertExists } from "../test/render";
 import ChannelView from "./channel";
-import type { Message } from "../api";
+import type { Message, PublicUser } from "../api";
 
 const TEST_SERVER = import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL ?? "http://127.0.0.1:3030";
 
@@ -61,6 +61,7 @@ function seedAuthed() {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
     },
@@ -73,6 +74,7 @@ function seedAuthed() {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
     },
@@ -88,6 +90,12 @@ function setInputSelection(input: HTMLInputElement, start: number, end = start) 
   input.focus();
   input.setSelectionRange(start, end);
   fireEvent.select(input);
+}
+
+function inputFromUser(input: HTMLInputElement, value: string, caretIndex = value.length) {
+  input.value = value;
+  input.setSelectionRange(caretIndex, caretIndex);
+  fireEvent.input(input);
 }
 
 function deferred<T = void>() {
@@ -179,6 +187,7 @@ function seedOwnMessage(overrides: Partial<Message> = {}) {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
       ...overrides,
@@ -201,6 +210,7 @@ function seedThreadWithOwnReply(overrides: Partial<Message> = {}) {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
       ...overrides,
@@ -256,6 +266,218 @@ describe("Channel view integration", () => {
     });
     expect(state.sentThreadReplies).toEqual([{ rootId: 1, text: "reply from panel" }]);
     expect(state.sentMessages).toEqual([]);
+  });
+
+  test("thread panel renders hydrated mention labels from roots, replies, sends, and live updates", async () => {
+    const state = seedThreadWithOwnReply({
+      text: "existing reply <@2>",
+      mentions: [
+        {
+          id: 2,
+          username: "bob",
+          display_name: "Bobby <Tables>",
+          avatar_url: null,
+        },
+      ],
+    });
+    const bob: PublicUser = {
+      id: 2,
+      username: "bob",
+      display_name: "Bobby <Tables>",
+      avatar_url: null,
+    };
+    state.users = [...state.users, bob];
+    state.messages["100"][0] = {
+      ...state.messages["100"][0],
+      text: "hello <@2>",
+      mentions: [bob],
+    };
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    const rootText = await findRenderedMessageTextWithin(panel, "hello @Bobby <Tables>");
+    expect(within(rootText).getByText("@Bobby <Tables>")).toHaveAttribute("title", "@bob");
+    await findRenderedMessageTextWithin(panel, "existing reply @Bobby <Tables>");
+
+    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "sent reply <@2>" } });
+    fireEvent.click(within(panel).getByRole("button", { name: /^send$/i }));
+
+    await findRenderedMessageTextWithin(panel, "sent reply @Bobby <Tables>");
+    expect(state.sentThreadReplies).toContainEqual({ rootId: 1, text: "sent reply <@2>" });
+
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushThreadReplyCreated({
+      channel_id: 100,
+      root_message_id: 1,
+      reply: {
+        id: 52,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_030_000_000,
+        text: "live reply <@2>",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        mentions: [bob],
+        attachments: [],
+        embeds: [],
+      },
+      thread_summary: { reply_count: 3, last_reply_created_at: 1_700_000_030_000_000 },
+    });
+    await findRenderedMessageTextWithin(panel, "live reply @Bobby <Tables>");
+
+    es.pushMessageUpdated({
+      id: 52,
+      user_id: 2,
+      channel_id: 100,
+      parent_id: 1,
+      created_at: 1_700_000_030_000_000,
+      text: "live edited <@2>",
+      username: "bob",
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      mentions: [bob],
+      attachments: [],
+      embeds: [],
+    });
+    await findRenderedMessageTextWithin(panel, "live edited @Bobby <Tables>");
+    expect(queryRenderedMessageTextWithin(panel, "live reply @Bobby <Tables>")).toBeNull();
+  });
+
+  test("thread panel emphasizes mentioned replies independently from authored replies and tombstones", async () => {
+    const state = seedAuthed();
+    const selfUser: PublicUser = {
+      id: DEV_USER.id,
+      username: DEV_USER.username,
+      display_name: DEV_USER.display_name,
+      avatar_url: DEV_USER.avatar_url,
+    };
+    state.threadReplies["1"] = [
+      {
+        id: 71,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_010_000_000,
+        text: "thread ping <@1>",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        mentions: [selfUser],
+        attachments: [],
+        embeds: [],
+      },
+      {
+        id: 72,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_011_000_000,
+        text: "own reply no mention",
+        username: DEV_USER.username,
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        mentions: [],
+        attachments: [],
+        embeds: [],
+      },
+      {
+        id: 73,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_012_000_000,
+        text: "own reply ping <@1>",
+        username: DEV_USER.username,
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        mentions: [selfUser],
+        attachments: [],
+        embeds: [],
+      },
+      {
+        id: 74,
+        user_id: 2,
+        channel_id: 100,
+        parent_id: 1,
+        created_at: 1_700_000_013_000_000,
+        deleted_at: 1_700_000_014_000_000,
+        text: "deleted thread ping <@1>",
+        username: "bob",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: true,
+        mentions: [selfUser],
+        attachments: [],
+        embeds: [],
+      },
+    ];
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    const mentionedText = await findRenderedMessageTextWithin(panel, "thread ping @baipas");
+    const mentionedRow = assertExists(
+      mentionedText.closest("article") as HTMLElement | null,
+      "mentioned thread row",
+    );
+    expect(mentionedRow).toHaveAttribute("data-mentioned-current-user", "true");
+    expect(mentionedRow).not.toHaveAttribute("data-authored-by-current-user");
+    expect(mentionedRow).toHaveClass("bg-yellow-50", "ring-yellow-300", "border-yellow-300");
+
+    const ownText = await findRenderedMessageTextWithin(panel, "own reply no mention");
+    const ownRow = assertExists(ownText.closest("article") as HTMLElement | null, "own thread row");
+    expect(ownRow).toHaveAttribute("data-authored-by-current-user", "true");
+    expect(ownRow).not.toHaveAttribute("data-mentioned-current-user");
+    expect(ownRow).toHaveClass("border-blue-400", "bg-blue-50/50");
+
+    const bothText = await findRenderedMessageTextWithin(panel, "own reply ping @baipas");
+    const bothRow = assertExists(
+      bothText.closest("article") as HTMLElement | null,
+      "own mentioned thread row",
+    );
+    expect(bothRow).toHaveAttribute("data-authored-by-current-user", "true");
+    expect(bothRow).toHaveAttribute("data-mentioned-current-user", "true");
+    expect(bothRow).toHaveClass("border-blue-400", "bg-yellow-50", "ring-yellow-300");
+
+    const deletedRow = assertExists(
+      within(panel)
+        .getByLabelText(/original message deleted/i)
+        .closest("article") as HTMLElement | null,
+      "deleted thread row",
+    );
+    expect(deletedRow).not.toHaveAttribute("data-mentioned-current-user");
+    expect(within(deletedRow).queryByRole("button", { name: /mention baipas/i })).toBeNull();
+  });
+
+  test("thread reply edits render hydrated mention labels from the HTTP response", async () => {
+    const state = seedThreadWithOwnReply({ text: "before mention edit" });
+    const bob: PublicUser = {
+      id: 2,
+      username: "bob",
+      display_name: "Bobby <Tables>",
+      avatar_url: null,
+    };
+    state.users = [...state.users, bob];
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("before mention edit")).toBeInTheDocument());
+    const input = await openThreadReplyEdit(panel);
+    fireEvent.input(input, { target: { value: "after mention <@2>" } });
+    fireEvent.click(within(panel).getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(state.editedMessages).toContainEqual({ id: 70, text: "after mention <@2>" });
+    });
+    const rendered = await findRenderedMessageTextWithin(panel, "after mention @Bobby <Tables>");
+    expect(within(rendered).getByText("@Bobby <Tables>")).toHaveAttribute("title", "@bob");
   });
 
   test("thread panel exposes reaction controls for the root and replies", async () => {
@@ -602,6 +824,47 @@ describe("Channel view integration", () => {
     });
   });
 
+  test("thread reply composer searches, chips, serializes, and renders user mentions", async () => {
+    const state = seedAuthed();
+    const bob: PublicUser = {
+      id: 2,
+      username: "bobthreadcompose",
+      display_name: "Bobby Thread Compose",
+      avatar_url: null,
+    };
+    state.users.push(bob);
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
+    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
+
+    inputFromUser(input, "thread @bobthread");
+    const listbox = await screen.findByRole("listbox", { name: /mention suggestions/i });
+    const bobOption = within(listbox).getByRole("option", {
+      name: /mention bobby thread compose @bobthreadcompose/i,
+    });
+    expect(bobOption).toHaveAttribute("aria-selected", "true");
+    expect(state.userSearchRequests).toContainEqual({ query: "bobthread", limit: 8 });
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => {
+      expect(input.value).toBe("thread <@2> ");
+      expect(within(input).getByText("@Bobby Thread Compose")).toBeInTheDocument();
+    });
+    expect(state.sentThreadReplies).toEqual([]);
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => {
+      expect(state.sentThreadReplies).toContainEqual({ rootId: 1, text: "thread <@2> " });
+      expect(input.value).toBe("");
+    });
+    expect(within(panel).getByText("@Bobby Thread Compose")).toHaveAttribute(
+      "title",
+      "@bobthreadcompose",
+    );
+  });
+
   test("failed thread replies restore the exact multiline draft after clearing", async () => {
     const state = seedAuthed();
     let releaseReply: () => void = () => undefined;
@@ -663,6 +926,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -696,6 +960,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -782,6 +1047,51 @@ describe("Channel view integration", () => {
     });
   });
 
+  test("thread reply edits search, chip, save markers, and render hydrated mentions", async () => {
+    const state = seedThreadWithOwnReply({ text: "reply body" });
+    const bob: PublicUser = {
+      id: 2,
+      username: "bobthreadedit",
+      display_name: "Bobby Thread Edit",
+      avatar_url: null,
+    };
+    state.users.push(bob);
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("reply body")).toBeInTheDocument());
+    const input = await openThreadReplyEdit(panel);
+
+    inputFromUser(input, "reply @bobthreadedit");
+    const listbox = await screen.findByRole("listbox", { name: /mention suggestions/i });
+    expect(
+      within(listbox).getByRole("option", {
+        name: /mention bobby thread edit @bobthreadedit/i,
+      }),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(state.userSearchRequests).toContainEqual({ query: "bobthreadedit", limit: 8 });
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => {
+      expect(input.value).toBe("reply <@2> ");
+      expect(within(input).getByText("@Bobby Thread Edit")).toBeInTheDocument();
+    });
+    expect(state.editedMessages).toEqual([]);
+
+    fireEvent.click(
+      within(assertExists(input.closest("form"), "thread reply edit form")).getByRole("button", {
+        name: /^save$/i,
+      }),
+    );
+    await waitFor(() => {
+      expect(state.editedMessages).toContainEqual({ id: 70, text: "reply <@2> " });
+    });
+    expect(within(panel).getByText("@Bobby Thread Edit")).toHaveAttribute(
+      "title",
+      "@bobthreadedit",
+    );
+  });
+
   test("thread reply edit Save button PUTs exact multiline text", async () => {
     const state = seedThreadWithOwnReply({ text: "button edit" });
     mountAt("/channel/100?thread=1");
@@ -820,6 +1130,39 @@ describe("Channel view integration", () => {
     expect(
       await findRenderedMessageTextWithin(panel, "cancel first line\ncancel second line"),
     ).toBeInTheDocument();
+  });
+
+  test("Escape dismisses thread reply edit mention autocomplete before canceling the edit", async () => {
+    const state = seedThreadWithOwnReply({ text: "thread escape edit" });
+    state.users.push({
+      id: 2,
+      username: "bobthreadescape",
+      display_name: "Bobby Thread Escape",
+      avatar_url: null,
+    });
+    mountAt("/channel/100?thread=1");
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("thread escape edit")).toBeInTheDocument());
+    const input = await openThreadReplyEdit(panel);
+    inputFromUser(input, "thread @bobthreadescape");
+    await screen.findByRole("listbox", { name: /mention suggestions/i });
+
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("listbox", { name: /mention suggestions/i })).toBeNull(),
+    );
+    expect(within(panel).getByRole("textbox", { name: /edit reply/i })).toBeInTheDocument();
+    expect(state.editedMessages).toEqual([]);
+
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    await waitFor(() =>
+      expect(within(panel).queryByRole("textbox", { name: /edit reply/i })).toBeNull(),
+    );
+    expect(state.editedMessages).toEqual([]);
+    expect(within(panel).getByText("thread escape edit")).toBeInTheDocument();
   });
 
   test("unchanged thread reply multiline edits exit edit mode without PUTing", async () => {
@@ -906,6 +1249,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
     });
@@ -946,6 +1290,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -1009,6 +1354,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       } satisfies Message;
@@ -1057,6 +1403,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -1069,6 +1416,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
         thread_summary: { reply_count: 2, last_reply_created_at: 1_700_000_000_000_000 },
@@ -1085,6 +1433,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -1164,6 +1513,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -1203,6 +1553,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -1228,6 +1579,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -1255,6 +1607,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [makeAttachment({ id: 9101, message_id: 13 })],
         embeds: [],
       },
@@ -1276,6 +1629,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [makeAttachment({ id: 9102, message_id: 14 })],
       embeds: [],
     });
@@ -1304,6 +1658,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments:
           replyNumber === 1 || replyNumber === 51
             ? [makeAttachment({ id: 9201 + replyNumber, message_id: 2_000 + replyNumber })]
@@ -1355,6 +1710,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [makeAttachment({ id: 9301, message_id: 2_100 })],
         embeds: [],
       },
@@ -1389,6 +1745,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
     });
@@ -1417,6 +1774,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
     });
@@ -1447,6 +1805,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
     });
@@ -1475,6 +1834,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
     });
@@ -1508,6 +1868,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -1527,6 +1888,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -1551,6 +1913,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -1586,6 +1949,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -1609,6 +1973,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -1643,6 +2008,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [
           {
@@ -1671,6 +2037,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -1736,6 +2103,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -1751,6 +2119,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: true,
+        mentions: [],
         attachments: [],
         embeds: [],
         reactions: [{ kind: "native", emoji: "❤️", count: 1, me_reacted: false }],
@@ -1793,6 +2162,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [makeAttachment({ id: 9801, message_id: 90 })],
         embeds: [],
       },
@@ -1807,6 +2177,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [makeAttachment({ id: 9802, message_id: 91 })],
         embeds: [],
       },
@@ -1878,6 +2249,69 @@ describe("Channel view integration", () => {
     await waitFor(() => {
       expect(input.value).toBe("");
       expect(document.activeElement).toBe(input);
+    });
+  });
+
+  test("channel composer searches, chips, serializes, and renders user mentions", async () => {
+    const bob: PublicUser = {
+      id: 2,
+      username: "bob",
+      display_name: "Bobby",
+      avatar_url: null,
+    };
+    const state = seedAuthed();
+    state.users = [...state.users, bob];
+    state.messages["100"] = [
+      ...state.messages["100"],
+      {
+        id: 9,
+        user_id: 1,
+        channel_id: 100,
+        text: "primed <@2>",
+        username: "alice",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        mentions: [bob],
+        attachments: [],
+        embeds: [],
+      },
+    ];
+    mountAt("/channel/100");
+
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    await screen.findByText("@Bobby");
+
+    inputFromUser(input, "<@2>");
+    await waitFor(() => {
+      expect(within(input).getByText("@Bobby")).toHaveClass("bg-blue-100", "text-blue-800");
+    });
+
+    inputFromUser(input, "@bo");
+    const listbox = await screen.findByRole("listbox", { name: /mention suggestions/i });
+    const bobOption = within(listbox).getByRole("option", { name: /mention bobby @bob/i });
+    expect(bobOption).toHaveAttribute("aria-selected", "true");
+    expect(state.userSearchRequests).toContainEqual({ query: "bo", limit: 8 });
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => {
+      expect(input.value).toBe("<@2> ");
+      expect(within(input).getByText("@Bobby")).toBeInTheDocument();
+    });
+    expect(state.sentMessages).toEqual([]);
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => {
+      expect(state.sentMessages).toContainEqual({ channel: "100", text: "<@2> " });
+      expect(input.value).toBe("");
+    });
+
+    const created = state.messages["100"].at(-1);
+    expect(created?.mentions).toEqual([bob]);
+    if (created) latestFakeEventSource()?.pushMessage(created);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("@Bobby").length).toBeGreaterThanOrEqual(2);
     });
   });
 
@@ -1980,6 +2414,63 @@ describe("Channel view integration", () => {
         expect(input.value).toBe("");
         expect(document.activeElement).toBe(input);
       });
+    } finally {
+      unmount();
+      urls.restore();
+    }
+  });
+
+  test("photo captions submit mention markers and render hydrated SSE mentions with attachments", async () => {
+    const urls = mockObjectUrls();
+    const state = seedAuthed();
+    state.users.push({ id: 2, username: "bob", display_name: "Bobby Tables", avatar_url: null });
+    const { unmount } = mountAt("/channel/100");
+
+    try {
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+      const photo = photoFile("mention-caption.png");
+      const text = "caption <@2>";
+      fireEvent.input(input, { target: { value: text } });
+      fireEvent.change(fileInput(), { target: { files: [photo] } });
+      fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+
+      await waitFor(() => {
+        expect(state.sentMessagePhotos).toContainEqual({
+          channel: "100",
+          text,
+          photos: [{ name: "mention-caption.png", size: photo.size, type: "image/png" }],
+        });
+        expect(screen.queryByRole("img", { name: /mention-caption\.png/i })).toBeNull();
+        expect(urls.revokeObjectURL).toHaveBeenCalledWith("blob:mention-caption.png-0");
+        expect(input.value).toBe("");
+        expect(document.activeElement).toBe(input);
+      });
+
+      const created = assertExists(
+        state.messages["100"].find((message) => message.text === text),
+        "created photo caption mention",
+      );
+      expect(created.mentions).toEqual([
+        { id: 2, username: "bob", display_name: "Bobby Tables", avatar_url: null },
+      ]);
+      await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+      assertExists(latestFakeEventSource(), "latestFakeEventSource").pushMessage(created);
+
+      const mention = await screen.findByText("@Bobby Tables");
+      expect(mention).toHaveAttribute("title", "@bob");
+      const messageText = assertExists(
+        mention.closest(".whitespace-pre-wrap"),
+        "photo caption mention text",
+      );
+      expect(messageText).toHaveTextContent("caption @Bobby Tables");
+      expect(messageText).not.toHaveTextContent("<@2>");
+      expect(screen.getByRole("img", { name: /photo attachment from baipas/i })).toHaveAttribute(
+        "src",
+        expect.stringContaining("/attachments/"),
+      );
+      expect(
+        screen.getByRole("button", { name: /open photo attachment from baipas/i }),
+      ).toBeEnabled();
     } finally {
       unmount();
       urls.restore();
@@ -2209,6 +2700,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -2503,6 +2995,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
     });
@@ -2530,6 +3023,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -2545,6 +3039,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
         reply_to: {
@@ -2579,6 +3074,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
       reply_to: {
@@ -2620,6 +3116,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -2635,6 +3132,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
         reply_to: {
@@ -2673,6 +3171,7 @@ describe("Channel view integration", () => {
       text: "",
       deleted_at: 1_700_000_002_000_000,
       suppress_embeds: true,
+      mentions: [],
       attachments: [],
       embeds: [],
       reactions: [],
@@ -2710,6 +3209,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -2725,6 +3225,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
         thread_summary: { reply_count: 1, last_reply_created_at: 1_700_000_002_000_000 },
@@ -2756,6 +3257,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -2785,6 +3287,7 @@ describe("Channel view integration", () => {
       text: "",
       deleted_at: 1_700_000_003_000_000,
       suppress_embeds: true,
+      mentions: [],
       attachments: [],
       embeds: [],
       reactions: [],
@@ -2812,6 +3315,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -2827,6 +3331,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
         reply_to: {
@@ -2867,6 +3372,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: true,
+        mentions: [],
         attachments: [],
         embeds: [],
         reactions: [],
@@ -2883,6 +3389,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
         reply_to: {
@@ -2910,6 +3417,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
         reply_to: null,
@@ -3040,6 +3548,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
     });
@@ -3100,6 +3609,64 @@ describe("Channel view integration", () => {
     await waitFor(() => {
       expect(mswState().editedMessages).toContainEqual({ id: 7, text: "edited!" });
     });
+  });
+
+  test("applies mention metadata returned by channel message edit responses", async () => {
+    const bob: PublicUser = {
+      id: 2,
+      username: "bobeditresponse",
+      display_name: "Bobby Response",
+      avatar_url: null,
+    };
+    const state = seedOwnMessage({ username: "baipas" });
+    state.users.push(bob);
+    mountAt("/channel/100");
+
+    const input = await openMessageEdit("original");
+    const text = `edited mention <@${bob.id}>`;
+    fireEvent.input(input, { target: { value: text } });
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+
+    await waitFor(() => {
+      expect(state.editedMessages).toContainEqual({ id: 7, text });
+      expect(screen.getByText("@Bobby Response")).toHaveAttribute("title", "@bobeditresponse");
+      expect(state.messages["100"][0]?.mentions).toEqual([bob]);
+    });
+  });
+
+  test("channel message edits search, chip, serialize, and render user mentions", async () => {
+    const bob: PublicUser = {
+      id: 2,
+      username: "bobchanneledit",
+      display_name: "Bobby Channel Edit",
+      avatar_url: null,
+    };
+    const state = seedOwnMessage({ id: 36, username: "baipas", text: "edit me" });
+    state.users.push(bob);
+    mountAt("/channel/100");
+
+    const input = await openMessageEdit("edit me");
+    inputFromUser(input, "edited @bobchannel");
+
+    const listbox = await screen.findByRole("listbox", { name: /mention suggestions/i });
+    const bobOption = within(listbox).getByRole("option", {
+      name: /mention bobby channel edit @bobchanneledit/i,
+    });
+    expect(bobOption).toHaveAttribute("aria-selected", "true");
+    expect(state.userSearchRequests).toContainEqual({ query: "bobchannel", limit: 8 });
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => {
+      expect(input.value).toBe("edited <@2> ");
+      expect(within(input).getByText("@Bobby Channel Edit")).toBeInTheDocument();
+    });
+    expect(state.editedMessages).toEqual([]);
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => {
+      expect(state.editedMessages).toContainEqual({ id: 36, text: "edited <@2> " });
+    });
+    expect(screen.getByText("@Bobby Channel Edit")).toHaveAttribute("title", "@bobchanneledit");
   });
 
   test("Shift+Enter inserts an edit newline and Enter PUTs the exact multiline draft", async () => {
@@ -3176,6 +3743,35 @@ describe("Channel view integration", () => {
     await waitFor(() => expect(screen.queryByLabelText(/edit message/i)).toBeNull());
     expect(mswState().editedMessages).toEqual([]);
     expect(screen.getByText("escape edit")).toBeInTheDocument();
+  });
+
+  test("Escape dismisses message edit mention autocomplete before canceling the edit", async () => {
+    const state = seedOwnMessage({ id: 37, text: "escape mention edit" });
+    state.users.push({
+      id: 2,
+      username: "bobescapeedit",
+      display_name: "Bobby Escape Edit",
+      avatar_url: null,
+    });
+    mountAt("/channel/100");
+
+    const input = await openMessageEdit("escape mention edit");
+    inputFromUser(input, "escape @bobescape");
+    await screen.findByRole("listbox", { name: /mention suggestions/i });
+
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("listbox", { name: /mention suggestions/i })).toBeNull(),
+    );
+    expect(screen.getByLabelText(/edit message/i)).toBeInTheDocument();
+    expect(state.editedMessages).toEqual([]);
+
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByLabelText(/edit message/i)).toBeNull());
+    expect(state.editedMessages).toEqual([]);
+    expect(screen.getByText("escape mention edit")).toBeInTheDocument();
   });
 
   test("unchanged multiline edits exit edit mode without PUTing", async () => {
@@ -3297,6 +3893,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -3322,6 +3919,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -3355,6 +3953,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -3390,6 +3989,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -3431,6 +4031,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [makeAttachment({ id: 9501, message_id: 12 })],
         embeds: [],
       },
@@ -3490,6 +4091,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
     });
@@ -3497,6 +4099,61 @@ describe("Channel view integration", () => {
     await waitFor(() => {
       expect(screen.getByText("hello (edited)")).toBeInTheDocument();
       expect(screen.queryByText("hello")).toBeNull();
+    });
+  });
+
+  test("applies mention metadata from message_updated SSE events", async () => {
+    const bob: PublicUser = {
+      id: 2,
+      username: "bobliveedit",
+      display_name: "Bobby Live",
+      avatar_url: null,
+    };
+    const carol: PublicUser = {
+      id: 3,
+      username: "carolliveedit",
+      display_name: "Carol Live",
+      avatar_url: null,
+    };
+    const state = seedAuthed();
+    state.messages["100"] = [
+      {
+        id: 15,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        text: `before <@${bob.id}>`,
+        username: DEV_USER.username,
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        mentions: [bob],
+        attachments: [],
+        embeds: [],
+      },
+    ];
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("@Bobby Live")).toBeInTheDocument());
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+
+    const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
+    es.pushMessageUpdated({
+      id: 15,
+      user_id: DEV_USER.id,
+      channel_id: 100,
+      text: `after <@${carol.id}>`,
+      username: DEV_USER.username,
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      mentions: [carol],
+      attachments: [],
+      embeds: [],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("@Carol Live")).toHaveAttribute("title", "@carolliveedit");
+      expect(screen.queryByText("@Bobby Live")).toBeNull();
     });
   });
 
@@ -3535,6 +4192,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -3561,6 +4219,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: true,
+      mentions: [],
       attachments: [],
       embeds: [],
       reactions: [],
@@ -3595,6 +4254,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
     });
@@ -3626,6 +4286,7 @@ describe("Channel view integration", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
     });
@@ -3668,6 +4329,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -3779,6 +4441,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -3813,6 +4476,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -3843,6 +4507,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -3871,6 +4536,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: "/uploads/avatars/1.webp?v=1",
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -3883,6 +4549,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -3909,6 +4576,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
       },
@@ -3962,6 +4630,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
         reactions: [],
@@ -4035,6 +4704,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [],
         reactions: [{ kind: "native", emoji: "👍", count: 2, me_reacted: true }],
@@ -4074,6 +4744,7 @@ describe("Channel view integration", () => {
         display_name: null,
         avatar_url: null,
         suppress_embeds: false,
+        mentions: [],
         attachments: [],
         embeds: [
           {

@@ -1,31 +1,22 @@
-import {
-  Component,
-  For,
-  Show,
-  createMemo,
-  createSignal,
-  onCleanup,
-  onMount,
-  type JSX,
-} from "solid-js";
+import { Component, For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import {
   addMessageReaction,
   deleteMessage,
   editMessage,
   messageDisplayName,
-  resolveServerUrl,
   removeMessageReaction,
   setMessageEmbedsSuppressed,
-  type CustomEmoji,
   type Message,
+  type PublicUser,
   type ReactionRequest,
   type ReactionSummary,
+  type SearchUsersOptions,
 } from "../api";
 import { useOptionalCustomEmojis } from "../contexts/custom-emojis";
 import { CONSERVATIVE_EMOJIS } from "../emoji/emoji-data";
 import { customEmojisToEntries, parseCustomEmojiMarkers } from "../emoji/custom-emojis";
+import { messageMentionsCurrentUser } from "../mentions/mentions";
 import { applyOptimisticReaction, reactionSummariesEqual } from "../reactions/reaction-summaries";
-import { linkifyText } from "../linkify";
 import AttachmentGrid from "./attachment-grid";
 import Avatar from "./avatar";
 import EmojiPicker from "./emoji-picker";
@@ -33,6 +24,7 @@ import { DeleteIcon, EditIcon, EmojiIcon } from "./icons";
 import MessageEmbed from "./message-embed";
 import MessageInput from "./message-input";
 import MessageReferencePreview, { messageReferencePreviewText } from "./message-reference-preview";
+import MessageText from "./message-text";
 import Modal from "./modal";
 import ReactionRow from "./reaction-row";
 
@@ -45,32 +37,6 @@ interface ContextMenuState {
 interface ReactionPickerState {
   messageId: number;
   anchor: HTMLElement;
-}
-
-function renderTextWithCustomEmojis(
-  text: string,
-  byId: (id: number) => CustomEmoji | null,
-): JSX.Element[] {
-  return parseCustomEmojiMarkers(text).map((token) => {
-    if (token.type === "text") return token.value;
-
-    const emoji = byId(token.id);
-    if (!emoji) {
-      return (
-        <span title={`Custom emoji ${token.marker} is unavailable`}>:{token.storedName}:</span>
-      );
-    }
-
-    const label = `:${emoji.name}:`;
-    return (
-      <img
-        src={resolveServerUrl(emoji.image_url)}
-        alt={label}
-        title={emoji.deleted_at === null ? label : `${label} (deleted)`}
-        class="inline-block h-6 w-6 align-text-bottom object-contain"
-      />
-    );
-  });
 }
 
 function formatThreadTimestamp(timestampMicros: number): string {
@@ -93,6 +59,21 @@ function referencedMessageLabel(message: Message): string {
   return `message by ${messageDisplayName(message)}: ${messageReferencePreviewText(message)}`;
 }
 
+function messageRowClass(authoredByCurrentUser: boolean, mentionedCurrentUser: boolean): string {
+  const borderClass = authoredByCurrentUser
+    ? "border-blue-400"
+    : mentionedCurrentUser
+      ? "border-yellow-300"
+      : "border-transparent";
+  const stateClass = mentionedCurrentUser
+    ? "bg-yellow-50 ring-1 ring-inset ring-yellow-300 hover:bg-yellow-100/80 focus-within:bg-yellow-100/80"
+    : authoredByCurrentUser
+      ? "bg-blue-50/50 hover:bg-blue-50 focus-within:bg-blue-50"
+      : "hover:bg-gray-50 focus-within:bg-gray-50";
+
+  return `group relative flex items-start gap-3 px-2 py-1 -mx-2 rounded-md border-l-4 transition-colors ${borderClass} ${stateClass}`;
+}
+
 export function channelMessageElementId(messageId: number): string {
   return `channel-message-${messageId}`;
 }
@@ -104,7 +85,12 @@ const ChannelMessages: Component<{
   currentUserId: number | null;
   onOpenThread?: (message: Message, options?: { focusComposer?: boolean }) => void;
   onReplyToMessage?: (message: Message) => void;
+  onMessageUpdated?: (message: Message) => void;
   onReactionsChange?: (messageId: number, reactions: ReactionSummary[]) => void;
+  mentionUsers?: readonly PublicUser[];
+  onMentionUsers?: (users: readonly PublicUser[]) => void;
+  searchMentionUsers?: (options: SearchUsersOptions) => Promise<PublicUser[]>;
+  mentionSearchLimit?: number;
 }> = (props) => {
   const customEmojis = useOptionalCustomEmojis();
   const activeCustomEmojis = () => customEmojis?.activeEmojis?.() ?? [];
@@ -140,6 +126,7 @@ const ChannelMessages: Component<{
   });
 
   const startEditing = (msg: Message) => {
+    props.onMentionUsers?.(msg.mentions ?? []);
     setDraft(msg.text);
     setEditingId(msg.id);
     closeMenu();
@@ -190,7 +177,9 @@ const ChannelMessages: Component<{
       return;
     }
     try {
-      await editMessage(msg.id, next);
+      const updated = await editMessage(msg.id, next);
+      props.onMentionUsers?.(updated?.mentions ?? []);
+      props.onMessageUpdated?.(updated);
     } catch (e) {
       console.error("failed to edit message", e);
     }
@@ -272,6 +261,9 @@ const ChannelMessages: Component<{
   const isOwnMessage = (msg: Message) =>
     !isDeletedMessage(msg) && props.currentUserId !== null && msg.user_id === props.currentUserId;
 
+  const isMentionedCurrentUser = (msg: Message) =>
+    messageMentionsCurrentUser(msg, props.currentUserId);
+
   const canOpenThread = (msg: Message) =>
     !isDeletedMessage(msg) && msg.parent_id == null && props.onOpenThread !== undefined;
 
@@ -315,7 +307,9 @@ const ChannelMessages: Component<{
           <div
             id={channelMessageElementId(message.id)}
             data-message-id={String(message.id)}
-            class="group relative flex items-start gap-3 px-2 py-1 -mx-2 rounded-md hover:bg-gray-50 focus-within:bg-gray-50"
+            data-authored-by-current-user={isOwnMessage(message) ? "true" : undefined}
+            data-mentioned-current-user={isMentionedCurrentUser(message) ? "true" : undefined}
+            class={messageRowClass(isOwnMessage(message), isMentionedCurrentUser(message))}
             onContextMenu={(e) => handleContextMenu(e, message)}
           >
             <Avatar
@@ -347,22 +341,11 @@ const ChannelMessages: Component<{
                 <Show
                   when={editingId() === message.id}
                   fallback={
-                    <div class="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-                      {linkifyText(message.text).map((tok) =>
-                        tok.type === "link" ? (
-                          <a
-                            href={tok.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-blue-700 hover:underline break-all"
-                          >
-                            {tok.url}
-                          </a>
-                        ) : (
-                          renderTextWithCustomEmojis(tok.value, customEmojiById)
-                        ),
-                      )}
-                    </div>
+                    <MessageText
+                      text={message.text}
+                      mentions={message.mentions ?? []}
+                      currentUserId={props.currentUserId}
+                    />
                   }
                 >
                   <form
@@ -376,6 +359,10 @@ const ChannelMessages: Component<{
                       value={draft()}
                       onChange={setDraft}
                       ariaLabel="Edit message"
+                      mentionUsers={props.mentionUsers}
+                      onMentionUsers={props.onMentionUsers}
+                      searchMentionUsers={props.searchMentionUsers}
+                      mentionSearchLimit={props.mentionSearchLimit}
                       inputRef={(el) =>
                         queueMicrotask(() => {
                           if (el.isConnected) el.focus();

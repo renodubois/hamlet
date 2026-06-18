@@ -9,7 +9,7 @@ import {
   untrack,
   type JSX,
 } from "solid-js";
-import { getServerUrl, type CustomEmoji } from "../api";
+import { getServerUrl, type CustomEmoji, type PublicUser, type SearchUsersOptions } from "../api";
 import { useOptionalCustomEmojis } from "../contexts/custom-emojis";
 import { parseCustomEmojiMarkers, customEmojisToEntries } from "../emoji/custom-emojis";
 import { CONSERVATIVE_EMOJIS } from "../emoji/emoji-data";
@@ -19,6 +19,15 @@ import {
   hasValidShortcodeBoundary,
   replaceCompletedEmojiShortcodeBeforeCaret,
 } from "../emoji/emoji-shortcodes";
+import {
+  findActiveMentionToken,
+  mentionDisplayName,
+  parseMentionMarkers,
+  rankMentionUsers,
+  replaceMentionToken,
+  type MentionAutocompleteToken,
+} from "../mentions/mentions";
+import Avatar from "./avatar";
 import EmojiPicker from "./emoji-picker";
 import { EmojiIcon } from "./icons";
 
@@ -52,6 +61,10 @@ export interface MessageInputProps {
   emojiButtonLabel?: string;
   inputRef?: (element: MessageEditorElement) => void;
   onKeyDown?: JSX.EventHandler<MessageEditorElement, KeyboardEvent>;
+  mentionUsers?: readonly PublicUser[];
+  onMentionUsers?: (users: readonly PublicUser[]) => void;
+  searchMentionUsers?: (options: SearchUsersOptions) => Promise<PublicUser[]>;
+  mentionSearchLimit?: number;
 }
 
 const DEFAULT_ROOT_CLASS = "flex min-w-0 flex-1 items-center gap-2";
@@ -63,6 +76,7 @@ const DEFAULT_EMOJI_BUTTON_CLASS =
 const EMOJI_AUTOCOMPLETE_SESSION_QUERY_PATTERN = /^[A-Za-z0-9_+-]{0,32}$/;
 const EMOJI_AUTOCOMPLETE_QUERY_PATTERN = /^[A-Za-z0-9_+-]{2,32}$/;
 const MAX_EMOJI_AUTOCOMPLETE_RESULTS = 8;
+const DEFAULT_MENTION_AUTOCOMPLETE_LIMIT = 8;
 // Browsers struggle to place a caret after a contenteditable=false chip when
 // it has no editable text after it. Keep an invisible editable text boundary in
 // the DOM only where needed, then strip it from serialized text and offsets.
@@ -130,13 +144,26 @@ function emojiAutocompleteOptionLabel(result: EmojiSearchResult): string {
     : `Emoji ${result.canonicalShortcode}`;
 }
 
+function mentionAutocompleteTokenKey(token: MentionAutocompleteToken | null): string | null {
+  return token ? `${token.start}:${token.end}:${token.query}` : null;
+}
+
+function mentionAutocompleteOptionLabel(user: PublicUser): string {
+  const display = mentionDisplayName(user);
+  return display === user.username
+    ? `Mention @${user.username}`
+    : `Mention ${display} @${user.username}`;
+}
+
 function resolveImageUrl(url: string): string {
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
   return `${getServerUrl()}${url}`;
 }
 
 function markerForElement(node: Node): string | null {
-  return node instanceof HTMLElement ? (node.dataset.emojiMarker ?? null) : null;
+  return node instanceof HTMLElement
+    ? (node.dataset.emojiMarker ?? node.dataset.mentionMarker ?? null)
+    : null;
 }
 
 const BLOCK_BOUNDARY_ELEMENT_NAMES = new Set(["DIV", "P", "LI"]);
@@ -351,22 +378,104 @@ function placeEditorSelection(root: HTMLElement, selection: SelectionRange) {
   domSelection?.addRange(range);
 }
 
-function findMarkerEndingAt(value: string, caret: number): { start: number; end: number } | null {
-  for (const token of parseCustomEmojiMarkers(value)) {
-    if (token.type === "text") continue;
-    const start = value.indexOf(token.marker, Math.max(0, caret - token.marker.length));
-    if (start >= 0 && start + token.marker.length === caret) {
-      return { start, end: caret };
-    }
-  }
-  return null;
+interface MarkerRange {
+  marker: string;
+  start: number;
+  end: number;
 }
 
-function findMarkerStartingAt(value: string, caret: number): { start: number; end: number } | null {
-  const rest = value.slice(caret);
-  const token = parseCustomEmojiMarkers(rest)[0];
-  if (!token || token.type === "text") return null;
-  return token.marker.length > 0 ? { start: caret, end: caret + token.marker.length } : null;
+type EditorRenderToken =
+  | { type: "text"; value: string }
+  | { type: "custom-emoji"; marker: string; storedName: string; id: number }
+  | { type: "mention"; marker: string; id: number };
+
+function customEmojiMarkerRanges(value: string): (MarkerRange & EditorRenderToken)[] {
+  const ranges: (MarkerRange & EditorRenderToken)[] = [];
+  let cursor = 0;
+
+  for (const token of parseCustomEmojiMarkers(value)) {
+    if (token.type === "text") {
+      cursor += token.value.length;
+      continue;
+    }
+
+    ranges.push({
+      type: "custom-emoji",
+      marker: token.marker,
+      storedName: token.storedName,
+      id: token.id,
+      start: cursor,
+      end: cursor + token.marker.length,
+    });
+    cursor += token.marker.length;
+  }
+
+  return ranges;
+}
+
+function mentionMarkerRanges(value: string): (MarkerRange & EditorRenderToken)[] {
+  const ranges: (MarkerRange & EditorRenderToken)[] = [];
+  let cursor = 0;
+
+  for (const token of parseMentionMarkers(value)) {
+    if (token.type === "text") {
+      cursor += token.value.length;
+      continue;
+    }
+
+    ranges.push({
+      type: "mention",
+      marker: token.marker,
+      id: token.id,
+      start: cursor,
+      end: cursor + token.marker.length,
+    });
+    cursor += token.marker.length;
+  }
+
+  return ranges;
+}
+
+function editorMarkerRanges(value: string, includeMentions: boolean): MarkerRange[] {
+  return [
+    ...customEmojiMarkerRanges(value),
+    ...(includeMentions ? mentionMarkerRanges(value) : []),
+  ].sort((a, b) => a.start - b.start || a.end - b.end);
+}
+
+function parseEditorRenderTokens(value: string, includeMentions: boolean): EditorRenderToken[] {
+  const tokens: EditorRenderToken[] = [];
+  let cursor = 0;
+
+  for (const range of [
+    ...customEmojiMarkerRanges(value),
+    ...(includeMentions ? mentionMarkerRanges(value) : []),
+  ].sort((a, b) => a.start - b.start || a.end - b.end)) {
+    if (range.start < cursor) continue;
+    if (range.start > cursor)
+      tokens.push({ type: "text", value: value.slice(cursor, range.start) });
+    tokens.push(range);
+    cursor = range.end;
+  }
+
+  if (cursor < value.length) tokens.push({ type: "text", value: value.slice(cursor) });
+  return tokens;
+}
+
+function findMarkerEndingAt(
+  value: string,
+  caret: number,
+  includeMentions: boolean,
+): { start: number; end: number } | null {
+  return editorMarkerRanges(value, includeMentions).find((range) => range.end === caret) ?? null;
+}
+
+function findMarkerStartingAt(
+  value: string,
+  caret: number,
+  includeMentions: boolean,
+): { start: number; end: number } | null {
+  return editorMarkerRanges(value, includeMentions).find((range) => range.start === caret) ?? null;
 }
 
 function createEditorCaretSentinel(): Text {
@@ -409,6 +518,24 @@ function createEmojiChipElement(
   return chip;
 }
 
+function createMentionChipElement(
+  marker: string,
+  id: number,
+  user: PublicUser | null,
+): HTMLSpanElement {
+  const display = user ? mentionDisplayName(user) : String(id);
+  const label = `@${display}`;
+  const chip = document.createElement("span");
+  chip.contentEditable = "false";
+  chip.dataset.mentionMarker = marker;
+  chip.setAttribute("aria-label", `Mention ${label}`);
+  chip.title = user ? `@${user.username}` : `${marker} (unavailable)`;
+  chip.className =
+    "mx-0.5 inline-flex items-center rounded bg-blue-100 px-1 font-medium text-blue-800 align-baseline";
+  chip.textContent = label;
+  return chip;
+}
+
 function appendTextWithLineBreaks(fragment: DocumentFragment, value: string) {
   const lines = value.split("\n");
   lines.forEach((line, index) => {
@@ -423,11 +550,12 @@ function appendTextWithLineBreaks(fragment: DocumentFragment, value: string) {
 function renderEditorValue(
   root: HTMLElement,
   value: string,
-  byId: (id: number) => CustomEmoji | null,
+  customEmojiById: (id: number) => CustomEmoji | null,
+  mentionUserById: (id: number) => PublicUser | null,
+  includeMentions: boolean,
 ) {
   const fragment = document.createDocumentFragment();
-
-  const tokens = parseCustomEmojiMarkers(value);
+  const tokens = parseEditorRenderTokens(value, includeMentions);
 
   tokens.forEach((token, index) => {
     if (token.type === "text") {
@@ -435,7 +563,18 @@ function renderEditorValue(
       return;
     }
 
-    fragment.append(createEmojiChipElement(token.marker, token.storedName, byId(token.id)));
+    if (token.type === "mention") {
+      const user = mentionUserById(token.id);
+      if (!user) {
+        appendTextWithLineBreaks(fragment, token.marker);
+        return;
+      }
+      fragment.append(createMentionChipElement(token.marker, token.id, user));
+    } else {
+      fragment.append(
+        createEmojiChipElement(token.marker, token.storedName, customEmojiById(token.id)),
+      );
+    }
 
     const nextToken = tokens[index + 1];
     if (!nextToken || nextToken.type !== "text" || nextToken.value.length === 0) {
@@ -448,6 +587,7 @@ function renderEditorValue(
 
 export default function MessageInput(props: MessageInputProps) {
   const autocompleteListboxId = createUniqueId();
+  const mentionListboxId = createUniqueId();
   const customEmojis = useOptionalCustomEmojis();
   const allCustomEmojis = () => customEmojis?.allEmojis?.() ?? [];
   const activeCustomEmojis = () => customEmojis?.activeEmojis?.() ?? [];
@@ -464,11 +604,29 @@ export default function MessageInput(props: MessageInputProps) {
       .join("|"),
   );
   const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
+  const mentionUsersById = createMemo(
+    () => new Map((props.mentionUsers ?? []).map((user) => [user.id, user])),
+  );
+  const mentionUsersRenderVersion = createMemo(() =>
+    (props.mentionUsers ?? [])
+      .map(
+        (user) => `${user.id}:${user.username}:${user.display_name ?? ""}:${user.avatar_url ?? ""}`,
+      )
+      .join("|"),
+  );
+  const mentionUserById = (id: number) => mentionUsersById().get(id) ?? null;
+  const mentionChipsEnabled = () =>
+    !!props.searchMentionUsers || (props.mentionUsers?.length ?? 0) > 0;
+  const mentionSearchLimit = () => props.mentionSearchLimit ?? DEFAULT_MENTION_AUTOCOMPLETE_LIMIT;
   const [emojiPickerOpen, setEmojiPickerOpen] = createSignal(false);
   const [selectedAutocompleteIndex, setSelectedAutocompleteIndex] = createSignal(0);
   const [dismissedAutocompleteSessionStart, setDismissedAutocompleteSessionStart] = createSignal<
     number | null
   >(null);
+  const [selectedMentionAutocompleteIndex, setSelectedMentionAutocompleteIndex] = createSignal(0);
+  const [dismissedMentionAutocompleteSessionStart, setDismissedMentionAutocompleteSessionStart] =
+    createSignal<number | null>(null);
+  const [mentionSearchResults, setMentionSearchResults] = createSignal<PublicUser[]>([]);
   const [selection, setSelection] = createSignal<SelectionRange>({
     start: props.value.length,
     end: props.value.length,
@@ -485,24 +643,65 @@ export default function MessageInput(props: MessageInputProps) {
 
     return session;
   });
+  const mentionAutocompleteSession = createMemo(() =>
+    findActiveMentionToken(props.value, selection()),
+  );
+  const mentionAutocompleteToken = createMemo(() => {
+    if (!props.searchMentionUsers) return null;
+
+    const session = mentionAutocompleteSession();
+    const dismissedSessionStart = dismissedMentionAutocompleteSessionStart();
+    if (session && dismissedSessionStart !== null && session.start === dismissedSessionStart) {
+      return null;
+    }
+
+    return session;
+  });
   const autocompleteTokenKey = createMemo(() => emojiAutocompleteTokenKey(autocompleteToken()));
+  const mentionTokenKey = createMemo(() => mentionAutocompleteTokenKey(mentionAutocompleteToken()));
   const autocompleteSuggestions = createMemo(() => {
     const token = autocompleteToken();
-    if (!token) return [];
+    if (!token || mentionAutocompleteToken()) return [];
 
     return searchEmojiResults(token.query, emojiEntries()).slice(0, MAX_EMOJI_AUTOCOMPLETE_RESULTS);
   });
+  const mentionAutocompleteSuggestions = createMemo(() => {
+    const token = mentionAutocompleteToken();
+    if (!token) return [];
+
+    return rankMentionUsers(mentionSearchResults(), token.query, mentionSearchLimit());
+  });
   const autocompleteOpen = createMemo(() => autocompleteSuggestions().length > 0);
+  const mentionAutocompleteOpen = createMemo(() => mentionAutocompleteSuggestions().length > 0);
   const selectedAutocompleteSuggestion = () =>
     autocompleteSuggestions()[selectedAutocompleteIndex()] ?? autocompleteSuggestions()[0];
+  const selectedMentionAutocompleteSuggestion = () =>
+    mentionAutocompleteSuggestions()[selectedMentionAutocompleteIndex()] ??
+    mentionAutocompleteSuggestions()[0];
   const selectedAutocompleteOptionId = () =>
     autocompleteOpen()
       ? `${autocompleteListboxId}-option-${selectedAutocompleteIndex()}`
       : undefined;
+  const selectedMentionAutocompleteOptionId = () =>
+    mentionAutocompleteOpen()
+      ? `${mentionListboxId}-option-${selectedMentionAutocompleteIndex()}`
+      : undefined;
+  const activeAutocompleteListboxId = () =>
+    mentionAutocompleteOpen()
+      ? mentionListboxId
+      : autocompleteOpen()
+        ? autocompleteListboxId
+        : undefined;
+  const activeAutocompleteOptionId = () =>
+    mentionAutocompleteOpen()
+      ? selectedMentionAutocompleteOptionId()
+      : selectedAutocompleteOptionId();
   let inputRef: MessageEditorElement | undefined;
   let emojiButtonRef: HTMLButtonElement | undefined;
   let previousValue = props.value;
   let previousAutocompleteTokenKey: string | null = null;
+  let previousMentionAutocompleteTokenKey: string | null = null;
+  let mentionSearchRequestId = 0;
   let stagedEditorValue: string | null = null;
   let disposed = false;
 
@@ -528,6 +727,45 @@ export default function MessageInput(props: MessageInputProps) {
   });
 
   createEffect(() => {
+    const tokenKey = mentionTokenKey();
+
+    if (tokenKey !== previousMentionAutocompleteTokenKey) {
+      previousMentionAutocompleteTokenKey = tokenKey;
+      setSelectedMentionAutocompleteIndex(0);
+    }
+
+    const dismissedSessionStart = untrack(dismissedMentionAutocompleteSessionStart);
+    if (dismissedSessionStart === null) return;
+
+    const session = mentionAutocompleteSession();
+    if (!session || session.start !== dismissedSessionStart) {
+      setDismissedMentionAutocompleteSessionStart(null);
+    }
+  });
+
+  createEffect(() => {
+    const token = mentionAutocompleteToken();
+    const search = props.searchMentionUsers;
+    if (!token || !search) {
+      mentionSearchRequestId += 1;
+      setMentionSearchResults([]);
+      return;
+    }
+
+    const requestId = ++mentionSearchRequestId;
+    void search({ query: token.query, limit: mentionSearchLimit() })
+      .then((users) => {
+        if (requestId !== mentionSearchRequestId) return;
+        const rankedUsers = rankMentionUsers(users, token.query, mentionSearchLimit());
+        setMentionSearchResults(rankedUsers);
+        props.onMentionUsers?.(rankedUsers);
+      })
+      .catch(() => {
+        if (requestId === mentionSearchRequestId) setMentionSearchResults([]);
+      });
+  });
+
+  createEffect(() => {
     const suggestionCount = autocompleteSuggestions().length;
     const selectedIndex = untrack(selectedAutocompleteIndex);
 
@@ -537,7 +775,16 @@ export default function MessageInput(props: MessageInputProps) {
   });
 
   createEffect(() => {
-    if (autocompleteOpen()) setEmojiPickerOpen(false);
+    const suggestionCount = mentionAutocompleteSuggestions().length;
+    const selectedIndex = untrack(selectedMentionAutocompleteIndex);
+
+    if (suggestionCount === 0 || selectedIndex >= suggestionCount) {
+      setSelectedMentionAutocompleteIndex(0);
+    }
+  });
+
+  createEffect(() => {
+    if (autocompleteOpen() || mentionAutocompleteOpen()) setEmojiPickerOpen(false);
   });
 
   const readInputSelection = (): SelectionRange => {
@@ -634,11 +881,38 @@ export default function MessageInput(props: MessageInputProps) {
     return true;
   };
 
+  const commitMentionAutocompleteSuggestion = (
+    suggestion = selectedMentionAutocompleteSuggestion(),
+  ): boolean => {
+    const token = mentionAutocompleteToken();
+    if (!token || !suggestion) return false;
+
+    const replacement = replaceMentionToken(props.value, token, suggestion);
+    props.onMentionUsers?.([suggestion]);
+    setSelectedMentionAutocompleteIndex(0);
+    setDismissedMentionAutocompleteSessionStart(null);
+    updateValue(
+      replacement.value,
+      { start: replacement.caretIndex, end: replacement.caretIndex },
+      { focusInput: true },
+    );
+    return true;
+  };
+
   const moveAutocompleteSelection = (delta: number) => {
     const suggestionCount = autocompleteSuggestions().length;
     if (suggestionCount === 0) return;
 
     setSelectedAutocompleteIndex(
+      (currentIndex) => (currentIndex + delta + suggestionCount) % suggestionCount,
+    );
+  };
+
+  const moveMentionAutocompleteSelection = (delta: number) => {
+    const suggestionCount = mentionAutocompleteSuggestions().length;
+    if (suggestionCount === 0) return;
+
+    setSelectedMentionAutocompleteIndex(
       (currentIndex) => (currentIndex + delta + suggestionCount) % suggestionCount,
     );
   };
@@ -649,7 +923,57 @@ export default function MessageInput(props: MessageInputProps) {
     setSelectedAutocompleteIndex(0);
   };
 
+  const dismissMentionAutocomplete = () => {
+    const session = mentionAutocompleteSession();
+    if (session) setDismissedMentionAutocompleteSessionStart(session.start);
+    setSelectedMentionAutocompleteIndex(0);
+    setMentionSearchResults([]);
+  };
+
   const handleKeyDown: JSX.EventHandler<MessageEditorElement, KeyboardEvent> = (event) => {
+    if (mentionAutocompleteOpen()) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        dismissMentionAutocomplete();
+        return;
+      }
+
+      if (!event.altKey && !event.ctrlKey && !event.metaKey) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          event.stopPropagation();
+          moveMentionAutocompleteSelection(1);
+          return;
+        }
+
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          event.stopPropagation();
+          moveMentionAutocompleteSelection(-1);
+          return;
+        }
+
+        if (event.key === "Tab" && !event.shiftKey) {
+          rememberSelection();
+          if (commitMentionAutocompleteSuggestion()) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
+        }
+
+        if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+          rememberSelection();
+          if (commitMentionAutocompleteSuggestion()) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
+        }
+      }
+    }
+
     if (autocompleteOpen()) {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -723,9 +1047,9 @@ export default function MessageInput(props: MessageInputProps) {
     if (!event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
       const navigationRange =
         event.key === "ArrowRight"
-          ? findMarkerStartingAt(props.value, currentSelection.start)
+          ? findMarkerStartingAt(props.value, currentSelection.start, mentionChipsEnabled())
           : event.key === "ArrowLeft"
-            ? findMarkerEndingAt(props.value, currentSelection.start)
+            ? findMarkerEndingAt(props.value, currentSelection.start, mentionChipsEnabled())
             : null;
 
       if (navigationRange) {
@@ -738,9 +1062,9 @@ export default function MessageInput(props: MessageInputProps) {
 
     const markerRange =
       event.key === "Backspace"
-        ? findMarkerEndingAt(props.value, currentSelection.start)
+        ? findMarkerEndingAt(props.value, currentSelection.start, mentionChipsEnabled())
         : event.key === "Delete"
-          ? findMarkerStartingAt(props.value, currentSelection.start)
+          ? findMarkerStartingAt(props.value, currentSelection.start, mentionChipsEnabled())
           : null;
 
     if (!markerRange) return;
@@ -793,7 +1117,9 @@ export default function MessageInput(props: MessageInputProps) {
   createEffect(() => {
     const value = props.value;
     customEmojiRenderVersion();
-    if (inputRef) renderEditorValue(inputRef, value, customEmojiById);
+    mentionUsersRenderVersion();
+    if (inputRef)
+      renderEditorValue(inputRef, value, customEmojiById, mentionUserById, mentionChipsEnabled());
 
     const currentSelection = untrack(selection);
     const normalizedSelection = normalizeSelection(currentSelection, value);
@@ -810,6 +1136,7 @@ export default function MessageInput(props: MessageInputProps) {
 
     if (valueWasReset) {
       setEmojiPickerOpen(false);
+      dismissMentionAutocomplete();
       restoreSelection({ start: 0, end: 0 });
     }
   });
@@ -817,6 +1144,44 @@ export default function MessageInput(props: MessageInputProps) {
   return (
     <div class={props.class ?? DEFAULT_ROOT_CLASS}>
       <div class="relative min-w-0 flex-1">
+        <Show when={mentionAutocompleteOpen()}>
+          <ul
+            id={mentionListboxId}
+            role="listbox"
+            aria-label="Mention suggestions"
+            class="absolute bottom-full left-0 z-40 mb-2 max-h-64 w-full max-w-sm overflow-y-auto rounded-md border border-gray-200 bg-white py-1 text-sm shadow-lg"
+          >
+            <For each={mentionAutocompleteSuggestions()}>
+              {(user, index) => {
+                const selected = () => index() === selectedMentionAutocompleteIndex();
+                const display = () => mentionDisplayName(user);
+                return (
+                  <li
+                    id={`${mentionListboxId}-option-${index()}`}
+                    role="option"
+                    aria-label={mentionAutocompleteOptionLabel(user)}
+                    aria-selected={selected()}
+                    class={`flex cursor-pointer items-center gap-3 px-3 py-2 ${
+                      selected() ? "bg-blue-100 text-blue-900" : "text-gray-900 hover:bg-blue-50"
+                    }`}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      rememberSelection();
+                      commitMentionAutocompleteSuggestion(user);
+                    }}
+                    onClick={() => commitMentionAutocompleteSuggestion(user)}
+                  >
+                    <Avatar url={user.avatar_url} username={display()} size={32} />
+                    <span class="min-w-0 flex flex-col">
+                      <span class="truncate font-semibold text-gray-950">{display()}</span>
+                      <span class="truncate text-xs text-gray-500">@{user.username}</span>
+                    </span>
+                  </li>
+                );
+              }}
+            </For>
+          </ul>
+        </Show>
         <Show when={autocompleteOpen()}>
           <ul
             id={autocompleteListboxId}
@@ -889,8 +1254,8 @@ export default function MessageInput(props: MessageInputProps) {
           role="textbox"
           aria-multiline="true"
           aria-autocomplete="list"
-          aria-controls={autocompleteOpen() ? autocompleteListboxId : undefined}
-          aria-activedescendant={selectedAutocompleteOptionId()}
+          aria-controls={activeAutocompleteListboxId()}
+          aria-activedescendant={activeAutocompleteOptionId()}
           class={
             props.inputClass
               ? `${MULTILINE_INPUT_BEHAVIOR_CLASS} ${props.inputClass}`
@@ -928,7 +1293,10 @@ export default function MessageInput(props: MessageInputProps) {
           rememberSelection();
           setEmojiPickerOpen((open) => {
             const nextOpen = !open;
-            if (nextOpen) dismissAutocomplete();
+            if (nextOpen) {
+              dismissAutocomplete();
+              dismissMentionAutocomplete();
+            }
             return nextOpen;
           });
         }}

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
-import type { Message } from "../api";
+import type { Message, PublicUser, SearchUsersOptions } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
 import { makeAttachment, makeMessage } from "../test/fixtures";
 import { assertExists } from "../test/render";
@@ -90,6 +90,33 @@ function mount(
       onReplyToMessage={onReplyToMessage}
     />
   ));
+}
+
+function mountWithMentions(
+  messages: Message[],
+  options: {
+    mentionUsers?: readonly PublicUser[];
+    onMentionUsers?: (users: readonly PublicUser[]) => void;
+    searchMentionUsers?: (options: SearchUsersOptions) => Promise<PublicUser[]>;
+  },
+) {
+  return render(() => (
+    <ChannelMessages
+      messages={messages}
+      loading={false}
+      error={null}
+      currentUserId={SELF_ID}
+      mentionUsers={options.mentionUsers}
+      onMentionUsers={options.onMentionUsers}
+      searchMentionUsers={options.searchMentionUsers}
+    />
+  ));
+}
+
+function setInputSelection(input: HTMLInputElement, start: number, end = start) {
+  input.focus();
+  input.setSelectionRange(start, end);
+  fireEvent.select(input);
 }
 
 beforeEach(() => {
@@ -324,6 +351,170 @@ describe("<ChannelMessages> message text rendering", () => {
     expect(
       screen.getByRole("link", { name: "https://example.com/%3C:party:123%3E" }),
     ).toHaveAttribute("href", "https://example.com/%3C:party:123%3E");
+  });
+
+  test("renders hydrated user mention markers as safe inline labels with fallbacks", () => {
+    customEmojiContext.current = {
+      byId: (id) =>
+        id === 123
+          ? {
+              id: 123,
+              name: "party",
+              image_url: "/uploads/emojis/123.webp?v=1",
+              animated: false,
+              created_by_user_id: SELF_ID,
+              created_at: 1,
+              updated_at: 1,
+              deleted_at: null,
+            }
+          : null,
+    };
+    const mentioned = makeMessage({
+      id: 508,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "hi <@2> and <:party:123> missing <@999> malformed <@abc> https://example.com/%3C@2%3E again <@2>",
+      username: "them",
+      mentions: [
+        {
+          id: 2,
+          username: "bob",
+          display_name: "Bobby <Tables>",
+          avatar_url: null,
+        },
+      ],
+    });
+
+    mount([mentioned], SELF_ID);
+
+    const mentionLabels = screen.getAllByText("@Bobby <Tables>");
+    expect(mentionLabels).toHaveLength(2);
+    expect(mentionLabels[0]).toHaveAccessibleName("Mention Bobby <Tables> (@bob)");
+    expect(mentionLabels[0]).toHaveAttribute("title", "@bob");
+    const messageText = assertExists(mentionLabels[0].closest(".whitespace-pre-wrap"));
+    expect(screen.getByRole("img", { name: ":party:" })).toBeInTheDocument();
+    expect(messageText).toHaveTextContent("<@999>");
+    expect(messageText).toHaveTextContent("malformed <@abc>");
+    expect(screen.getByRole("link", { name: "https://example.com/%3C@2%3E" })).toHaveAttribute(
+      "href",
+      "https://example.com/%3C@2%3E",
+    );
+  });
+
+  test("does not render body mention controls for deleted tombstone messages", () => {
+    const deletedMention = makeMessage({
+      id: 509,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "deleted body <@2>",
+      username: "them",
+      deleted_at: 1_700_000_100,
+      mentions: [
+        {
+          id: 2,
+          username: "bob",
+          display_name: "Bobby",
+          avatar_url: null,
+        },
+      ],
+    });
+
+    mount([deletedMention], SELF_ID);
+
+    expect(screen.getByLabelText(/original message deleted/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /mention bobby/i })).toBeNull();
+    expect(screen.queryByText("@Bobby")).toBeNull();
+    expect(screen.queryByText(/deleted body/i)).toBeNull();
+  });
+
+  test("emphasizes non-deleted rows that mention the current user independently from authored styling", () => {
+    const selfUser: PublicUser = {
+      id: SELF_ID,
+      username: "me",
+      display_name: "Me",
+      avatar_url: null,
+    };
+    const otherUser: PublicUser = {
+      id: OTHER_ID,
+      username: "them",
+      display_name: null,
+      avatar_url: null,
+    };
+    const mentionedByOther = makeMessage({
+      id: 530,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "ping <@1>",
+      username: "them",
+      mentions: [selfUser],
+    });
+    const mentionedOtherUser = makeMessage({
+      id: 531,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "ping <@2>",
+      username: "them",
+      mentions: [otherUser],
+    });
+    const authoredBySelf = makeMessage({
+      id: 532,
+      user_id: SELF_ID,
+      channel_id: 1,
+      text: "authored by me",
+      username: "me",
+    });
+    const authoredAndMentioned = makeMessage({
+      id: 533,
+      user_id: SELF_ID,
+      channel_id: 1,
+      text: "self ping <@1>",
+      username: "me",
+      mentions: [selfUser],
+    });
+    const deletedMention = makeMessage({
+      id: 534,
+      user_id: OTHER_ID,
+      channel_id: 1,
+      text: "deleted ping <@1>",
+      username: "them",
+      deleted_at: 1_700_000_100,
+      mentions: [selfUser],
+    });
+
+    mount(
+      [mentionedByOther, mentionedOtherUser, authoredBySelf, authoredAndMentioned, deletedMention],
+      SELF_ID,
+    );
+
+    const mentionedRow = assertExists(document.getElementById(channelMessageElementId(530)));
+    expect(mentionedRow).toHaveAttribute("data-mentioned-current-user", "true");
+    expect(mentionedRow).not.toHaveAttribute("data-authored-by-current-user");
+    expect(mentionedRow).toHaveClass("bg-yellow-50", "ring-yellow-300", "border-yellow-300");
+    expect(within(mentionedRow).getByRole("button", { name: "Mention Me (@me)" })).toHaveClass(
+      "bg-yellow-100",
+      "font-semibold",
+    );
+
+    const otherMentionRow = assertExists(document.getElementById(channelMessageElementId(531)));
+    expect(otherMentionRow).not.toHaveAttribute("data-mentioned-current-user");
+    expect(
+      within(otherMentionRow).getByRole("button", { name: "Mention them (@them)" }),
+    ).toHaveClass("bg-blue-100", "font-medium");
+
+    const authoredRow = assertExists(document.getElementById(channelMessageElementId(532)));
+    expect(authoredRow).toHaveAttribute("data-authored-by-current-user", "true");
+    expect(authoredRow).not.toHaveAttribute("data-mentioned-current-user");
+    expect(authoredRow).toHaveClass("border-blue-400", "bg-blue-50/50");
+
+    const bothRow = assertExists(document.getElementById(channelMessageElementId(533)));
+    expect(bothRow).toHaveAttribute("data-authored-by-current-user", "true");
+    expect(bothRow).toHaveAttribute("data-mentioned-current-user", "true");
+    expect(bothRow).toHaveClass("border-blue-400", "bg-yellow-50", "ring-yellow-300");
+
+    const deletedRow = assertExists(document.getElementById(channelMessageElementId(534)));
+    expect(deletedRow).not.toHaveAttribute("data-mentioned-current-user");
+    expect(deletedRow).not.toHaveClass("bg-yellow-50", "ring-yellow-300");
+    expect(within(deletedRow).queryByRole("button", { name: /mention me/i })).toBeNull();
   });
 });
 
@@ -1538,6 +1729,52 @@ describe("<ChannelMessages> hover action toolbar", () => {
     await waitFor(() =>
       expect(editMessage).toHaveBeenCalledWith(message.id, "hello <:party:123>!"),
     );
+  });
+
+  test("editing a message searches, chips, and saves mention markers", async () => {
+    const bob: PublicUser = {
+      id: 2,
+      username: "bob",
+      display_name: "Bobby",
+      avatar_url: null,
+    };
+    const message = makeMessage({ ...ownMessage, text: "hello <@2>" });
+    const onMentionUsers = vi.fn();
+    const searchMentionUsers = vi.fn(async () => [bob]);
+    vi.mocked(editMessage).mockResolvedValueOnce({
+      ...message,
+      text: "hello <@2> and <@2> ",
+      mentions: [bob],
+    });
+
+    mountWithMentions([message], {
+      mentionUsers: [bob],
+      onMentionUsers,
+      searchMentionUsers,
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+    expect(input.value).toBe("hello <@2>");
+    expect(within(input).getByText("@Bobby")).toHaveClass("bg-blue-100", "text-blue-800");
+
+    const draft = "hello <@2> and @bo";
+    fireEvent.input(input, { target: { value: draft } });
+    setInputSelection(input, draft.length);
+    const listbox = await screen.findByRole("listbox", { name: /mention suggestions/i });
+    expect(
+      within(listbox).getByRole("option", { name: /mention bobby @bob/i }),
+    ).toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(input.value).toBe("hello <@2> and <@2> "));
+    expect(editMessage).not.toHaveBeenCalled();
+
+    fireEvent.submit(assertExists(input.closest("form"), "form"));
+    await waitFor(() =>
+      expect(editMessage).toHaveBeenCalledWith(message.id, "hello <@2> and <@2> "),
+    );
+    expect(onMentionUsers).toHaveBeenCalledWith([bob]);
   });
 
   test("clicking Delete opens the confirm dialog and confirming calls deleteMessage", async () => {

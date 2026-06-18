@@ -9,14 +9,15 @@ use actix_web::http::header::CONTENT_TYPE;
 use actix_web::{HttpResponse, Responder, delete, get, guard, post, put, web};
 use futures_util::TryStreamExt;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, EntityTrait, PaginatorTrait,
-    QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, EntityTrait,
+    PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::api::attachments::{AttachmentStorage, resolve_storage_path};
 use crate::api::avatars::avatar_url;
 use crate::api::channels::{CHANNEL_TYPE_TEXT, ChannelResponse};
+use crate::api::users::PublicUserResponse;
 use crate::auth::AuthUser;
 use crate::broadcast::{
     BroadcastEvent, Broadcaster, MessageDeletedEvent, MessageEmbedsUpdatedEvent,
@@ -26,6 +27,7 @@ use crate::broadcast::{
 use crate::embeds;
 use crate::entity;
 use crate::error::AppError;
+use crate::mentions::{load_mentions_for_messages, validate_message_mentions};
 use crate::photos::{
     MAX_MESSAGE_PHOTOS, PHOTO_MAX_BYTES, ProcessedPhoto, STORED_PHOTO_CONTENT_TYPE, UploadedPhoto,
     process_uploaded_photos,
@@ -108,6 +110,7 @@ pub struct MessageResponse {
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
     pub suppress_embeds: bool,
+    pub mentions: Vec<PublicUserResponse>,
     pub attachments: Vec<AttachmentResponse>,
     pub embeds: Vec<EmbedResponse>,
     pub reactions: Vec<ReactionSummary>,
@@ -237,6 +240,7 @@ async fn get_messages(
     let message_ids: Vec<i64> = rows.iter().map(|(m, _)| m.id).collect();
     let embeds_by_message = load_embeds_for_messages(db.get_ref(), &message_ids).await?;
     let attachments_by_message = load_attachments_for_messages(db.get_ref(), &message_ids).await?;
+    let mentions_by_message = load_mentions_for_messages(db.get_ref(), &message_ids).await?;
     let reactions_by_message = load_reaction_summaries(db.get_ref(), &message_ids, user.id).await?;
     let summaries_by_message = load_thread_summaries_for_roots(db.get_ref(), &message_ids).await?;
     let response_messages: Vec<entity::message::Model> =
@@ -252,10 +256,18 @@ async fn get_messages(
                 .get(&m.id)
                 .cloned()
                 .unwrap_or_default();
+            let mentions = mentions_by_message.get(&m.id).cloned().unwrap_or_default();
             let reactions = reactions_by_message.get(&m.id).cloned().unwrap_or_default();
             let reply_to = reply_refs_by_message.get(&m.id).cloned();
-            let mut response =
-                message_response_from_model(m, u, embeds, attachments, reactions, reply_to);
+            let mut response = message_response_from_model(
+                m,
+                u,
+                embeds,
+                attachments,
+                mentions,
+                reactions,
+                reply_to,
+            );
             response.thread_summary = summaries_by_message.get(&response.id).cloned();
             response
         })
@@ -534,6 +546,7 @@ async fn create_message_json(
 ) -> Result<impl Responder, AppError> {
     let channel_id = path.into_inner();
     let body = parse_send_message_request(&body)?;
+    let mentions = validate_message_mentions(db.get_ref(), &body.text).await?;
     let message_id = generate_id();
     let (inserted, attachments, reply_to) = insert_message_rows(
         db.get_ref(),
@@ -545,9 +558,10 @@ async fn create_message_json(
         },
         body.text,
         Vec::new(),
+        &mentions,
     )
     .await?;
-    let resp = created_message_response(&inserted, &user, attachments, reply_to);
+    let resp = created_message_response(&inserted, &user, attachments, mentions, reply_to);
     publish_created_message(db, broadcaster, embed_fetcher, inserted, resp).await
 }
 
@@ -589,14 +603,20 @@ async fn create_multipart_message(
     user: AuthUser,
 ) -> Result<web::Json<MessageResponse>, AppError> {
     let multipart = read_multipart_message_create(payload).await?;
-    let target = match target {
-        MultipartMessageCreateTarget::TopLevel { channel_id } => MessageCreateTarget::TopLevel {
-            channel_id,
-            reply_to_message_id: multipart.reply_to_message_id,
-        },
+    let (target, mentions) = match target {
+        MultipartMessageCreateTarget::TopLevel { channel_id } => (
+            MessageCreateTarget::TopLevel {
+                channel_id,
+                reply_to_message_id: multipart.reply_to_message_id,
+            },
+            validate_message_mentions(db.get_ref(), &multipart.text).await?,
+        ),
         MultipartMessageCreateTarget::ThreadReply { root_message_id } => {
             ensure_thread_reply_has_no_inline_target(multipart.reply_to_message_id)?;
-            MessageCreateTarget::ThreadReply { root_message_id }
+            (
+                MessageCreateTarget::ThreadReply { root_message_id },
+                validate_message_mentions(db.get_ref(), &multipart.text).await?,
+            )
         }
     };
     if multipart.text.trim().is_empty() && multipart.photos.is_empty() {
@@ -614,6 +634,7 @@ async fn create_multipart_message(
         target,
         multipart.text,
         pending,
+        &mentions,
     )
     .await;
     let (inserted, attachments, reply_to) = match rows {
@@ -623,7 +644,7 @@ async fn create_multipart_message(
             return Err(err);
         }
     };
-    let resp = created_message_response(&inserted, &user, attachments, reply_to);
+    let resp = created_message_response(&inserted, &user, attachments, mentions, reply_to);
     publish_created_message(db, broadcaster, embed_fetcher, inserted, resp).await
 }
 
@@ -929,6 +950,7 @@ async fn insert_message_rows(
     target: MessageCreateTarget,
     text: String,
     attachments: Vec<PendingAttachmentInsert>,
+    mentions: &[PublicUserResponse],
 ) -> Result<
     (
         entity::message::Model,
@@ -957,18 +979,21 @@ async fn insert_message_rows(
     };
 
     let txn = db.begin().await?;
+    let created_at = now_unix_micros();
     let new_message = entity::message::ActiveModel {
         id: Set(message_id),
         user_id: Set(user_id),
         channel_id: Set(channel_id),
         parent_id: Set(parent_id),
         reply_to_message_id: Set(reply_to_message_id),
-        created_at: Set(now_unix_micros()),
+        created_at: Set(created_at),
         deleted_at: Set(None),
         text: Set(text),
         suppress_embeds: Set(false),
     };
     let inserted = new_message.insert(&txn).await?;
+
+    insert_message_mentions(&txn, inserted.id, created_at, mentions).await?;
 
     let mut saved_attachments = Vec::with_capacity(attachments.len());
     for attachment in attachments {
@@ -997,10 +1022,50 @@ async fn insert_message_rows(
     Ok((inserted, saved_attachments, reply_to))
 }
 
+async fn insert_message_mentions<C>(
+    conn: &C,
+    message_id: i64,
+    created_at: i64,
+    mentions: &[PublicUserResponse],
+) -> Result<(), AppError>
+where
+    C: ConnectionTrait,
+{
+    for (position, mention) in mentions.iter().enumerate() {
+        entity::message_mention::ActiveModel {
+            id: Set(generate_id()),
+            message_id: Set(message_id),
+            user_id: Set(mention.id),
+            position: Set(position as i32),
+            created_at: Set(created_at),
+        }
+        .insert(conn)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn replace_message_mentions<C>(
+    conn: &C,
+    message_id: i64,
+    mentions: &[PublicUserResponse],
+) -> Result<(), AppError>
+where
+    C: ConnectionTrait,
+{
+    entity::message_mention::Entity::delete_many()
+        .filter(entity::message_mention::Column::MessageId.eq(message_id))
+        .exec(conn)
+        .await?;
+    insert_message_mentions(conn, message_id, now_unix_micros(), mentions).await
+}
+
 fn created_message_response(
     inserted: &entity::message::Model,
     user: &AuthUser,
     attachments: Vec<AttachmentResponse>,
+    mentions: Vec<PublicUserResponse>,
     reply_to: Option<MessageReferenceResponse>,
 ) -> MessageResponse {
     MessageResponse {
@@ -1016,6 +1081,7 @@ fn created_message_response(
         display_name: user.display_name.clone(),
         avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
         suppress_embeds: inserted.suppress_embeds,
+        mentions,
         attachments,
         embeds: Vec::new(),
         reactions: Vec::new(),
@@ -1129,6 +1195,8 @@ async fn get_participated_threads(
     let embeds_by_message = load_embeds_for_messages(db.get_ref(), &preview_message_ids).await?;
     let attachments_by_message =
         load_attachments_for_messages(db.get_ref(), &preview_message_ids).await?;
+    let mentions_by_message =
+        load_mentions_for_messages(db.get_ref(), &preview_message_ids).await?;
     let reactions_by_message =
         load_reaction_summaries(db.get_ref(), &preview_message_ids, user.id).await?;
     let mut response_messages = Vec::new();
@@ -1179,6 +1247,10 @@ async fn get_participated_threads(
                     .get(&reply.id)
                     .cloned()
                     .unwrap_or_default();
+                let mentions = mentions_by_message
+                    .get(&reply.id)
+                    .cloned()
+                    .unwrap_or_default();
                 let reactions = reactions_by_message
                     .get(&reply.id)
                     .cloned()
@@ -1189,6 +1261,7 @@ async fn get_participated_threads(
                     reply_user.clone(),
                     embeds,
                     attachments,
+                    mentions,
                     reactions,
                     reply_to,
                 )
@@ -1196,6 +1269,10 @@ async fn get_participated_threads(
             .collect();
         let root_embeds = embeds_by_message.get(&root.id).cloned().unwrap_or_default();
         let root_attachments = attachments_by_message
+            .get(&root.id)
+            .cloned()
+            .unwrap_or_default();
+        let root_mentions = mentions_by_message
             .get(&root.id)
             .cloned()
             .unwrap_or_default();
@@ -1211,6 +1288,7 @@ async fn get_participated_threads(
                 root_user,
                 root_embeds,
                 root_attachments,
+                root_mentions,
                 root_reactions,
                 root_reply_to,
             ),
@@ -1286,6 +1364,7 @@ async fn get_thread(
     message_ids.push(root.id);
     let embeds_by_message = load_embeds_for_messages(db.get_ref(), &message_ids).await?;
     let attachments_by_message = load_attachments_for_messages(db.get_ref(), &message_ids).await?;
+    let mentions_by_message = load_mentions_for_messages(db.get_ref(), &message_ids).await?;
     let reactions_by_message = load_reaction_summaries(db.get_ref(), &message_ids, user.id).await?;
     let mut response_messages: Vec<entity::message::Model> =
         rows.iter().map(|(message, _)| message.clone()).collect();
@@ -1308,6 +1387,10 @@ async fn get_thread(
             .get(&root_message_id)
             .cloned()
             .unwrap_or_default(),
+        mentions_by_message
+            .get(&root_message_id)
+            .cloned()
+            .unwrap_or_default(),
         reactions_by_message
             .get(&root_message_id)
             .cloned()
@@ -1322,9 +1405,10 @@ async fn get_thread(
                 .get(&m.id)
                 .cloned()
                 .unwrap_or_default();
+            let mentions = mentions_by_message.get(&m.id).cloned().unwrap_or_default();
             let reactions = reactions_by_message.get(&m.id).cloned().unwrap_or_default();
             let reply_to = reply_refs_by_message.get(&m.id).cloned();
-            message_response_from_model(m, u, embeds, attachments, reactions, reply_to)
+            message_response_from_model(m, u, embeds, attachments, mentions, reactions, reply_to)
         })
         .collect();
 
@@ -1347,6 +1431,7 @@ async fn create_thread_reply_json(
     let root_message_id = path.into_inner();
     let body = parse_send_message_request(&body)?;
     ensure_thread_reply_has_no_inline_target(body.reply_to_message_id)?;
+    let mentions = validate_message_mentions(db.get_ref(), &body.text).await?;
     let message_id = generate_id();
     let (inserted, attachments, reply_to) = insert_message_rows(
         db.get_ref(),
@@ -1355,9 +1440,10 @@ async fn create_thread_reply_json(
         MessageCreateTarget::ThreadReply { root_message_id },
         body.text,
         Vec::new(),
+        &mentions,
     )
     .await?;
-    let resp = created_message_response(&inserted, &user, attachments, reply_to);
+    let resp = created_message_response(&inserted, &user, attachments, mentions, reply_to);
     publish_created_message(db, broadcaster, embed_fetcher, inserted, resp).await
 }
 
@@ -1420,6 +1506,7 @@ fn message_response_from_model(
     user: Option<entity::user::Model>,
     embeds: Vec<EmbedResponse>,
     attachments: Vec<AttachmentResponse>,
+    mentions: Vec<PublicUserResponse>,
     reactions: Vec<ReactionSummary>,
     reply_to: Option<MessageReferenceResponse>,
 ) -> MessageResponse {
@@ -1445,6 +1532,7 @@ fn message_response_from_model(
         display_name,
         avatar_url,
         suppress_embeds: message.suppress_embeds,
+        mentions: if is_deleted { Vec::new() } else { mentions },
         attachments: if is_deleted { Vec::new() } else { attachments },
         embeds: if is_deleted { Vec::new() } else { embeds },
         reactions: if is_deleted { Vec::new() } else { reactions },
@@ -1476,11 +1564,15 @@ async fn update_message(
         return Err(AppError::NotFound);
     }
 
+    let mentions = validate_message_mentions(db.get_ref(), &body.text).await?;
     let channel_id = existing.channel_id;
     let previous_text = existing.text.clone();
+    let txn = db.begin().await?;
     let mut active: entity::message::ActiveModel = existing.into();
     active.text = Set(body.text.clone());
-    let updated = active.update(db.get_ref()).await?;
+    let updated = active.update(&txn).await?;
+    replace_message_mentions(&txn, updated.id, &mentions).await?;
+    txn.commit().await?;
 
     let existing_embeds = load_embeds_for_messages(db.get_ref(), &[updated.id])
         .await?
@@ -1518,6 +1610,7 @@ async fn update_message(
         display_name: user.display_name.clone(),
         avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
         suppress_embeds: updated.suppress_embeds,
+        mentions,
         attachments: existing_attachments,
         embeds: existing_embeds,
         reactions,
@@ -1740,6 +1833,7 @@ async fn delete_message(
                 display_name: user.display_name.clone(),
                 avatar_url: avatar_url(user.avatar_path.as_deref(), user.avatar_updated_at),
                 suppress_embeds: updated.suppress_embeds,
+                mentions: Vec::new(),
                 attachments: Vec::new(),
                 embeds: Vec::new(),
                 reactions: Vec::new(),
@@ -1748,6 +1842,10 @@ async fn delete_message(
             }))
             .await?;
     } else {
+        entity::message_mention::Entity::delete_many()
+            .filter(entity::message_mention::Column::MessageId.eq(message_id))
+            .exec(&txn)
+            .await?;
         let active: entity::message::ActiveModel = existing.into();
         active.delete(&txn).await?;
         txn.commit().await?;

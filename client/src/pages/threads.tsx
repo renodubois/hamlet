@@ -2,6 +2,9 @@ import { A } from "@solidjs/router";
 import { createResource, For, Show } from "solid-js";
 import { listParticipatedThreads, messageDisplayName, type Message } from "../api";
 import AttachmentGrid from "../components/attachment-grid";
+import MessageText from "../components/message-text";
+import { useAuth } from "../contexts/auth";
+import { messageMentionsCurrentUser } from "../mentions/mentions";
 
 function formatTimestamp(timestampMicros: number): string {
   return new Date(Math.floor(timestampMicros / 1000)).toLocaleString(undefined, {
@@ -21,6 +24,32 @@ function isDeletedMessage(message: Message): boolean {
   return message.deleted_at != null;
 }
 
+function isAuthoredByCurrentUser(message: Message, currentUserId: number | null): boolean {
+  return !isDeletedMessage(message) && currentUserId !== null && message.user_id === currentUserId;
+}
+
+function previewMessageStateClass(
+  message: Message,
+  currentUserId: number | null,
+  defaultBorderClass: string,
+  defaultStateClass: string,
+): string {
+  const authoredByCurrentUser = isAuthoredByCurrentUser(message, currentUserId);
+  const mentionedCurrentUser = messageMentionsCurrentUser(message, currentUserId);
+  const borderClass = authoredByCurrentUser
+    ? "border-blue-400"
+    : mentionedCurrentUser
+      ? "border-yellow-300"
+      : defaultBorderClass;
+  const stateClass = mentionedCurrentUser
+    ? "bg-yellow-50 ring-1 ring-inset ring-yellow-300"
+    : authoredByCurrentUser
+      ? "bg-blue-50/50"
+      : defaultStateClass;
+
+  return `${borderClass} ${stateClass}`;
+}
+
 function PreviewAttachments(props: { message: Message }) {
   return (
     <Show when={!isDeletedMessage(props.message) && props.message.attachments.length > 0}>
@@ -32,15 +61,33 @@ function PreviewAttachments(props: { message: Message }) {
   );
 }
 
-function ReplyPreview(props: { reply: Message }) {
+function ReplyPreview(props: { reply: Message; currentUserId: number | null }) {
+  const authoredByCurrentUser = () => isAuthoredByCurrentUser(props.reply, props.currentUserId);
+  const mentionedCurrentUser = () => messageMentionsCurrentUser(props.reply, props.currentUserId);
+
   return (
-    <li class="rounded-md bg-gray-50 px-3 py-2">
+    <li
+      data-message-id={String(props.reply.id)}
+      data-authored-by-current-user={authoredByCurrentUser() ? "true" : undefined}
+      data-mentioned-current-user={mentionedCurrentUser() ? "true" : undefined}
+      class={`rounded-md border-l-4 px-3 py-2 ${previewMessageStateClass(
+        props.reply,
+        props.currentUserId,
+        "border-transparent",
+        "bg-gray-50",
+      )}`}
+    >
       <Show
         when={!isDeletedMessage(props.reply)}
         fallback={<p class="italic text-gray-500">Reply deleted</p>}
       >
         <p class="text-xs font-semibold text-gray-600">{messageDisplayName(props.reply)}</p>
-        <p class="mt-1 whitespace-pre-wrap break-words text-sm text-gray-800">{props.reply.text}</p>
+        <MessageText
+          text={props.reply.text}
+          mentions={props.reply.mentions ?? []}
+          currentUserId={props.currentUserId}
+          class="mt-1 whitespace-pre-wrap break-words text-sm text-gray-800"
+        />
         <PreviewAttachments message={props.reply} />
       </Show>
     </li>
@@ -48,7 +95,16 @@ function ReplyPreview(props: { reply: Message }) {
 }
 
 export default function ThreadsView() {
+  const { user } = useAuth();
+  const currentUserId = () => user()?.id ?? null;
   const [threads] = createResource(listParticipatedThreads);
+
+  const previewMentionsCurrentUser = (thread: {
+    root: Message;
+    recent_replies: readonly Message[];
+  }) =>
+    messageMentionsCurrentUser(thread.root, currentUserId()) ||
+    thread.recent_replies.some((reply) => messageMentionsCurrentUser(reply, currentUserId()));
 
   return (
     <section class="flex h-full flex-col bg-white text-gray-900">
@@ -79,7 +135,16 @@ export default function ThreadsView() {
                 `${thread.reply_count} ${thread.reply_count === 1 ? "reply" : "replies"}`;
               const threadHref = () => `/channel/${thread.channel.id}?thread=${thread.root.id}`;
               return (
-                <article class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+                <article
+                  data-mentioned-current-user={
+                    previewMentionsCurrentUser(thread) ? "true" : undefined
+                  }
+                  class={`rounded-lg border p-4 shadow-sm transition-colors ${
+                    previewMentionsCurrentUser(thread)
+                      ? "border-yellow-300 bg-yellow-50/40 ring-1 ring-inset ring-yellow-200"
+                      : "border-gray-200 bg-white"
+                  }`}
+                >
                   <div class="flex flex-wrap items-center justify-between gap-2">
                     <p class="text-sm font-semibold text-blue-700"># {thread.channel.name}</p>
                     <p class="text-xs text-gray-500">
@@ -90,7 +155,21 @@ export default function ThreadsView() {
                     </p>
                   </div>
 
-                  <div class="mt-3 border-l-4 border-gray-200 pl-3">
+                  <div
+                    data-message-id={String(thread.root.id)}
+                    data-authored-by-current-user={
+                      isAuthoredByCurrentUser(thread.root, currentUserId()) ? "true" : undefined
+                    }
+                    data-mentioned-current-user={
+                      messageMentionsCurrentUser(thread.root, currentUserId()) ? "true" : undefined
+                    }
+                    class={`mt-3 rounded-r-md border-l-4 py-2 pl-3 pr-2 ${previewMessageStateClass(
+                      thread.root,
+                      currentUserId(),
+                      "border-gray-200",
+                      "",
+                    )}`}
+                  >
                     <Show
                       when={!isDeletedMessage(thread.root)}
                       fallback={<p class="italic text-gray-500">Original message deleted</p>}
@@ -98,9 +177,12 @@ export default function ThreadsView() {
                       <p class="text-sm font-semibold text-gray-700">
                         {messageDisplayName(thread.root)}
                       </p>
-                      <p class="mt-1 whitespace-pre-wrap break-words text-gray-900">
-                        {thread.root.text}
-                      </p>
+                      <MessageText
+                        text={thread.root.text}
+                        mentions={thread.root.mentions ?? []}
+                        currentUserId={currentUserId()}
+                        class="mt-1 whitespace-pre-wrap break-words text-gray-900"
+                      />
                       <PreviewAttachments message={thread.root} />
                     </Show>
                   </div>
@@ -108,7 +190,7 @@ export default function ThreadsView() {
                   <Show when={thread.recent_replies.length > 0}>
                     <ol class="mt-3 space-y-2" aria-label="Recent replies">
                       <For each={thread.recent_replies}>
-                        {(reply) => <ReplyPreview reply={reply} />}
+                        {(reply) => <ReplyPreview reply={reply} currentUserId={currentUserId()} />}
                       </For>
                     </ol>
                   </Show>

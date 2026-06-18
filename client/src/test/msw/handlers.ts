@@ -6,6 +6,7 @@ import type {
   Message,
   MessageAttachment,
   ParticipatedThreadPreview,
+  PublicUser,
   ScreenShareStream,
   Thread,
   User,
@@ -24,12 +25,39 @@ export const DEV_USER: User = {
   avatar_url: null,
 };
 
+const USER_SEARCH_DEFAULT_LIMIT = 20;
+const USER_SEARCH_MAX_LIMIT = 50;
+const USER_SEARCH_MIN_LIMIT = 1;
+
+type DirectoryUser = PublicUser & {
+  email?: string | null;
+  email_verified?: boolean;
+  avatar_path?: string | null;
+  credentials?: unknown;
+  sessions?: unknown;
+};
+
+function publicUserFrom(
+  user: Pick<PublicUser, "id" | "username" | "display_name" | "avatar_url">,
+): PublicUser {
+  return {
+    id: user.id,
+    username: user.username,
+    display_name: user.display_name,
+    avatar_url: user.avatar_url,
+  };
+}
+
+export const DEV_PUBLIC_USER: PublicUser = publicUserFrom(DEV_USER);
+
 export const DEFAULT_CHANNELS: Channel[] = [
   { id: 100, name: "general", position: 0, type: "text" },
 ];
 
 export interface HandlerState {
   me: User | null;
+  users: DirectoryUser[];
+  userSearchRequests: { query: string; limit: number }[];
   channels: Channel[];
   messages: Record<string, Message[]>;
   validCredentials: { username: string; password: string };
@@ -76,8 +104,10 @@ export interface HandlerState {
 }
 
 export function createState(overrides: Partial<HandlerState> = {}): HandlerState {
-  return {
+  const state: HandlerState = {
     me: null,
+    users: [DEV_PUBLIC_USER],
+    userSearchRequests: [],
     channels: [...DEFAULT_CHANNELS],
     messages: { "100": [] },
     validCredentials: { username: "baipas", password: "password" },
@@ -110,6 +140,8 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     suppressedEmbeds: [],
     ...overrides,
   };
+  if (state.me) upsertDirectoryUser(state, state.me);
+  return state;
 }
 
 function attachmentFromUploadedPhoto(
@@ -138,6 +170,7 @@ function attachmentFromUploadedPhoto(
 function withReplyMetadataDefaults(message: Message): Message {
   return {
     ...message,
+    mentions: message.mentions ?? [],
     reply_to_message_id: message.reply_to_message_id ?? null,
     reply_to: message.reply_to
       ? {
@@ -151,6 +184,105 @@ function withReplyMetadataDefaults(message: Message): Message {
 
 function withReplyMetadataDefaultsList(messages: Message[]): Message[] {
   return messages.map((message) => withReplyMetadataDefaults(message));
+}
+
+type UserSearchRank = "exact" | "prefix" | "substring" | "fuzzy" | "empty";
+type UserSearchFieldRank = "username" | "display_name" | "empty";
+
+const USER_SEARCH_RANK_ORDER: Record<UserSearchRank, number> = {
+  exact: 0,
+  prefix: 1,
+  substring: 2,
+  fuzzy: 3,
+  empty: 4,
+};
+
+const USER_SEARCH_FIELD_ORDER: Record<UserSearchFieldRank, number> = {
+  username: 0,
+  display_name: 1,
+  empty: 2,
+};
+
+function boundedUserSearchLimit(rawLimit: string | null): number {
+  const parsed = rawLimit === null ? USER_SEARCH_DEFAULT_LIMIT : Number(rawLimit);
+  const fallback = Number.isFinite(parsed) ? Math.trunc(parsed) : USER_SEARCH_DEFAULT_LIMIT;
+  return Math.max(USER_SEARCH_MIN_LIMIT, Math.min(fallback, USER_SEARCH_MAX_LIMIT));
+}
+
+function fuzzyMatch(candidate: string, query: string): boolean {
+  let queryIndex = 0;
+  for (const char of candidate) {
+    if (char === query[queryIndex]) queryIndex += 1;
+    if (queryIndex >= query.length) return true;
+  }
+  return query.length === 0;
+}
+
+function scoreText(candidate: string, query: string): UserSearchRank | null {
+  if (candidate === query) return "exact";
+  if (candidate.startsWith(query)) return "prefix";
+  if (candidate.includes(query)) return "substring";
+  if (fuzzyMatch(candidate, query)) return "fuzzy";
+  return null;
+}
+
+function scoreUser(
+  user: DirectoryUser,
+  query: string,
+): { rank: UserSearchRank; field: UserSearchFieldRank } | null {
+  if (query.length === 0) return { rank: "empty", field: "empty" };
+
+  const candidates: { rank: UserSearchRank; field: UserSearchFieldRank }[] = [];
+  const usernameRank = scoreText(user.username.toLowerCase(), query);
+  if (usernameRank) candidates.push({ rank: usernameRank, field: "username" });
+  if (user.display_name) {
+    const displayNameRank = scoreText(user.display_name.toLowerCase(), query);
+    if (displayNameRank) candidates.push({ rank: displayNameRank, field: "display_name" });
+  }
+  candidates.sort((a, b) => {
+    const rankDelta = USER_SEARCH_RANK_ORDER[a.rank] - USER_SEARCH_RANK_ORDER[b.rank];
+    if (rankDelta !== 0) return rankDelta;
+    return USER_SEARCH_FIELD_ORDER[a.field] - USER_SEARCH_FIELD_ORDER[b.field];
+  });
+  return candidates[0] ?? null;
+}
+
+function searchPublicUsers(users: DirectoryUser[], rawQuery: string, limit: number): PublicUser[] {
+  const query = rawQuery.trim().toLowerCase();
+  return users
+    .map((user) => ({ user, score: scoreUser(user, query) }))
+    .filter(
+      (
+        entry,
+      ): entry is {
+        user: DirectoryUser;
+        score: { rank: UserSearchRank; field: UserSearchFieldRank };
+      } => entry.score !== null,
+    )
+    .sort((a, b) => {
+      const rankDelta = USER_SEARCH_RANK_ORDER[a.score.rank] - USER_SEARCH_RANK_ORDER[b.score.rank];
+      if (rankDelta !== 0) return rankDelta;
+      const fieldDelta =
+        USER_SEARCH_FIELD_ORDER[a.score.field] - USER_SEARCH_FIELD_ORDER[b.score.field];
+      if (fieldDelta !== 0) return fieldDelta;
+      const usernameDelta = a.user.username
+        .toLowerCase()
+        .localeCompare(b.user.username.toLowerCase());
+      if (usernameDelta !== 0) return usernameDelta;
+      return a.user.id - b.user.id;
+    })
+    .slice(0, limit)
+    .map((entry) => publicUserFrom(entry.user));
+}
+
+function upsertDirectoryUser(currentState: HandlerState, user: PublicUser): void {
+  const next = publicUserFrom(user);
+  const index = currentState.users.findIndex((existing) => existing.id === next.id);
+  if (index === -1) currentState.users = [...currentState.users, next];
+  else
+    currentState.users = currentState.users.map((existing, i) =>
+      i === index ? { ...existing, ...next } : existing,
+    );
 }
 
 function findMessageById(currentState: HandlerState, id: number): Message | undefined {
@@ -258,6 +390,43 @@ function threadInlineReplyTargetError(): Response {
   );
 }
 
+const MAX_UNIQUE_MENTIONS_PER_MESSAGE = 50;
+
+type MentionHydrationResult =
+  | { ok: true; mentions: PublicUser[] }
+  | { ok: false; response: Response };
+
+function hydrateMentionsFromText(currentState: HandlerState, text: string): MentionHydrationResult {
+  const mentionRe = /<@(\d+)>/g;
+  const ids: number[] = [];
+  const seen = new Set<number>();
+  let match: RegExpExecArray | null = mentionRe.exec(text);
+  while (match !== null) {
+    const id = Number(match[1]);
+    if (!Number.isSafeInteger(id) || id <= 0 || id > Number.MAX_SAFE_INTEGER) {
+      return { ok: false, response: errorJson("invalid_request", "invalid request", 400) };
+    }
+    if (!seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
+    match = mentionRe.exec(text);
+  }
+
+  if (ids.length > MAX_UNIQUE_MENTIONS_PER_MESSAGE) {
+    return { ok: false, response: errorJson("invalid_request", "invalid request", 400) };
+  }
+
+  const usersById = new Map(currentState.users.map((user) => [user.id, publicUserFrom(user)]));
+  const mentions: PublicUser[] = [];
+  for (const id of ids) {
+    const user = usersById.get(id);
+    if (!user) return { ok: false, response: errorJson("invalid_request", "invalid request", 400) };
+    mentions.push(user);
+  }
+  return { ok: true, mentions };
+}
+
 export function createHandlers(state: HandlerState) {
   return [
     http.get(`${BASE}/me`, () => {
@@ -274,7 +443,17 @@ export function createHandlers(state: HandlerState) {
       if (next !== null && next.length > 64) return new HttpResponse(null, { status: 400 });
       state.displayNameUpdates.push(next);
       state.me = { ...state.me, display_name: next };
+      upsertDirectoryUser(state, state.me);
       return HttpResponse.json(state.me);
+    }),
+
+    http.get(`${BASE}/users`, ({ request }) => {
+      if (!state.me) return new HttpResponse(null, { status: 401 });
+      const url = new URL(request.url);
+      const query = url.searchParams.get("q") ?? url.searchParams.get("query") ?? "";
+      const limit = boundedUserSearchLimit(url.searchParams.get("limit"));
+      state.userSearchRequests.push({ query, limit });
+      return HttpResponse.json(searchPublicUsers(state.users, query, limit));
     }),
 
     http.post(`${BASE}/login`, async ({ request }) => {
@@ -284,6 +463,7 @@ export function createHandlers(state: HandlerState) {
         body.password === state.validCredentials.password
       ) {
         state.me = DEV_USER;
+        upsertDirectoryUser(state, DEV_USER);
         return new HttpResponse(null, { status: 200 });
       }
       return new HttpResponse(null, { status: 401 });
@@ -297,6 +477,7 @@ export function createHandlers(state: HandlerState) {
     http.post(`${BASE}/register`, async ({ request }) => {
       const body = (await request.json()) as { username: string; password: string };
       state.me = { ...DEV_USER, username: body.username };
+      upsertDirectoryUser(state, state.me);
       return new HttpResponse(null, { status: 200 });
     }),
 
@@ -450,6 +631,8 @@ export function createHandlers(state: HandlerState) {
 
       const validationError = validateInlineReplyTarget(state, channelId, replyToMessageId);
       if (validationError) return validationError;
+      const mentionHydration = hydrateMentionsFromText(state, text);
+      if (!mentionHydration.ok) return mentionHydration.response;
 
       state.sentMessages.push({ channel, text });
       if (replyToMessageId !== null) {
@@ -497,6 +680,7 @@ export function createHandlers(state: HandlerState) {
         display_name: state.me?.display_name ?? null,
         avatar_url: state.me?.avatar_url ?? null,
         suppress_embeds: false,
+        mentions: mentionHydration.mentions,
         attachments: uploadedPhotos.map((photo, index) =>
           attachmentFromUploadedPhoto(photo, messageId, index),
         ),
@@ -620,6 +804,9 @@ export function createHandlers(state: HandlerState) {
         text = body.text;
       }
 
+      const mentionHydration = hydrateMentionsFromText(state, text);
+      if (!mentionHydration.ok) return mentionHydration.response;
+
       let root: Message | undefined;
       for (const list of Object.values(state.messages)) {
         root = list.find((m) => m.id === rootId);
@@ -640,6 +827,7 @@ export function createHandlers(state: HandlerState) {
         display_name: state.me?.display_name ?? null,
         avatar_url: state.me?.avatar_url ?? null,
         suppress_embeds: false,
+        mentions: mentionHydration.mentions,
         attachments: uploadedPhotos.map((photo, index) =>
           attachmentFromUploadedPhoto(photo, replyId, index),
         ),
@@ -665,29 +853,40 @@ export function createHandlers(state: HandlerState) {
     http.put(`${BASE}/message/:id`, async ({ request, params }) => {
       const body = (await request.json()) as { text: string };
       const id = Number(params.id);
-      state.editedMessages.push({ id, text: body.text });
-      let updated: Message | null = null;
+      let existing: Message | null = null;
+      let replaceMessage: ((message: Message) => void) | null = null;
       for (const channel of Object.keys(state.messages)) {
         const list = state.messages[channel];
         const idx = list.findIndex((m) => m.id === id);
         if (idx >= 0) {
-          updated = { ...list[idx], text: body.text };
-          list[idx] = updated;
+          existing = list[idx];
+          replaceMessage = (message) => {
+            list[idx] = message;
+          };
           break;
         }
       }
-      if (!updated) {
+      if (!existing) {
         for (const rootId of Object.keys(state.threadReplies)) {
           const list = state.threadReplies[rootId];
           const idx = list.findIndex((m) => m.id === id);
           if (idx >= 0) {
-            updated = { ...list[idx], text: body.text };
-            list[idx] = updated;
+            existing = list[idx];
+            replaceMessage = (message) => {
+              list[idx] = message;
+            };
             break;
           }
         }
       }
-      if (!updated) return new HttpResponse(null, { status: 404 });
+      if (!existing || !replaceMessage) return new HttpResponse(null, { status: 404 });
+
+      const mentionHydration = hydrateMentionsFromText(state, body.text);
+      if (!mentionHydration.ok) return mentionHydration.response;
+
+      state.editedMessages.push({ id, text: body.text });
+      const updated = { ...existing, text: body.text, mentions: mentionHydration.mentions };
+      replaceMessage(updated);
       return HttpResponse.json(withReplyMetadataDefaults(updated));
     }),
 
@@ -855,6 +1054,7 @@ export function createHandlers(state: HandlerState) {
         ...state.me,
         avatar_url: `/uploads/avatars/${state.me.id}.webp?v=${ts}`,
       };
+      upsertDirectoryUser(state, state.me);
       return HttpResponse.json(state.me);
     }),
 
@@ -862,6 +1062,7 @@ export function createHandlers(state: HandlerState) {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       state.deletedAvatar = true;
       state.me = { ...state.me, avatar_url: null };
+      upsertDirectoryUser(state, state.me);
       return HttpResponse.json(state.me);
     }),
 

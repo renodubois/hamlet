@@ -3,13 +3,14 @@
 mod common;
 
 use std::io::Cursor;
+use std::path::{Path, PathBuf};
 
 use actix_web::http::header::{CONTENT_TYPE, ContentType};
 use actix_web::{App, http::StatusCode, test, web};
 use common::{TestCtx, insert_message, make_tmp_uploads_dir};
-use hamlet::{AttachmentStorage, configure_app, entity, generate_id, now_unix_micros};
+use hamlet::{AttachmentStorage, configure_app, entity, generate_id, mentions, now_unix_micros};
 use image::{ImageFormat, Rgb, RgbImage, Rgba, RgbaImage};
-use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
 
 struct MultipartPart {
     name: &'static str,
@@ -66,6 +67,51 @@ async fn insert_attachment(db: &sea_orm::DatabaseConnection, message_id: i64) ->
     .await
     .unwrap();
     id
+}
+
+async fn insert_public_user(db: &sea_orm::DatabaseConnection, username: &str) -> i64 {
+    let id = generate_id();
+    entity::user::ActiveModel {
+        id: Set(id),
+        username: Set(username.to_owned()),
+        display_name: Set(None),
+        email: Set(Some(format!("{username}@example.test"))),
+        email_verified: Set(false),
+        avatar_path: Set(None),
+        avatar_updated_at: Set(None),
+    }
+    .insert(db)
+    .await
+    .unwrap();
+    id
+}
+
+async fn message_mention_rows(
+    db: &sea_orm::DatabaseConnection,
+    message_id: i64,
+) -> Vec<entity::message_mention::Model> {
+    entity::message_mention::Entity::find()
+        .filter(entity::message_mention::Column::MessageId.eq(message_id))
+        .order_by_asc(entity::message_mention::Column::Position)
+        .all(db)
+        .await
+        .unwrap()
+}
+
+fn stored_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files
 }
 
 fn multipart_payload(parts: Vec<MultipartPart>) -> (String, Vec<u8>) {
@@ -391,6 +437,208 @@ async fn test_multipart_text_plus_photo_creates_served_attachment_and_sse_payloa
     assert!(event_str.contains("kind\\\":\\\"message\\\""));
     assert!(event_str.contains(&format!("\\\"id\\\":{attachment_id}")));
     assert!(event_str.contains("\\\"attachments\\\":[{"));
+
+    std::fs::remove_dir_all(&private_dir).ok();
+}
+
+#[actix_web::test]
+async fn test_multipart_photo_caption_mentions_persist_hydrate_history_and_sse() {
+    let ctx = TestCtx::new().await;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob_id = insert_public_user(&ctx.db, "bob").await;
+    let carol_id = insert_public_user(&ctx.db, "carol").await;
+    let private_dir = make_tmp_uploads_dir();
+    let mut rx = ctx.broadcaster.test_client();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(AttachmentStorage {
+                dir: private_dir.clone(),
+            }))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
+
+    let text = format!("caption <@{bob_id}> repeat <@{bob_id}> and <@{carol_id}>");
+    let (content_type, body) = multipart_payload(vec![
+        text_part(&text),
+        photo_part(tiny_png(8, 4), "image/png"),
+    ]);
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{}", ctx.channel_id))
+        .insert_header((CONTENT_TYPE, content_type))
+        .insert_header(alice.cookie_header())
+        .set_payload(body)
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let created: serde_json::Value = test::read_body_json(resp).await;
+    let created_id = created["id"].as_i64().unwrap();
+    let attachment_id = created["attachments"][0]["id"].as_i64().unwrap();
+
+    assert_eq!(created["text"], text);
+    assert_eq!(created["attachments"].as_array().unwrap().len(), 1);
+    assert_eq!(created["attachments"][0]["message_id"], created_id);
+    assert_eq!(created["mentions"].as_array().unwrap().len(), 2);
+    assert_eq!(created["mentions"][0]["id"], bob_id);
+    assert_eq!(created["mentions"][0]["username"], "bob");
+    assert_eq!(created["mentions"][1]["id"], carol_id);
+    assert_eq!(created["mentions"][1]["username"], "carol");
+
+    let mention_rows = message_mention_rows(&ctx.db, created_id).await;
+    assert_eq!(mention_rows.len(), 2);
+    assert_eq!(mention_rows[0].user_id, bob_id);
+    assert_eq!(mention_rows[0].position, 0);
+    assert_eq!(mention_rows[1].user_id, carol_id);
+    assert_eq!(mention_rows[1].position, 1);
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for photo caption mention SSE")
+        .expect("broadcast channel closed");
+    let event_str = format!("{:?}", event);
+    assert!(event_str.contains("kind\\\":\\\"message\\\""));
+    assert!(event_str.contains(&format!("\\\"id\\\":{attachment_id}")));
+    assert!(event_str.contains("\\\"attachments\\\":[{"));
+    assert!(event_str.contains(&format!("\\\"id\\\":{bob_id}")));
+    assert!(event_str.contains(&format!("\\\"id\\\":{carol_id}")));
+
+    let history_req = test::TestRequest::get()
+        .uri(&format!("/messages/{}", ctx.channel_id))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, history_req).await).await;
+    let created_row = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == created_id)
+        .unwrap();
+    assert_eq!(created_row["attachments"][0]["id"], attachment_id);
+    assert_eq!(created_row["mentions"][0]["id"], bob_id);
+    assert_eq!(created_row["mentions"][1]["id"], carol_id);
+
+    std::fs::remove_dir_all(&private_dir).ok();
+}
+
+#[actix_web::test]
+async fn test_thread_multipart_reply_mentions_persist_hydrate_thread_and_sse() {
+    let ctx = TestCtx::new().await;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob_id = insert_public_user(&ctx.db, "bob").await;
+    let root_id = insert_message(&ctx.db, alice.user_id, ctx.channel_id, "root").await;
+    let private_dir = make_tmp_uploads_dir();
+    let mut rx = ctx.broadcaster.test_client();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(AttachmentStorage {
+                dir: private_dir.clone(),
+            }))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
+
+    let text = format!("multipart thread reply <@{bob_id}>");
+    let (content_type, body) = multipart_payload(vec![text_part(&text)]);
+    let req = test::TestRequest::post()
+        .uri(&format!("/thread/{root_id}/reply"))
+        .insert_header((CONTENT_TYPE, content_type))
+        .insert_header(alice.cookie_header())
+        .set_payload(body)
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let created: serde_json::Value = test::read_body_json(resp).await;
+    let reply_id = created["id"].as_i64().unwrap();
+
+    assert_eq!(created["parent_id"], root_id);
+    assert_eq!(created["text"], text);
+    assert_eq!(created["mentions"].as_array().unwrap().len(), 1);
+    assert_eq!(created["mentions"][0]["id"], bob_id);
+    assert_eq!(created["mentions"][0]["username"], "bob");
+    let mention_rows = message_mention_rows(&ctx.db, reply_id).await;
+    assert_eq!(mention_rows.len(), 1);
+    assert_eq!(mention_rows[0].user_id, bob_id);
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for multipart thread reply mention SSE")
+        .expect("broadcast channel closed");
+    let event_str = format!("{:?}", event);
+    assert!(event_str.contains("kind\\\":\\\"thread_reply_created\\\""));
+    assert!(event_str.contains(&format!("\\\"id\\\":{reply_id}")));
+    assert!(event_str.contains(&format!("\\\"id\\\":{bob_id}")));
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/thread/{root_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let thread: serde_json::Value = test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(thread["replies"][0]["id"], reply_id);
+    assert_eq!(thread["replies"][0]["mentions"][0]["id"], bob_id);
+
+    std::fs::remove_dir_all(&private_dir).ok();
+}
+
+#[actix_web::test]
+async fn test_multipart_photo_caption_invalid_mentions_reject_without_orphans() {
+    let ctx = TestCtx::new().await;
+    let alice = ctx.register("alice", "hunter2").await;
+    let private_dir = make_tmp_uploads_dir();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(AttachmentStorage {
+                dir: private_dir.clone(),
+            }))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
+
+    let mut over_cap_text = String::new();
+    for index in 0..=mentions::MAX_UNIQUE_MENTIONS_PER_MESSAGE {
+        let user_id = insert_public_user(&ctx.db, &format!("mention_cap_{index}")).await;
+        over_cap_text.push_str(&format!("<@{user_id}> "));
+    }
+
+    for text in ["bad <@0>".to_owned(), over_cap_text] {
+        let (content_type, body) = multipart_payload(vec![
+            text_part(&text),
+            photo_part(tiny_png(4, 4), "image/png"),
+        ]);
+        let req = test::TestRequest::post()
+            .uri(&format!("/message/{}", ctx.channel_id))
+            .insert_header((CONTENT_TYPE, content_type))
+            .insert_header(alice.cookie_header())
+            .set_payload(body)
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["error"]["kind"], "invalid_request");
+
+        assert!(
+            entity::message::Entity::find()
+                .all(&ctx.db)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            entity::message_attachment::Entity::find()
+                .all(&ctx.db)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            entity::message_mention::Entity::find()
+                .all(&ctx.db)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(stored_files(&private_dir).is_empty());
+    }
 
     std::fs::remove_dir_all(&private_dir).ok();
 }

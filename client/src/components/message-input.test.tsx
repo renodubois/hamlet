@@ -3,12 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { createSignal } from "solid-js";
 import { describe, expect, test, vi } from "vitest";
+import type { PublicUser, SearchUsersOptions } from "../api";
 import { AuthProvider } from "../contexts/auth";
 import { CustomEmojisProvider } from "../contexts/custom-emojis";
 import { expectNoA11yViolations } from "../test/a11y";
 import { DEV_USER, type HandlerState } from "../test/msw/handlers";
 import { resetMswState, server } from "../test/msw/server";
-import MessageInput from "./message-input";
+import MessageInput, { type MessageInputProps } from "./message-input";
 
 const searchName = /search and select emoji/i;
 const pickerName = /emoji picker/i;
@@ -46,6 +47,117 @@ const CUSTOM_EMOJI_FIXTURES: HandlerState["customEmojis"] = [
     deleted_at: 2,
   },
 ];
+
+const MENTION_USER_FIXTURES: PublicUser[] = [
+  {
+    id: 2,
+    username: "bob",
+    display_name: "Bobby",
+    avatar_url: "/uploads/avatars/bob.webp?v=1",
+  },
+  {
+    id: 3,
+    username: "alice",
+    display_name: null,
+    avatar_url: null,
+  },
+  {
+    id: 4,
+    username: "carol",
+    display_name: "Carol",
+    avatar_url: null,
+  },
+];
+
+type MentionSearch = (options: SearchUsersOptions) => Promise<PublicUser[]>;
+
+function mergeUsers(current: readonly PublicUser[], discovered: readonly PublicUser[]) {
+  const byId = new Map(current.map((user) => [user.id, user]));
+  for (const user of discovered) byId.set(user.id, user);
+  return Array.from(byId.values());
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function renderMentionHarness(
+  initialValue = "",
+  options: {
+    searchMentionUsers?: MentionSearch;
+    initialMentionUsers?: readonly PublicUser[];
+    onKeyDown?: MessageInputProps["onKeyDown"];
+  } = {},
+) {
+  const changes: string[] = [];
+  const discoveredUsers: PublicUser[][] = [];
+  const searchMentionUsers = options.searchMentionUsers ?? vi.fn(async () => MENTION_USER_FIXTURES);
+
+  const result = render(() => {
+    const [value, setValue] = createSignal(initialValue);
+    const [mentionUsers, setMentionUsers] = createSignal<readonly PublicUser[]>(
+      options.initialMentionUsers ?? [],
+    );
+
+    return (
+      <MessageInput
+        value={value()}
+        onChange={(nextValue) => {
+          changes.push(nextValue);
+          setValue(nextValue);
+        }}
+        ariaLabel="Compose message"
+        placeholder="Send a new message..."
+        mentionUsers={mentionUsers()}
+        onMentionUsers={(users) => {
+          discoveredUsers.push([...users]);
+          setMentionUsers((current) => mergeUsers(current, users));
+        }}
+        searchMentionUsers={searchMentionUsers}
+        onKeyDown={options.onKeyDown}
+      />
+    );
+  });
+
+  return { ...result, changes, discoveredUsers, searchMentionUsers };
+}
+
+function renderMentionFormHarness(initialValue = "", searchMentionUsers?: MentionSearch) {
+  const changes: string[] = [];
+  const onSubmit = vi.fn((event: SubmitEvent) => event.preventDefault());
+  const search = searchMentionUsers ?? vi.fn(async () => MENTION_USER_FIXTURES);
+
+  const result = render(() => {
+    const [value, setValue] = createSignal(initialValue);
+    const [mentionUsers, setMentionUsers] = createSignal<readonly PublicUser[]>([]);
+
+    return (
+      <form onSubmit={onSubmit}>
+        <MessageInput
+          value={value()}
+          onChange={(nextValue) => {
+            changes.push(nextValue);
+            setValue(nextValue);
+          }}
+          ariaLabel="Compose message"
+          placeholder="Send a new message..."
+          mentionUsers={mentionUsers()}
+          onMentionUsers={(users) => setMentionUsers((current) => mergeUsers(current, users))}
+          searchMentionUsers={search}
+        />
+        <button type="submit">Send</button>
+      </form>
+    );
+  });
+
+  return { ...result, changes, onSubmit, searchMentionUsers: search };
+}
 
 function renderHarness(initialValue = "") {
   const changes: string[] = [];
@@ -376,6 +488,206 @@ describe("<MessageInput>", () => {
     expect(event.defaultPrevented).toBe(true);
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(input.value).toBe("draft");
+  });
+
+  test("shows mention autocomplete for a boundary-valid empty @ token", async () => {
+    const { container, searchMentionUsers, discoveredUsers } = renderMentionHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, "@");
+
+    const listbox = await screen.findByRole("listbox", { name: /mention suggestions/i });
+    const options = within(listbox).getAllByRole("option");
+    expect(searchMentionUsers).toHaveBeenLastCalledWith({ query: "", limit: 8 });
+    expect(discoveredUsers.at(-1)?.map((user) => user.username)).toEqual(["alice", "bob", "carol"]);
+    expect(options).toHaveLength(3);
+    expect(options[0]).toHaveAttribute("aria-selected", "true");
+    expect(options[0]).toHaveAccessibleName(/mention @alice/i);
+    const bobOption = within(listbox).getByRole("option", { name: /mention bobby @bob/i });
+    expect(within(bobOption).getByRole("img", { name: /bobby's avatar/i })).toBeInTheDocument();
+    expect(within(bobOption).getByText("Bobby")).toHaveClass("font-semibold");
+    expect(within(bobOption).getByText("@bob")).toHaveClass("text-gray-500");
+    expect(input).toHaveAttribute("aria-autocomplete", "list");
+    expect(input).toHaveAttribute("aria-controls", listbox.id);
+    expect(input).toHaveAttribute("aria-activedescendant", options[0].id);
+    await expectNoA11yViolations(container, "message input mention autocomplete");
+  });
+
+  test("hides mention autocomplete while text is selected", async () => {
+    renderMentionHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, "@bo");
+    await screen.findByRole("listbox", { name: /mention suggestions/i });
+
+    setInputSelection(input, 0, "@bo".length);
+    await waitFor(() => {
+      expect(screen.queryByRole("listbox", { name: /mention suggestions/i })).toBeNull();
+    });
+  });
+
+  test("ignores failed mention searches quietly", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const searchMentionUsers = vi.fn<MentionSearch>(async () => {
+      throw new Error("network down");
+    });
+    renderMentionHarness("", { searchMentionUsers });
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, "@zz");
+
+    await waitFor(() => expect(searchMentionUsers).toHaveBeenCalledWith({ query: "zz", limit: 8 }));
+    await waitFor(() => {
+      expect(screen.queryByRole("listbox", { name: /mention suggestions/i })).toBeNull();
+    });
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  test("ignores stale mention search responses", async () => {
+    const staleSearch = deferred<PublicUser[]>();
+    const searchMentionUsers = vi.fn<MentionSearch>((options) => {
+      if (options.query === "a") return staleSearch.promise;
+      return Promise.resolve([MENTION_USER_FIXTURES[2]]);
+    });
+    renderMentionHarness("", { searchMentionUsers });
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, "@a");
+    await waitFor(() => expect(searchMentionUsers).toHaveBeenCalledWith({ query: "a", limit: 8 }));
+
+    inputFromUser(input, "@c");
+    const carolOption = await screen.findByRole("option", { name: /mention carol @carol/i });
+    expect(carolOption).toHaveAttribute("aria-selected", "true");
+
+    staleSearch.resolve([MENTION_USER_FIXTURES[1]]);
+    await Promise.resolve();
+
+    expect(screen.queryByRole("option", { name: /mention @alice/i })).toBeNull();
+    expect(screen.getByRole("option", { name: /mention carol @carol/i })).toBeInTheDocument();
+  });
+
+  test("Enter commits the selected mention as a durable chip before form submit", async () => {
+    const { changes, onSubmit } = renderMentionFormHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, "hello @bo world", "hello @bo".length);
+    await screen.findByRole("listbox", { name: /mention suggestions/i });
+
+    const commitEvent = keyDown(input, { key: "Enter" });
+
+    expect(commitEvent.defaultPrevented).toBe(true);
+    await waitFor(() => {
+      expect(input.value).toBe("hello <@2> world");
+      expect(input.selectionStart).toBe("hello <@2> ".length);
+      expect(screen.getByText("@Bobby")).toHaveClass("bg-blue-100", "text-blue-800");
+    });
+    expect(screen.queryByText("<@2>")).toBeNull();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(changes.at(-1)).toBe("hello <@2> world");
+
+    const submitEvent = keyDown(input, { key: "Enter" });
+
+    expect(submitEvent.defaultPrevented).toBe(true);
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+  });
+
+  test("Tab and mouse commit mention suggestions while arrow keys wrap selection", async () => {
+    const { changes } = renderMentionFormHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, "@");
+    const listbox = await screen.findByRole("listbox", { name: /mention suggestions/i });
+    const options = within(listbox).getAllByRole("option");
+
+    let event = keyDown(input, { key: "ArrowUp" });
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(options.at(-1)).toHaveAttribute("aria-selected", "true"));
+
+    event = keyDown(input, { key: "ArrowDown" });
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(options[0]).toHaveAttribute("aria-selected", "true"));
+
+    event = keyDown(input, { key: "Tab" });
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(input.value).toBe("<@3> "));
+    expect(changes.at(-1)).toBe("<@3> ");
+
+    inputFromUser(input, "@bo");
+    const bob = await screen.findByRole("option", { name: /mention bobby @bob/i });
+    const mouseDown = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    bob.dispatchEvent(mouseDown);
+    expect(mouseDown.defaultPrevented).toBe(true);
+    fireEvent.click(bob);
+
+    await waitFor(() => {
+      expect(input.value).toBe("<@2> ");
+      expect(document.activeElement).toBe(input);
+    });
+  });
+
+  test("Escape dismisses mention autocomplete before owner keyboard handlers", async () => {
+    const ownerKeyDown = vi.fn((event: KeyboardEvent) => {
+      if (event.key === "Escape") event.preventDefault();
+    });
+    renderMentionHarness("", { onKeyDown: ownerKeyDown });
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, "@bo");
+    await screen.findByRole("listbox", { name: /mention suggestions/i });
+
+    const event = keyDown(input, { key: "Escape" });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(ownerKeyDown).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(screen.queryByRole("listbox", { name: /mention suggestions/i })).toBeNull();
+    });
+  });
+
+  test("mention autocomplete, emoji autocomplete, and emoji picker are mutually exclusive", async () => {
+    renderMentionHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    await openPicker();
+    inputFromUser(input, "@bo");
+
+    await screen.findByRole("listbox", { name: /mention suggestions/i });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: pickerName })).toBeNull());
+
+    inputFromUser(input, ":sm");
+    await expectEmojiAutocompleteOpen();
+    expect(screen.queryByRole("listbox", { name: /mention suggestions/i })).toBeNull();
+
+    inputFromUser(input, "@bo");
+    await screen.findByRole("listbox", { name: /mention suggestions/i });
+    fireEvent.click(screen.getByRole("button", { name: /open emoji picker/i }));
+
+    await screen.findByRole("dialog", { name: pickerName });
+    expect(screen.queryByRole("listbox", { name: /mention suggestions/i })).toBeNull();
+  });
+
+  test("renders known mention markers as chips, leaves unknown markers readable, and preserves markers when editing", async () => {
+    const { changes } = renderMentionHarness("hello <@2> missing <@999>", {
+      initialMentionUsers: [MENTION_USER_FIXTURES[0]],
+    });
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    expect(input.value).toBe("hello <@2> missing <@999>");
+    await waitFor(() => {
+      expect(within(input).getByText("@Bobby")).toHaveClass("bg-blue-100", "text-blue-800");
+    });
+    expect(input.textContent).toContain("<@999>");
+    expect(screen.queryByText("<@2>")).toBeNull();
+
+    input.append(document.createTextNode("!"));
+    setDomSelection(input, input.childNodes.length);
+    fireEvent.input(input);
+
+    await waitFor(() => {
+      expect(input.value).toBe("hello <@2> missing <@999>!");
+    });
+    expect(changes.at(-1)).toBe("hello <@2> missing <@999>!");
   });
 
   test("shows native emoji autocomplete suggestions for a boundary-valid prefix", async () => {

@@ -1,5 +1,7 @@
 export { getServerUrl, resolveServerUrl, setServerUrl } from "./client";
 export type { User } from "./auth";
+export type { PublicUser, SearchUsersOptions } from "./users";
+export { searchUsers } from "./users";
 export {
   getMe,
   login,
@@ -32,6 +34,7 @@ export type {
   Embed,
   EmbedType,
   Message,
+  MentionUser,
   MessageAttachment,
   MessageReference,
   MessageDeleted,

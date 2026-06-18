@@ -69,6 +69,7 @@ pub fn configure_app(cfg: &mut web::ServiceConfig, deps: AppDeps) {
                 .configure(api::attachments::configure)
                 .configure(api::messages::configure)
                 .configure(api::channels::configure)
+                .configure(api::users::configure)
                 .configure(api::voice::configure_authed)
                 .configure(api::auth::configure_authed)
                 .configure(api::avatars::configure)

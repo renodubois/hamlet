@@ -30,9 +30,11 @@ import {
   messageDisplayName,
   messageReferenceFromMessage,
   messageReferencesTarget,
+  searchUsers,
   sendMessage,
   sendTyping,
   type Message,
+  type PublicUser,
 } from "../api";
 import { useChannels } from "../contexts/channels";
 import { useEvents } from "../contexts/events";
@@ -72,6 +74,7 @@ export default function ChannelView() {
   // means an embed update on one row only re-renders that row.
   const [resource] = createResource(() => params.id, listMessages);
   const [messages, setMessages] = createStore<Message[]>([]);
+  const [mentionUserCache, setMentionUserCache] = createSignal<Map<number, PublicUser>>(new Map());
   let lastTypingSentAt = 0;
   let composerRef: HTMLElement | undefined;
   let messagesScrollRef: HTMLDivElement | undefined;
@@ -83,12 +86,41 @@ export default function ChannelView() {
     });
   };
 
+  const primeMentionUsers = (users: readonly PublicUser[]) => {
+    if (users.length === 0) return;
+    setMentionUserCache((current) => {
+      let changed = false;
+      const next = new Map(current);
+      for (const mentionUser of users) {
+        const existing = next.get(mentionUser.id);
+        if (
+          existing &&
+          existing.username === mentionUser.username &&
+          existing.display_name === mentionUser.display_name &&
+          existing.avatar_url === mentionUser.avatar_url
+        ) {
+          continue;
+        }
+        next.set(mentionUser.id, mentionUser);
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  };
+
+  const primeMentionUsersFromMessages = (nextMessages: readonly Message[]) => {
+    primeMentionUsers(nextMessages.flatMap((nextMessage) => nextMessage.mentions ?? []));
+  };
+
+  const mentionUsers = () => Array.from(mentionUserCache().values());
+
   // Reconcile the fetched array into the store on initial load and on every
   // channel switch. The "id" key tells reconcile to diff items rather than
   // replace the whole array, so already-rendered rows survive when the same
   // message appears in both the old and new fetches.
   createEffect(() => {
     const data = resource();
+    primeMentionUsersFromMessages(data ?? []);
     setMessages(reconcile(data ?? [], { key: "id" }));
     scrollMessagesToBottom();
   });
@@ -171,6 +203,16 @@ export default function ChannelView() {
     });
   };
 
+  const applyMessageUpdate = (m: Message) => {
+    if (String(m.channel_id) !== params.id) return;
+    primeMentionUsers(m.mentions ?? []);
+    setMessages((existing) => existing.id === m.id, m);
+    patchVisibleReplyReferences(m.id, m);
+    if (replyTarget()?.id === m.id) {
+      setReplyTarget(m.deleted_at == null ? m : null);
+    }
+  };
+
   const submitMessage = async () => {
     if (submitting() || !hasDraftContent()) return;
 
@@ -183,6 +225,11 @@ export default function ChannelView() {
         replyToMessageId: target?.id,
       });
       if (!response.ok) return;
+      const createdMessage = (await response
+        .clone()
+        .json()
+        .catch(() => null)) as Message | null;
+      primeMentionUsers(createdMessage?.mentions ?? []);
       setMessage("");
       setReplyTarget(null);
       photoSelection.clearPhotos();
@@ -198,16 +245,12 @@ export default function ChannelView() {
   onMount(() => {
     const unsubCreated = events.onMessage((m) => {
       if (String(m.channel_id) !== params.id) return;
+      primeMentionUsers(m.mentions ?? []);
       setMessages(messages.length, m);
       scrollMessagesToBottom();
     });
     const unsubUpdated = events.onMessageUpdated((m) => {
-      if (String(m.channel_id) !== params.id) return;
-      setMessages((existing) => existing.id === m.id, m);
-      patchVisibleReplyReferences(m.id, m);
-      if (replyTarget()?.id === m.id) {
-        setReplyTarget(m.deleted_at == null ? m : null);
-      }
+      applyMessageUpdate(m);
     });
     const unsubDeleted = events.onMessageDeleted((d) => {
       if (String(d.channel_id) !== params.id) return;
@@ -238,6 +281,7 @@ export default function ChannelView() {
     });
     const unsubThreadReply = events.onThreadReplyCreated((e) => {
       if (String(e.channel_id) !== params.id) return;
+      primeMentionUsers(e.reply.mentions ?? []);
       setMessages((existing) => existing.id === e.root_message_id && existing.parent_id == null, {
         thread_summary: e.thread_summary,
       });
@@ -290,9 +334,13 @@ export default function ChannelView() {
             currentUserId={user()?.id ?? null}
             onOpenThread={openThread}
             onReplyToMessage={selectInlineReplyTarget}
+            onMessageUpdated={applyMessageUpdate}
             onReactionsChange={(messageId, reactions) => {
               setMessages((existing) => existing.id === messageId, { reactions });
             }}
+            mentionUsers={mentionUsers()}
+            onMentionUsers={primeMentionUsers}
+            searchMentionUsers={searchUsers}
           />
         </div>
         {openThreadRootId() !== null && (
@@ -303,6 +351,9 @@ export default function ChannelView() {
             focusComposer={focusComposerRootId() === openThreadRootId()}
             onComposerFocusConsumed={() => setFocusComposerRootId(null)}
             onClose={closeThread}
+            mentionUsers={mentionUsers()}
+            onMentionUsers={primeMentionUsers}
+            searchMentionUsers={searchUsers}
           />
         )}
       </div>
@@ -364,6 +415,9 @@ export default function ChannelView() {
               ariaLabel="New message"
               placeholder="Send a new message..."
               describedBy={replyTarget() ? replyBannerId : undefined}
+              mentionUsers={mentionUsers()}
+              onMentionUsers={primeMentionUsers}
+              searchMentionUsers={searchUsers}
               inputRef={(el) => {
                 composerRef = el;
               }}

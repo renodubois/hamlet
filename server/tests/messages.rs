@@ -8,8 +8,10 @@ use actix_web::{
     test, web,
 };
 use common::{TestCtx, insert_message, make_tmp_uploads_dir};
-use hamlet::{AttachmentStorage, configure_app, entity, generate_id, now_unix_micros};
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, Set};
+use hamlet::{AttachmentStorage, configure_app, entity, generate_id, mentions, now_unix_micros};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, QueryOrder, Set,
+};
 
 async fn insert_message_with_parent(
     db: &sea_orm::DatabaseConnection,
@@ -72,6 +74,57 @@ async fn set_display_name(db: &sea_orm::DatabaseConnection, user_id: i64, displa
         .into_active_model();
     user.display_name = Set(Some(display_name.to_owned()));
     user.update(db).await.unwrap();
+}
+
+async fn insert_public_user(
+    db: &sea_orm::DatabaseConnection,
+    username: &str,
+    display_name: Option<&str>,
+) -> i64 {
+    let id = generate_id();
+    entity::user::ActiveModel {
+        id: Set(id),
+        username: Set(username.to_owned()),
+        display_name: Set(display_name.map(str::to_owned)),
+        email: Set(Some(format!("{username}@example.test"))),
+        email_verified: Set(false),
+        avatar_path: Set(None),
+        avatar_updated_at: Set(None),
+    }
+    .insert(db)
+    .await
+    .unwrap();
+    id
+}
+
+async fn message_mention_rows(
+    db: &sea_orm::DatabaseConnection,
+    message_id: i64,
+) -> Vec<entity::message_mention::Model> {
+    entity::message_mention::Entity::find()
+        .filter(entity::message_mention::Column::MessageId.eq(message_id))
+        .order_by_asc(entity::message_mention::Column::Position)
+        .all(db)
+        .await
+        .unwrap()
+}
+
+async fn insert_message_mention(
+    db: &sea_orm::DatabaseConnection,
+    message_id: i64,
+    user_id: i64,
+    position: i32,
+) {
+    entity::message_mention::ActiveModel {
+        id: Set(generate_id()),
+        message_id: Set(message_id),
+        user_id: Set(user_id),
+        position: Set(position),
+        created_at: Set(now_unix_micros()),
+    }
+    .insert(db)
+    .await
+    .unwrap();
 }
 
 async fn insert_custom_emoji(
@@ -203,6 +256,10 @@ fn assert_empty_attachments(message: &serde_json::Value) {
     assert_eq!(message["attachments"], serde_json::json!([]));
 }
 
+fn assert_empty_mentions(message: &serde_json::Value) {
+    assert_eq!(message["mentions"], serde_json::json!([]));
+}
+
 fn assert_reply_metadata_null(message: &serde_json::Value) {
     assert_eq!(
         message.get("reply_to_message_id"),
@@ -273,7 +330,356 @@ async fn test_message_create_without_inline_reply_returns_explicit_null_reply_fi
         test::read_body_json(test::call_service(&app, req).await).await;
 
     assert_eq!(created["text"], "plain top-level");
+    assert_empty_mentions(&created);
     assert_reply_metadata_null(&created);
+}
+
+#[actix_web::test]
+async fn test_channel_json_mentions_persist_hydrate_history_and_sse() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob_id = insert_public_user(&ctx.db, "bob", Some("Bobby Tables")).await;
+    let carol_id = insert_public_user(&ctx.db, "carol", None).await;
+    let mut rx = ctx.broadcaster.test_client();
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let text = format!("hi <@{bob_id}> twice <@{bob_id}> and <@{carol_id}>");
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{chan_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"text": text}).to_string())
+        .to_request();
+    let created: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let created_id = created["id"].as_i64().unwrap();
+
+    assert_eq!(created["text"], text);
+    assert_eq!(created["mentions"].as_array().unwrap().len(), 2);
+    assert_eq!(created["mentions"][0]["id"], bob_id);
+    assert_eq!(created["mentions"][0]["username"], "bob");
+    assert_eq!(created["mentions"][0]["display_name"], "Bobby Tables");
+    assert_eq!(created["mentions"][1]["id"], carol_id);
+    assert_eq!(created["mentions"][1]["username"], "carol");
+    assert!(created["mentions"][0].get("email").is_none());
+    assert!(created["mentions"][0].get("email_verified").is_none());
+    assert!(created["mentions"][0].get("avatar_path").is_none());
+
+    let mention_rows = message_mention_rows(&ctx.db, created_id).await;
+    assert_eq!(mention_rows.len(), 2);
+    assert_eq!(mention_rows[0].user_id, bob_id);
+    assert_eq!(mention_rows[0].position, 0);
+    assert_eq!(mention_rows[1].user_id, carol_id);
+    assert_eq!(mention_rows[1].position, 1);
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for message broadcast")
+        .expect("broadcast channel closed");
+    let event_str = format!("{:?}", event);
+    assert!(event_str.contains("kind\\\":\\\"message\\\""));
+    assert!(event_str.contains(&format!("\\\"id\\\":{bob_id}")));
+    assert!(event_str.contains("Bobby Tables"));
+    assert!(event_str.contains(&format!("\\\"id\\\":{carol_id}")));
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let created_row = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == created_id)
+        .unwrap();
+    assert_eq!(created_row["mentions"][0]["id"], bob_id);
+    assert_eq!(created_row["mentions"][1]["id"], carol_id);
+}
+
+#[actix_web::test]
+async fn test_channel_json_mentions_ignore_malformed_markers_and_reject_invalid_batches() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{chan_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(
+            serde_json::json!({"text": "ordinary <@> <@abc> <@-1> <@123abc> <@123"}).to_string(),
+        )
+        .to_request();
+    let created: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    assert_empty_mentions(&created);
+
+    for text in [
+        "unsafe zero <@0>".to_owned(),
+        "unsafe js <@9007199254740992>".to_owned(),
+        "missing user <@900000000000000>".to_owned(),
+    ] {
+        let req = test::TestRequest::post()
+            .uri(&format!("/message/{chan_id}"))
+            .insert_header(ContentType::json())
+            .insert_header(alice.cookie_header())
+            .set_payload(serde_json::json!({"text": text}).to_string())
+            .to_request();
+        assert_error_response(
+            test::call_service(&app, req).await,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+        )
+        .await;
+    }
+
+    let mut marker_text = String::new();
+    for index in 0..=mentions::MAX_UNIQUE_MENTIONS_PER_MESSAGE {
+        let user_id = insert_public_user(&ctx.db, &format!("mention_cap_{index}"), None).await;
+        marker_text.push_str(&format!("<@{user_id}> "));
+    }
+    let req = test::TestRequest::post()
+        .uri(&format!("/message/{chan_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"text": marker_text}).to_string())
+        .to_request();
+    assert_error_response(
+        test::call_service(&app, req).await,
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+    )
+    .await;
+}
+
+#[actix_web::test]
+async fn test_thread_mentions_round_trip_fetch_previews_and_sse() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob_id = insert_public_user(&ctx.db, "bob", Some("Bobby Tables")).await;
+    let carol_id = insert_public_user(&ctx.db, "carol", None).await;
+
+    let root_text = format!("root mentions <@{bob_id}>");
+    let root_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        &root_text,
+    )
+    .await;
+    insert_message_mention(&ctx.db, root_id, bob_id, 0).await;
+
+    let older_reply_text = format!("older mentions <@{carol_id}>");
+    let older_reply_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_010_000_000,
+        &older_reply_text,
+    )
+    .await;
+    insert_message_mention(&ctx.db, older_reply_id, carol_id, 0).await;
+
+    let middle_reply_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_020_000_000,
+        "middle without mention",
+    )
+    .await;
+
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let invalid_req = test::TestRequest::post()
+        .uri(&format!("/thread/{root_id}/reply"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"text": "invalid <@0>"}).to_string())
+        .to_request();
+    assert_error_response(
+        test::call_service(&app, invalid_req).await,
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+    )
+    .await;
+
+    let mut rx = ctx.broadcaster.test_client();
+    let newest_reply_text = format!("newest mentions <@{bob_id}>");
+    let req = test::TestRequest::post()
+        .uri(&format!("/thread/{root_id}/reply"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"text": newest_reply_text}).to_string())
+        .to_request();
+    let created: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let newest_reply_id = created["id"].as_i64().unwrap();
+    let newest_created_at = created["created_at"].as_i64().unwrap();
+
+    assert_eq!(created["parent_id"], root_id);
+    assert_reply_metadata_null(&created);
+    assert_eq!(created["mentions"].as_array().unwrap().len(), 1);
+    assert_eq!(created["mentions"][0]["id"], bob_id);
+    assert_eq!(created["mentions"][0]["username"], "bob");
+    assert_eq!(created["mentions"][0]["display_name"], "Bobby Tables");
+    let newest_mentions = message_mention_rows(&ctx.db, newest_reply_id).await;
+    assert_eq!(newest_mentions.len(), 1);
+    assert_eq!(newest_mentions[0].user_id, bob_id);
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for thread reply mention broadcast")
+        .expect("broadcast channel closed");
+    let event_str = format!("{:?}", event);
+    assert!(event_str.contains("kind\\\":\\\"thread_reply_created\\\""));
+    assert!(event_str.contains(&format!("\\\"root_message_id\\\":{root_id}")));
+    assert!(event_str.contains(&format!("\\\"id\\\":{newest_reply_id}")));
+    assert!(event_str.contains(&format!("\\\"id\\\":{bob_id}")));
+    assert!(event_str.contains("Bobby Tables"));
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/thread/{root_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let thread: serde_json::Value = test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(thread["root"]["id"], root_id);
+    assert_eq!(thread["root"]["mentions"][0]["id"], bob_id);
+    assert_eq!(
+        thread["root"]["mentions"][0]["display_name"],
+        "Bobby Tables"
+    );
+    let replies = thread["replies"].as_array().unwrap();
+    assert_eq!(replies.len(), 3);
+    assert_eq!(replies[0]["id"], older_reply_id);
+    assert_eq!(replies[0]["mentions"][0]["id"], carol_id);
+    assert_eq!(replies[1]["id"], middle_reply_id);
+    assert_empty_mentions(&replies[1]);
+    assert_eq!(replies[2]["id"], newest_reply_id);
+    assert_eq!(replies[2]["mentions"][0]["id"], bob_id);
+
+    let req = test::TestRequest::get()
+        .uri("/threads/participated")
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let previews: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let preview = previews
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["root"]["id"] == root_id)
+        .unwrap();
+    assert_eq!(preview["channel"]["id"], chan_id);
+    assert_eq!(preview["reply_count"], 3);
+    assert_eq!(preview["last_reply_created_at"], newest_created_at);
+    assert_eq!(preview["root"]["mentions"][0]["id"], bob_id);
+    let recent = preview["recent_replies"].as_array().unwrap();
+    assert_eq!(recent.len(), 3);
+    assert_eq!(recent[0]["id"], older_reply_id);
+    assert_eq!(recent[0]["mentions"][0]["id"], carol_id);
+    assert_eq!(recent[1]["id"], middle_reply_id);
+    assert_empty_mentions(&recent[1]);
+    assert_eq!(recent[2]["id"], newest_reply_id);
+    assert_eq!(recent[2]["mentions"][0]["id"], bob_id);
+}
+
+#[actix_web::test]
+async fn test_thread_reply_edit_replaces_mentions_and_broadcasts_hydrated_update() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob_id = insert_public_user(&ctx.db, "bob", Some("Bobby Tables")).await;
+    let carol_id = insert_public_user(&ctx.db, "carol", Some("Carolyn")).await;
+    let root_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        None,
+        1_700_000_000_000_000,
+        "root",
+    )
+    .await;
+    let reply_text = format!("initial <@{bob_id}>");
+    let reply_id = insert_message_with_parent(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_010_000_000,
+        &reply_text,
+    )
+    .await;
+    insert_message_mention(&ctx.db, reply_id, bob_id, 0).await;
+    let mut rx = ctx.broadcaster.test_client();
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let invalid_req = test::TestRequest::put()
+        .uri(&format!("/message/{reply_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"text": "invalid <@0>"}).to_string())
+        .to_request();
+    assert_error_response(
+        test::call_service(&app, invalid_req).await,
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+    )
+    .await;
+    let unchanged_mentions = message_mention_rows(&ctx.db, reply_id).await;
+    assert_eq!(unchanged_mentions.len(), 1);
+    assert_eq!(unchanged_mentions[0].user_id, bob_id);
+
+    let edited_text = format!("edited <@{carol_id}>");
+    let req = test::TestRequest::put()
+        .uri(&format!("/message/{reply_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"text": edited_text}).to_string())
+        .to_request();
+    let edited: serde_json::Value = test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(edited["id"], reply_id);
+    assert_eq!(edited["parent_id"], root_id);
+    assert_eq!(edited["mentions"].as_array().unwrap().len(), 1);
+    assert_eq!(edited["mentions"][0]["id"], carol_id);
+    assert_eq!(edited["mentions"][0]["display_name"], "Carolyn");
+
+    let replaced_mentions = message_mention_rows(&ctx.db, reply_id).await;
+    assert_eq!(replaced_mentions.len(), 1);
+    assert_eq!(replaced_mentions[0].user_id, carol_id);
+    assert_eq!(replaced_mentions[0].position, 0);
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for thread reply edit broadcast")
+        .expect("broadcast channel closed");
+    let event_str = format!("{:?}", event);
+    assert!(event_str.contains("kind\\\":\\\"message_updated\\\""));
+    assert!(event_str.contains(&format!("\\\"id\\\":{reply_id}")));
+    assert!(event_str.contains(&format!("\\\"parent_id\\\":{root_id}")));
+    assert!(event_str.contains(&format!("\\\"id\\\":{carol_id}")));
+    assert!(event_str.contains("Carolyn"));
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/thread/{root_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let thread: serde_json::Value = test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(thread["replies"][0]["id"], reply_id);
+    assert_eq!(thread["replies"][0]["mentions"][0]["id"], carol_id);
+    assert_eq!(
+        thread["replies"][0]["mentions"][0]["display_name"],
+        "Carolyn"
+    );
 }
 
 #[actix_web::test]
@@ -3279,6 +3685,152 @@ async fn test_message_edit_updates_text_and_returns_updated() {
 }
 
 #[actix_web::test]
+async fn test_message_edit_replaces_mentions_and_broadcasts_hydrated_update() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob_id = insert_public_user(&ctx.db, "bobmentionedit", Some("Bobby Mention")).await;
+    let carol_id = insert_public_user(&ctx.db, "carolmentionedit", None).await;
+    let msg_id = insert_message(&ctx.db, alice.user_id, chan_id, "plain before mentions").await;
+    let mut rx = ctx.broadcaster.test_client();
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let first_text = format!("hi <@{bob_id}> twice <@{bob_id}> and <@{carol_id}>");
+    let req = test::TestRequest::put()
+        .uri(&format!("/message/{msg_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"text": first_text}).to_string())
+        .to_request();
+    let edited: serde_json::Value = test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(edited["text"], first_text);
+    assert_eq!(edited["mentions"].as_array().unwrap().len(), 2);
+    assert_eq!(edited["mentions"][0]["id"], bob_id);
+    assert_eq!(edited["mentions"][0]["display_name"], "Bobby Mention");
+    assert_eq!(edited["mentions"][1]["id"], carol_id);
+
+    let mention_rows = message_mention_rows(&ctx.db, msg_id).await;
+    assert_eq!(mention_rows.len(), 2);
+    assert_eq!(mention_rows[0].user_id, bob_id);
+    assert_eq!(mention_rows[0].position, 0);
+    assert_eq!(mention_rows[1].user_id, carol_id);
+    assert_eq!(mention_rows[1].position, 1);
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for first edit broadcast")
+        .expect("broadcast channel closed");
+    let event_str = format!("{event:?}");
+    assert!(event_str.contains("kind\\\":\\\"message_updated\\\""));
+    assert!(event_str.contains(&format!("\\\"id\\\":{bob_id}")));
+    assert!(event_str.contains("Bobby Mention"));
+    assert!(event_str.contains(&format!("\\\"id\\\":{carol_id}")));
+
+    let second_text = format!("only carol remains <@{carol_id}>");
+    let req = test::TestRequest::put()
+        .uri(&format!("/message/{msg_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"text": second_text}).to_string())
+        .to_request();
+    let edited: serde_json::Value = test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(edited["mentions"].as_array().unwrap().len(), 1);
+    assert_eq!(edited["mentions"][0]["id"], carol_id);
+
+    let mention_rows = message_mention_rows(&ctx.db, msg_id).await;
+    assert_eq!(mention_rows.len(), 1);
+    assert_eq!(mention_rows[0].user_id, carol_id);
+    assert_eq!(mention_rows[0].position, 0);
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for second edit broadcast")
+        .expect("broadcast channel closed");
+    let event_str = format!("{event:?}");
+    assert!(event_str.contains("kind\\\":\\\"message_updated\\\""));
+    assert!(event_str.contains(&format!("\\\"id\\\":{carol_id}")));
+    assert!(!event_str.contains("bobmentionedit"));
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(history[0]["mentions"].as_array().unwrap().len(), 1);
+    assert_eq!(history[0]["mentions"][0]["id"], carol_id);
+}
+
+#[actix_web::test]
+async fn test_message_edit_rejects_invalid_mentions_and_preserves_existing_rows() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob_id = insert_public_user(&ctx.db, "editvalidbob", None).await;
+    let original_text = format!("original <@{bob_id}>");
+    let msg_id = insert_message(&ctx.db, alice.user_id, chan_id, &original_text).await;
+    insert_message_mention(&ctx.db, msg_id, bob_id, 0).await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    for text in [
+        "unsafe zero <@0>".to_owned(),
+        "missing user <@900000000000000>".to_owned(),
+    ] {
+        let req = test::TestRequest::put()
+            .uri(&format!("/message/{msg_id}"))
+            .insert_header(ContentType::json())
+            .insert_header(alice.cookie_header())
+            .set_payload(serde_json::json!({"text": text}).to_string())
+            .to_request();
+        assert_error_response(
+            test::call_service(&app, req).await,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+        )
+        .await;
+
+        let stored = entity::message::Entity::find_by_id(msg_id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.text, original_text);
+        let mention_rows = message_mention_rows(&ctx.db, msg_id).await;
+        assert_eq!(mention_rows.len(), 1);
+        assert_eq!(mention_rows[0].user_id, bob_id);
+        assert_eq!(mention_rows[0].position, 0);
+    }
+
+    let mut marker_text = String::new();
+    for index in 0..=mentions::MAX_UNIQUE_MENTIONS_PER_MESSAGE {
+        let user_id = insert_public_user(&ctx.db, &format!("edit_cap_{index}"), None).await;
+        marker_text.push_str(&format!("<@{user_id}> "));
+    }
+    let req = test::TestRequest::put()
+        .uri(&format!("/message/{msg_id}"))
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(serde_json::json!({"text": marker_text}).to_string())
+        .to_request();
+    assert_error_response(
+        test::call_service(&app, req).await,
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+    )
+    .await;
+
+    let stored = entity::message::Entity::find_by_id(msg_id)
+        .one(&ctx.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.text, original_text);
+    let mention_rows = message_mention_rows(&ctx.db, msg_id).await;
+    assert_eq!(mention_rows.len(), 1);
+    assert_eq!(mention_rows[0].user_id, bob_id);
+}
+
+#[actix_web::test]
 async fn test_message_edit_rejects_other_users_messages() {
     let ctx = TestCtx::new().await;
     let chan_id = ctx.channel_id;
@@ -3340,6 +3892,107 @@ async fn test_message_delete_removes_own_message() {
         .await
         .unwrap();
     assert!(stored.is_none());
+}
+
+#[actix_web::test]
+async fn test_message_hard_delete_removes_mention_rows() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob_id = insert_public_user(&ctx.db, "harddeletebob", None).await;
+    let msg_id = insert_message(&ctx.db, alice.user_id, chan_id, &format!("bye <@{bob_id}>")).await;
+    insert_message_mention(&ctx.db, msg_id, bob_id, 0).await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::delete()
+        .uri(&format!("/message/{msg_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::NO_CONTENT
+    );
+
+    assert!(
+        entity::message::Entity::find_by_id(msg_id)
+            .one(&ctx.db)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(message_mention_rows(&ctx.db, msg_id).await.is_empty());
+}
+
+#[actix_web::test]
+async fn test_message_tombstone_tolerates_existing_mentions_without_rendering_them() {
+    let ctx = TestCtx::new().await;
+    let chan_id = ctx.channel_id;
+    let alice = ctx.register("alice", "hunter2").await;
+    let bob = ctx.register("bob", "hunter2").await;
+    let target_id =
+        insert_public_user(&ctx.db, "secretmentiontarget", Some("Secret Mention")).await;
+    let root_id = insert_message(
+        &ctx.db,
+        alice.user_id,
+        chan_id,
+        &format!("secret body <@{target_id}>"),
+    )
+    .await;
+    insert_message_mention(&ctx.db, root_id, target_id, 0).await;
+    insert_message_with_parent(
+        &ctx.db,
+        bob.user_id,
+        chan_id,
+        Some(root_id),
+        1_700_000_010_000_000,
+        "reply keeps root tombstoned",
+    )
+    .await;
+    let mut rx = ctx.broadcaster.test_client();
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::delete()
+        .uri(&format!("/message/{root_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for tombstone broadcast")
+        .expect("broadcast channel closed");
+    let event_str = format!("{event:?}");
+    assert!(event_str.contains("kind\\\":\\\"message_updated\\\""));
+    assert!(event_str.contains("\\\"text\\\":\\\"\\\""));
+    assert!(event_str.contains("\\\"mentions\\\":[]"));
+    assert!(!event_str.contains("secretmentiontarget"));
+    assert!(!event_str.contains("Secret Mention"));
+
+    let mention_rows = message_mention_rows(&ctx.db, root_id).await;
+    assert_eq!(mention_rows.len(), 1);
+    assert_eq!(mention_rows[0].user_id, target_id);
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/messages/{chan_id}"))
+        .insert_header(alice.cookie_header())
+        .to_request();
+    let history: serde_json::Value =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let tombstone = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == root_id)
+        .unwrap();
+    assert!(tombstone["deleted_at"].as_i64().is_some());
+    assert_eq!(tombstone["text"], "");
+    assert_empty_mentions(tombstone);
+    let serialized = serde_json::to_string(&history).unwrap();
+    assert!(!serialized.contains("secretmentiontarget"));
+    assert!(!serialized.contains("Secret Mention"));
 }
 
 #[actix_web::test]

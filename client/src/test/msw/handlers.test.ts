@@ -1,12 +1,15 @@
 import { describe, expect, test, vi } from "vitest";
 import {
+  editMessage,
   getServerUrl,
   getThread,
   listMessages,
   listScreenShareStreams,
+  searchUsers,
   sendMessage,
   sendThreadReply,
   type Message,
+  type PublicUser,
 } from "../../api";
 import { makeAttachment, makeScreenShareStream } from "../fixtures";
 import { tinyPngFile, tinyWebpFile } from "../image-fixtures";
@@ -27,6 +30,7 @@ function seedThreadRoot(): { state: ReturnType<typeof resetMswState>; root: Mess
     display_name: null,
     avatar_url: null,
     suppress_embeds: false,
+    mentions: [],
     attachments: [],
     embeds: [],
     reactions: [],
@@ -34,6 +38,77 @@ function seedThreadRoot(): { state: ReturnType<typeof resetMswState>; root: Mess
   state.messages["100"] = [root];
   return { state, root };
 }
+
+describe("MSW user search handlers", () => {
+  test("returns public user DTOs with deterministic ranked limit behavior", async () => {
+    const users: PublicUser[] = [
+      { id: 4, username: "alpha", display_name: null, avatar_url: null },
+      { id: 3, username: "ALP", display_name: null, avatar_url: null },
+      { id: 5, username: "calpso", display_name: null, avatar_url: null },
+      { id: 6, username: "a-l-p", display_name: null, avatar_url: null },
+      { id: 2, username: "hidden", display_name: "alp", avatar_url: null },
+    ];
+    const state = resetMswState({ me: DEV_USER, users });
+
+    await expect(searchUsers({ query: "AlP", limit: 3 })).resolves.toEqual([
+      users[1],
+      users[4],
+      users[0],
+    ]);
+    expect(state.userSearchRequests).toEqual([{ query: "AlP", limit: 3 }]);
+  });
+
+  test("caps requested limits and returns deterministic empty results", async () => {
+    const users = Array.from(
+      { length: 55 },
+      (_, index): PublicUser => ({
+        id: index + 10,
+        username: `user-${String(index).padStart(2, "0")}`,
+        display_name: null,
+        avatar_url: null,
+      }),
+    );
+    const state = resetMswState({ me: DEV_USER, users });
+
+    await expect(searchUsers({ query: "user", limit: 999 })).resolves.toHaveLength(50);
+    expect(state.userSearchRequests).toEqual([{ query: "user", limit: 50 }]);
+
+    await expect(searchUsers({ query: "zzzz" })).resolves.toEqual([]);
+    expect(state.userSearchRequests.at(-1)).toEqual({ query: "zzzz", limit: 20 });
+  });
+
+  test("filters private fields from directory fixtures", async () => {
+    resetMswState({
+      me: DEV_USER,
+      users: [
+        {
+          id: 9,
+          username: "private",
+          display_name: "Private Person",
+          avatar_url: "/uploads/avatars/9.webp?v=1",
+          email: "private@example.test",
+          email_verified: true,
+          avatar_path: "avatars/9.webp",
+          credentials: [{ provider: "password" }],
+          sessions: [{ token: "secret" }],
+        },
+      ],
+    });
+
+    const [user] = await searchUsers({ query: "private" });
+    expect(user).toEqual({
+      id: 9,
+      username: "private",
+      display_name: "Private Person",
+      avatar_url: "/uploads/avatars/9.webp?v=1",
+    });
+    expect(user).not.toHaveProperty("email");
+    expect(user).not.toHaveProperty("email_verified");
+    expect(user).not.toHaveProperty("avatar_path");
+    expect(user).not.toHaveProperty("credentials");
+    expect(user).not.toHaveProperty("sessions");
+  });
+});
 
 describe("MSW screen share handlers", () => {
   test("return current streams and support channel filtering", async () => {
@@ -89,12 +164,83 @@ describe("MSW message upload handlers", () => {
       channel_id: 100,
       parent_id: null,
       text: "json text only",
+      mentions: [],
       attachments: [],
       embeds: [],
     });
     expect(state.sentMessages).toContainEqual({ channel: "100", text: "json text only" });
     expect(state.sentMessagePhotos).toEqual([]);
     await expect(listMessages("100")).resolves.toContainEqual(created);
+  });
+
+  test("hydrates JSON channel message mention markers from public users", async () => {
+    const bob: PublicUser = {
+      id: 2,
+      username: "bob",
+      display_name: "Bobby Tables",
+      avatar_url: null,
+    };
+    const state = resetMswState({ me: DEV_USER, users: [bob] });
+
+    const response = await sendMessage(
+      "100",
+      `hello <@${bob.id}> twice <@${bob.id}> malformed <@abc>`,
+    );
+    expect(response.ok).toBe(true);
+    const created = (await response.json()) as Message;
+
+    expect(created.mentions).toEqual([bob]);
+    expect(state.messages["100"][0]?.mentions).toEqual([bob]);
+    await expect(listMessages("100")).resolves.toContainEqual(created);
+  });
+
+  test("hydrates channel message edit mention markers and rejects invalid edits", async () => {
+    const bob: PublicUser = {
+      id: 2,
+      username: "bob",
+      display_name: "Bobby Tables",
+      avatar_url: null,
+    };
+    const carol: PublicUser = {
+      id: 3,
+      username: "carol",
+      display_name: null,
+      avatar_url: null,
+    };
+    const state = resetMswState({ me: DEV_USER, users: [bob, carol] });
+    state.messages["100"] = [
+      {
+        id: 21,
+        user_id: DEV_USER.id,
+        channel_id: 100,
+        text: "plain",
+        username: DEV_USER.username,
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        mentions: [],
+        attachments: [],
+        embeds: [],
+        reactions: [],
+      },
+    ];
+
+    const updated = await editMessage(21, `hi <@${bob.id}> twice <@${bob.id}> <@${carol.id}>`);
+
+    expect(updated.mentions).toEqual([bob, carol]);
+    expect(state.messages["100"][0]?.mentions).toEqual([bob, carol]);
+    expect(state.editedMessages).toEqual([{ id: 21, text: updated.text }]);
+    await expect(listMessages("100")).resolves.toContainEqual(updated);
+
+    const invalid = await fetch(`${getServerUrl()}/message/21`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "missing <@999>" }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(state.editedMessages).toEqual([{ id: 21, text: updated.text }]);
+    expect(state.messages["100"][0]?.text).toBe(updated.text);
+    expect(state.messages["100"][0]?.mentions).toEqual([bob, carol]);
   });
 
   test("tracks JSON inline reply targets and returns compact reply metadata", async () => {
@@ -110,6 +256,7 @@ describe("MSW message upload handlers", () => {
       display_name: "Bobby",
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
       reactions: [],
@@ -157,6 +304,7 @@ describe("MSW message upload handlers", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
       reactions: [],
@@ -215,6 +363,7 @@ describe("MSW message upload handlers", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [],
       embeds: [],
       reactions: [],
@@ -328,6 +477,7 @@ describe("MSW message upload handlers", () => {
       display_name: null,
       avatar_url: null,
       suppress_embeds: false,
+      mentions: [],
       attachments: [makeAttachment({ id: 7001, message_id: 45 })],
       embeds: [],
       reactions: [],

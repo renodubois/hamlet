@@ -20,14 +20,16 @@ import {
   sendThreadReply,
   setMessageEmbedsSuppressed,
   type Message,
+  type PublicUser,
   type ReactionRequest,
   type ReactionSummary,
+  type SearchUsersOptions,
 } from "../api";
 import { useOptionalCustomEmojis } from "../contexts/custom-emojis";
 import { useEvents } from "../contexts/events";
 import { customEmojisToEntries, parseCustomEmojiMarkers } from "../emoji/custom-emojis";
 import { CONSERVATIVE_EMOJIS } from "../emoji/emoji-data";
-import { linkifyText } from "../linkify";
+import { messageMentionsCurrentUser } from "../mentions/mentions";
 import {
   applyOptimisticReaction,
   mergeReactionUpdateForViewer,
@@ -45,6 +47,7 @@ import { DeleteIcon, EditIcon, EmojiIcon } from "./icons";
 import MessageEmbed from "./message-embed";
 import MessageInput from "./message-input";
 import MessageReferencePreview from "./message-reference-preview";
+import MessageText from "./message-text";
 import Modal from "./modal";
 import ReactionRow from "./reaction-row";
 
@@ -57,7 +60,22 @@ function isDeletedMessage(message: Message): boolean {
   return message.deleted_at != null;
 }
 
-function MessageBody(props: { message: Message }) {
+function threadMessageClass(authoredByCurrentUser: boolean, mentionedCurrentUser: boolean): string {
+  const borderClass = authoredByCurrentUser
+    ? "border-blue-400"
+    : mentionedCurrentUser
+      ? "border-yellow-300"
+      : "border-transparent";
+  const stateClass = mentionedCurrentUser
+    ? "bg-yellow-50 ring-1 ring-inset ring-yellow-300 hover:bg-yellow-100/80 focus-within:bg-yellow-100/80"
+    : authoredByCurrentUser
+      ? "bg-blue-50/50 hover:bg-blue-50 focus-within:bg-blue-50"
+      : "hover:bg-gray-50 focus-within:bg-gray-50";
+
+  return `group relative flex items-start gap-3 rounded-md border-l-4 py-2 pl-2 pr-12 transition-colors ${borderClass} ${stateClass}`;
+}
+
+function MessageBody(props: { message: Message; currentUserId: number | null }) {
   return (
     <Show
       when={!isDeletedMessage(props.message)}
@@ -67,22 +85,11 @@ function MessageBody(props: { message: Message }) {
         </p>
       }
     >
-      <div class="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-        {linkifyText(props.message.text).map((tok) =>
-          tok.type === "link" ? (
-            <a
-              href={tok.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              class="text-blue-700 hover:underline break-all"
-            >
-              {tok.url}
-            </a>
-          ) : (
-            tok.value
-          ),
-        )}
-      </div>
+      <MessageText
+        text={props.message.text}
+        mentions={props.message.mentions ?? []}
+        currentUserId={props.currentUserId}
+      />
     </Show>
   );
 }
@@ -100,16 +107,27 @@ function ThreadMessage(props: {
   onSuppressEmbeds: (message: Message) => void;
   onToggleReaction: (message: Message, reaction: ReactionSummary) => void;
   onOpenReactionPicker: (message: Message, anchor: HTMLElement) => void;
+  mentionUsers?: readonly PublicUser[];
+  onMentionUsers?: (users: readonly PublicUser[]) => void;
+  searchMentionUsers?: (options: SearchUsersOptions) => Promise<PublicUser[]>;
+  mentionSearchLimit?: number;
 }) {
   const canReact = () => !isDeletedMessage(props.message) && props.currentUserId !== null;
-  const isOwnReply = () =>
+  const isOwnMessage = () =>
     !isDeletedMessage(props.message) &&
-    props.message.parent_id != null &&
     props.currentUserId !== null &&
     props.message.user_id === props.currentUserId;
+  const isOwnReply = () => isOwnMessage() && props.message.parent_id != null;
+  const isMentionedCurrentUser = () =>
+    messageMentionsCurrentUser(props.message, props.currentUserId);
 
   return (
-    <article class="group relative flex items-start gap-3 rounded-md py-2 pr-12 hover:bg-gray-50 focus-within:bg-gray-50">
+    <article
+      data-message-id={String(props.message.id)}
+      data-authored-by-current-user={isOwnMessage() ? "true" : undefined}
+      data-mentioned-current-user={isMentionedCurrentUser() ? "true" : undefined}
+      class={threadMessageClass(isOwnMessage(), isMentionedCurrentUser())}
+    >
       <Avatar
         url={isDeletedMessage(props.message) ? null : props.message.avatar_url}
         username={
@@ -127,7 +145,10 @@ function ThreadMessage(props: {
             />
           </Show>
         </Show>
-        <Show when={props.editing} fallback={<MessageBody message={props.message} />}>
+        <Show
+          when={props.editing}
+          fallback={<MessageBody message={props.message} currentUserId={props.currentUserId} />}
+        >
           <form
             class="flex gap-2 items-center"
             onSubmit={(e) => {
@@ -139,6 +160,10 @@ function ThreadMessage(props: {
               value={props.draft}
               onChange={props.onDraftChange}
               ariaLabel="Edit reply"
+              mentionUsers={props.mentionUsers}
+              onMentionUsers={props.onMentionUsers}
+              searchMentionUsers={props.searchMentionUsers}
+              mentionSearchLimit={props.mentionSearchLimit}
               inputRef={(el) => queueMicrotask(() => el.focus())}
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
@@ -243,6 +268,10 @@ export default function ThreadPanel(props: {
   onClose: () => void;
   focusComposer?: boolean;
   onComposerFocusConsumed?: () => void;
+  mentionUsers?: readonly PublicUser[];
+  onMentionUsers?: (users: readonly PublicUser[]) => void;
+  searchMentionUsers?: (options: SearchUsersOptions) => Promise<PublicUser[]>;
+  mentionSearchLimit?: number;
 }) {
   const customEmojis = useOptionalCustomEmojis();
   const activeCustomEmojis = () => customEmojis?.activeEmojis?.() ?? [];
@@ -272,6 +301,7 @@ export default function ThreadPanel(props: {
   let repliesScrollRef: HTMLDivElement | undefined;
 
   const appendReply = (reply: Message) => {
+    props.onMentionUsers?.(reply.mentions ?? []);
     mutate((current) => {
       if (!current) return current;
       if (current.replies.some((existing) => existing.id === reply.id)) return current;
@@ -280,6 +310,7 @@ export default function ThreadPanel(props: {
   };
 
   const updateMessageInThread = (message: Message) => {
+    props.onMentionUsers?.(message.mentions ?? []);
     mutate((current) => {
       if (!current) return current;
       const reference = messageReferenceFromMessage(message);
@@ -520,6 +551,15 @@ export default function ThreadPanel(props: {
     }
   });
 
+  createEffect(() => {
+    const loaded = thread();
+    if (!loaded) return;
+    props.onMentionUsers?.([
+      ...(loaded.root.mentions ?? []),
+      ...loaded.replies.flatMap((reply) => reply.mentions ?? []),
+    ]);
+  });
+
   const loadOlderReplies = async () => {
     const current = thread();
     const oldestReply = current?.replies[0];
@@ -586,6 +626,7 @@ export default function ThreadPanel(props: {
   };
 
   const startEditing = (message: Message) => {
+    props.onMentionUsers?.(message.mentions ?? []);
     setEditDraft(message.text);
     setEditingId(message.id);
   };
@@ -734,6 +775,10 @@ export default function ThreadPanel(props: {
                         onOpenReactionPicker={(message, anchor) =>
                           setReactionPicker({ messageId: message.id, anchor })
                         }
+                        mentionUsers={props.mentionUsers}
+                        onMentionUsers={props.onMentionUsers}
+                        searchMentionUsers={props.searchMentionUsers}
+                        mentionSearchLimit={props.mentionSearchLimit}
                       />
                     )}
                   </For>
@@ -780,6 +825,10 @@ export default function ThreadPanel(props: {
             inputRef={(el) => {
               inputRef = el;
             }}
+            mentionUsers={props.mentionUsers}
+            onMentionUsers={props.onMentionUsers}
+            searchMentionUsers={props.searchMentionUsers}
+            mentionSearchLimit={props.mentionSearchLimit}
           />
           <button
             class="rounded-md bg-blue-100 p-4 disabled:opacity-50"

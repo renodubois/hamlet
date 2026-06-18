@@ -12,6 +12,7 @@ mod database;
 pub mod embeds;
 pub mod entity;
 pub mod error;
+pub mod mentions;
 pub mod middleware;
 mod photos;
 pub mod reactions;

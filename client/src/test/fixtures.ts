@@ -1,8 +1,8 @@
 import type { CameraStream, Message, MessageAttachment, ScreenShareStream } from "../api";
 
 /// Build a `Message` fixture with media/embed fields filled in with sensible
-/// defaults. Every test message has `suppress_embeds: false`, no attachments,
-/// and no embeds unless the caller overrides them, so tests that don't care
+/// defaults. Every test message has `suppress_embeds: false`, no mentions,
+/// no attachments, and no embeds unless the caller overrides them, so tests that don't care
 /// about media features stay compact.
 export function makeMessage(
   partial: Partial<Message> & Pick<Message, "id" | "user_id" | "channel_id" | "text" | "username">,
@@ -14,6 +14,7 @@ export function makeMessage(
     reply_to_message_id: null,
     reply_to: null,
     suppress_embeds: false,
+    mentions: [],
     attachments: [],
     embeds: [],
     reactions: [],
