@@ -48,6 +48,7 @@ export interface MessageReferencePreviewProps {
   ariaLabelPrefix?: string;
   role?: JSX.HTMLAttributes<HTMLDivElement>["role"];
   ariaLive?: "off" | "polite" | "assertive";
+  onActivate?: () => void;
   children?: JSX.Element;
 }
 
@@ -191,7 +192,12 @@ function PreviewText(props: { reference: MessageReferencePreviewSource }) {
 }
 
 export default function MessageReferencePreview(props: MessageReferencePreviewProps) {
-  const rootClass = () => props.class ?? DEFAULT_ROOT_CLASS;
+  const rootClass = () => {
+    const base = props.class ?? DEFAULT_ROOT_CLASS;
+    return props.onActivate
+      ? `${base} cursor-pointer rounded-sm text-left hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-400`
+      : base;
+  };
   const authorClass = () => props.authorClass ?? DEFAULT_AUTHOR_CLASS;
   const textClass = () => props.textClass ?? DEFAULT_TEXT_CLASS;
   const ariaLabel = () =>
@@ -199,15 +205,8 @@ export default function MessageReferencePreview(props: MessageReferencePreviewPr
       props.reference,
       props.targetId,
     )}`;
-
-  return (
-    <div
-      id={props.id}
-      class={rootClass()}
-      role={props.role}
-      aria-live={props.ariaLive}
-      aria-label={ariaLabel()}
-    >
+  const content = () => (
+    <>
       <span class={authorClass()}>{`${props.authorPrefix ?? ""}${referenceAuthorName(
         props.reference,
       )}`}</span>
@@ -220,6 +219,37 @@ export default function MessageReferencePreview(props: MessageReferencePreviewPr
         </Show>
       </span>
       {props.children}
-    </div>
+    </>
+  );
+
+  return (
+    <Show
+      when={props.onActivate}
+      keyed
+      fallback={
+        <div
+          id={props.id}
+          class={rootClass()}
+          role={props.role}
+          aria-live={props.ariaLive}
+          aria-label={ariaLabel()}
+        >
+          {content()}
+        </div>
+      }
+    >
+      {(onActivate) => (
+        <button
+          id={props.id}
+          type="button"
+          class={rootClass()}
+          aria-live={props.ariaLive}
+          aria-label={ariaLabel()}
+          onClick={() => onActivate()}
+        >
+          {content()}
+        </button>
+      )}
+    </Show>
   );
 }

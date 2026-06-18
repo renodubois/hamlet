@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen } from "@solidjs/testing-library";
 import type { CustomEmoji } from "../api";
 
 const customEmojiContext = vi.hoisted(() => ({
@@ -114,6 +114,15 @@ describe("<MessageReferencePreview>", () => {
     expect(screen.getByLabelText(/replying to unavailable message 99/i)).toHaveTextContent(
       "Original message unavailable",
     );
+  });
+
+  test("renders as a button and invokes activation when interactive", () => {
+    const onActivate = vi.fn();
+    render(() => <MessageReferencePreview reference={reference()} onActivate={onActivate} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /replying to casey: target text/i }));
+
+    expect(onActivate).toHaveBeenCalledOnce();
   });
 
   test("plain preview text normalizes custom emoji markers for labels", () => {

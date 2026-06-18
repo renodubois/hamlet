@@ -74,6 +74,14 @@ export default function ChannelView() {
   const [messages, setMessages] = createStore<Message[]>([]);
   let lastTypingSentAt = 0;
   let composerRef: HTMLElement | undefined;
+  let messagesScrollRef: HTMLDivElement | undefined;
+
+  const scrollMessagesToBottom = () => {
+    queueMicrotask(() => {
+      if (!messagesScrollRef) return;
+      messagesScrollRef.scrollTop = messagesScrollRef.scrollHeight;
+    });
+  };
 
   // Reconcile the fetched array into the store on initial load and on every
   // channel switch. The "id" key tells reconcile to diff items rather than
@@ -82,6 +90,7 @@ export default function ChannelView() {
   createEffect(() => {
     const data = resource();
     setMessages(reconcile(data ?? [], { key: "id" }));
+    scrollMessagesToBottom();
   });
 
   // When the current user's profile changes (display_name, avatar), patch
@@ -190,6 +199,7 @@ export default function ChannelView() {
     const unsubCreated = events.onMessage((m) => {
       if (String(m.channel_id) !== params.id) return;
       setMessages(messages.length, m);
+      scrollMessagesToBottom();
     });
     const unsubUpdated = events.onMessageUpdated((m) => {
       if (String(m.channel_id) !== params.id) return;
@@ -265,7 +275,14 @@ export default function ChannelView() {
       <RemoteCameraTiles />
 
       <div class="flex-1 min-h-0 flex">
-        <div class="min-w-0 flex-1 overflow-y-auto">
+        <div
+          ref={(el) => {
+            messagesScrollRef = el;
+          }}
+          class="min-w-0 flex-1 overflow-y-auto"
+          role="region"
+          aria-label="Messages"
+        >
           <ChannelMessages
             messages={messages}
             loading={resource.loading}

@@ -40,7 +40,7 @@ vi.mock("../contexts/custom-emojis", () => ({
   useOptionalCustomEmojis: () => customEmojiContext.current,
 }));
 
-import ChannelMessages from "./channel-messages";
+import ChannelMessages, { channelMessageElementId } from "./channel-messages";
 import {
   addMessageReaction,
   deleteMessage,
@@ -1138,6 +1138,44 @@ describe("<ChannelMessages> hover action toolbar", () => {
     expect(preview).toHaveTextContent("target text that is previewed");
     expect(preview.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     await expectNoA11yViolations(container, "inline reply preview");
+  });
+
+  test("clicking an inline reply preview jumps to the referenced message", () => {
+    const reply = makeMessage({
+      id: 618,
+      user_id: SELF_ID,
+      channel_id: 1,
+      text: "reply body",
+      username: "me",
+      reply_to_message_id: otherMessage.id,
+      reply_to: {
+        id: otherMessage.id,
+        user_id: otherMessage.user_id,
+        channel_id: otherMessage.channel_id,
+        created_at: 1_700_000_000_000_000,
+        deleted_at: null,
+        text: "target text that is previewed",
+        attachment_count: 0,
+        username: otherMessage.username,
+        display_name: otherMessage.display_name,
+        avatar_url: otherMessage.avatar_url,
+      },
+    });
+    mount([otherMessage, reply], SELF_ID);
+
+    const targetRow = assertExists(
+      document.getElementById(channelMessageElementId(otherMessage.id)),
+      "referenced message row",
+    );
+    const scrollIntoView = vi.fn();
+    targetRow.scrollIntoView = scrollIntoView;
+
+    expect(targetRow).toHaveAttribute("data-message-id", String(otherMessage.id));
+    fireEvent.click(
+      screen.getByRole("button", { name: /replying to them: target text that is previewed/i }),
+    );
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", inline: "nearest" });
   });
 
   test("can inline-reply to an inline reply and renders only the direct target", () => {

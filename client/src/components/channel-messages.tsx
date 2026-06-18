@@ -1,4 +1,13 @@
-import { Component, For, Show, createSignal, onCleanup, onMount, type JSX } from "solid-js";
+import {
+  Component,
+  For,
+  Show,
+  createMemo,
+  createSignal,
+  onCleanup,
+  onMount,
+  type JSX,
+} from "solid-js";
 import {
   addMessageReaction,
   deleteMessage,
@@ -84,6 +93,10 @@ function referencedMessageLabel(message: Message): string {
   return `message by ${messageDisplayName(message)}: ${messageReferencePreviewText(message)}`;
 }
 
+export function channelMessageElementId(messageId: number): string {
+  return `channel-message-${messageId}`;
+}
+
 const ChannelMessages: Component<{
   messages: readonly Message[];
   loading: boolean;
@@ -99,6 +112,7 @@ const ChannelMessages: Component<{
     ...CONSERVATIVE_EMOJIS,
     ...customEmojisToEntries(activeCustomEmojis()),
   ];
+  const visibleMessageIds = createMemo(() => new Set(props.messages.map((message) => message.id)));
   const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
   const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null);
   const [editingId, setEditingId] = createSignal<number | null>(null);
@@ -269,6 +283,19 @@ const ChannelMessages: Component<{
   const hasAnyAction = (msg: Message) =>
     canReact(msg) || isOwnMessage(msg) || canOpenThread(msg) || canInlineReply(msg);
 
+  const referencedTargetId = (msg: Message) => msg.reply_to_message_id ?? msg.reply_to?.id ?? null;
+
+  const canJumpToReferencedMessage = (targetId: number | null | undefined) =>
+    targetId != null && visibleMessageIds().has(targetId);
+
+  const jumpToReferencedMessage = (targetId: number | null | undefined) => {
+    if (targetId == null) return;
+    document.getElementById(channelMessageElementId(targetId))?.scrollIntoView({
+      block: "center",
+      inline: "nearest",
+    });
+  };
+
   const handleContextMenu = (e: MouseEvent, msg: Message) => {
     if (!isOwnMessage(msg)) return;
     e.preventDefault();
@@ -286,6 +313,8 @@ const ChannelMessages: Component<{
       <For each={props.messages}>
         {(message) => (
           <div
+            id={channelMessageElementId(message.id)}
+            data-message-id={String(message.id)}
             class="group relative flex items-start gap-3 px-2 py-1 -mx-2 rounded-md hover:bg-gray-50 focus-within:bg-gray-50"
             onContextMenu={(e) => handleContextMenu(e, message)}
           >
@@ -307,7 +336,12 @@ const ChannelMessages: Component<{
                 <Show when={message.reply_to ?? message.reply_to_message_id ?? null}>
                   <MessageReferencePreview
                     reference={message.reply_to ?? null}
-                    targetId={message.reply_to_message_id ?? message.reply_to?.id}
+                    targetId={referencedTargetId(message)}
+                    onActivate={
+                      canJumpToReferencedMessage(referencedTargetId(message))
+                        ? () => jumpToReferencedMessage(referencedTargetId(message))
+                        : undefined
+                    }
                   />
                 </Show>
                 <Show

@@ -1368,12 +1368,16 @@ describe("Channel view integration", () => {
     expect(within(panel).getByText("live thread photo")).toBeInTheDocument();
   });
 
-  test("appends a message delivered over SSE", async () => {
+  test("appends a message delivered over SSE and scrolls to it", async () => {
     seedAuthed();
     mountAt("/channel/100");
 
     await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
     await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+
+    const scrollArea = screen.getByRole("region", { name: /messages/i }) as HTMLDivElement;
+    Object.defineProperty(scrollArea, "scrollHeight", { configurable: true, value: 1234 });
+    scrollArea.scrollTop = 0;
 
     const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
     es.pushMessage({
@@ -1391,6 +1395,7 @@ describe("Channel view integration", () => {
 
     await waitFor(() => {
       expect(screen.getByText("hot off the wire")).toBeInTheDocument();
+      expect(scrollArea.scrollTop).toBe(1234);
     });
   });
 
