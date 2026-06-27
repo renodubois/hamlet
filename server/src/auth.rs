@@ -129,6 +129,7 @@ pub async fn register_user(
         secret: Set(Some(hash)),
     };
     credential.insert(db).await?;
+    crate::read_state::ensure_user_read_state_baselines(db, user_id).await?;
 
     Ok(user)
 }

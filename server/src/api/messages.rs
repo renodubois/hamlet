@@ -994,6 +994,7 @@ async fn insert_message_rows(
     let inserted = new_message.insert(&txn).await?;
 
     insert_message_mentions(&txn, inserted.id, created_at, mentions).await?;
+    insert_initial_message_mentions(&txn, inserted.id, created_at, mentions).await?;
 
     let mut saved_attachments = Vec::with_capacity(attachments.len());
     for attachment in attachments {
@@ -1034,6 +1035,29 @@ where
     for (position, mention) in mentions.iter().enumerate() {
         entity::message_mention::ActiveModel {
             id: Set(generate_id()),
+            message_id: Set(message_id),
+            user_id: Set(mention.id),
+            position: Set(position as i32),
+            created_at: Set(created_at),
+        }
+        .insert(conn)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn insert_initial_message_mentions<C>(
+    conn: &C,
+    message_id: i64,
+    created_at: i64,
+    mentions: &[PublicUserResponse],
+) -> Result<(), AppError>
+where
+    C: ConnectionTrait,
+{
+    for (position, mention) in mentions.iter().enumerate() {
+        entity::message_initial_mention::ActiveModel {
             message_id: Set(message_id),
             user_id: Set(mention.id),
             position: Set(position as i32),
@@ -1846,6 +1870,10 @@ async fn delete_message(
             .filter(entity::message_mention::Column::MessageId.eq(message_id))
             .exec(&txn)
             .await?;
+        entity::message_initial_mention::Entity::delete_many()
+            .filter(entity::message_initial_mention::Column::MessageId.eq(message_id))
+            .exec(&txn)
+            .await?;
         let active: entity::message::ActiveModel = existing.into();
         active.delete(&txn).await?;
         txn.commit().await?;
@@ -1884,8 +1912,8 @@ async fn delete_message(
 }
 
 #[get("/messages/subscribe")]
-async fn subscribe(broadcaster: web::Data<Broadcaster>) -> impl Responder {
-    broadcaster.subscribe().await
+async fn subscribe(broadcaster: web::Data<Broadcaster>, user: AuthUser) -> impl Responder {
+    broadcaster.subscribe(user.id).await
 }
 
 #[post("/typing/{channel_id}")]

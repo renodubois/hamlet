@@ -37,7 +37,7 @@ pub async fn bootstrap_default_channels(
                 return Ok(DefaultChannelBootstrapOutcome::SkippedExistingChannels);
             }
 
-            entity::channel::ActiveModel {
+            let general = entity::channel::ActiveModel {
                 id: Set(generate_id()),
                 name: Set("general".to_owned()),
                 position: Set(0),
@@ -45,6 +45,7 @@ pub async fn bootstrap_default_channels(
             }
             .insert(txn)
             .await?;
+            crate::read_state::ensure_channel_read_state_baselines(txn, general.id).await?;
 
             entity::channel::ActiveModel {
                 id: Set(generate_id()),

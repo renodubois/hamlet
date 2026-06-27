@@ -41,6 +41,8 @@ function fakeEvents(): {
     },
     onThreadReplyCreated: () => () => {},
     onThreadReplyDeleted: () => () => {},
+    onReadStateUpdated: () => () => {},
+    onConnected: () => () => {},
   };
   return { events, emit: (t) => emit(t), emitMessage: (m) => emitMessage(m) };
 }
@@ -233,6 +235,8 @@ describe("<TypingIndicator>", () => {
       onUserTyping: () => unsub,
       onThreadReplyCreated: () => () => {},
       onThreadReplyDeleted: () => () => {},
+      onReadStateUpdated: () => () => {},
+      onConnected: () => () => {},
     };
     const { unmount } = render(() => (
       <TypingIndicator channelId={100} currentUserId={1} events={events} />

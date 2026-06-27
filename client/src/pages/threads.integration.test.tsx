@@ -4,6 +4,7 @@ import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
 import { AuthProvider } from "../contexts/auth";
 import { ChannelsProvider } from "../contexts/channels";
 import { EventsProvider } from "../contexts/events";
+import { ReadStatesProvider } from "../contexts/read-states";
 import { FakeEventSource } from "../test/msw/sse";
 import { resetMswState } from "../test/msw/server";
 import { makeAttachment } from "../test/fixtures";
@@ -27,12 +28,14 @@ function mountAt(path = "/threads") {
   const result = render(() => (
     <AuthProvider>
       <EventsProvider>
-        <ChannelsProvider>
-          <MemoryRouter history={history}>
-            <Route path="/threads" component={ThreadsView} />
-            <Route path="/channel/:id" component={ChannelView} />
-          </MemoryRouter>
-        </ChannelsProvider>
+        <ReadStatesProvider>
+          <ChannelsProvider>
+            <MemoryRouter history={history}>
+              <Route path="/threads" component={ThreadsView} />
+              <Route path="/channel/:id" component={ChannelView} />
+            </MemoryRouter>
+          </ChannelsProvider>
+        </ReadStatesProvider>
       </EventsProvider>
     </AuthProvider>
   ));

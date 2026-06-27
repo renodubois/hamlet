@@ -7,6 +7,7 @@ import { AuthProvider } from "../contexts/auth";
 import { ChannelsProvider } from "../contexts/channels";
 import { CustomEmojisProvider } from "../contexts/custom-emojis";
 import { EventsProvider } from "../contexts/events";
+import { ReadStatesProvider } from "../contexts/read-states";
 import { FakeEventSource, latestFakeEventSource } from "../test/msw/sse";
 import { mswState, resetMswState, server } from "../test/msw/server";
 import { DEV_USER } from "../test/msw/handlers";
@@ -36,9 +37,11 @@ function mountAt(path: string) {
       <EventsProvider>
         <CustomEmojisProvider>
           <ChannelsProvider>
-            <MemoryRouter history={history}>
-              <Route path="/channel/:id" component={ChannelView} />
-            </MemoryRouter>
+            <ReadStatesProvider>
+              <MemoryRouter history={history}>
+                <Route path="/channel/:id" component={ChannelView} />
+              </MemoryRouter>
+            </ReadStatesProvider>
           </ChannelsProvider>
         </CustomEmojisProvider>
       </EventsProvider>
@@ -153,6 +156,33 @@ function photoFile(name: string, type = "image/png") {
   return tinyPngFile(name);
 }
 
+function messagesRegion(): HTMLDivElement {
+  return screen.getByRole("region", { name: /messages/i }) as HTMLDivElement;
+}
+
+function setScrollMetrics(
+  element: HTMLDivElement,
+  metrics: { scrollHeight: number; clientHeight: number; scrollTop: number },
+) {
+  let currentScrollTop = metrics.scrollTop;
+  Object.defineProperties(element, {
+    scrollHeight: { configurable: true, get: () => metrics.scrollHeight },
+    clientHeight: { configurable: true, get: () => metrics.clientHeight },
+    scrollTop: {
+      configurable: true,
+      get: () => currentScrollTop,
+      set: (value: number) => {
+        currentScrollTop = value;
+      },
+    },
+  });
+  return {
+    get scrollTop() {
+      return currentScrollTop;
+    },
+  };
+}
+
 function findRenderedMessageText(text: string) {
   return screen.findByText(
     (_, element) =>
@@ -243,6 +273,121 @@ describe("Channel view integration", () => {
       expect(screen.getByText("hello")).toBeInTheDocument();
       expect(screen.getByText("world")).toBeInTheDocument();
     });
+  });
+
+  test("marks the focused near-bottom active channel read with the last visible message", async () => {
+    const focusSpy = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const state = seedAuthed();
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("world")).toBeInTheDocument());
+    setScrollMetrics(messagesRegion(), { scrollHeight: 1000, clientHeight: 100, scrollTop: 920 });
+    fireEvent.scroll(messagesRegion());
+
+    await waitFor(() => {
+      expect(state.markReadRequests).toContainEqual({
+        channelId: 100,
+        lastVisibleMessageId: 2,
+      });
+    });
+    focusSpy.mockRestore();
+  });
+
+  test("incoming messages while scrolled up show a jump affordance without forcing scroll", async () => {
+    const focusSpy = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const state = seedAuthed();
+    const { container } = mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("world")).toBeInTheDocument());
+    state.markReadRequests = [];
+    const scroll = setScrollMetrics(messagesRegion(), {
+      scrollHeight: 1000,
+      clientHeight: 100,
+      scrollTop: 100,
+    });
+    assertExists(latestFakeEventSource(), "latestFakeEventSource").pushMessage({
+      id: 3,
+      user_id: 2,
+      channel_id: 100,
+      parent_id: null,
+      text: "below viewport",
+      username: "bob",
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      mentions: [],
+      attachments: [],
+      embeds: [],
+    });
+
+    await waitFor(() => expect(screen.getByText("below viewport")).toBeInTheDocument());
+    expect(scroll.scrollTop).toBe(100);
+    expect(
+      screen.getByRole("button", { name: /new messages below\. jump to latest messages/i }),
+    ).toBeInTheDocument();
+    expect(state.markReadRequests).not.toContainEqual({
+      channelId: 100,
+      lastVisibleMessageId: 3,
+    });
+    await expectNoA11yViolations(container, "new-message jump affordance");
+    focusSpy.mockRestore();
+  });
+
+  test("jumping to newest messages scrolls to bottom and hands off to mark-read", async () => {
+    const focusSpy = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const state = seedAuthed();
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("world")).toBeInTheDocument());
+    state.markReadRequests = [];
+    const scroll = setScrollMetrics(messagesRegion(), {
+      scrollHeight: 1000,
+      clientHeight: 100,
+      scrollTop: 100,
+    });
+    assertExists(latestFakeEventSource(), "latestFakeEventSource").pushMessage({
+      id: 4,
+      user_id: 2,
+      channel_id: 100,
+      parent_id: null,
+      text: "jump target",
+      username: "bob",
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      mentions: [],
+      attachments: [],
+      embeds: [],
+    });
+
+    const jump = await screen.findByRole("button", {
+      name: /new messages below\. jump to latest messages/i,
+    });
+    fireEvent.click(jump);
+
+    await waitFor(() => expect(scroll.scrollTop).toBe(1000));
+    await waitFor(() => {
+      expect(state.markReadRequests).toContainEqual({
+        channelId: 100,
+        lastVisibleMessageId: 4,
+      });
+    });
+    expect(screen.queryByRole("button", { name: /new messages below/i })).toBeNull();
+    focusSpy.mockRestore();
+  });
+
+  test("blurred or hidden renderer state suppresses near-bottom mark-read", async () => {
+    const focusSpy = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const state = seedAuthed();
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("world")).toBeInTheDocument());
+    setScrollMetrics(messagesRegion(), { scrollHeight: 1000, clientHeight: 100, scrollTop: 920 });
+    fireEvent.scroll(messagesRegion());
+
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    expect(state.markReadRequests).toEqual([]);
+    focusSpy.mockRestore();
   });
 
   test("opens a thread side panel from the reply action, focuses the composer, and sends a reply", async () => {
@@ -1724,7 +1869,7 @@ describe("Channel view integration", () => {
     expect(within(panel).getByText("live thread photo")).toBeInTheDocument();
   });
 
-  test("appends a message delivered over SSE and scrolls to it", async () => {
+  test("appends a message delivered over SSE and auto-follows when already near bottom", async () => {
     seedAuthed();
     mountAt("/channel/100");
 
@@ -1732,8 +1877,11 @@ describe("Channel view integration", () => {
     await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
 
     const scrollArea = screen.getByRole("region", { name: /messages/i }) as HTMLDivElement;
-    Object.defineProperty(scrollArea, "scrollHeight", { configurable: true, value: 1234 });
-    scrollArea.scrollTop = 0;
+    const scroll = setScrollMetrics(scrollArea, {
+      scrollHeight: 1234,
+      clientHeight: 100,
+      scrollTop: 1140,
+    });
 
     const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
     es.pushMessage({
@@ -1752,7 +1900,7 @@ describe("Channel view integration", () => {
 
     await waitFor(() => {
       expect(screen.getByText("hot off the wire")).toBeInTheDocument();
-      expect(scrollArea.scrollTop).toBe(1234);
+      expect(scroll.scrollTop).toBe(1234);
     });
   });
 

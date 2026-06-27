@@ -2,6 +2,7 @@ import { A } from "@solidjs/router";
 import { createSignal, For, Match, Show, Switch } from "solid-js";
 import { type Channel, type User } from "../api";
 import { useChannels } from "../contexts/channels";
+import { useReadStates } from "../contexts/read-states";
 import AddChannelModal from "./add-channel-modal";
 import Avatar from "./avatar";
 import { SettingsIcon } from "./icons";
@@ -15,6 +16,7 @@ export default function ChannelSidebar(props: {
   onAvatarChange?: () => void;
 }) {
   const { channels, reorder } = useChannels();
+  const readStates = useReadStates();
   const [addChannelOpen, setAddChannelOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   const [draggedId, setDraggedId] = createSignal<number | null>(null);
@@ -108,14 +110,57 @@ export default function ChannelSidebar(props: {
                       <A
                         href={`/channel/${channel.id}`}
                         activeClass="bg-gray-700 text-white font-medium"
-                        inactiveClass="text-gray-400 hover:bg-gray-700 hover:text-gray-200"
-                        class="block px-3 py-1.5 rounded text-sm cursor-pointer"
+                        inactiveClass={
+                          readStates.hasUnread(channel.id) ||
+                          readStates.mentionCount(channel.id) > 0
+                            ? "text-gray-100 font-semibold hover:bg-gray-700 hover:text-gray-100"
+                            : "text-gray-400 hover:bg-gray-700 hover:text-gray-200"
+                        }
+                        class="relative flex items-center gap-2 px-3 py-1.5 rounded text-sm cursor-pointer"
+                        classList={{
+                          "pl-6":
+                            readStates.hasUnread(channel.id) ||
+                            readStates.mentionCount(channel.id) > 0,
+                        }}
+                        aria-label={
+                          readStates.mentionCount(channel.id) > 0
+                            ? `${channel.name}, ${readStates.mentionCount(channel.id)} unread mention${
+                                readStates.mentionCount(channel.id) === 1 ? "" : "s"
+                              }`
+                            : readStates.hasUnread(channel.id)
+                              ? `${channel.name}, unread messages`
+                              : channel.name
+                        }
                         // Anchors are draggable by default as URLs, which hijacks
                         // our custom drag-and-drop — suppress that here and let
                         // the wrapping div own the drag.
                         draggable={false}
                       >
-                        # {channel.name}
+                        <Show
+                          when={
+                            readStates.hasUnread(channel.id) ||
+                            readStates.mentionCount(channel.id) > 0
+                          }
+                        >
+                          <span
+                            aria-hidden="true"
+                            class="absolute left-2 h-2 w-2 rounded-full bg-blue-300"
+                            data-testid={`channel-unread-dot-${channel.id}`}
+                          />
+                        </Show>
+                        <span aria-hidden="true">#</span>
+                        <span class="min-w-0 flex-1 truncate">{channel.name}</span>
+                        <Show when={readStates.mentionCount(channel.id) > 0}>
+                          <span
+                            class="ml-auto min-w-5 rounded-full bg-red-500 px-1.5 py-0.5 text-center text-[11px] font-bold leading-none text-white"
+                            role="img"
+                            aria-label={`${readStates.mentionCount(channel.id)} unread mention${
+                              readStates.mentionCount(channel.id) === 1 ? "" : "s"
+                            } in ${channel.name}`}
+                          >
+                            {readStates.mentionCount(channel.id)}
+                          </span>
+                        </Show>
                       </A>
                     }
                   >

@@ -5,6 +5,32 @@ import { EventsProvider, useEvents } from "./events";
 import { makeCameraStream, makeScreenShareStream } from "../test/fixtures";
 import { FakeEventSource, latestFakeEventSource, resetFakeEventSources } from "../test/msw/sse";
 
+function ReadStateEventProbe() {
+  const events = useEvents();
+  const [readState, setReadState] = createSignal("none");
+  const [connectedCount, setConnectedCount] = createSignal(0);
+
+  onMount(() => {
+    const unsubscribeReadState = events.onReadStateUpdated((summary) => {
+      setReadState(`${summary.channel_id}:${summary.last_read_message_id}:${summary.has_unread}`);
+    });
+    const unsubscribeConnected = events.onConnected(() => {
+      setConnectedCount((count) => count + 1);
+    });
+    onCleanup(() => {
+      unsubscribeReadState();
+      unsubscribeConnected();
+    });
+  });
+
+  return (
+    <div>
+      <p>read state {readState()}</p>
+      <p>connected {connectedCount()}</p>
+    </div>
+  );
+}
+
 function MediaEventProbe() {
   const events = useEvents();
   const [screenStarted, setScreenStarted] = createSignal("none");
@@ -46,6 +72,33 @@ function MediaEventProbe() {
 afterEach(() => {
   vi.unstubAllGlobals();
   resetFakeEventSources();
+});
+
+describe("EventsProvider read-state events", () => {
+  test("dispatches read-state updates and connection notifications", async () => {
+    vi.stubGlobal("EventSource", FakeEventSource);
+    render(() => (
+      <EventsProvider>
+        <ReadStateEventProbe />
+      </EventsProvider>
+    ));
+
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+    latestFakeEventSource()?.pushConnected();
+    expect(await screen.findByText("connected 1")).toBeInTheDocument();
+    latestFakeEventSource()?.open();
+    expect(await screen.findByText("connected 2")).toBeInTheDocument();
+
+    latestFakeEventSource()?.pushReadStateUpdated({
+      channel_id: 10,
+      has_unread: false,
+      mention_count: 0,
+      last_read_created_at: 100,
+      last_read_message_id: 20,
+      updated_at: 200,
+    });
+    expect(await screen.findByText("read state 10:20:false")).toBeInTheDocument();
+  });
 });
 
 describe("EventsProvider media stream events", () => {

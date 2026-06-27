@@ -5,6 +5,7 @@ import {
   type CustomEmoji,
   type Message,
   type MessageDeleted,
+  type ReadStateSummary,
   type MessageEmbedsUpdated,
   type CameraStream,
   type CameraVideoStopped,
@@ -23,8 +24,12 @@ import {
 
 type Listener<T> = (value: T) => void;
 
+type EventKind = SSEEvent["kind"] | "connected";
+
 // Look up the data type for a given SSEEvent kind.
-type DataFor<K extends SSEEvent["kind"]> = Extract<SSEEvent, { kind: K }>["data"];
+type DataFor<K extends EventKind> = K extends "connected"
+  ? void
+  : Extract<SSEEvent, { kind: K }>["data"];
 
 export interface EventsContextValue {
   onMessage: (cb: Listener<Message>) => () => void;
@@ -48,6 +53,8 @@ export interface EventsContextValue {
   onUserTyping: (cb: Listener<UserTyping>) => () => void;
   onThreadReplyCreated: (cb: Listener<ThreadReplyCreated>) => () => void;
   onThreadReplyDeleted: (cb: Listener<ThreadReplyDeleted>) => () => void;
+  onReadStateUpdated: (cb: Listener<ReadStateSummary>) => () => void;
+  onConnected: (cb: Listener<void>) => () => void;
 }
 
 const EventsContext = createContext<EventsContextValue>();
@@ -56,9 +63,9 @@ export function EventsProvider(props: { children: JSX.Element }) {
   // One Set per SSEEvent kind. Callbacks are stored as type-erased functions;
   // the typed `subscribe` wrapper below preserves the kind→data correspondence
   // from the SSEEvent discriminated union at the boundary.
-  const listeners = new Map<SSEEvent["kind"], Set<Listener<unknown>>>();
+  const listeners = new Map<EventKind, Set<Listener<unknown>>>();
 
-  function subscribe<K extends SSEEvent["kind"]>(kind: K, cb: Listener<DataFor<K>>): () => void {
+  function subscribe<K extends EventKind>(kind: K, cb: Listener<DataFor<K>>): () => void {
     let set = listeners.get(kind);
     if (!set) {
       set = new Set();
@@ -74,7 +81,10 @@ export function EventsProvider(props: { children: JSX.Element }) {
   onMount(() => {
     const es = messagesEventSource();
     es.onmessage = (m) => {
-      if (m.data === "connected") return;
+      if (m.data === "connected") {
+        listeners.get("connected")?.forEach((cb) => cb(undefined));
+        return;
+      }
       let parsed: SSEEvent;
       try {
         parsed = JSON.parse(m.data) as SSEEvent;
@@ -88,6 +98,9 @@ export function EventsProvider(props: { children: JSX.Element }) {
       // matches the key, so for any given Set every callback can accept
       // `parsed.data` when `parsed.kind === key`.
       set.forEach((cb) => cb(parsed.data));
+    };
+    es.onopen = () => {
+      listeners.get("connected")?.forEach((cb) => cb(undefined));
     };
     eventSource = es;
   });
@@ -120,6 +133,8 @@ export function EventsProvider(props: { children: JSX.Element }) {
     onUserTyping: (cb) => subscribe("user_typing", cb),
     onThreadReplyCreated: (cb) => subscribe("thread_reply_created", cb),
     onThreadReplyDeleted: (cb) => subscribe("thread_reply_deleted", cb),
+    onReadStateUpdated: (cb) => subscribe("read_state_updated", cb),
+    onConnected: (cb) => subscribe("connected", cb),
   };
 
   return <EventsContext.Provider value={value}>{props.children}</EventsContext.Provider>;

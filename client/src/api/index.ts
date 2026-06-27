@@ -13,6 +13,8 @@ export {
 } from "./auth";
 export type { Channel, ChannelType } from "./channels";
 export { listChannels, createChannel, reorderChannels } from "./channels";
+export type { ReadStateSummary } from "./read-states";
+export { listReadStates, markChannelRead } from "./read-states";
 export type { CustomEmoji } from "./emojis";
 export {
   listCustomEmojis,

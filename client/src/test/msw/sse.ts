@@ -6,6 +6,7 @@ import type {
   MessageDeleted,
   MessageEmbedsUpdated,
   MessageReactionsUpdated,
+  ReadStateSummary,
   ScreenShareStopped,
   ScreenShareStream,
   SSEEvent,
@@ -47,12 +48,23 @@ export class FakeEventSource {
   static instances: FakeEventSource[] = [];
   onmessage: Listener | null = null;
   onerror: ((ev: Event) => void) | null = null;
+  onopen: ((ev: Event) => void) | null = null;
   closed = false;
   readonly url: string;
 
   constructor(url: string) {
     this.url = url;
     FakeEventSource.instances.push(this);
+  }
+
+  open() {
+    if (this.closed || !this.onopen) return;
+    this.onopen(new Event("open"));
+  }
+
+  pushConnected() {
+    if (this.closed || !this.onmessage) return;
+    this.onmessage(new MessageEvent("message", { data: "connected" }));
   }
 
   push(event: SSEEvent) {
@@ -112,6 +124,10 @@ export class FakeEventSource {
 
   pushThreadReplyDeleted(data: ThreadReplyDeleted) {
     this.push({ kind: "thread_reply_deleted", data });
+  }
+
+  pushReadStateUpdated(data: ReadStateSummary) {
+    this.push({ kind: "read_state_updated", data });
   }
 
   close() {

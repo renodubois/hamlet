@@ -91,6 +91,9 @@ async fn create_channel(
         channel_type: Set(channel_type.to_owned()),
     };
     let inserted = new_channel.insert(db.get_ref()).await?;
+    if inserted.channel_type == CHANNEL_TYPE_TEXT {
+        crate::read_state::ensure_channel_read_state_baselines(db.get_ref(), inserted.id).await?;
+    }
 
     let resp = ChannelResponse::from(inserted);
     broadcaster

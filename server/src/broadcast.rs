@@ -28,6 +28,7 @@ use crate::api::emoji::EmojiResponse;
 use crate::api::messages::{EmbedResponse, MessageResponse, ThreadSummary};
 use crate::error::AppError;
 use crate::reactions::ReactionSummary;
+use crate::read_state::ReadStateSummary;
 use crate::voice::{CameraStream, ScreenShareStream, VoiceParticipant};
 
 #[derive(Debug)]
@@ -37,7 +38,13 @@ pub struct Broadcaster {
 
 #[derive(Debug, Default)]
 struct BroadcasterInner {
-    clients: Vec<mpsc::Sender<Event>>,
+    clients: Vec<ClientSender>,
+}
+
+#[derive(Clone, Debug)]
+struct ClientSender {
+    user_id: Option<i64>,
+    tx: mpsc::Sender<Event>,
 }
 
 impl Broadcaster {
@@ -74,7 +81,7 @@ impl Broadcaster {
         };
         let mut ok_clients = Vec::new();
         for client in clients {
-            if client.send(Event::Comment("ping".into())).await.is_ok() {
+            if client.tx.send(Event::Comment("ping".into())).await.is_ok() {
                 ok_clients.push(client.clone());
             }
         }
@@ -85,11 +92,14 @@ impl Broadcaster {
 
     /// Register a new SSE subscriber; returns the `Sse` responder that the
     /// handler hands back to actix-web.
-    pub async fn subscribe(&self) -> impl Responder + use<> {
+    pub async fn subscribe(&self, user_id: i64) -> impl Responder + use<> {
         let (tx, rx) = mpsc::channel(10);
         let _ = tx.send(Data::new("connected").into()).await;
         if let Ok(mut g) = self.inner.lock() {
-            g.clients.push(tx);
+            g.clients.push(ClientSender {
+                user_id: Some(user_id),
+                tx,
+            });
         }
         Sse::from_infallible_stream(ReceiverStream::new(rx))
     }
@@ -101,6 +111,17 @@ impl Broadcaster {
         Ok(())
     }
 
+    /// Serialize `event` as JSON and send it only to one authenticated user's subscribers.
+    pub async fn publish_to_user<E: Serialize + ?Sized>(
+        &self,
+        user_id: i64,
+        event: &E,
+    ) -> Result<(), AppError> {
+        let payload = serde_json::to_string(event)?;
+        self.send_raw_to_user(user_id, &payload).await;
+        Ok(())
+    }
+
     async fn send_raw(&self, msg: &str) {
         let clients = match self.inner.lock() {
             Ok(g) => g.clients.clone(),
@@ -108,14 +129,40 @@ impl Broadcaster {
         };
         let send_futures = clients
             .iter()
-            .map(|client| client.send(Data::new(msg).into()));
+            .map(|client| client.tx.send(Data::new(msg).into()));
+        future::join_all(send_futures).await;
+    }
+
+    async fn send_raw_to_user(&self, user_id: i64, msg: &str) {
+        let clients = match self.inner.lock() {
+            Ok(g) => g.clients.clone(),
+            Err(p) => p.into_inner().clients.clone(),
+        };
+        let send_futures = clients
+            .iter()
+            .filter(|client| client.user_id == Some(user_id))
+            .map(|client| client.tx.send(Data::new(msg).into()));
         future::join_all(send_futures).await;
     }
 
     pub fn test_client(&self) -> tokio::sync::mpsc::Receiver<actix_sse::Event> {
         let (tx, rx) = tokio::sync::mpsc::channel(10);
         if let Ok(mut g) = self.inner.lock() {
-            g.clients.push(tx);
+            g.clients.push(ClientSender { user_id: None, tx });
+        }
+        rx
+    }
+
+    pub fn test_client_for_user(
+        &self,
+        user_id: i64,
+    ) -> tokio::sync::mpsc::Receiver<actix_sse::Event> {
+        let (tx, rx) = tokio::sync::mpsc::channel(10);
+        if let Ok(mut g) = self.inner.lock() {
+            g.clients.push(ClientSender {
+                user_id: Some(user_id),
+                tx,
+            });
         }
         rx
     }
@@ -234,4 +281,5 @@ pub enum BroadcastEvent {
     UserTyping(UserTypingEvent),
     ThreadReplyCreated(ThreadReplyCreatedEvent),
     ThreadReplyDeleted(ThreadReplyDeletedEvent),
+    ReadStateUpdated(ReadStateSummary),
 }

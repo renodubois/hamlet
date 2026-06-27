@@ -94,6 +94,26 @@ ON "message_mention" ("message_id", "position", "user_id")"#,
         sql: r#"CREATE INDEX IF NOT EXISTS "idx_message_mention_user_message"
 ON "message_mention" ("user_id", "message_id")"#,
     },
+    SqliteIndexDefinition {
+        name: "idx_message_initial_mention_message_position_user",
+        sql: r#"CREATE INDEX IF NOT EXISTS "idx_message_initial_mention_message_position_user"
+ON "message_initial_mention" ("message_id", "position", "user_id")"#,
+    },
+    SqliteIndexDefinition {
+        name: "idx_message_initial_mention_user_message",
+        sql: r#"CREATE INDEX IF NOT EXISTS "idx_message_initial_mention_user_message"
+ON "message_initial_mention" ("user_id", "message_id")"#,
+    },
+    SqliteIndexDefinition {
+        name: "idx_user_channel_read_state_channel_user",
+        sql: r#"CREATE INDEX IF NOT EXISTS "idx_user_channel_read_state_channel_user"
+ON "user_channel_read_state" ("channel_id", "user_id")"#,
+    },
+    SqliteIndexDefinition {
+        name: "idx_user_channel_read_state_user_updated",
+        sql: r#"CREATE INDEX IF NOT EXISTS "idx_user_channel_read_state_user_updated"
+ON "user_channel_read_state" ("user_id", "updated_at")"#,
+    },
 ];
 
 #[derive(Debug, Error)]
@@ -191,6 +211,12 @@ async fn apply_sqlite_integrity_migrations(
     for index in SQLITE_MANAGED_INDEXES {
         execute_sqlite_statement(&txn, index.name, index.sql).await?;
     }
+
+    backfill_initial_mentions(&txn).await?;
+
+    crate::read_state::ensure_all_read_state_baselines(&txn)
+        .await
+        .map_err(|source| migration_error("backfill channel read states", source))?;
 
     txn.commit()
         .await
@@ -304,6 +330,35 @@ WHERE EXISTS (
               AND "keeper"."id" < "message_reaction"."id"
           )
       )
+)"#,
+    )
+    .await
+}
+
+async fn backfill_initial_mentions<C>(db: &C) -> Result<(), DatabaseSetupError>
+where
+    C: ConnectionTrait,
+{
+    execute_sqlite_statement(
+        db,
+        "backfill initial message mentions",
+        r#"INSERT INTO "message_initial_mention" (
+    "message_id",
+    "user_id",
+    "position",
+    "created_at"
+)
+SELECT
+    "m"."message_id",
+    "m"."user_id",
+    "m"."position",
+    "m"."created_at"
+FROM "message_mention" AS "m"
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM "message_initial_mention" AS "initial"
+    WHERE "initial"."message_id" = "m"."message_id"
+      AND "initial"."user_id" = "m"."user_id"
 )"#,
     )
     .await

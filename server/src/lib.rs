@@ -16,6 +16,7 @@ pub mod mentions;
 pub mod middleware;
 mod photos;
 pub mod reactions;
+pub mod read_state;
 pub mod seed;
 pub mod startup;
 pub mod telemetry;

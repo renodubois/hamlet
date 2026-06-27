@@ -9,5 +9,6 @@ pub mod avatars;
 pub mod channels;
 pub mod emoji;
 pub mod messages;
+pub mod read_states;
 pub mod users;
 pub mod voice;

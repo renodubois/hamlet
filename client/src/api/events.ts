@@ -1,6 +1,7 @@
 import { getServerUrl } from "./client";
 import type { Channel } from "./channels";
 import type { CustomEmoji } from "./emojis";
+import type { ReadStateSummary } from "./read-states";
 import type {
   Message,
   MessageDeleted,
@@ -42,7 +43,8 @@ export type SSEEvent =
   | { kind: "camera_video_stopped"; data: CameraVideoStopped }
   | { kind: "user_typing"; data: UserTyping }
   | { kind: "thread_reply_created"; data: ThreadReplyCreated }
-  | { kind: "thread_reply_deleted"; data: ThreadReplyDeleted };
+  | { kind: "thread_reply_deleted"; data: ThreadReplyDeleted }
+  | { kind: "read_state_updated"; data: ReadStateSummary };
 
 export function messagesEventSource(): EventSource {
   return new EventSource(`${getServerUrl()}/messages/subscribe`, {

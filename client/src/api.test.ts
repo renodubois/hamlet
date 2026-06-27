@@ -6,6 +6,8 @@ import {
   searchUsers,
   listChannels,
   reorderChannels,
+  listReadStates,
+  markChannelRead,
   sendMessage,
   listParticipatedThreads,
   getThread,
@@ -29,6 +31,7 @@ import {
   type Channel,
   type CustomEmoji,
   type PublicUser,
+  type ReadStateSummary,
   type ScreenShareStream,
 } from "./api";
 import { tinyPngFile, tinyWebpFile } from "./test/image-fixtures";
@@ -156,6 +159,64 @@ describe("apiFetch behavior", () => {
   test("reorderChannels throws on non-2xx", async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 400 }));
     await expect(reorderChannels([2, 1])).rejects.toThrow(/400/);
+  });
+
+  test("listReadStates fetches the authenticated read-state snapshot", async () => {
+    const snapshot: ReadStateSummary[] = [
+      {
+        channel_id: 10,
+        has_unread: true,
+        mention_count: 0,
+        last_read_created_at: 100,
+        last_read_message_id: 20,
+        updated_at: 200,
+      },
+    ];
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(snapshot), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(listReadStates()).resolves.toEqual(snapshot);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${DEFAULT_SERVER}/read-states`);
+    expect(fetchMock.mock.calls[0][1].credentials).toBe("include");
+  });
+
+  test("listReadStates throws on non-2xx", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 401 }));
+    await expect(listReadStates()).rejects.toThrow(/401/);
+  });
+
+  test("markChannelRead sends the last visible message id and parses the summary", async () => {
+    const summary: ReadStateSummary = {
+      channel_id: 10,
+      has_unread: false,
+      mention_count: 0,
+      last_read_created_at: 100,
+      last_read_message_id: 20,
+      updated_at: 300,
+    };
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(summary), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(markChannelRead(10, 20)).resolves.toEqual(summary);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/channels/10/read-state`);
+    expect(init.method).toBe("PUT");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init.credentials).toBe("include");
+    expect(JSON.parse(init.body)).toEqual({ last_visible_message_id: 20 });
+  });
+
+  test("markChannelRead throws on non-2xx", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 400 }));
+    await expect(markChannelRead(10, 20)).rejects.toThrow(/400/);
   });
 
   test("listCustomEmojis parses the registry array", async () => {

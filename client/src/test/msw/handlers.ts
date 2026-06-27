@@ -7,6 +7,7 @@ import type {
   MessageAttachment,
   ParticipatedThreadPreview,
   PublicUser,
+  ReadStateSummary,
   ScreenShareStream,
   Thread,
   User,
@@ -101,6 +102,8 @@ export interface HandlerState {
   restoredCustomEmojiIds: number[];
   typingPings: string[];
   suppressedEmbeds: { id: number; suppress: boolean }[];
+  readStates: ReadStateSummary[];
+  markReadRequests: { channelId: number; lastVisibleMessageId: number }[];
 }
 
 export function createState(overrides: Partial<HandlerState> = {}): HandlerState {
@@ -138,8 +141,22 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     restoredCustomEmojiIds: [],
     typingPings: [],
     suppressedEmbeds: [],
+    readStates: [],
+    markReadRequests: [],
     ...overrides,
   };
+  if (state.readStates.length === 0) {
+    state.readStates = state.channels
+      .filter((channel) => channel.type === "text")
+      .map((channel) => ({
+        channel_id: channel.id,
+        has_unread: false,
+        mention_count: 0,
+        last_read_created_at: 0,
+        last_read_message_id: 0,
+        updated_at: 0,
+      }));
+  }
   if (state.me) upsertDirectoryUser(state, state.me);
   return state;
 }
@@ -482,6 +499,36 @@ export function createHandlers(state: HandlerState) {
     }),
 
     http.get(`${BASE}/channels`, () => HttpResponse.json(state.channels)),
+
+    http.get(`${BASE}/read-states`, () => {
+      if (!state.me) return new HttpResponse(null, { status: 401 });
+      return HttpResponse.json(state.readStates);
+    }),
+
+    http.put(`${BASE}/channels/:id/read-state`, async ({ request, params }) => {
+      if (!state.me) return new HttpResponse(null, { status: 401 });
+      const channelId = Number(params.id);
+      const body = (await request.json()) as { last_visible_message_id: number };
+      state.markReadRequests.push({
+        channelId,
+        lastVisibleMessageId: body.last_visible_message_id,
+      });
+      const message = findMessageById(state, body.last_visible_message_id);
+      const summary: ReadStateSummary = {
+        channel_id: channelId,
+        has_unread: false,
+        mention_count: 0,
+        last_read_created_at: message?.created_at ?? body.last_visible_message_id,
+        last_read_message_id: body.last_visible_message_id,
+        updated_at: Date.now(),
+      };
+      const existingIndex = state.readStates.findIndex(
+        (readState) => readState.channel_id === channelId,
+      );
+      if (existingIndex >= 0) state.readStates[existingIndex] = summary;
+      else state.readStates.push(summary);
+      return HttpResponse.json(summary);
+    }),
 
     http.get(`${BASE}/emojis`, () => HttpResponse.json(state.customEmojis)),
 

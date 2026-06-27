@@ -39,8 +39,10 @@ import {
 import { useChannels } from "../contexts/channels";
 import { useEvents } from "../contexts/events";
 import { useAuth } from "../contexts/auth";
+import { useReadStates } from "../contexts/read-states";
 import { TYPING_PING_INTERVAL_MS } from "../constants";
 import { mergeReactionUpdateForViewer } from "../reactions/reaction-summaries";
+import { getViewportReadMarkerState, isNearScrollBottom } from "../messages/viewport-read-marker";
 
 function inlineReplyPreviewText(target: Message): string {
   return messageReferencePreviewText(target);
@@ -60,6 +62,7 @@ export default function ChannelView() {
   const { channels } = useChannels();
   const events = useEvents();
   const { user } = useAuth();
+  const readStates = useReadStates();
   const channel = () => channels()?.find((c) => String(c.id) === params.id);
   const [message, setMessage] = createSignal("");
   const [submitting, setSubmitting] = createSignal(false);
@@ -68,6 +71,7 @@ export default function ChannelView() {
   const photoSelectionErrorId = createUniqueId();
   const replyBannerId = createUniqueId();
   const [focusComposerRootId, setFocusComposerRootId] = createSignal<number | null>(null);
+  const [hasNewMessagesBelow, setHasNewMessagesBelow] = createSignal(false);
   const openThreadRootId = createMemo(() => parseThreadId(location.query.thread));
   // The Resource owns loading/error state for the initial fetch; the Store
   // owns the reactive list that SSE events mutate granularly. createStore
@@ -78,12 +82,60 @@ export default function ChannelView() {
   let lastTypingSentAt = 0;
   let composerRef: HTMLElement | undefined;
   let messagesScrollRef: HTMLDivElement | undefined;
+  let markReadTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastMarkReadKey: string | null = null;
 
-  const scrollMessagesToBottom = () => {
+  const scheduleActiveChannelMarkRead = () => {
+    if (!messagesScrollRef) return;
+    const channelId = Number(params.id);
+    if (!Number.isSafeInteger(channelId) || channelId <= 0) return;
+
+    const marker = getViewportReadMarkerState(messagesScrollRef);
+    if (
+      !marker.rendererEligible ||
+      !marker.nearBottom ||
+      marker.lastVisibleTopLevelMessageId === null
+    ) {
+      return;
+    }
+
+    const markReadKey = `${channelId}:${marker.lastVisibleTopLevelMessageId}`;
+    if (lastMarkReadKey === markReadKey) return;
+    if (markReadTimer) clearTimeout(markReadTimer);
+    markReadTimer = setTimeout(() => {
+      if (!messagesScrollRef) return;
+      const current = getViewportReadMarkerState(messagesScrollRef);
+      if (
+        !current.rendererEligible ||
+        !current.nearBottom ||
+        current.lastVisibleTopLevelMessageId === null
+      ) {
+        return;
+      }
+      const currentKey = `${channelId}:${current.lastVisibleTopLevelMessageId}`;
+      lastMarkReadKey = currentKey;
+      void readStates.markRead(channelId, current.lastVisibleTopLevelMessageId);
+    }, 120);
+  };
+
+  const scrollMessagesToBottom = (afterScroll?: () => void) => {
     queueMicrotask(() => {
       if (!messagesScrollRef) return;
       messagesScrollRef.scrollTop = messagesScrollRef.scrollHeight;
+      setHasNewMessagesBelow(false);
+      afterScroll?.();
     });
+  };
+
+  const handleMessagesScroll = () => {
+    if (messagesScrollRef && getViewportReadMarkerState(messagesScrollRef).nearBottom) {
+      setHasNewMessagesBelow(false);
+    }
+    scheduleActiveChannelMarkRead();
+  };
+
+  const jumpToLatestMessages = () => {
+    scrollMessagesToBottom(scheduleActiveChannelMarkRead);
   };
 
   const primeMentionUsers = (users: readonly PublicUser[]) => {
@@ -122,7 +174,7 @@ export default function ChannelView() {
     const data = resource();
     primeMentionUsersFromMessages(data ?? []);
     setMessages(reconcile(data ?? [], { key: "id" }));
-    scrollMessagesToBottom();
+    scrollMessagesToBottom(scheduleActiveChannelMarkRead);
   });
 
   // When the current user's profile changes (display_name, avatar), patch
@@ -168,7 +220,11 @@ export default function ChannelView() {
   };
 
   createEffect(() => {
-    if (params.id) setReplyTarget(null);
+    if (params.id) {
+      setReplyTarget(null);
+      setHasNewMessagesBelow(false);
+      lastMarkReadKey = null;
+    }
   });
 
   createEffect(() => {
@@ -245,9 +301,15 @@ export default function ChannelView() {
   onMount(() => {
     const unsubCreated = events.onMessage((m) => {
       if (String(m.channel_id) !== params.id) return;
+      const shouldAutoFollow = messagesScrollRef ? isNearScrollBottom(messagesScrollRef) : true;
       primeMentionUsers(m.mentions ?? []);
       setMessages(messages.length, m);
-      scrollMessagesToBottom();
+      if (shouldAutoFollow) {
+        scrollMessagesToBottom(scheduleActiveChannelMarkRead);
+      } else {
+        setHasNewMessagesBelow(true);
+        scheduleActiveChannelMarkRead();
+      }
     });
     const unsubUpdated = events.onMessageUpdated((m) => {
       applyMessageUpdate(m);
@@ -292,6 +354,9 @@ export default function ChannelView() {
         thread_summary: e.thread_summary ?? undefined,
       });
     });
+    const onFocusOrVisibility = () => scheduleActiveChannelMarkRead();
+    window.addEventListener("focus", onFocusOrVisibility);
+    document.addEventListener("visibilitychange", onFocusOrVisibility);
     onCleanup(() => {
       unsubCreated();
       unsubUpdated();
@@ -300,6 +365,9 @@ export default function ChannelView() {
       unsubReactions();
       unsubThreadReply();
       unsubThreadReplyDeleted();
+      window.removeEventListener("focus", onFocusOrVisibility);
+      document.removeEventListener("visibilitychange", onFocusOrVisibility);
+      if (markReadTimer) clearTimeout(markReadTimer);
     });
   });
 
@@ -326,6 +394,7 @@ export default function ChannelView() {
           class="min-w-0 flex-1 overflow-y-auto"
           role="region"
           aria-label="Messages"
+          onScroll={handleMessagesScroll}
         >
           <ChannelMessages
             messages={messages}
@@ -342,6 +411,18 @@ export default function ChannelView() {
             onMentionUsers={primeMentionUsers}
             searchMentionUsers={searchUsers}
           />
+          <Show when={hasNewMessagesBelow()}>
+            <div class="sticky bottom-4 z-10 flex justify-center px-4" aria-live="polite">
+              <button
+                type="button"
+                class="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                aria-label="New messages below. Jump to latest messages"
+                onClick={jumpToLatestMessages}
+              >
+                New messages — Jump to bottom
+              </button>
+            </div>
+          </Show>
         </div>
         {openThreadRootId() !== null && (
           <ThreadPanel

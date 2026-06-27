@@ -70,6 +70,7 @@ pub fn configure_app(cfg: &mut web::ServiceConfig, deps: AppDeps) {
                 .configure(api::messages::configure)
                 .configure(api::channels::configure)
                 .configure(api::users::configure)
+                .configure(api::read_states::configure)
                 .configure(api::voice::configure_authed)
                 .configure(api::auth::configure_authed)
                 .configure(api::avatars::configure)

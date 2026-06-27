@@ -5,6 +5,7 @@ import { useAuth } from "./contexts/auth";
 import { ChannelsProvider, useChannels } from "./contexts/channels";
 import { CustomEmojisProvider } from "./contexts/custom-emojis";
 import { EventsProvider } from "./contexts/events";
+import { ReadStatesProvider } from "./contexts/read-states";
 import { type User } from "./api";
 import { VoiceChatProvider } from "./contexts/voice-chat";
 
@@ -89,9 +90,11 @@ const App: Component<RouteSectionProps> = (props) => {
         <EventsProvider>
           <CustomEmojisProvider>
             <ChannelsProvider>
-              <VoiceChatProvider>
-                <AppShell user={auth.user() as User}>{props.children}</AppShell>
-              </VoiceChatProvider>
+              <ReadStatesProvider>
+                <VoiceChatProvider>
+                  <AppShell user={auth.user() as User}>{props.children}</AppShell>
+                </VoiceChatProvider>
+              </ReadStatesProvider>
             </ChannelsProvider>
           </CustomEmojisProvider>
         </EventsProvider>
