@@ -59,16 +59,20 @@ pub struct Config {
     pub seed_dev_data: bool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 pub struct ServerSettings {
     pub account_registration_enabled: bool,
+    /// Optional Sentry DSN loaded from the disk-backed server config file.
+    /// `HAMLET_SENTRY_DSN` can override this value at process start.
+    pub sentry_dsn: Option<String>,
 }
 
 impl Default for ServerSettings {
     fn default() -> Self {
         Self {
             account_registration_enabled: true,
+            sentry_dsn: None,
         }
     }
 }
@@ -98,13 +102,15 @@ impl Config {
         let settings_file =
             server_settings_path_from_env_value(settings_file_override.as_deref(), &data_dir);
         let server_settings = load_server_settings(&settings_file)?;
-        let sentry_dsn = std::env::var(SENTRY_DSN_ENV).ok();
+        let sentry_dsn_override = std::env::var(SENTRY_DSN_ENV).ok();
+        let sentry_dsn = sentry_dsn_from_env_value(sentry_dsn_override.as_deref())
+            .or_else(|| sentry_dsn_from_env_value(server_settings.sentry_dsn.as_deref()));
 
         Ok(Self {
             bind_addr: env_or(DEFAULT_BIND_ADDR, "HAMLET_BIND_ADDR"),
             database_url: database_url_from_env_value(database_url.as_deref(), &data_dir),
             log_filter: env_or(DEFAULT_LOG_FILTER, "RUST_LOG"),
-            sentry_dsn: sentry_dsn_from_env_value(sentry_dsn.as_deref()),
+            sentry_dsn,
             uploads_dir: PathBuf::from(env_or(DEFAULT_UPLOADS_DIR, "HAMLET_UPLOADS_DIR")),
             message_attachments_dir: PathBuf::from(env_or(
                 DEFAULT_MESSAGE_ATTACHMENTS_DIR,
@@ -365,7 +371,10 @@ mod tests {
 
     #[test]
     fn default_server_settings_enable_registration() {
-        assert!(ServerSettings::default().account_registration_enabled);
+        let settings = ServerSettings::default();
+
+        assert!(settings.account_registration_enabled);
+        assert_eq!(settings.sentry_dsn, None);
     }
 
     #[test]
@@ -432,6 +441,26 @@ mod tests {
     }
 
     #[test]
+    fn server_settings_file_can_set_sentry_dsn() {
+        let path = unique_tmp_config_path("server-config.json");
+        let parent = path.parent().expect("config path should have parent");
+        fs::create_dir_all(parent).expect("tmp config dir should be creatable");
+        fs::write(
+            &path,
+            "{\"sentry_dsn\": \"https://public@example.com/1\"}\n",
+        )
+        .expect("config should be writable");
+
+        let settings = load_server_settings(&path).expect("config should parse");
+
+        assert_eq!(
+            settings.sentry_dsn,
+            Some("https://public@example.com/1".to_owned())
+        );
+        fs::remove_dir_all(parent).expect("tmp config dir should be removable");
+    }
+
+    #[test]
     fn server_settings_missing_fields_use_registration_enabled_default() {
         let path = unique_tmp_config_path("server-config.json");
         let parent = path.parent().expect("config path should have parent");
@@ -441,6 +470,7 @@ mod tests {
         let settings = load_server_settings(&path).expect("config should parse");
 
         assert!(settings.account_registration_enabled);
+        assert_eq!(settings.sentry_dsn, None);
         fs::remove_dir_all(parent).expect("tmp config dir should be removable");
     }
 

@@ -33,6 +33,7 @@ async fn test_public_config_reports_disabled_registration() {
         App::new()
             .app_data(web::Data::new(ServerSettings {
                 account_registration_enabled: false,
+                ..ServerSettings::default()
             }))
             .configure(|cfg| configure_app(cfg, ctx.deps())),
     )
@@ -119,6 +120,7 @@ async fn test_register_returns_clear_error_when_registration_is_disabled() {
         App::new()
             .app_data(web::Data::new(ServerSettings {
                 account_registration_enabled: false,
+                ..ServerSettings::default()
             }))
             .configure(|cfg| configure_app(cfg, ctx.deps())),
     )
@@ -155,6 +157,7 @@ async fn test_login_still_works_when_registration_is_disabled() {
         App::new()
             .app_data(web::Data::new(ServerSettings {
                 account_registration_enabled: false,
+                ..ServerSettings::default()
             }))
             .configure(|cfg| configure_app(cfg, ctx.deps())),
     )

@@ -29,7 +29,9 @@ Useful server environment flags:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | derived from the data dir | Full SQLite URL override. |
-| `HAMLET_DATA_DIR` | platform app-data dir | Root for the default `hamlet.db` path. |
+| `HAMLET_DATA_DIR` | platform app-data dir | Root for the default `hamlet.db` and `server-config.json` paths. |
+| `HAMLET_CONFIG_FILE` | `server-config.json` under the data dir | JSON server config file. Set `account_registration_enabled` there to close/open registration and `sentry_dsn` to enable optional Sentry reporting. |
+| `HAMLET_SENTRY_DSN` | unset | Optional Sentry DSN override; when set, error-level tracing events are reported to Sentry in addition to normal logs. |
 | `HAMLET_BOOTSTRAP_DEFAULT_CHANNELS` | `true` | Create `general` text and `voice` voice channels when the channel table is empty. |
 | `HAMLET_SEED_DEV_DATA` | `true` in debug builds, `false` in release builds | Seed local dev users and a fixed dev session token. |
 | `HAMLET_UPLOADS_DIR` | `./uploads` | Public upload storage. Compose points this at `/var/lib/hamlet/uploads`. |

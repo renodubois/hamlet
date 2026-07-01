@@ -101,7 +101,8 @@ pub async fn start_server(
     let attachment_storage = Data::new(AttachmentStorage {
         dir: message_attachments_dir,
     });
-    let server_settings = Data::new(config.server_settings);
+    let account_registration_enabled = config.server_settings.account_registration_enabled;
+    let server_settings = Data::new(config.server_settings.clone());
 
     if config.voice.is_none() {
         tracing::warn!(
@@ -127,7 +128,7 @@ pub async fn start_server(
     let emojis_dir = emojis_dir.clone();
     tracing::info!(
         settings_file = %config.settings_file.display(),
-        account_registration_enabled = config.server_settings.account_registration_enabled,
+        account_registration_enabled,
         "loaded server settings"
     );
     tracing::info!(addr = %bind_addr, "starting server");

@@ -10,8 +10,8 @@ struct PublicConfigResponse {
     account_registration_enabled: bool,
 }
 
-impl From<ServerSettings> for PublicConfigResponse {
-    fn from(settings: ServerSettings) -> Self {
+impl From<&ServerSettings> for PublicConfigResponse {
+    fn from(settings: &ServerSettings) -> Self {
         Self {
             account_registration_enabled: settings.account_registration_enabled,
         }
@@ -20,11 +20,13 @@ impl From<ServerSettings> for PublicConfigResponse {
 
 #[get("/config")]
 async fn get_public_config(settings: Option<web::Data<ServerSettings>>) -> impl Responder {
-    web::Json(PublicConfigResponse::from(
-        settings
-            .map(|settings| *settings.get_ref())
-            .unwrap_or_default(),
-    ))
+    let account_registration_enabled = settings
+        .as_ref()
+        .map(|settings| settings.account_registration_enabled)
+        .unwrap_or_else(|| ServerSettings::default().account_registration_enabled);
+    web::Json(PublicConfigResponse {
+        account_registration_enabled,
+    })
 }
 
 pub fn configure_public(cfg: &mut web::ServiceConfig) {
