@@ -18,6 +18,7 @@ tracing-actix-web = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.9"
 serde_json = "1.0.149"
+sentry = { version = "0.48.3", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls", "tracing"] }
 argon2 = "0.5"
 hex = "0.4"
 actix-multipart = "0.7"

@@ -9,7 +9,7 @@ async fn main() -> std::io::Result<()> {
         eprintln!("configuration failed: {error}");
         std::io::Error::other(error.to_string())
     })?;
-    telemetry::init(&config.log_filter);
+    let _telemetry_guard = telemetry::init(&config.log_filter, config.sentry_dsn.as_deref());
 
     // `connect_database` prepares SQLite connection settings, keeps a sentinel
     // connection alive for in-memory URLs, and applies the baseline schema.

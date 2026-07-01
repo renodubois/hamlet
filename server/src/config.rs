@@ -25,6 +25,7 @@ const DEFAULT_DATA_DIR_NAME: &str = "Hamlet";
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 const DEFAULT_DATA_DIR_NAME: &str = "hamlet";
 const DEFAULT_LOG_FILTER: &str = "info";
+const SENTRY_DSN_ENV: &str = "HAMLET_SENTRY_DSN";
 const DEFAULT_UPLOADS_DIR: &str = "./uploads";
 const DEFAULT_MESSAGE_ATTACHMENTS_DIR: &str = "./private-uploads/message-attachments";
 const DEFAULT_BOOTSTRAP_DEFAULT_CHANNELS: bool = true;
@@ -35,6 +36,9 @@ pub struct Config {
     pub bind_addr: String,
     pub database_url: String,
     pub log_filter: String,
+    /// Optional Sentry DSN. When set, server error-level tracing events are
+    /// reported to Sentry in addition to the normal formatted logs.
+    pub sentry_dsn: Option<String>,
     pub uploads_dir: PathBuf,
     pub message_attachments_dir: PathBuf,
     /// Disk-backed server settings loaded at startup.
@@ -94,11 +98,13 @@ impl Config {
         let settings_file =
             server_settings_path_from_env_value(settings_file_override.as_deref(), &data_dir);
         let server_settings = load_server_settings(&settings_file)?;
+        let sentry_dsn = std::env::var(SENTRY_DSN_ENV).ok();
 
         Ok(Self {
             bind_addr: env_or(DEFAULT_BIND_ADDR, "HAMLET_BIND_ADDR"),
             database_url: database_url_from_env_value(database_url.as_deref(), &data_dir),
             log_filter: env_or(DEFAULT_LOG_FILTER, "RUST_LOG"),
+            sentry_dsn: sentry_dsn_from_env_value(sentry_dsn.as_deref()),
             uploads_dir: PathBuf::from(env_or(DEFAULT_UPLOADS_DIR, "HAMLET_UPLOADS_DIR")),
             message_attachments_dir: PathBuf::from(env_or(
                 DEFAULT_MESSAGE_ATTACHMENTS_DIR,
@@ -180,6 +186,13 @@ fn write_default_server_settings(path: &Path) -> Result<(), ConfigError> {
         path: path.to_path_buf(),
         source,
     })
+}
+
+fn sentry_dsn_from_env_value(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 
 fn local_app_data_dir_from_env() -> PathBuf {
@@ -370,6 +383,21 @@ mod tests {
         assert_eq!(
             server_settings_path_from_env_value(Some("custom/config.json"), &data_dir),
             PathBuf::from("custom/config.json")
+        );
+    }
+
+    #[test]
+    fn sentry_dsn_env_is_optional() {
+        assert_eq!(sentry_dsn_from_env_value(None), None);
+        assert_eq!(sentry_dsn_from_env_value(Some("")), None);
+        assert_eq!(sentry_dsn_from_env_value(Some("   ")), None);
+    }
+
+    #[test]
+    fn sentry_dsn_env_uses_trimmed_non_empty_value() {
+        assert_eq!(
+            sentry_dsn_from_env_value(Some(" https://public@example.com/1 ")),
+            Some("https://public@example.com/1".to_owned())
         );
     }
 

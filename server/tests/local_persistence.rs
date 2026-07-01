@@ -427,6 +427,7 @@ fn config_for_default_database_dir(root: &Path, data_dir: &Path) -> Config {
         bind_addr: "127.0.0.1:0".to_owned(),
         database_url: Config::default_database_url_for_data_dir(data_dir),
         log_filter: "off".to_owned(),
+        sentry_dsn: None,
         uploads_dir: root.join("uploads"),
         message_attachments_dir: root.join("private-uploads").join("message-attachments"),
         server_settings: ServerSettings::default(),
