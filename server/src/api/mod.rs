@@ -7,6 +7,7 @@ pub mod attachments;
 pub mod auth;
 pub mod avatars;
 pub mod channels;
+pub mod config;
 pub mod emoji;
 pub mod messages;
 pub mod read_states;

@@ -12,6 +12,10 @@ fn production_compose_uses_one_application_data_volume_for_sqlite_and_uploads() 
         "production compose should point Hamlet's data directory at the mounted app-data volume"
     );
     assert!(
+        compose.contains("HAMLET_CONFIG_FILE: /var/lib/hamlet/server-config.json"),
+        "production compose should keep the editable server config in the app-data volume"
+    );
+    assert!(
         compose.contains("DATABASE_URL: \"sqlite:///var/lib/hamlet/hamlet.db?mode=rwc\""),
         "production compose should set an explicit file-backed SQLite URL inside the data dir"
     );
@@ -159,6 +163,8 @@ fn server_env_example_documents_persistence_controls() {
         "DATABASE_URL=sqlite://data/hamlet.db?mode=rwc",
         "DATABASE_URL=sqlite:file:hamlet_clean_room?mode=memory&cache=shared",
         "HAMLET_BOOTSTRAP_DEFAULT_CHANNELS=true",
+        "HAMLET_CONFIG_FILE",
+        "account_registration_enabled",
         "HAMLET_SEED_DEV_DATA",
     ] {
         assert!(

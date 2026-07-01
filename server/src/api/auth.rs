@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::avatars::avatar_url;
 use crate::auth::{self, AuthUser};
+use crate::config::ServerSettings;
 use crate::entity;
 use crate::error::AppError;
 
@@ -66,8 +67,16 @@ impl From<entity::user::Model> for UserResponse {
 #[post("/register")]
 async fn register(
     db: web::Data<DatabaseConnection>,
+    settings: Option<web::Data<ServerSettings>>,
     body: web::Json<RegisterRequest>,
 ) -> Result<HttpResponse, AppError> {
+    let account_registration_enabled = settings
+        .map(|settings| settings.account_registration_enabled)
+        .unwrap_or_else(|| ServerSettings::default().account_registration_enabled);
+    if !account_registration_enabled {
+        return Err(AppError::RegistrationDisabled);
+    }
+
     if body.username.is_empty() || body.password.is_empty() {
         return Err(AppError::InvalidRequest);
     }

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@solidjs/testing-library";
 import { Show } from "solid-js";
 import { AuthProvider, useAuth } from "../contexts/auth";
+import { resetMswState } from "../test/msw/server";
 import { assertExists } from "../test/render";
 import LoginScreen from "./login";
 
@@ -51,5 +52,18 @@ describe("Login flow", () => {
     mount();
     fireEvent.click(screen.getByRole("button", { name: /create one/i }));
     expect(screen.getByPlaceholderText(/email/i)).toBeInTheDocument();
+  });
+
+  test("hides registration affordances when the server disables account creation", async () => {
+    resetMswState({ accountRegistrationEnabled: false });
+    mount();
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /create one/i })).toBeNull();
+    });
+    expect(screen.queryByPlaceholderText(/email/i)).toBeNull();
+    expect(
+      screen.getByText(/account registration is disabled on this server/i),
+    ).toBeInTheDocument();
   });
 });

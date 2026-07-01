@@ -59,6 +59,7 @@ export function AuthProvider(props: { children: JSX.Element }) {
         return null;
       }
       if (res.status === 409) return "Username already taken";
+      if (res.status === 403) return "Registration is disabled on this server";
       return "Registration failed";
     } catch {
       return "Could not reach server";

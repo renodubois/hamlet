@@ -5,11 +5,46 @@ mod common;
 use actix_web::{
     App,
     http::{StatusCode, header::ContentType},
-    test,
+    test, web,
 };
 use common::TestCtx;
-use hamlet::{auth, configure_app, entity};
+use hamlet::{ServerSettings, auth, configure_app, entity};
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+
+// --- public config ---
+
+#[actix_web::test]
+async fn test_public_config_defaults_registration_enabled() {
+    let ctx = TestCtx::new().await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::get().uri("/config").to_request();
+    let resp = test::call_service(&app, req).await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(&test::read_body(resp).await).unwrap();
+    assert_eq!(body["account_registration_enabled"], true);
+}
+
+#[actix_web::test]
+async fn test_public_config_reports_disabled_registration() {
+    let ctx = TestCtx::new().await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(ServerSettings {
+                account_registration_enabled: false,
+            }))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
+
+    let req = test::TestRequest::get().uri("/config").to_request();
+    let resp = test::call_service(&app, req).await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(&test::read_body(resp).await).unwrap();
+    assert_eq!(body["account_registration_enabled"], false);
+}
 
 // --- register ---
 
@@ -75,6 +110,65 @@ async fn test_register_rejects_empty_password() {
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[actix_web::test]
+async fn test_register_returns_clear_error_when_registration_is_disabled() {
+    let ctx = TestCtx::new().await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(ServerSettings {
+                account_registration_enabled: false,
+            }))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
+
+    let req = test::TestRequest::post()
+        .uri("/register")
+        .insert_header(ContentType::json())
+        .set_payload(serde_json::json!({"username": "alice", "password": "hunter2"}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(resp.headers().get("set-cookie").is_none());
+    let body: serde_json::Value = serde_json::from_slice(&test::read_body(resp).await).unwrap();
+    assert_eq!(body["error"]["kind"], "registration_disabled");
+    assert_eq!(body["error"]["message"], "account registration is disabled");
+
+    let created = entity::user::Entity::find()
+        .filter(entity::user::Column::Username.eq("alice"))
+        .one(&ctx.db)
+        .await
+        .unwrap();
+    assert!(created.is_none());
+}
+
+#[actix_web::test]
+async fn test_login_still_works_when_registration_is_disabled() {
+    let ctx = TestCtx::new().await;
+    auth::register_user(&ctx.db, "alice", "hunter2", None)
+        .await
+        .unwrap();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(ServerSettings {
+                account_registration_enabled: false,
+            }))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
+
+    let req = test::TestRequest::post()
+        .uri("/login")
+        .insert_header(ContentType::json())
+        .set_payload(serde_json::json!({"username": "alice", "password": "hunter2"}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+
+    assert!(resp.status().is_success());
+    assert!(resp.headers().get("set-cookie").is_some());
 }
 
 #[actix_web::test]

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   getServerUrl,
   setServerUrl,
+  getPublicServerConfig,
   login,
   searchUsers,
   listChannels,
@@ -61,6 +62,39 @@ describe("apiFetch behavior", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  test("public server config fetches the registration setting", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ account_registration_enabled: false }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(getPublicServerConfig()).resolves.toEqual({
+      account_registration_enabled: false,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/config`);
+    expect(init.credentials).toBe("include");
+  });
+
+  test("public server config supports an explicit server URL", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ account_registration_enabled: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(getPublicServerConfig("http://example.test:9000/")).resolves.toEqual({
+      account_registration_enabled: true,
+    });
+
+    expect(fetchMock.mock.calls[0][0]).toBe("http://example.test:9000/config");
   });
 
   test("login posts JSON with credentials included", async () => {

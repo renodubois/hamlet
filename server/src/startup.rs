@@ -47,9 +47,9 @@ pub fn deps_for_tests(db: DatabaseConnection, broadcaster: Arc<Broadcaster>) -> 
     }
 }
 
-/// Register every route on `cfg`. Public routes (register/login/logout +
-/// LiveKit webhook) live outside the auth scope; everything else is wrapped
-/// in `require_auth`.
+/// Register every route on `cfg`. Public routes (server config,
+/// register/login/logout + LiveKit webhook) live outside the auth scope;
+/// everything else is wrapped in `require_auth`.
 pub fn configure_app(cfg: &mut web::ServiceConfig, deps: AppDeps) {
     cfg.app_data(deps.db.clone())
         .app_data(deps.broadcaster.clone())
@@ -57,7 +57,8 @@ pub fn configure_app(cfg: &mut web::ServiceConfig, deps: AppDeps) {
         .app_data(deps.voice_state.clone())
         .app_data(deps.embed_fetcher.clone())
         .app_data(deps.emoji_storage.clone())
-        // Public auth surface
+        // Public server/auth surface
+        .configure(api::config::configure_public)
         .configure(api::auth::configure_public)
         // LiveKit webhooks authenticate via signed JWT in the body, not a
         // session cookie, so they live outside the require_auth scope.
@@ -100,6 +101,7 @@ pub async fn start_server(
     let attachment_storage = Data::new(AttachmentStorage {
         dir: message_attachments_dir,
     });
+    let server_settings = Data::new(config.server_settings);
 
     if config.voice.is_none() {
         tracing::warn!(
@@ -123,6 +125,11 @@ pub async fn start_server(
     let bind_addr = config.bind_addr.clone();
     let avatars_dir = avatars_dir.clone();
     let emojis_dir = emojis_dir.clone();
+    tracing::info!(
+        settings_file = %config.settings_file.display(),
+        account_registration_enabled = config.server_settings.account_registration_enabled,
+        "loaded server settings"
+    );
     tracing::info!(addr = %bind_addr, "starting server");
 
     HttpServer::new(move || {
@@ -145,6 +152,7 @@ pub async fn start_server(
             .app_data(avatar_storage.clone())
             .app_data(emoji_storage.clone())
             .app_data(attachment_storage.clone())
+            .app_data(server_settings.clone())
             .service(actix_files::Files::new(
                 "/uploads/avatars",
                 avatars_dir.clone(),

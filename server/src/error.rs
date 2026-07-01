@@ -37,6 +37,8 @@ pub enum AppError {
     InvalidCredentials,
     #[error("username already taken")]
     UsernameTaken,
+    #[error("account registration is disabled")]
+    RegistrationDisabled,
     #[error("custom emoji name already exists")]
     EmojiNameTaken,
     #[error("emoji name is required")]
@@ -89,6 +91,7 @@ impl AppError {
             AppError::Unauthorized => "unauthorized",
             AppError::InvalidCredentials => "invalid_credentials",
             AppError::UsernameTaken => "username_taken",
+            AppError::RegistrationDisabled => "registration_disabled",
             AppError::EmojiNameTaken => "emoji_name_taken",
             AppError::EmojiNameRequired => "emoji_name_required",
             AppError::InvalidEmojiName => "invalid_emoji_name",
@@ -149,7 +152,7 @@ impl ResponseError for AppError {
             | AppError::TooManyAttachments
             | AppError::PhotoDimensionsTooLarge => StatusCode::BAD_REQUEST,
             AppError::Unauthorized | AppError::InvalidCredentials => StatusCode::UNAUTHORIZED,
-            AppError::Forbidden => StatusCode::FORBIDDEN,
+            AppError::Forbidden | AppError::RegistrationDisabled => StatusCode::FORBIDDEN,
             AppError::NotFound | AppError::ReplyTargetNotFound => StatusCode::NOT_FOUND,
             AppError::UsernameTaken | AppError::EmojiNameTaken => StatusCode::CONFLICT,
             AppError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,

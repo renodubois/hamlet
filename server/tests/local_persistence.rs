@@ -9,8 +9,8 @@ use hamlet::broadcast::Broadcaster;
 use hamlet::voice::{VoiceConfig, VoiceState};
 use hamlet::{
     AppDeps, AttachmentStorage, AvatarStorage, Config, DefaultChannelBootstrapOutcome,
-    EmbedFetcher, EmojiStorage, auth, bootstrap_default_channels, configure_app, connect_database,
-    entity, generate_id,
+    EmbedFetcher, EmojiStorage, ServerSettings, auth, bootstrap_default_channels, configure_app,
+    connect_database, entity, generate_id,
 };
 use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 
@@ -429,6 +429,8 @@ fn config_for_default_database_dir(root: &Path, data_dir: &Path) -> Config {
         log_filter: "off".to_owned(),
         uploads_dir: root.join("uploads"),
         message_attachments_dir: root.join("private-uploads").join("message-attachments"),
+        server_settings: ServerSettings::default(),
+        settings_file: data_dir.join("server-config.json"),
         voice: None,
         embed_fetcher_enabled: false,
         bootstrap_default_channels: true,

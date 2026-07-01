@@ -27,4 +27,5 @@ issues/
 .env
 .env.*
 !.env.example
+server-config.json
 .hamlet-worktree.env

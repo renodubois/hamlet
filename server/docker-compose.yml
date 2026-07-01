@@ -9,6 +9,7 @@ services:
     environment:
       HAMLET_BIND_ADDR: 0.0.0.0:3030
       HAMLET_DATA_DIR: /var/lib/hamlet
+      HAMLET_CONFIG_FILE: /var/lib/hamlet/server-config.json
       DATABASE_URL: "sqlite:///var/lib/hamlet/hamlet.db?mode=rwc"
       HAMLET_UPLOADS_DIR: /var/lib/hamlet/uploads
       HAMLET_MESSAGE_ATTACHMENTS_DIR: /var/lib/hamlet/private-uploads/message-attachments

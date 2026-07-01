@@ -4,14 +4,22 @@
 //! the values it needs through `web::Data` or function arguments — there
 //! should be no `std::env::var` calls outside this file.
 
-use std::path::{Path, PathBuf};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::voice::VoiceConfig;
 
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:3030";
 const DATABASE_URL_ENV: &str = "DATABASE_URL";
 const DATA_DIR_ENV: &str = "HAMLET_DATA_DIR";
+const CONFIG_FILE_ENV: &str = "HAMLET_CONFIG_FILE";
 const DEFAULT_DATABASE_FILE_NAME: &str = "hamlet.db";
+const DEFAULT_CONFIG_FILE_NAME: &str = "server-config.json";
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 const DEFAULT_DATA_DIR_NAME: &str = "Hamlet";
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -29,6 +37,10 @@ pub struct Config {
     pub log_filter: String,
     pub uploads_dir: PathBuf,
     pub message_attachments_dir: PathBuf,
+    /// Disk-backed server settings loaded at startup.
+    pub server_settings: ServerSettings,
+    /// The file path used for disk-backed server settings.
+    pub settings_file: PathBuf,
     /// `None` when LiveKit env vars are missing — voice endpoints respond 503.
     pub voice: Option<VoiceConfig>,
     /// Whether outbound embed fetches happen on message create/update.
@@ -43,14 +55,47 @@ pub struct Config {
     pub seed_dev_data: bool,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub struct ServerSettings {
+    pub account_registration_enabled: bool,
+}
+
+impl Default for ServerSettings {
+    fn default() -> Self {
+        Self {
+            account_registration_enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("failed to read server config file {path:?}: {source}")]
+    ReadServerSettings { path: PathBuf, source: io::Error },
+    #[error("failed to write default server config file {path:?}: {source}")]
+    WriteDefaultServerSettings { path: PathBuf, source: io::Error },
+    #[error("failed to serialize default server config: {0}")]
+    SerializeDefaultServerSettings(serde_json::Error),
+    #[error("failed to parse server config file {path:?}: {source}")]
+    ParseServerSettings {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+}
+
 impl Config {
     /// Production-shaped config: read every value from the environment with
     /// sane defaults. `cargo run` and Docker Compose both go through here.
-    pub fn from_env() -> Self {
+    pub fn from_env() -> Result<Self, ConfigError> {
         let data_dir = local_app_data_dir_from_env();
         let database_url = std::env::var(DATABASE_URL_ENV).ok();
+        let settings_file_override = std::env::var(CONFIG_FILE_ENV).ok();
+        let settings_file =
+            server_settings_path_from_env_value(settings_file_override.as_deref(), &data_dir);
+        let server_settings = load_server_settings(&settings_file)?;
 
-        Self {
+        Ok(Self {
             bind_addr: env_or(DEFAULT_BIND_ADDR, "HAMLET_BIND_ADDR"),
             database_url: database_url_from_env_value(database_url.as_deref(), &data_dir),
             log_filter: env_or(DEFAULT_LOG_FILTER, "RUST_LOG"),
@@ -59,6 +104,8 @@ impl Config {
                 DEFAULT_MESSAGE_ATTACHMENTS_DIR,
                 "HAMLET_MESSAGE_ATTACHMENTS_DIR",
             )),
+            server_settings,
+            settings_file,
             voice: VoiceConfig::from_env(),
             embed_fetcher_enabled: true,
             bootstrap_default_channels: env_bool(
@@ -66,13 +113,18 @@ impl Config {
                 "HAMLET_BOOTSTRAP_DEFAULT_CHANNELS",
             ),
             seed_dev_data: env_bool(default_seed_dev_data(), SEED_DEV_DATA_ENV),
-        }
+        })
     }
 
     /// Build the same file-backed SQLite URL used by default local startup,
     /// but rooted at an explicit data directory for tests and smoke harnesses.
     pub fn default_database_url_for_data_dir(data_dir: impl AsRef<Path>) -> String {
         sqlite_file_database_url(&data_dir.as_ref().join(DEFAULT_DATABASE_FILE_NAME))
+    }
+
+    /// Build the default server settings path for an explicit data directory.
+    pub fn default_settings_file_for_data_dir(data_dir: impl AsRef<Path>) -> PathBuf {
+        data_dir.as_ref().join(DEFAULT_CONFIG_FILE_NAME)
     }
 }
 
@@ -84,6 +136,50 @@ fn database_url_from_env_value(value: Option<&str>, data_dir: &Path) -> String {
     non_empty_env_value(value)
         .map(str::to_owned)
         .unwrap_or_else(|| Config::default_database_url_for_data_dir(data_dir))
+}
+
+fn server_settings_path_from_env_value(value: Option<&str>, data_dir: &Path) -> PathBuf {
+    non_empty_env_value(value)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Config::default_settings_file_for_data_dir(data_dir))
+}
+
+fn load_server_settings(path: &Path) -> Result<ServerSettings, ConfigError> {
+    match fs::read_to_string(path) {
+        Ok(contents) => {
+            serde_json::from_str(&contents).map_err(|source| ConfigError::ParseServerSettings {
+                path: path.to_path_buf(),
+                source,
+            })
+        }
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            write_default_server_settings(path)?;
+            Ok(ServerSettings::default())
+        }
+        Err(source) => Err(ConfigError::ReadServerSettings {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn write_default_server_settings(path: &Path) -> Result<(), ConfigError> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|source| ConfigError::WriteDefaultServerSettings {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    }
+
+    let body = serde_json::to_string_pretty(&ServerSettings::default())
+        .map_err(ConfigError::SerializeDefaultServerSettings)?;
+    fs::write(path, format!("{body}\n")).map_err(|source| ConfigError::WriteDefaultServerSettings {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 fn local_app_data_dir_from_env() -> PathBuf {
@@ -206,6 +302,10 @@ fn parse_bool_flag(value: &str) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
 
     #[test]
@@ -248,6 +348,85 @@ mod tests {
             database_url_from_env_value(None, &data_dir),
             Config::default_database_url_for_data_dir(&data_dir)
         );
+    }
+
+    #[test]
+    fn default_server_settings_enable_registration() {
+        assert!(ServerSettings::default().account_registration_enabled);
+    }
+
+    #[test]
+    fn server_settings_path_defaults_to_data_dir_and_accepts_override() {
+        let data_dir = PathBuf::from("local-data");
+
+        assert_eq!(
+            server_settings_path_from_env_value(None, &data_dir),
+            data_dir.join(DEFAULT_CONFIG_FILE_NAME)
+        );
+        assert_eq!(
+            server_settings_path_from_env_value(Some(""), &data_dir),
+            data_dir.join(DEFAULT_CONFIG_FILE_NAME)
+        );
+        assert_eq!(
+            server_settings_path_from_env_value(Some("custom/config.json"), &data_dir),
+            PathBuf::from("custom/config.json")
+        );
+    }
+
+    #[test]
+    fn missing_server_settings_file_is_created_with_default_enabled() {
+        let path = unique_tmp_config_path("server-config.json");
+        let parent = path
+            .parent()
+            .expect("config path should have parent")
+            .to_path_buf();
+
+        let settings = load_server_settings(&path).expect("missing config should be created");
+
+        assert!(settings.account_registration_enabled);
+        let persisted = fs::read_to_string(&path).expect("default config should be written");
+        assert!(persisted.contains("\"account_registration_enabled\": true"));
+        fs::remove_dir_all(parent).expect("tmp config dir should be removable");
+    }
+
+    #[test]
+    fn server_settings_file_can_disable_registration() {
+        let path = unique_tmp_config_path("server-config.json");
+        let parent = path.parent().expect("config path should have parent");
+        fs::create_dir_all(parent).expect("tmp config dir should be creatable");
+        fs::write(&path, "{\"account_registration_enabled\": false}\n")
+            .expect("config should be writable");
+
+        let settings = load_server_settings(&path).expect("config should parse");
+
+        assert!(!settings.account_registration_enabled);
+        fs::remove_dir_all(parent).expect("tmp config dir should be removable");
+    }
+
+    #[test]
+    fn server_settings_missing_fields_use_registration_enabled_default() {
+        let path = unique_tmp_config_path("server-config.json");
+        let parent = path.parent().expect("config path should have parent");
+        fs::create_dir_all(parent).expect("tmp config dir should be creatable");
+        fs::write(&path, "{}\n").expect("config should be writable");
+
+        let settings = load_server_settings(&path).expect("config should parse");
+
+        assert!(settings.account_registration_enabled);
+        fs::remove_dir_all(parent).expect("tmp config dir should be removable");
+    }
+
+    #[test]
+    fn invalid_server_settings_file_returns_parse_error() {
+        let path = unique_tmp_config_path("server-config.json");
+        let parent = path.parent().expect("config path should have parent");
+        fs::create_dir_all(parent).expect("tmp config dir should be creatable");
+        fs::write(&path, "not json\n").expect("config should be writable");
+
+        let error = load_server_settings(&path).expect_err("invalid config should fail");
+
+        assert!(matches!(error, ConfigError::ParseServerSettings { .. }));
+        fs::remove_dir_all(parent).expect("tmp config dir should be removable");
     }
 
     #[test]
@@ -321,5 +500,15 @@ mod tests {
         assert!(!env_bool_value(true, Some("no")));
         assert_eq!(env_bool_value(default, Some("")), default);
         assert_eq!(env_bool_value(default, Some("   ")), default);
+    }
+
+    fn unique_tmp_config_path(file_name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("hamlet-config-test-{}-{nanos}", std::process::id()))
+            .join(file_name)
     }
 }

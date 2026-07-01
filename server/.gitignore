@@ -13,4 +13,5 @@
 .env
 .env.*
 !.env.example
+server-config.json
 livekit.local*.yaml

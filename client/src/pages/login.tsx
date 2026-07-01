@@ -1,6 +1,6 @@
-import { createSignal, Show } from "solid-js";
+import { createEffect, createSignal, onCleanup, Show } from "solid-js";
 import { useAuth } from "../contexts/auth";
-import { getServerUrl } from "../api";
+import { getPublicServerConfig, getServerUrl } from "../api";
 
 export default function LoginScreen() {
   const auth = useAuth();
@@ -11,10 +11,47 @@ export default function LoginScreen() {
   const [email, setEmail] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);
   const [submitting, setSubmitting] = createSignal(false);
+  const [accountRegistrationEnabled, setAccountRegistrationEnabled] = createSignal(true);
+
+  const switchMode = (next: "login" | "register") => {
+    if (next === "register" && !accountRegistrationEnabled()) return;
+    setMode(next);
+    setError(null);
+  };
+
+  createEffect(() => {
+    const currentServer = server().trim();
+    let cancelled = false;
+    if (!currentServer) {
+      setAccountRegistrationEnabled(true);
+      return;
+    }
+
+    getPublicServerConfig(currentServer)
+      .then((config) => {
+        if (!cancelled) setAccountRegistrationEnabled(config.account_registration_enabled);
+      })
+      .catch(() => {
+        if (!cancelled) setAccountRegistrationEnabled(true);
+      });
+
+    onCleanup(() => {
+      cancelled = true;
+    });
+  });
+
+  createEffect(() => {
+    if (!accountRegistrationEnabled() && mode() === "register") switchMode("login");
+  });
 
   const handleSubmit = async (e: SubmitEvent) => {
     e.preventDefault();
     setError(null);
+    if (mode() === "register" && !accountRegistrationEnabled()) {
+      setError("Registration is disabled on this server");
+      return;
+    }
+
     setSubmitting(true);
     const err =
       mode() === "login"
@@ -30,11 +67,6 @@ export default function LoginScreen() {
     const err = await auth.login(server(), devUsername, "password");
     setSubmitting(false);
     if (err) setError(err);
-  };
-
-  const switchMode = (next: "login" | "register") => {
-    setMode(next);
-    setError(null);
   };
 
   return (
@@ -67,7 +99,7 @@ export default function LoginScreen() {
             value={password()}
             onInput={(e) => setPassword(e.currentTarget.value)}
           />
-          <Show when={mode() === "register"}>
+          <Show when={mode() === "register" && accountRegistrationEnabled()}>
             <input
               class="bg-gray-700 text-gray-100 rounded-md p-3 placeholder-gray-400"
               type="email"
@@ -111,24 +143,33 @@ export default function LoginScreen() {
             </div>
           </div>
         </Show>
-        <p class="text-gray-400 text-sm mt-4 text-center">
-          <Show
-            when={mode() === "login"}
-            fallback={
-              <>
-                Have an account?{" "}
-                <button class="text-blue-400 hover:underline" onClick={() => switchMode("login")}>
-                  Sign in
-                </button>
-              </>
-            }
-          >
-            Need an account?{" "}
-            <button class="text-blue-400 hover:underline" onClick={() => switchMode("register")}>
-              Create one
-            </button>
-          </Show>
-        </p>
+        <Show
+          when={accountRegistrationEnabled()}
+          fallback={
+            <p class="text-gray-400 text-sm mt-4 text-center">
+              Account registration is disabled on this server.
+            </p>
+          }
+        >
+          <p class="text-gray-400 text-sm mt-4 text-center">
+            <Show
+              when={mode() === "login"}
+              fallback={
+                <>
+                  Have an account?{" "}
+                  <button class="text-blue-400 hover:underline" onClick={() => switchMode("login")}>
+                    Sign in
+                  </button>
+                </>
+              }
+            >
+              Need an account?{" "}
+              <button class="text-blue-400 hover:underline" onClick={() => switchMode("register")}>
+                Create one
+              </button>
+            </Show>
+          </p>
+        </Show>
       </div>
     </div>
   );

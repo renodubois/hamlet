@@ -1,4 +1,6 @@
 export { getServerUrl, resolveServerUrl, setServerUrl } from "./client";
+export type { PublicServerConfig } from "./config";
+export { getPublicServerConfig } from "./config";
 export type { User } from "./auth";
 export type { PublicUser, SearchUsersOptions } from "./users";
 export { searchUsers } from "./users";

@@ -62,6 +62,7 @@ export interface HandlerState {
   channels: Channel[];
   messages: Record<string, Message[]>;
   validCredentials: { username: string; password: string };
+  accountRegistrationEnabled: boolean;
   sentMessages: { channel: string; text: string }[];
   sentInlineReplies: { channel: string; text: string; replyToMessageId: number }[];
   sentMessagePhotos: {
@@ -115,6 +116,7 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     channels: [...DEFAULT_CHANNELS],
     messages: { "100": [] },
     validCredentials: { username: "baipas", password: "password" },
+    accountRegistrationEnabled: true,
     sentMessages: [],
     sentInlineReplies: [],
     sentMessagePhotos: [],
@@ -448,6 +450,12 @@ function hydrateMentionsFromText(currentState: HandlerState, text: string): Ment
 
 export function createHandlers(state: HandlerState) {
   return [
+    http.get(`${BASE}/config`, () =>
+      HttpResponse.json({
+        account_registration_enabled: state.accountRegistrationEnabled,
+      }),
+    ),
+
     http.get(`${BASE}/me`, () => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       return HttpResponse.json(state.me);
@@ -514,6 +522,9 @@ export function createHandlers(state: HandlerState) {
     }),
 
     http.post(`${BASE}/register`, async ({ request }) => {
+      if (!state.accountRegistrationEnabled) {
+        return errorJson("registration_disabled", "account registration is disabled", 403);
+      }
       const body = (await request.json()) as { username: string; password: string };
       state.me = { ...DEV_USER, username: body.username };
       state.validCredentials = { username: body.username, password: body.password };
