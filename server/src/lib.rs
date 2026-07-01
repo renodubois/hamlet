@@ -3,6 +3,7 @@
 //! together, and tests construct `AppDeps` and call `configure_app` to
 //! exercise routes via `actix_web::test::init_service`.
 
+pub mod admin_cli;
 pub mod api;
 pub mod auth;
 pub mod bootstrap;

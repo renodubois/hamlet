@@ -55,7 +55,24 @@ before HTTP routes are served. After schema initialization:
 
 Release-shaped defaults disable development users. Operators who want a clean
 workspace with no seeded accounts should run with `HAMLET_SEED_DEV_DATA=false`
-(and leave registration/login flows to create real users).
+and create real users through registration/login flows or the
+[admin account creation CLI](admin-account-creation.md).
+
+## Admin account provisioning
+
+Server operators can create a password-backed user without exposing a remote
+admin endpoint by running the `hamlet-admin` CLI against the same `DATABASE_URL`
+or `HAMLET_DATA_DIR` used by the server:
+
+```bash
+cd server
+cargo run --bin hamlet-admin -- create-user \
+  --username alice \
+  --password 'temporary-password'
+```
+
+See [Admin account creation](admin-account-creation.md) for usage, Docker notes,
+and error behavior.
 
 ## Schema changes and migrations
 
