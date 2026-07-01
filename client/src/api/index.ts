@@ -7,6 +7,7 @@ export {
   login,
   register,
   logout,
+  changePassword,
   updateDisplayName,
   uploadAvatar,
   deleteAvatar,

@@ -17,6 +17,7 @@ import {
   addMessageReaction,
   removeMessageReaction,
   messageDisplayName,
+  changePassword,
   updateDisplayName,
   MessagePhotoValidationError,
   listCustomEmojis,
@@ -73,6 +74,33 @@ describe("apiFetch behavior", () => {
     expect(init.credentials).toBe("include");
     expect(init.headers).toEqual({ "Content-Type": "application/json" });
     expect(JSON.parse(init.body)).toEqual({ username: "alice", password: "hunter2" });
+  });
+
+  test("changePassword puts JSON with credential body", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+    await changePassword("oldpass", "newpass");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/me/password`);
+    expect(init.method).toBe("PUT");
+    expect(init.credentials).toBe("include");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(JSON.parse(init.body)).toEqual({ current_password: "oldpass", new_password: "newpass" });
+  });
+
+  test("changePassword surfaces server validation messages", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: { kind: "invalid_credentials", message: "invalid credentials" } }),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+    );
+
+    await expect(changePassword("bad", "newpass")).rejects.toThrow(/invalid credentials/i);
   });
 
   test("searchUsers serializes empty query and limit", async () => {

@@ -246,6 +246,64 @@ describe("<SettingsModal>", () => {
     });
   });
 
+  test("Change password submits credentials, clears fields, and shows success", async () => {
+    resetMswState({
+      me: { ...DEV_USER, username: "alice" },
+      validCredentials: { username: "alice", password: "oldpass" },
+    });
+    mount(true);
+
+    const current = screen.getByLabelText(/current password/i) as HTMLInputElement;
+    const next = screen.getByLabelText(/^new password$/i) as HTMLInputElement;
+    const confirm = screen.getByLabelText(/confirm new password/i) as HTMLInputElement;
+
+    fireEvent.input(current, { target: { value: "oldpass" } });
+    fireEvent.input(next, { target: { value: "newpass" } });
+    fireEvent.input(confirm, { target: { value: "newpass" } });
+    fireEvent.click(screen.getByRole("button", { name: /change password/i }));
+
+    await waitFor(() => {
+      expect(mswState().passwordChanges).toContainEqual({
+        currentPassword: "oldpass",
+        newPassword: "newpass",
+      });
+    });
+    expect(screen.getByRole("status")).toHaveTextContent(/password changed/i);
+    expect(current).toHaveValue("");
+    expect(next).toHaveValue("");
+    expect(confirm).toHaveValue("");
+  });
+
+  test("Change password blocks mismatched confirmation before submit", () => {
+    resetMswState({ me: DEV_USER });
+    mount(true);
+
+    fireEvent.input(screen.getByLabelText(/current password/i), { target: { value: "password" } });
+    fireEvent.input(screen.getByLabelText(/^new password$/i), { target: { value: "newpass" } });
+    fireEvent.input(screen.getByLabelText(/confirm new password/i), {
+      target: { value: "different" },
+    });
+
+    expect(screen.getByText(/new passwords do not match/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /change password/i })).toBeDisabled();
+    expect(mswState().passwordChanges).toEqual([]);
+  });
+
+  test("Change password shows a clear error when the current password is wrong", async () => {
+    resetMswState({ me: DEV_USER });
+    mount(true);
+
+    fireEvent.input(screen.getByLabelText(/current password/i), { target: { value: "wrong" } });
+    fireEvent.input(screen.getByLabelText(/^new password$/i), { target: { value: "newpass" } });
+    fireEvent.input(screen.getByLabelText(/confirm new password/i), {
+      target: { value: "newpass" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /change password/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/current password is incorrect/i);
+    expect(mswState().passwordChanges).toEqual([]);
+  });
+
   test("shows the display name (and @username) in the header when set", () => {
     mount(true, { user: { ...USER, display_name: "Ally" } });
     expect(screen.getByRole("heading", { name: /settings/i })).toBeInTheDocument();

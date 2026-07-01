@@ -1,5 +1,6 @@
 import { createEffect, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
 import {
+  changePassword,
   deleteAvatar,
   getServerUrl,
   updateDisplayName,
@@ -496,7 +497,21 @@ export default function SettingsModal(props: {
   const [displayNameDraft, setDisplayNameDraft] = createSignal("");
   const [displayNameSaving, setDisplayNameSaving] = createSignal(false);
   const [displayNameError, setDisplayNameError] = createSignal<string | null>(null);
+  const [currentPassword, setCurrentPassword] = createSignal("");
+  const [newPassword, setNewPassword] = createSignal("");
+  const [confirmNewPassword, setConfirmNewPassword] = createSignal("");
+  const [passwordSaving, setPasswordSaving] = createSignal(false);
+  const [passwordError, setPasswordError] = createSignal<string | null>(null);
+  const [passwordSuccess, setPasswordSuccess] = createSignal<string | null>(null);
   const active = () => SECTIONS.find((s) => s.id === section()) ?? SECTIONS[0];
+  const passwordMismatch = () =>
+    confirmNewPassword().length > 0 && newPassword() !== confirmNewPassword();
+  const canChangePassword = () =>
+    currentPassword().length > 0 &&
+    newPassword().length > 0 &&
+    confirmNewPassword().length > 0 &&
+    !passwordMismatch() &&
+    !passwordSaving();
 
   // Keep the editable field in sync with the latest persisted display name
   // (e.g. when the auth context refetches after a successful save).
@@ -563,6 +578,46 @@ export default function SettingsModal(props: {
       setDisplayNameError(e instanceof Error ? e.message : "Reset failed");
     } finally {
       setDisplayNameSaving(false);
+    }
+  };
+
+  const handlePasswordInput = (setter: (value: string) => void, value: string) => {
+    setter(value);
+    setPasswordError(null);
+    setPasswordSuccess(null);
+  };
+
+  const savePassword = async () => {
+    setPasswordError(null);
+    setPasswordSuccess(null);
+
+    if (
+      currentPassword().length === 0 ||
+      newPassword().length === 0 ||
+      confirmNewPassword().length === 0
+    ) {
+      setPasswordError("Fill out all password fields.");
+      return;
+    }
+    if (newPassword() !== confirmNewPassword()) {
+      setPasswordError("New passwords do not match.");
+      return;
+    }
+
+    setPasswordSaving(true);
+    try {
+      await changePassword(currentPassword(), newPassword());
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmNewPassword("");
+      setPasswordSuccess("Password changed.");
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Password change failed";
+      setPasswordError(
+        /invalid credentials/i.test(message) ? "Current password is incorrect." : message,
+      );
+    } finally {
+      setPasswordSaving(false);
     }
   };
 
@@ -732,6 +787,107 @@ export default function SettingsModal(props: {
                         </div>
                         <Show when={displayNameError()}>
                           {(msg) => <p class="text-red-400 text-sm">{msg()}</p>}
+                        </Show>
+                      </form>
+
+                      <form
+                        class="flex flex-col gap-3 w-full max-w-md pt-4 border-t border-gray-700"
+                        aria-describedby="password-change-help"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          void savePassword();
+                        }}
+                      >
+                        <div>
+                          <h3 class="text-sm font-semibold text-gray-100">Change password</h3>
+                          <p id="password-change-help" class="mt-1 text-xs text-gray-400">
+                            Enter your current password before choosing a new one.
+                          </p>
+                        </div>
+
+                        <div>
+                          <label
+                            for="current-password-input"
+                            class="text-sm font-medium text-gray-200"
+                          >
+                            Current password
+                          </label>
+                          <input
+                            id="current-password-input"
+                            type="password"
+                            autocomplete="current-password"
+                            class="mt-1 w-full bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:border-blue-500 focus:outline-none"
+                            value={currentPassword()}
+                            onInput={(e) =>
+                              handlePasswordInput(setCurrentPassword, e.currentTarget.value)
+                            }
+                            disabled={passwordSaving()}
+                          />
+                        </div>
+
+                        <div>
+                          <label for="new-password-input" class="text-sm font-medium text-gray-200">
+                            New password
+                          </label>
+                          <input
+                            id="new-password-input"
+                            type="password"
+                            autocomplete="new-password"
+                            class="mt-1 w-full bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:border-blue-500 focus:outline-none"
+                            value={newPassword()}
+                            onInput={(e) =>
+                              handlePasswordInput(setNewPassword, e.currentTarget.value)
+                            }
+                            disabled={passwordSaving()}
+                          />
+                        </div>
+
+                        <div>
+                          <label
+                            for="confirm-new-password-input"
+                            class="text-sm font-medium text-gray-200"
+                          >
+                            Confirm new password
+                          </label>
+                          <input
+                            id="confirm-new-password-input"
+                            type="password"
+                            autocomplete="new-password"
+                            class="mt-1 w-full bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:border-blue-500 focus:outline-none"
+                            value={confirmNewPassword()}
+                            onInput={(e) =>
+                              handlePasswordInput(setConfirmNewPassword, e.currentTarget.value)
+                            }
+                            disabled={passwordSaving()}
+                          />
+                          <Show when={passwordMismatch()}>
+                            <p role="alert" class="mt-1 text-xs text-red-300">
+                              New passwords do not match.
+                            </p>
+                          </Show>
+                        </div>
+
+                        <button
+                          type="submit"
+                          class="self-start bg-blue-600 hover:bg-blue-700 text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
+                          disabled={!canChangePassword()}
+                        >
+                          {passwordSaving() ? "Changing..." : "Change password"}
+                        </button>
+
+                        <Show when={passwordError()}>
+                          {(msg) => (
+                            <p role="alert" class="text-sm text-red-300">
+                              {msg()}
+                            </p>
+                          )}
+                        </Show>
+                        <Show when={passwordSuccess()}>
+                          {(msg) => (
+                            <p role="status" class="text-sm text-green-300">
+                              {msg()}
+                            </p>
+                          )}
                         </Show>
                       </form>
                     </div>

@@ -90,6 +90,7 @@ export interface HandlerState {
   uploadedAvatars: { size: number; type: string }[];
   deletedAvatar: boolean;
   displayNameUpdates: (string | null)[];
+  passwordChanges: { currentPassword: string; newPassword: string }[];
   voiceParticipants: Record<string, VoiceParticipant[]>;
   voiceTokensMinted: number[];
   voiceStatusUpdates: { muted: boolean; deafened: boolean }[];
@@ -129,6 +130,7 @@ export function createState(overrides: Partial<HandlerState> = {}): HandlerState
     uploadedAvatars: [],
     deletedAvatar: false,
     displayNameUpdates: [],
+    passwordChanges: [],
     voiceParticipants: {},
     voiceTokensMinted: [],
     voiceStatusUpdates: [],
@@ -464,6 +466,26 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(state.me);
     }),
 
+    http.put(`${BASE}/me/password`, async ({ request }) => {
+      if (!state.me) return new HttpResponse(null, { status: 401 });
+      const body = (await request.json()) as {
+        current_password?: string;
+        new_password?: string;
+      };
+      if (!body.current_password || !body.new_password) {
+        return errorJson("invalid_request", "invalid request", 400);
+      }
+      if (body.current_password !== state.validCredentials.password) {
+        return errorJson("invalid_credentials", "invalid credentials", 401);
+      }
+      state.passwordChanges.push({
+        currentPassword: body.current_password,
+        newPassword: body.new_password,
+      });
+      state.validCredentials = { ...state.validCredentials, password: body.new_password };
+      return new HttpResponse(null, { status: 204 });
+    }),
+
     http.get(`${BASE}/users`, ({ request }) => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       const url = new URL(request.url);
@@ -494,6 +516,7 @@ export function createHandlers(state: HandlerState) {
     http.post(`${BASE}/register`, async ({ request }) => {
       const body = (await request.json()) as { username: string; password: string };
       state.me = { ...DEV_USER, username: body.username };
+      state.validCredentials = { username: body.username, password: body.password };
       upsertDirectoryUser(state, state.me);
       return new HttpResponse(null, { status: 200 });
     }),

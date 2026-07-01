@@ -160,6 +160,35 @@ pub async fn authenticate_password(
         .ok_or(AppError::InvalidCredentials)
 }
 
+pub async fn change_password(
+    db: &DatabaseConnection,
+    user_id: i64,
+    current_password: &str,
+    new_password: &str,
+) -> Result<(), AppError> {
+    let credential = entity::credential::Entity::find()
+        .filter(entity::credential::Column::Provider.eq(PASSWORD_PROVIDER))
+        .filter(entity::credential::Column::UserId.eq(user_id))
+        .one(db)
+        .await?
+        .ok_or(AppError::InvalidCredentials)?;
+
+    let current_hash = credential
+        .secret
+        .as_deref()
+        .ok_or(AppError::InvalidCredentials)?;
+    if !verify_password(current_password, current_hash) {
+        return Err(AppError::InvalidCredentials);
+    }
+
+    let new_hash = hash_password(new_password)?;
+    let mut credential: entity::credential::ActiveModel = credential.into();
+    credential.secret = Set(Some(new_hash));
+    credential.update(db).await?;
+
+    Ok(())
+}
+
 pub fn session_cookie(token: String) -> Cookie<'static> {
     Cookie::build(SESSION_COOKIE, token)
         .http_only(true)

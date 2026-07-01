@@ -365,6 +365,134 @@ async fn test_update_me_requires_auth() {
     );
 }
 
+// --- password changes ---
+
+#[actix_web::test]
+async fn test_change_password_updates_credential_and_keeps_session() {
+    let ctx = TestCtx::new().await;
+    let alice = ctx.register("alice", "hunter2").await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::put()
+        .uri("/me/password")
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(
+            serde_json::json!({"current_password": "hunter2", "new_password": "correct horse"})
+                .to_string(),
+        )
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let me_req = test::TestRequest::get()
+        .uri("/me")
+        .insert_header(alice.cookie_header())
+        .to_request();
+    assert!(test::call_service(&app, me_req).await.status().is_success());
+
+    let old_login_req = test::TestRequest::post()
+        .uri("/login")
+        .insert_header(ContentType::json())
+        .set_payload(serde_json::json!({"username": "alice", "password": "hunter2"}).to_string())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, old_login_req).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let new_login_req = test::TestRequest::post()
+        .uri("/login")
+        .insert_header(ContentType::json())
+        .set_payload(
+            serde_json::json!({"username": "alice", "password": "correct horse"}).to_string(),
+        )
+        .to_request();
+    assert!(
+        test::call_service(&app, new_login_req)
+            .await
+            .status()
+            .is_success()
+    );
+}
+
+#[actix_web::test]
+async fn test_change_password_rejects_wrong_current_password_without_changing_credential() {
+    let ctx = TestCtx::new().await;
+    let alice = ctx.register("alice", "hunter2").await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::put()
+        .uri("/me/password")
+        .insert_header(ContentType::json())
+        .insert_header(alice.cookie_header())
+        .set_payload(
+            serde_json::json!({"current_password": "wrong", "new_password": "correct horse"})
+                .to_string(),
+        )
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    assert!(
+        auth::authenticate_password(&ctx.db, "alice", "hunter2")
+            .await
+            .is_ok()
+    );
+    assert!(
+        auth::authenticate_password(&ctx.db, "alice", "correct horse")
+            .await
+            .is_err()
+    );
+}
+
+#[actix_web::test]
+async fn test_change_password_rejects_empty_password_fields() {
+    let ctx = TestCtx::new().await;
+    let alice = ctx.register("alice", "hunter2").await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    for body in [
+        serde_json::json!({"current_password": "", "new_password": "newpass"}),
+        serde_json::json!({"current_password": "hunter2", "new_password": ""}),
+    ] {
+        let req = test::TestRequest::put()
+            .uri("/me/password")
+            .insert_header(ContentType::json())
+            .insert_header(alice.cookie_header())
+            .set_payload(body.to_string())
+            .to_request();
+        assert_eq!(
+            test::call_service(&app, req).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    assert!(
+        auth::authenticate_password(&ctx.db, "alice", "hunter2")
+            .await
+            .is_ok()
+    );
+}
+
+#[actix_web::test]
+async fn test_change_password_requires_auth() {
+    let ctx = TestCtx::new().await;
+    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+
+    let req = test::TestRequest::put()
+        .uri("/me/password")
+        .insert_header(ContentType::json())
+        .set_payload(
+            serde_json::json!({"current_password": "old", "new_password": "new"}).to_string(),
+        )
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
 // --- session expiry ---
 
 #[actix_web::test]

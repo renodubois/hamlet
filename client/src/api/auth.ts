@@ -43,6 +43,26 @@ export async function logout(): Promise<void> {
   await apiFetch("/logout", { method: "POST" });
 }
 
+async function readApiError(res: Response, fallback: string): Promise<Error> {
+  try {
+    const body = (await res.json()) as { error?: { message?: string } };
+    const message = body.error?.message;
+    if (message) return new Error(message);
+  } catch {
+    // Fall through to the generic status message.
+  }
+  return new Error(`${fallback} (${res.status})`);
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const res = await apiFetch("/me/password", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+  if (!res.ok) throw await readApiError(res, "Password change failed");
+}
+
 export async function updateDisplayName(displayName: string | null): Promise<User> {
   const res = await apiFetch("/me", {
     method: "PUT",

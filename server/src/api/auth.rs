@@ -33,6 +33,12 @@ pub struct UpdateProfileRequest {
     pub display_name: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct UserResponse {
     pub id: i64,
@@ -145,11 +151,32 @@ async fn update_me(
     Ok(web::Json(UserResponse::from(updated)))
 }
 
-/// Public surface: `register`, `login`, `logout`. Auth-gated: `/me`, `/me` PUT.
+#[put("/me/password")]
+async fn change_password(
+    db: web::Data<DatabaseConnection>,
+    user: AuthUser,
+    body: web::Json<ChangePasswordRequest>,
+) -> Result<HttpResponse, AppError> {
+    if body.current_password.is_empty() || body.new_password.is_empty() {
+        return Err(AppError::InvalidRequest);
+    }
+
+    auth::change_password(
+        db.get_ref(),
+        user.id,
+        &body.current_password,
+        &body.new_password,
+    )
+    .await?;
+
+    Ok(HttpResponse::NoContent().finish())
+}
+
+/// Public surface: `register`, `login`, `logout`. Auth-gated: `/me`, `/me` PUT, `/me/password` PUT.
 pub fn configure_public(cfg: &mut web::ServiceConfig) {
     cfg.service(register).service(login).service(logout);
 }
 
 pub fn configure_authed(cfg: &mut web::ServiceConfig) {
-    cfg.service(me).service(update_me);
+    cfg.service(me).service(update_me).service(change_password);
 }
