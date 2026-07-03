@@ -14,13 +14,7 @@ async fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let config = match Config::from_env() {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!("error: configuration failed: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let config = Config::from_env();
 
     match admin_cli::run_command(command, &config.database_url).await {
         Ok(message) => {

@@ -30,7 +30,7 @@ pub use api::avatars::AvatarStorage;
 pub use api::emoji::EmojiStorage;
 pub use api::messages::EmbedFetcher;
 pub use bootstrap::{DefaultChannelBootstrapOutcome, bootstrap_default_channels};
-pub use config::{Config, ConfigError, ServerSettings};
+pub use config::Config;
 pub use database::{DatabaseSetupError, connect_database, connect_initialized_database_url};
 pub use error::AppError;
 pub use seed::seed_development_data;

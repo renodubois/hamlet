@@ -145,11 +145,6 @@ export default function LoginScreen() {
         </Show>
         <Show
           when={accountRegistrationEnabled()}
-          fallback={
-            <p class="text-gray-400 text-sm mt-4 text-center">
-              Account registration is disabled on this server.
-            </p>
-          }
         >
           <p class="text-gray-400 text-sm mt-4 text-center">
             <Show

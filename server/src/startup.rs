@@ -92,6 +92,7 @@ pub async fn start_server(
     std::fs::create_dir_all(&avatars_dir)?;
     std::fs::create_dir_all(&emojis_dir)?;
     std::fs::create_dir_all(&message_attachments_dir)?;
+    let config_data = Data::new(config.clone());
     let avatar_storage = Data::new(AvatarStorage {
         dir: config.uploads_dir.clone(),
     });
@@ -101,8 +102,6 @@ pub async fn start_server(
     let attachment_storage = Data::new(AttachmentStorage {
         dir: message_attachments_dir,
     });
-    let account_registration_enabled = config.server_settings.account_registration_enabled;
-    let server_settings = Data::new(config.server_settings.clone());
 
     if config.voice.is_none() {
         tracing::warn!(
@@ -126,11 +125,6 @@ pub async fn start_server(
     let bind_addr = config.bind_addr.clone();
     let avatars_dir = avatars_dir.clone();
     let emojis_dir = emojis_dir.clone();
-    tracing::info!(
-        settings_file = %config.settings_file.display(),
-        account_registration_enabled,
-        "loaded server settings"
-    );
     tracing::info!(addr = %bind_addr, "starting server");
 
     HttpServer::new(move || {
@@ -153,7 +147,7 @@ pub async fn start_server(
             .app_data(avatar_storage.clone())
             .app_data(emoji_storage.clone())
             .app_data(attachment_storage.clone())
-            .app_data(server_settings.clone())
+            .app_data(config_data.clone())
             .service(actix_files::Files::new(
                 "/uploads/avatars",
                 avatars_dir.clone(),
