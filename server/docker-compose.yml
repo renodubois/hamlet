@@ -30,7 +30,12 @@ services:
     command: --config /etc/livekit.yaml
     network_mode: host
     volumes:
-      - ${HAMLET_LIVEKIT_CONFIG:-./livekit.yaml}:/etc/livekit.yaml:ro
+      - type: bind
+        source: ${HAMLET_LIVEKIT_CONFIG:-./livekit.yaml}
+        target: /etc/livekit.yaml
+        read_only: true
+        bind:
+          create_host_path: false
     restart: unless-stopped
 
 volumes:
