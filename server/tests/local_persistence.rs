@@ -9,8 +9,8 @@ use hamlet::broadcast::Broadcaster;
 use hamlet::voice::{VoiceConfig, VoiceState};
 use hamlet::{
     AppDeps, AttachmentStorage, AvatarStorage, Config, DefaultChannelBootstrapOutcome,
-    EmbedFetcher, EmojiStorage, ServerSettings, auth, bootstrap_default_channels, configure_app,
-    connect_database, entity, generate_id,
+    EmbedFetcher, EmojiStorage, auth, bootstrap_default_channels, configure_app, connect_database,
+    entity, generate_id,
 };
 use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 

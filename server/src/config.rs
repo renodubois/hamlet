@@ -243,8 +243,6 @@ fn parse_bool_flag(value: &str) -> Option<bool> {
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     use super::*;
 
     #[test]
@@ -291,23 +289,15 @@ mod tests {
 
     #[test]
     fn account_registration_can_be_set_or_defaults() {
-        assert_eq!(
-            account_registration_enabled_from_env_value(Some("true")),
-            true
-        );
-        assert_eq!(
-            account_registration_enabled_from_env_value(Some("false")),
-            false
-        );
-        // Invalid input types: goes to default
-        assert_eq!(
-            account_registration_enabled_from_env_value(Some("true")),
-            true
-        );
-        assert_eq!(
-            account_registration_enabled_from_env_value(Some("true")),
-            true
-        );
+        assert!(account_registration_enabled_from_env_value(Some("true")));
+        assert!(!account_registration_enabled_from_env_value(Some("false")));
+
+        for value in [None, Some(""), Some("TRUE"), Some("yes")] {
+            assert!(
+                !account_registration_enabled_from_env_value(value),
+                "{value:?}"
+            );
+        }
     }
 
     #[test]
@@ -396,15 +386,5 @@ mod tests {
         assert!(!env_bool_value(true, Some("no")));
         assert_eq!(env_bool_value(default, Some("")), default);
         assert_eq!(env_bool_value(default, Some("   ")), default);
-    }
-
-    fn unique_tmp_config_path(file_name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time should be after epoch")
-            .as_nanos();
-        std::env::temp_dir()
-            .join(format!("hamlet-config-test-{}-{nanos}", std::process::id()))
-            .join(file_name)
     }
 }

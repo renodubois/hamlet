@@ -8,15 +8,26 @@ use actix_web::{
     test, web,
 };
 use common::TestCtx;
-use hamlet::{ServerSettings, auth, configure_app, entity};
+use hamlet::{Config, auth, configure_app, entity};
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+
+fn config_with_registration(account_registration_enabled: bool) -> Config {
+    let mut config = Config::from_env();
+    config.account_registration_enabled = account_registration_enabled;
+    config
+}
 
 // --- public config ---
 
 #[actix_web::test]
-async fn test_public_config_defaults_registration_enabled() {
+async fn test_public_config_reports_enabled_registration() {
     let ctx = TestCtx::new().await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(config_with_registration(true)))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
 
     let req = test::TestRequest::get().uri("/config").to_request();
     let resp = test::call_service(&app, req).await;
@@ -31,10 +42,7 @@ async fn test_public_config_reports_disabled_registration() {
     let ctx = TestCtx::new().await;
     let app = test::init_service(
         App::new()
-            .app_data(web::Data::new(ServerSettings {
-                account_registration_enabled: false,
-                ..ServerSettings::default()
-            }))
+            .app_data(web::Data::new(config_with_registration(false)))
             .configure(|cfg| configure_app(cfg, ctx.deps())),
     )
     .await;
@@ -52,7 +60,12 @@ async fn test_public_config_reports_disabled_registration() {
 #[actix_web::test]
 async fn test_register_creates_user_and_sets_cookie() {
     let ctx = TestCtx::new().await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(config_with_registration(true)))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
 
     let req = test::TestRequest::post()
         .uri("/register")
@@ -74,7 +87,12 @@ async fn test_register_rejects_duplicate_username() {
     auth::register_user(&ctx.db, "alice", "hunter2", None)
         .await
         .unwrap();
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(config_with_registration(true)))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
 
     let req = test::TestRequest::post()
         .uri("/register")
@@ -88,7 +106,12 @@ async fn test_register_rejects_duplicate_username() {
 #[actix_web::test]
 async fn test_register_rejects_empty_username() {
     let ctx = TestCtx::new().await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(config_with_registration(true)))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
 
     let req = test::TestRequest::post()
         .uri("/register")
@@ -102,7 +125,12 @@ async fn test_register_rejects_empty_username() {
 #[actix_web::test]
 async fn test_register_rejects_empty_password() {
     let ctx = TestCtx::new().await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(config_with_registration(true)))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
 
     let req = test::TestRequest::post()
         .uri("/register")
@@ -118,10 +146,7 @@ async fn test_register_returns_clear_error_when_registration_is_disabled() {
     let ctx = TestCtx::new().await;
     let app = test::init_service(
         App::new()
-            .app_data(web::Data::new(ServerSettings {
-                account_registration_enabled: false,
-                ..ServerSettings::default()
-            }))
+            .app_data(web::Data::new(config_with_registration(false)))
             .configure(|cfg| configure_app(cfg, ctx.deps())),
     )
     .await;
@@ -155,10 +180,7 @@ async fn test_login_still_works_when_registration_is_disabled() {
         .unwrap();
     let app = test::init_service(
         App::new()
-            .app_data(web::Data::new(ServerSettings {
-                account_registration_enabled: false,
-                ..ServerSettings::default()
-            }))
+            .app_data(web::Data::new(config_with_registration(false)))
             .configure(|cfg| configure_app(cfg, ctx.deps())),
     )
     .await;

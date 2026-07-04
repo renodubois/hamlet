@@ -164,7 +164,7 @@ fn server_env_example_documents_persistence_controls() {
         "HAMLET_DATABASE_URL=sqlite:file:hamlet_clean_room?mode=memory&cache=shared",
         "HAMLET_BOOTSTRAP_DEFAULT_CHANNELS=true",
         "HAMLET_CONFIG_FILE",
-        "account_registration_enabled",
+        "HAMLET_ACCOUNT_REGISTRATION_ENABLED",
         "HAMLET_SEED_DEV_DATA",
     ] {
         assert!(

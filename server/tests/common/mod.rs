@@ -28,6 +28,10 @@ impl TestCtx {
     /// Standard test fixture: in-memory DB + one seeded text channel +
     /// a quiet broadcaster (no ping loop). Embed fetcher is `Disabled`.
     pub async fn new() -> Self {
+        // TODO(reno): I'd love for a flag to enable logging for tests if you want,
+        // but this shouldn't be enabled by default
+        // let _ = hamlet::telemetry::init("debug", None);
+
         let (db, channel_id) = setup_db().await;
         Self {
             db,

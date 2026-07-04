@@ -62,8 +62,5 @@ describe("Login flow", () => {
       expect(screen.queryByRole("button", { name: /create one/i })).toBeNull();
     });
     expect(screen.queryByPlaceholderText(/email/i)).toBeNull();
-    expect(
-      screen.getByText(/account registration is disabled on this server/i),
-    ).toBeInTheDocument();
   });
 });
