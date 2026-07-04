@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::voice::VoiceConfig;
 
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:3030";
-const DATABASE_URL_ENV: &str = "DATABASE_URL";
+const DATABASE_URL_ENV: &str = "HAMLET_DATABASE_URL";
 const DATA_DIR_ENV: &str = "HAMLET_DATA_DIR";
 const DEFAULT_DATABASE_FILE_NAME: &str = "hamlet.db";
 #[cfg(any(target_os = "windows", target_os = "macos"))]

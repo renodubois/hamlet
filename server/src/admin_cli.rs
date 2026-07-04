@@ -15,7 +15,7 @@ pub const USAGE: &str = r#"Usage:
   hamlet-admin create-user --username <username> --password <temporary-password>
 
 Creates a password-backed Hamlet user in the configured server database.
-Run with the same DATABASE_URL or HAMLET_DATA_DIR environment that the server uses.
+Run with the same HAMLET_DATABASE_URL or HAMLET_DATA_DIR environment that the server uses.
 
 Commands:
   create-user    Create a user account without creating a login session

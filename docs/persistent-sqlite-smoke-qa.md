@@ -11,7 +11,7 @@ Use this checklist when validating that Hamlet data survives a server restart ag
 2. Start the server with an isolated file-backed data directory:
    ```bash
    export HAMLET_DATA_DIR="$(mktemp -d /tmp/hamlet-persistence-smoke.XXXXXX)"
-   export DATABASE_URL="sqlite://$HAMLET_DATA_DIR/hamlet.db?mode=rwc"
+   export HAMLET_DATABASE_URL="sqlite://$HAMLET_DATA_DIR/hamlet.db?mode=rwc"
    export HAMLET_UPLOADS_DIR="$HAMLET_DATA_DIR/uploads"
    export HAMLET_MESSAGE_ATTACHMENTS_DIR="$HAMLET_DATA_DIR/private-uploads/message-attachments"
    export HAMLET_SEED_DEV_DATA=false

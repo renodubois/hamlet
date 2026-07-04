@@ -218,7 +218,7 @@ Support/product notes:
 - A login that works in one run but not another is often server lifecycle or host
   spelling (`localhost` vs `127.0.0.1`) rather than Electron storage loss.
 - Server data is persistent by default. If channels, messages, sessions, or
-  seeded users are missing, check the server `DATABASE_URL`/`HAMLET_DATA_DIR`,
+  seeded users are missing, check the server `HAMLET_DATABASE_URL`/`HAMLET_DATA_DIR`,
   reset history, and `HAMLET_SEED_DEV_DATA` setting before treating it as an
   Electron packaging bug.
 

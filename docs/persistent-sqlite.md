@@ -7,7 +7,7 @@ in-memory database or remove the data directory.
 
 ## Defaults and environment controls
 
-When `DATABASE_URL` is unset or empty, `Config::from_env` builds a file-backed
+When `HAMLET_DATABASE_URL` is unset or empty, `Config::from_env` builds a file-backed
 SQLite URL for `hamlet.db` under the local application data directory:
 
 - `HAMLET_DATA_DIR`, when set, is used directly.
@@ -17,7 +17,7 @@ SQLite URL for `hamlet.db` under the local application data directory:
 - If no platform location is available, Hamlet falls back to `.hamlet-data` in
   the current working directory.
 
-Set `DATABASE_URL` to override the database completely. Only `sqlite:` URLs are
+Set `HAMLET_DATABASE_URL` to override the database completely. Only `sqlite:` URLs are
 supported. File-backed URLs should include `?mode=rwc`, for example
 `sqlite://data/hamlet.db?mode=rwc` or
 `sqlite:///var/lib/hamlet/hamlet.db?mode=rwc`. Explicit in-memory URLs are still
@@ -28,7 +28,7 @@ Useful server environment flags:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DATABASE_URL` | derived from the data dir | Full SQLite URL override. |
+| `HAMLET_DATABASE_URL` | derived from the data dir | Full SQLite URL override. |
 | `HAMLET_DATA_DIR` | platform app-data dir | Root for the default `hamlet.db` and `server-config.json` paths. |
 | `HAMLET_CONFIG_FILE` | `server-config.json` under the data dir | JSON server config file. Set `account_registration_enabled` there to close/open registration and `sentry_dsn` to enable optional Sentry reporting. |
 | `HAMLET_SENTRY_DSN` | unset | Optional Sentry DSN override; when set, error-level tracing events are reported to Sentry in addition to normal logs. |
@@ -63,7 +63,7 @@ and create real users through registration/login flows or the
 ## Admin account provisioning
 
 Server operators can create a password-backed user without exposing a remote
-admin endpoint by running the `hamlet-admin` CLI against the same `DATABASE_URL`
+admin endpoint by running the `hamlet-admin` CLI against the same `HAMLET_DATABASE_URL`
 or `HAMLET_DATA_DIR` used by the server:
 
 ```bash
@@ -122,7 +122,7 @@ touching local files:
 
 ```bash
 cd server
-DATABASE_URL='sqlite:file:hamlet_clean_room?mode=memory&cache=shared' \
+HAMLET_DATABASE_URL='sqlite:file:hamlet_clean_room?mode=memory&cache=shared' \
 HAMLET_SEED_DEV_DATA=false \
 cargo run
 ```
