@@ -143,9 +143,7 @@ export default function LoginScreen() {
             </div>
           </div>
         </Show>
-        <Show
-          when={accountRegistrationEnabled()}
-        >
+        <Show when={accountRegistrationEnabled()}>
           <p class="text-gray-400 text-sm mt-4 text-center">
             <Show
               when={mode() === "login"}

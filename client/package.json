@@ -31,6 +31,7 @@
     "size": "npm run build && size-limit"
   },
   "dependencies": {
+    "@sentry/solid": "^10.63.0",
     "@solidjs/router": "0.16.1",
     "cropperjs": "^2.1.1",
     "jdenticon": "^3.3.0",
