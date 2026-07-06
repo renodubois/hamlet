@@ -11,9 +11,8 @@ on:
         description: "Optional renderer-side Sentry DSN; leave blank to disable"
         required: false
         default: "https://60c6e628bcadb37f23e2356423103d85@o4511678358880256.ingest.us.sentry.io/4511678668734464"
-  # To auto-deploy later, uncomment and adjust:
-  # push:
-  #   branches: [main]
+  push:
+    branches: [main]
 
 permissions:
   contents: read
