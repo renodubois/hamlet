@@ -4,6 +4,7 @@ import {
   setServerUrl,
   getPublicServerConfig,
   login,
+  logout,
   searchUsers,
   listChannels,
   reorderChannels,
@@ -36,9 +37,18 @@ import {
   type ReadStateSummary,
   type ScreenShareStream,
 } from "./api";
+import { clearCachedCsrfToken } from "./api/client";
 import { tinyPngFile, tinyWebpFile } from "./test/image-fixtures";
 
 const DEFAULT_SERVER = import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL ?? "http://127.0.0.1:3030";
+const CSRF_COOKIE = "hamlet_csrf";
+const CSRF_HEADER = "X-Hamlet-CSRF";
+const CSRF_TEST_TOKEN = "test-csrf-token";
+const JSON_HEADERS_WITH_CSRF = {
+  "Content-Type": "application/json",
+  [CSRF_HEADER]: CSRF_TEST_TOKEN,
+};
+const CSRF_ONLY_HEADERS = { [CSRF_HEADER]: CSRF_TEST_TOKEN };
 
 describe("server url", () => {
   test("defaults when nothing is stored", () => {
@@ -57,10 +67,15 @@ describe("apiFetch behavior", () => {
 
   beforeEach(() => {
     fetchMock.mockReset();
+    clearCachedCsrfToken();
+    document.cookie = `${CSRF_COOKIE}=; Max-Age=0; path=/`;
+    document.cookie = `${CSRF_COOKIE}=${CSRF_TEST_TOKEN}; path=/`;
     vi.stubGlobal("fetch", fetchMock);
   });
 
   afterEach(() => {
+    document.cookie = `${CSRF_COOKIE}=; Max-Age=0; path=/`;
+    clearCachedCsrfToken();
     vi.unstubAllGlobals();
   });
 
@@ -107,7 +122,20 @@ describe("apiFetch behavior", () => {
     expect(init.method).toBe("POST");
     expect(init.credentials).toBe("include");
     expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init.headers).not.toHaveProperty(CSRF_HEADER);
     expect(JSON.parse(init.body)).toEqual({ username: "alice", password: "hunter2" });
+  });
+
+  test("logout posts without CSRF so stale browsers can recover", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    await logout();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${DEFAULT_SERVER}/logout`);
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("include");
+    expect(init.headers).toBeUndefined();
   });
 
   test("changePassword puts JSON with credential body", async () => {
@@ -119,7 +147,7 @@ describe("apiFetch behavior", () => {
     expect(url).toBe(`${DEFAULT_SERVER}/me/password`);
     expect(init.method).toBe("PUT");
     expect(init.credentials).toBe("include");
-    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init.headers).toEqual(JSON_HEADERS_WITH_CSRF);
     expect(JSON.parse(init.body)).toEqual({ current_password: "oldpass", new_password: "newpass" });
   });
 
@@ -135,6 +163,44 @@ describe("apiFetch behavior", () => {
     );
 
     await expect(changePassword("bad", "newpass")).rejects.toThrow(/invalid credentials/i);
+  });
+
+  test("unsafe methods fetch and attach a CSRF token when no readable cookie exists", async () => {
+    document.cookie = `${CSRF_COOKIE}=; Max-Age=0; path=/`;
+    clearCachedCsrfToken();
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ token: "token-from-endpoint" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    await changePassword("oldpass", "newpass");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${DEFAULT_SERVER}/csrf`);
+    expect(fetchMock.mock.calls[0][1]).toEqual({ credentials: "include" });
+    const [url, init] = fetchMock.mock.calls[1];
+    expect(url).toBe(`${DEFAULT_SERVER}/me/password`);
+    expect(init.headers).toEqual({
+      "Content-Type": "application/json",
+      [CSRF_HEADER]: "token-from-endpoint",
+    });
+  });
+
+  test("unsafe methods do not send credential bodies when CSRF bootstrap fails", async () => {
+    document.cookie = `${CSRF_COOKIE}=; Max-Age=0; path=/`;
+    clearCachedCsrfToken();
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 401 }));
+
+    await expect(changePassword("oldpass", "newpass")).rejects.toThrow(
+      /CSRF token request failed: 401/,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${DEFAULT_SERVER}/csrf`);
   });
 
   test("searchUsers serializes empty query and limit", async () => {
@@ -196,6 +262,7 @@ describe("apiFetch behavior", () => {
 
     await expect(listChannels()).resolves.toEqual(channels);
     expect(fetchMock.mock.calls[0][0]).toBe(`${DEFAULT_SERVER}/channels`);
+    expect(fetchMock.mock.calls[0][1].headers).toBeUndefined();
   });
 
   test("reorderChannels sends PUT with ids body and parses response", async () => {
@@ -214,7 +281,7 @@ describe("apiFetch behavior", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${DEFAULT_SERVER}/channels/order`);
     expect(init.method).toBe("PUT");
-    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init.headers).toEqual(JSON_HEADERS_WITH_CSRF);
     expect(JSON.parse(init.body)).toEqual({ ids: [2, 1] });
   });
 
@@ -271,7 +338,7 @@ describe("apiFetch behavior", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${DEFAULT_SERVER}/channels/10/read-state`);
     expect(init.method).toBe("PUT");
-    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init.headers).toEqual(JSON_HEADERS_WITH_CSRF);
     expect(init.credentials).toBe("include");
     expect(JSON.parse(init.body)).toEqual({ last_visible_message_id: 20 });
   });
@@ -335,6 +402,7 @@ describe("apiFetch behavior", () => {
     expect(url).toBe(`${DEFAULT_SERVER}/emojis`);
     expect(init.method).toBe("POST");
     expect(init.credentials).toBe("include");
+    expect(init.headers).toEqual(CSRF_ONLY_HEADERS);
     expect(init.body).toBeInstanceOf(FormData);
     const body = init.body as FormData;
     expect(body.get("name")).toBe("party");
@@ -379,7 +447,7 @@ describe("apiFetch behavior", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${DEFAULT_SERVER}/emojis/9`);
     expect(init.method).toBe("PATCH");
-    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init.headers).toEqual(JSON_HEADERS_WITH_CSRF);
     expect(JSON.parse(init.body)).toEqual({ name: "renamed_party" });
   });
 
@@ -461,7 +529,7 @@ describe("apiFetch behavior", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${DEFAULT_SERVER}/message/42`);
     expect(init.method).toBe("POST");
-    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init.headers).toEqual(JSON_HEADERS_WITH_CSRF);
     expect(JSON.parse(init.body)).toEqual({ text: "hi" });
   });
 
@@ -472,7 +540,7 @@ describe("apiFetch behavior", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${DEFAULT_SERVER}/message/42`);
     expect(init.method).toBe("POST");
-    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init.headers).toEqual(JSON_HEADERS_WITH_CSRF);
     expect(JSON.parse(init.body)).toEqual({ text: "reply body", reply_to_message_id: 7 });
   });
 
@@ -486,7 +554,7 @@ describe("apiFetch behavior", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${DEFAULT_SERVER}/message/42`);
     expect(init.method).toBe("POST");
-    expect(init.headers).toBeUndefined();
+    expect(init.headers).toEqual(CSRF_ONLY_HEADERS);
     expect(init.body).toBeInstanceOf(FormData);
     const body = init.body as FormData;
     expect(body.get("text")).toBe("caption");
@@ -503,7 +571,7 @@ describe("apiFetch behavior", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${DEFAULT_SERVER}/message/42`);
     expect(init.method).toBe("POST");
-    expect(init.headers).toBeUndefined();
+    expect(init.headers).toEqual(CSRF_ONLY_HEADERS);
     expect(init.body).toBeInstanceOf(FormData);
     const body = init.body as FormData;
     expect(body.get("text")).toBe("");
@@ -627,7 +695,7 @@ describe("apiFetch behavior", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${DEFAULT_SERVER}/thread/7/reply`);
     expect(init.method).toBe("POST");
-    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init.headers).toEqual(JSON_HEADERS_WITH_CSRF);
     expect(JSON.parse(init.body)).toEqual({ text: "reply" });
   });
 
@@ -659,7 +727,7 @@ describe("apiFetch behavior", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${DEFAULT_SERVER}/thread/7/reply`);
     expect(init.method).toBe("POST");
-    expect(init.headers).toBeUndefined();
+    expect(init.headers).toEqual(CSRF_ONLY_HEADERS);
     expect(init.body).toBeInstanceOf(FormData);
     const body = init.body as FormData;
     expect(body.get("text")).toBe("caption");
@@ -696,7 +764,7 @@ describe("apiFetch behavior", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${DEFAULT_SERVER}/message/7`);
     expect(init.method).toBe("PUT");
-    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init.headers).toEqual(JSON_HEADERS_WITH_CSRF);
     expect(JSON.parse(init.body)).toEqual({ text: "fixed typo" });
   });
 
@@ -720,7 +788,7 @@ describe("apiFetch behavior", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${DEFAULT_SERVER}/message/42/reactions`);
     expect(init.method).toBe("POST");
-    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init.headers).toEqual(JSON_HEADERS_WITH_CSRF);
     expect(JSON.parse(init.body)).toEqual({ kind: "native", emoji: "👍" });
   });
 
@@ -770,7 +838,7 @@ describe("apiFetch behavior", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${DEFAULT_SERVER}/message/42/reactions`);
     expect(init.method).toBe("DELETE");
-    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init.headers).toEqual(JSON_HEADERS_WITH_CSRF);
     expect(JSON.parse(init.body)).toEqual({ kind: "native", emoji: "👍" });
   });
 
@@ -782,6 +850,7 @@ describe("apiFetch behavior", () => {
     expect(url).toBe(`${DEFAULT_SERVER}/message/42`);
     expect(init.method).toBe("DELETE");
     expect(init.credentials).toBe("include");
+    expect(init.headers).toEqual(CSRF_ONLY_HEADERS);
   });
 
   test("deleteMessage throws on non-2xx", async () => {
@@ -863,7 +932,7 @@ describe("apiFetch behavior", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${DEFAULT_SERVER}/voice/status`);
     expect(init.method).toBe("POST");
-    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init.headers).toEqual(JSON_HEADERS_WITH_CSRF);
     expect(init.credentials).toBe("include");
     expect(JSON.parse(init.body)).toEqual({ muted: true, deafened: false });
   });
@@ -895,7 +964,7 @@ describe("apiFetch behavior", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${DEFAULT_SERVER}/me`);
     expect(init.method).toBe("PUT");
-    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init.headers).toEqual(JSON_HEADERS_WITH_CSRF);
     expect(JSON.parse(init.body)).toEqual({ display_name: "Ally" });
   });
 

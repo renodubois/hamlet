@@ -89,12 +89,14 @@ export async function loginAsSeededUser(page: Page): Promise<void> {
   await page.getByPlaceholder("Password").fill("password");
   await page.getByRole("button", { name: /sign in/i }).click();
 
-  await expect(page.locator("aside").getByText("baipas")).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator("aside").getByText("baipas").last()).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("navigation", { name: /channels/i })).toBeVisible();
 }
 
 export async function openGeneralChannel(page: Page): Promise<void> {
-  const generalLink = page.getByRole("navigation", { name: /channels/i }).getByText("# general");
+  const generalLink = page
+    .getByRole("navigation", { name: /channels/i })
+    .getByRole("link", { name: "general" });
   await expect(generalLink).toBeVisible({ timeout: 10_000 });
 
   const generalHref = await generalLink.getAttribute("href");
@@ -109,7 +111,14 @@ export async function sendMessage(page: Page, text: string): Promise<void> {
   const input = page.getByPlaceholder(/send a new message/i);
   await input.fill(text);
   await input.press("Enter");
-  await expect(page.getByText(text)).toBeVisible({ timeout: 10_000 });
+  await expect(
+    page
+      .getByRole("region", { name: /messages/i })
+      .getByText(text)
+      .last(),
+  ).toBeVisible({
+    timeout: 10_000,
+  });
 }
 
 export async function installExternalUrlCapture(app: ElectronApplication): Promise<void> {

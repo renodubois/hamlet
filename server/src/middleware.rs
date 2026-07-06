@@ -1,5 +1,5 @@
 use actix_web::{
-    Error, HttpMessage,
+    Error, HttpMessage, ResponseError,
     body::{EitherBody, MessageBody},
     dev::{ServiceRequest, ServiceResponse},
     middleware::Next,
@@ -7,7 +7,7 @@ use actix_web::{
 };
 use sea_orm::DatabaseConnection;
 
-use crate::auth;
+use crate::{auth, csrf};
 
 pub async fn require_auth<B: MessageBody>(
     req: ServiceRequest,
@@ -29,6 +29,13 @@ pub async fn require_auth<B: MessageBody>(
 
     match auth::validate_session(db.get_ref(), &token).await {
         Ok(user) => {
+            if csrf::should_validate_browser_write(&req)
+                && let Err(error) = csrf::validate_service_request(&req, &token)
+            {
+                let res = error.error_response();
+                return Ok(req.into_response(res).map_into_right_body());
+            }
+
             req.extensions_mut().insert(user);
             next.call(req).await.map(|res| res.map_into_left_body())
         }

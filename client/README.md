@@ -46,6 +46,7 @@ Run commands from `client/` unless noted.
 | Renderer-only built preview      | `npm run build:renderer && npm run serve` | Serves built renderer assets on the same configured loopback origin for browser-only checks.                                                                                                                    |
 | Electron dev launch              | `npm run electron:dev`                    | Builds main/preload, starts Vite, waits for the configured renderer URL, then launches Electron with `HAMLET_RENDERER_URL` pointing at Vite. Server must already be running.                                    |
 | Build everything                 | `npm run build`                           | Builds renderer output in `dist/` and Electron main/preload output in `dist-electron/`.                                                                                                                         |
+| Static web build                 | `npm run build:web`                       | Runs a normal Vite renderer build, then writes GitHub Pages-friendly SPA fallback files (`dist/404.html` and `dist/.nojekyll`).                                                                                 |
 | Electron-only build              | `npm run electron:build`                  | Builds only main/preload. Useful before launching multiple dev profiles against an already-running Vite server.                                                                                                 |
 | Local unpacked package           | `npm run package:unpacked`                | Runs `npm run build`, then writes `release/Hamlet Electron Alpha-<platform>-<arch>/`.                                                                                                                           |
 | Launch unpacked package          | `npm run package:launch`                  | Rebuilds/repackages, clears `HAMLET_RENDERER_URL`, and launches the unpacked app against the packaged loopback static renderer.                                                                                 |
@@ -98,7 +99,9 @@ There are two different URLs to keep straight:
 - **Hamlet server URL:** entered on the login screen and stored as
   `hamlet.serverUrl` in renderer localStorage. The default is
   `http://127.0.0.1:3030`; set `VITE_HAMLET_DEFAULT_SERVER_URL` or
-  `HAMLET_SERVER_URL` to change the default shown by a worktree.
+  `HAMLET_SERVER_URL` to change the default shown by a worktree. For static web
+  builds, set `VITE_HAMLET_DEFAULT_SERVER_URL` before `npm run build:web` to
+  bake in the hosted API URL shown on the login screen.
 
 Keep the server URL spelling stable while testing. The `localhost` and
 `127.0.0.1` spellings are different cookie hosts, so switching between them can
@@ -110,6 +113,11 @@ renderer origin; `file://`, custom protocols, remote renderer origins, and
 unexpected ports are rejected. When `HAMLET_RENDERER_URL` is unset or empty,
 Electron starts the packaged static renderer server from `dist/` on the
 configured host/port.
+
+Renderer-side Sentry telemetry is opt-in via `VITE_HAMLET_SENTRY_DSN`; unset or
+blank values disable Sentry initialization. This is separate from the server-side
+`HAMLET_SENTRY_DSN`, and the renderer keeps user info and HTTP body collection
+disabled.
 
 The renderer port is strict:
 

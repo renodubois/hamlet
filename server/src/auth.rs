@@ -7,6 +7,7 @@ use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_ha
 use rand::RngCore;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 
+use crate::config::CookieConfig;
 use crate::entity;
 use crate::error::AppError;
 use crate::util::generate_id;
@@ -189,21 +190,21 @@ pub async fn change_password(
     Ok(())
 }
 
-pub fn session_cookie(token: String) -> Cookie<'static> {
+pub fn session_cookie(token: String, config: &CookieConfig) -> Cookie<'static> {
     Cookie::build(SESSION_COOKIE, token)
         .http_only(true)
         .path("/")
-        // TODO(reno): setting this to `None` for web support
-        // .same_site(actix_web::cookie::SameSite::Lax)
-        .same_site(actix_web::cookie::SameSite::None)
+        .secure(config.secure)
+        .same_site(config.same_site.into())
         .finish()
 }
 
-pub fn clear_session_cookie() -> Cookie<'static> {
+pub fn clear_session_cookie(config: &CookieConfig) -> Cookie<'static> {
     let mut c = Cookie::build(SESSION_COOKIE, "")
         .http_only(true)
         .path("/")
-        .same_site(actix_web::cookie::SameSite::Lax)
+        .secure(config.secure)
+        .same_site(config.same_site.into())
         .finish();
     c.make_removal();
     c

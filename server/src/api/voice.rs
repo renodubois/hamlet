@@ -920,6 +920,7 @@ mod tests {
             emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
                 dir: std::env::temp_dir(),
             }),
+            cookie_config: web::Data::new(crate::CookieConfig::default()),
         };
         let app =
             test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
@@ -960,6 +961,7 @@ mod tests {
             emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
                 dir: std::env::temp_dir(),
             }),
+            cookie_config: web::Data::new(crate::CookieConfig::default()),
         };
         let app =
             test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
@@ -1782,6 +1784,7 @@ mod tests {
             emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
                 dir: std::env::temp_dir(),
             }),
+            cookie_config: web::Data::new(crate::CookieConfig::default()),
         };
         let app =
             test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
@@ -1829,6 +1832,7 @@ mod tests {
             emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
                 dir: std::env::temp_dir(),
             }),
+            cookie_config: web::Data::new(crate::CookieConfig::default()),
         };
         let app =
             test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
@@ -1908,6 +1912,7 @@ mod tests {
             emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
                 dir: std::env::temp_dir(),
             }),
+            cookie_config: web::Data::new(crate::CookieConfig::default()),
         };
         let app =
             test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
@@ -1951,6 +1956,7 @@ mod tests {
             emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
                 dir: std::env::temp_dir(),
             }),
+            cookie_config: web::Data::new(crate::CookieConfig::default()),
         };
         let app =
             test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
@@ -2000,6 +2006,7 @@ mod tests {
             emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
                 dir: std::env::temp_dir(),
             }),
+            cookie_config: web::Data::new(crate::CookieConfig::default()),
         };
         let app =
             test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
@@ -2052,6 +2059,7 @@ mod tests {
             emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
                 dir: std::env::temp_dir(),
             }),
+            cookie_config: web::Data::new(crate::CookieConfig::default()),
         };
         let app =
             test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))
@@ -2092,6 +2100,7 @@ mod tests {
             emoji_storage: web::Data::new(crate::api::emoji::EmojiStorage {
                 dir: std::env::temp_dir(),
             }),
+            cookie_config: web::Data::new(crate::CookieConfig::default()),
         };
         let app =
             test::init_service(App::new().configure(|cfg| configure_app(cfg, app_deps.clone())))

@@ -16,6 +16,8 @@ import type {
 
 const BASE = import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL ?? "http://127.0.0.1:3030";
 const MAX_SAFE_MESSAGE_ID = Number.MAX_SAFE_INTEGER;
+const CSRF_COOKIE = "hamlet_csrf";
+const CSRF_TEST_TOKEN = "msw-csrf-token";
 
 export const DEV_USER: User = {
   id: 1,
@@ -455,6 +457,18 @@ export function createHandlers(state: HandlerState) {
         account_registration_enabled: state.accountRegistrationEnabled,
       }),
     ),
+
+    http.get(`${BASE}/csrf`, () => {
+      if (!state.me) return new HttpResponse(null, { status: 401 });
+      return HttpResponse.json(
+        { token: CSRF_TEST_TOKEN },
+        {
+          headers: {
+            "Set-Cookie": `${CSRF_COOKIE}=${CSRF_TEST_TOKEN}; Path=/; SameSite=Lax`,
+          },
+        },
+      );
+    }),
 
     http.get(`${BASE}/me`, () => {
       if (!state.me) return new HttpResponse(null, { status: 401 });

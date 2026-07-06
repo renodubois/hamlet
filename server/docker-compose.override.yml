@@ -8,12 +8,30 @@ services:
       RUST_LOG: debug
       CARGO_TARGET_DIR: /app/target
       HAMLET_SEED_DEV_DATA: "true"
+      LIVEKIT_URL: "${LIVEKIT_URL:-ws://127.0.0.1:7880}"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:-devkey}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:-devsecretdevsecretdevsecretdevsecret}"
     volumes:
       - .:/app
       - hamlet_data:/var/lib/hamlet
       - hamlet_target:/app/target
       - hamlet_cargo_registry:/usr/local/cargo/registry
       - hamlet_cargo_git:/usr/local/cargo/git
+    depends_on:
+      - livekit
+
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --config /etc/livekit.yaml
+    network_mode: host
+    volumes:
+      - type: bind
+        source: ${HAMLET_LIVEKIT_CONFIG:-./livekit.yaml}
+        target: /etc/livekit.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+    restart: unless-stopped
 
 volumes:
   hamlet_target:

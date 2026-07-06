@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::avatars::avatar_url;
 use crate::auth::{self, AuthUser};
+use crate::config::CookieConfig;
+use crate::csrf;
 use crate::error::AppError;
 use crate::{Config, entity};
 
@@ -67,6 +69,7 @@ impl From<entity::user::Model> for UserResponse {
 async fn register(
     db: web::Data<DatabaseConnection>,
     config: web::Data<Config>,
+    cookie_config: web::Data<CookieConfig>,
     body: web::Json<RegisterRequest>,
 ) -> Result<HttpResponse, AppError> {
     if !config.account_registration_enabled {
@@ -84,33 +87,40 @@ async fn register(
     )
     .await?;
     let session = auth::create_session(db.get_ref(), user.id).await?;
+    let csrf_token = csrf::generate_token(&session.token)?;
     Ok(HttpResponse::Ok()
-        .cookie(auth::session_cookie(session.token))
+        .cookie(auth::session_cookie(session.token, cookie_config.get_ref()))
+        .cookie(csrf::csrf_cookie(csrf_token, cookie_config.get_ref()))
         .json(UserResponse::from(user)))
 }
 
 #[post("/login")]
 async fn login(
     db: web::Data<DatabaseConnection>,
+    cookie_config: web::Data<CookieConfig>,
     body: web::Json<LoginRequest>,
 ) -> Result<HttpResponse, AppError> {
     let user = auth::authenticate_password(db.get_ref(), &body.username, &body.password).await?;
     let session = auth::create_session(db.get_ref(), user.id).await?;
+    let csrf_token = csrf::generate_token(&session.token)?;
     Ok(HttpResponse::Ok()
-        .cookie(auth::session_cookie(session.token))
+        .cookie(auth::session_cookie(session.token, cookie_config.get_ref()))
+        .cookie(csrf::csrf_cookie(csrf_token, cookie_config.get_ref()))
         .json(UserResponse::from(user)))
 }
 
 #[post("/logout")]
 async fn logout(
     db: web::Data<DatabaseConnection>,
+    cookie_config: web::Data<CookieConfig>,
     req: HttpRequest,
 ) -> Result<HttpResponse, AppError> {
     if let Some(c) = req.cookie(auth::SESSION_COOKIE) {
         auth::destroy_session(db.get_ref(), c.value()).await?;
     }
     Ok(HttpResponse::Ok()
-        .cookie(auth::clear_session_cookie())
+        .cookie(auth::clear_session_cookie(cookie_config.get_ref()))
+        .cookie(csrf::clear_csrf_cookie(cookie_config.get_ref()))
         .finish())
 }
 

@@ -29,17 +29,20 @@ Useful server environment flags:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `HAMLET_DATABASE_URL` | derived from the data dir | Full SQLite URL override. |
-| `HAMLET_DATA_DIR` | platform app-data dir | Root for the default `hamlet.db` and `server-config.json` paths. |
-| `HAMLET_CONFIG_FILE` | `server-config.json` under the data dir | JSON server config file. Set `account_registration_enabled` there to close/open registration and `sentry_dsn` to enable optional Sentry reporting. |
-| `HAMLET_SENTRY_DSN` | unset | Optional Sentry DSN override; when set, error-level tracing events are reported to Sentry in addition to normal logs. |
+| `HAMLET_DATA_DIR` | platform app-data dir | Root for the default `hamlet.db` path. |
+| `HAMLET_ACCOUNT_REGISTRATION_ENABLED` | `false` | Open or close public account registration. Keep this disabled in production and provision users with `hamlet-admin`. |
+| `HAMLET_ALLOWED_ORIGINS` | unset | Comma-separated exact browser origins allowed for credentialed CORS requests. Set this for hosted static clients. |
+| `HAMLET_COOKIE_SECURE` | `false` | Whether session/CSRF cookies include `Secure`; set `true` for HTTPS deployments. |
+| `HAMLET_COOKIE_SAME_SITE` | `lax` | Cookie SameSite policy: `lax`, `strict`, or `none`. `none` requires `HAMLET_COOKIE_SECURE=true`. |
+| `HAMLET_SENTRY_DSN` | unset | Optional server Sentry DSN; when set, error-level tracing events are reported to Sentry in addition to normal logs. |
 | `HAMLET_BOOTSTRAP_DEFAULT_CHANNELS` | `true` | Create `general` text and `voice` voice channels when the channel table is empty. |
 | `HAMLET_SEED_DEV_DATA` | `true` in debug builds, `false` in release builds | Seed local dev users and a fixed dev session token. |
 | `HAMLET_UPLOADS_DIR` | `./uploads` | Public upload storage. Compose points this at `/var/lib/hamlet/uploads`. |
 | `HAMLET_MESSAGE_ATTACHMENTS_DIR` | `./private-uploads/message-attachments` | Private message attachment storage. Compose points this under `/var/lib/hamlet`. |
 
-`server/.env.example` shows local values. Docker Compose sets a release-shaped
-server environment in `server/docker-compose.yml` and the development override
-explicitly opts back into dev seed data.
+`server/.env.example` shows local and production-hosting values. Docker Compose
+sets a release-shaped server environment in `server/docker-compose.yml` and the
+development override explicitly opts back into dev seed data.
 
 ## Startup, bootstrap, and seed behavior
 

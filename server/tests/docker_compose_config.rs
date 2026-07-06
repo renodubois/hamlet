@@ -12,10 +12,6 @@ fn production_compose_uses_one_application_data_volume_for_sqlite_and_uploads() 
         "production compose should point Hamlet's data directory at the mounted app-data volume"
     );
     assert!(
-        compose.contains("HAMLET_CONFIG_FILE: /var/lib/hamlet/server-config.json"),
-        "production compose should keep the editable server config in the app-data volume"
-    );
-    assert!(
         compose.contains("HAMLET_DATABASE_URL: \"sqlite:///var/lib/hamlet/hamlet.db?mode=rwc\""),
         "production compose should set an explicit file-backed SQLite URL inside the data dir"
     );
@@ -52,6 +48,61 @@ fn production_compose_uses_one_application_data_volume_for_sqlite_and_uploads() 
 }
 
 #[test]
+fn production_compose_uses_loopback_binding_and_env_driven_livekit_settings() {
+    let compose = read_server_file("docker-compose.yml");
+
+    assert!(
+        compose.contains("\"127.0.0.1:${HAMLET_SERVER_PORT:-3030}:3030\""),
+        "production compose should only publish the API on loopback by default"
+    );
+    for expected in [
+        "HAMLET_ACCOUNT_REGISTRATION_ENABLED: \"${HAMLET_ACCOUNT_REGISTRATION_ENABLED:-false}\"",
+        "HAMLET_ALLOWED_ORIGINS: \"${HAMLET_ALLOWED_ORIGINS:-}\"",
+        "HAMLET_COOKIE_SECURE: \"${HAMLET_COOKIE_SECURE:-}\"",
+        "HAMLET_COOKIE_SAME_SITE: \"${HAMLET_COOKIE_SAME_SITE:-}\"",
+        "HAMLET_SENTRY_DSN: \"${HAMLET_SENTRY_DSN:-}\"",
+        "LIVEKIT_URL: \"${LIVEKIT_URL:-}\"",
+        "LIVEKIT_API_KEY: \"${LIVEKIT_API_KEY:-}\"",
+        "LIVEKIT_API_SECRET: \"${LIVEKIT_API_SECRET:-}\"",
+    ] {
+        assert!(
+            compose.contains(expected),
+            "production compose should contain {expected}"
+        );
+    }
+    assert!(
+        !compose.contains("devkey") && !compose.contains("devsecretdevsecretdevsecretdevsecret"),
+        "production compose must not bake in development LiveKit credentials"
+    );
+    assert!(
+        !compose.contains("depends_on:") && !compose.contains("  livekit:"),
+        "production compose should not require LiveKit unless an optional compose file is used"
+    );
+}
+
+#[test]
+fn optional_production_livekit_compose_is_separate_from_base_compose() {
+    let compose = read_server_file("docker-compose.livekit.yml");
+
+    assert!(
+        compose.contains("  livekit:"),
+        "optional production LiveKit compose should define the LiveKit service"
+    );
+    assert!(
+        compose.contains("source: ${HAMLET_LIVEKIT_CONFIG:-./livekit.prod.yaml}"),
+        "optional production LiveKit compose should default to a production config file"
+    );
+    assert!(
+        compose.contains("depends_on:") && compose.contains("- livekit"),
+        "optional production LiveKit compose should start LiveKit with the server"
+    );
+    assert!(
+        !compose.contains("devkey") && !compose.contains("devsecretdevsecretdevsecretdevsecret"),
+        "optional production LiveKit compose must not bake in development credentials"
+    );
+}
+
+#[test]
 fn development_compose_explicitly_enables_seed_data_without_removing_hot_reload() {
     let override_compose = read_server_file("docker-compose.override.yml");
 
@@ -62,6 +113,21 @@ fn development_compose_explicitly_enables_seed_data_without_removing_hot_reload(
     assert!(
         override_compose.contains("HAMLET_SEED_DEV_DATA: \"true\""),
         "development compose should opt into dev seed data explicitly"
+    );
+    assert!(
+        override_compose.contains("LIVEKIT_URL: \"${LIVEKIT_URL:-ws://127.0.0.1:7880}\""),
+        "development compose should keep local LiveKit URL defaults in the dev-only override"
+    );
+    assert!(
+        override_compose.contains("LIVEKIT_API_KEY: \"${LIVEKIT_API_KEY:-devkey}\"")
+            && override_compose.contains(
+                "LIVEKIT_API_SECRET: \"${LIVEKIT_API_SECRET:-devsecretdevsecretdevsecretdevsecret}\"",
+            ),
+        "development compose should keep dev LiveKit credentials only in the dev override"
+    );
+    assert!(
+        override_compose.contains("  livekit:"),
+        "development compose should keep starting the local LiveKit service by default"
     );
     assert!(
         override_compose.contains("- .:/app"),
@@ -106,6 +172,14 @@ fn runtime_dockerfile_prepares_owned_data_and_upload_directories_before_user_swi
     assert!(
         dockerfile.contains("chown -R hamlet:hamlet /app /var/lib/hamlet"),
         "runtime directories should be owned by the non-root app user"
+    );
+    assert!(
+        dockerfile.contains("cargo build --release --locked --bin hamlet --bin hamlet-admin"),
+        "production Dockerfile should build both deployment binaries"
+    );
+    assert!(
+        dockerfile.contains("/app/target/release/hamlet-admin /usr/local/bin/hamlet-admin"),
+        "production Dockerfile should copy hamlet-admin into the runtime image"
     );
 }
 
@@ -163,9 +237,15 @@ fn server_env_example_documents_persistence_controls() {
         "HAMLET_DATABASE_URL=sqlite://data/hamlet.db?mode=rwc",
         "HAMLET_DATABASE_URL=sqlite:file:hamlet_clean_room?mode=memory&cache=shared",
         "HAMLET_BOOTSTRAP_DEFAULT_CHANNELS=true",
-        "HAMLET_CONFIG_FILE",
-        "HAMLET_ACCOUNT_REGISTRATION_ENABLED",
+        "HAMLET_ALLOWED_ORIGINS=",
+        "HAMLET_COOKIE_SECURE=false",
+        "HAMLET_COOKIE_SAME_SITE=lax",
+        "HAMLET_ACCOUNT_REGISTRATION_ENABLED=false",
+        "HAMLET_SENTRY_DSN=",
         "HAMLET_SEED_DEV_DATA",
+        "LIVEKIT_URL=",
+        "LIVEKIT_API_KEY=",
+        "LIVEKIT_API_SECRET=",
     ] {
         assert!(
             env_example.contains(expected),

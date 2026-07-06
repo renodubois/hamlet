@@ -1,0 +1,19 @@
+# Optional production self-hosted LiveKit companion. Use with docker-compose.yml:
+# docker compose -f docker-compose.yml -f docker-compose.livekit.yml up -d --build
+services:
+  server:
+    depends_on:
+      - livekit
+
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --config /etc/livekit.yaml
+    network_mode: host
+    volumes:
+      - type: bind
+        source: ${HAMLET_LIVEKIT_CONFIG:-./livekit.prod.yaml}
+        target: /etc/livekit.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+    restart: unless-stopped

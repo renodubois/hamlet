@@ -61,6 +61,8 @@ pub enum AppError {
     PhotoDimensionsTooLarge,
     #[error("forbidden")]
     Forbidden,
+    #[error("invalid CSRF token")]
+    InvalidCsrfToken,
     #[error("payload too large")]
     PayloadTooLarge,
     #[error("service unavailable")]
@@ -102,6 +104,7 @@ impl AppError {
             AppError::TooManyAttachments => "too_many_attachments",
             AppError::PhotoDimensionsTooLarge => "photo_dimensions_too_large",
             AppError::Forbidden => "forbidden",
+            AppError::InvalidCsrfToken => "invalid_csrf_token",
             AppError::PayloadTooLarge => "payload_too_large",
             AppError::ServiceUnavailable => "service_unavailable",
             AppError::Db(_) | AppError::Json(_) | AppError::Io(_) | AppError::Internal(_) => {
@@ -152,7 +155,9 @@ impl ResponseError for AppError {
             | AppError::TooManyAttachments
             | AppError::PhotoDimensionsTooLarge => StatusCode::BAD_REQUEST,
             AppError::Unauthorized | AppError::InvalidCredentials => StatusCode::UNAUTHORIZED,
-            AppError::Forbidden | AppError::RegistrationDisabled => StatusCode::FORBIDDEN,
+            AppError::Forbidden | AppError::InvalidCsrfToken | AppError::RegistrationDisabled => {
+                StatusCode::FORBIDDEN
+            }
             AppError::NotFound | AppError::ReplyTargetNotFound => StatusCode::NOT_FOUND,
             AppError::UsernameTaken | AppError::EmojiNameTaken => StatusCode::CONFLICT,
             AppError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,

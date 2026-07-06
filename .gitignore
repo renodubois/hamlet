@@ -1,6 +1,10 @@
 docs/
 !docs/
 docs/*
+!docs/hosting-static-client-and-server.md
+!docs/examples/
+docs/examples/*
+!docs/examples/*.yml
 !docs/persistent-sqlite.md
 !docs/persistent-sqlite-prd.md
 !docs/plans/

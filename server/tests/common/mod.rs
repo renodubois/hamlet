@@ -8,7 +8,7 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 
 use hamlet::voice::{VoiceConfig, VoiceState};
 use hamlet::{
-    AppDeps, AvatarStorage, EmbedFetcher, EmojiStorage, auth, broadcast::Broadcaster,
+    AppDeps, AvatarStorage, CookieConfig, EmbedFetcher, EmojiStorage, auth, broadcast::Broadcaster,
     connect_initialized_database_url, entity, generate_id, now_unix_micros,
 };
 
@@ -73,6 +73,7 @@ impl TestCtx {
             emoji_storage: web::Data::new(EmojiStorage {
                 dir: self.uploads_dir.clone().unwrap_or_else(std::env::temp_dir),
             }),
+            cookie_config: web::Data::new(CookieConfig::default()),
         }
     }
 

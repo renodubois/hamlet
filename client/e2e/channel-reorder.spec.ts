@@ -40,7 +40,7 @@ test("rearranges channels by drag-and-drop and persists the new order on reload"
   await page.getByPlaceholder("Username").fill("baipas");
   await page.getByPlaceholder("Password").fill("password");
   await page.getByRole("button", { name: /sign in/i }).click();
-  await expect(page.locator("aside").getByText("baipas")).toBeVisible();
+  await expect(page.locator("aside").getByText("baipas").last()).toBeVisible();
   await expect(page.getByRole("navigation", { name: /channels/i })).toBeVisible();
 
   // Seed two extra channels under unique names so concurrent runs don't
@@ -61,7 +61,7 @@ test("rearranges channels by drag-and-drop and persists the new order on reload"
     // The new channel appears via SSE → refetch. Locate by link text, not
     // by role.name regex (which is sensitive to whitespace normalization).
     await expect(
-      page.getByRole("navigation", { name: /channels/i }).getByText(`# ${name}`),
+      page.getByRole("navigation", { name: /channels/i }).getByRole("link", { name }),
     ).toBeVisible({ timeout: 10_000 });
   }
 

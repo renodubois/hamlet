@@ -12,7 +12,9 @@ async function loginAndOpenGeneral(page: Page, username = "baipas") {
   await page.getByPlaceholder("Password").fill("password");
   await page.getByRole("button", { name: /sign in/i }).click();
 
-  const generalLink = page.getByRole("navigation", { name: /channels/i }).getByText("# general");
+  const generalLink = page
+    .getByRole("navigation", { name: /channels/i })
+    .getByRole("link", { name: "general" });
   await expect(generalLink).toBeVisible();
   const generalHref = await generalLink.getAttribute("href");
   expect(generalHref).toBeTruthy();

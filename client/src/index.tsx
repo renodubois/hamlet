@@ -10,18 +10,12 @@ import App from "./App";
 import { Router } from "@solidjs/router";
 import { routes } from "./routes";
 import { AuthProvider } from "./contexts/auth";
+import { initializeRendererSentry } from "./sentry";
 
-Sentry.init({
-  dsn: "https://60c6e628bcadb37f23e2356423103d85@o4511678358880256.ingest.us.sentry.io/4511678668734464",
-  dataCollection: {
-    // To disable sending user data and HTTP bodies, uncomment the lines below. For more info visit:
-    // https://docs.sentry.io/platforms/javascript/guides/solid/configuration/options/#dataCollection
-    userInfo: false,
-    // httpBodies: []
-  },
-});
-
-const SentryErrorBoundary = Sentry.withSentryErrorBoundary(ErrorBoundary);
+const sentryEnabled = initializeRendererSentry();
+const AppErrorBoundary = sentryEnabled
+  ? Sentry.withSentryErrorBoundary(ErrorBoundary)
+  : ErrorBoundary;
 
 const root = document.getElementById("root");
 
@@ -33,7 +27,7 @@ if (!(root instanceof HTMLElement)) {
 
 render(
   () => (
-    <SentryErrorBoundary
+    <AppErrorBoundary
       fallback={(err) => (
         <div class="p-8" role="alert">
           <h2 class="text-lg font-semibold text-red-700">Something went wrong</h2>
@@ -46,7 +40,7 @@ render(
       <AuthProvider>
         <Router root={App}>{routes}</Router>
       </AuthProvider>
-    </SentryErrorBoundary>
+    </AppErrorBoundary>
   ),
   root,
 );

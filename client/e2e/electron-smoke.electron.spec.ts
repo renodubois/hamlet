@@ -54,7 +54,7 @@ test("logs in, auto-navigates, sends a message, clears the composer, and reloads
 
   await expect(appWindow).toHaveURL(/\/channel\/\d+$/);
   await expect(
-    appWindow.getByRole("navigation", { name: /channels/i }).getByText("# general"),
+    appWindow.getByRole("navigation", { name: /channels/i }).getByRole("link", { name: "general" }),
   ).toBeVisible();
   await expect(appWindow.getByRole("heading", { name: /^#\s*\S/i })).toBeVisible();
 
@@ -67,7 +67,9 @@ test("logs in, auto-navigates, sends a message, clears the composer, and reloads
   const deepRoute = appWindow.url();
   await appWindow.reload();
   await expect(appWindow).toHaveURL(deepRoute);
-  await expect(appWindow.locator("aside").getByText("baipas")).toBeVisible({ timeout: 30_000 });
+  await expect(appWindow.locator("aside").getByText("baipas").last()).toBeVisible({
+    timeout: 30_000,
+  });
   await expect(appWindow.getByRole("heading", { name: /^#\s*general$/i })).toBeVisible();
   await expect(appWindow.getByText(marker)).toBeVisible({ timeout: 10_000 });
 });

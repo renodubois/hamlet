@@ -419,6 +419,7 @@ fn app_deps(db: DatabaseConnection, uploads_dir: &Path) -> AppDeps {
         emoji_storage: web::Data::new(EmojiStorage {
             dir: uploads_dir.to_path_buf(),
         }),
+        cookie_config: web::Data::new(hamlet::CookieConfig::default()),
     }
 }
 
@@ -428,6 +429,8 @@ fn config_for_default_database_dir(root: &Path, data_dir: &Path) -> Config {
         database_url: Config::default_database_url_for_data_dir(data_dir),
         log_filter: "off".to_owned(),
         account_registration_enabled: false,
+        cors: hamlet::CorsConfig::default(),
+        cookie: hamlet::CookieConfig::default(),
         sentry_dsn: None,
         uploads_dir: root.join("uploads"),
         message_attachments_dir: root.join("private-uploads").join("message-attachments"),

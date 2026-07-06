@@ -4,7 +4,13 @@
 use std::sync::Arc;
 
 use actix_cors::Cors;
-use actix_web::{App, HttpServer, middleware::from_fn, web, web::Data};
+use actix_web::{
+    App, HttpServer,
+    http::{Method, header},
+    middleware::from_fn,
+    web,
+    web::Data,
+};
 use sea_orm::DatabaseConnection;
 use tracing_actix_web::TracingLogger;
 
@@ -14,7 +20,7 @@ use crate::api::avatars::AvatarStorage;
 use crate::api::emoji::EmojiStorage;
 use crate::api::messages::EmbedFetcher;
 use crate::broadcast::Broadcaster;
-use crate::config::Config;
+use crate::config::{Config, CookieConfig, CorsConfig};
 use crate::middleware;
 use crate::voice::{VoiceConfig, VoiceState};
 
@@ -29,6 +35,7 @@ pub struct AppDeps {
     pub voice_state: Data<VoiceState>,
     pub embed_fetcher: Data<EmbedFetcher>,
     pub emoji_storage: Data<EmojiStorage>,
+    pub cookie_config: Data<CookieConfig>,
 }
 
 /// Default-flavoured deps for tests/hosts that don't need voice. Voice
@@ -44,6 +51,7 @@ pub fn deps_for_tests(db: DatabaseConnection, broadcaster: Arc<Broadcaster>) -> 
         emoji_storage: Data::new(EmojiStorage {
             dir: std::env::temp_dir(),
         }),
+        cookie_config: Data::new(CookieConfig::default()),
     }
 }
 
@@ -57,8 +65,10 @@ pub fn configure_app(cfg: &mut web::ServiceConfig, deps: AppDeps) {
         .app_data(deps.voice_state.clone())
         .app_data(deps.embed_fetcher.clone())
         .app_data(deps.emoji_storage.clone())
+        .app_data(deps.cookie_config.clone())
         // Public server/auth surface
         .configure(api::config::configure_public)
+        .configure(api::csrf::configure_public)
         .configure(api::auth::configure_public)
         // LiveKit webhooks authenticate via signed JWT in the body, not a
         // session cookie, so they live outside the require_auth scope.
@@ -79,6 +89,29 @@ pub fn configure_app(cfg: &mut web::ServiceConfig, deps: AppDeps) {
         );
 }
 
+pub fn cors_middleware(config: &CorsConfig) -> Cors {
+    let config = config.clone();
+
+    Cors::default()
+        .allowed_origin_fn(move |origin, _request_head| {
+            origin
+                .to_str()
+                .is_ok_and(|origin| config.is_origin_allowed(origin))
+        })
+        .allowed_methods(vec![
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ])
+        .allowed_headers(vec![
+            header::CONTENT_TYPE,
+            header::HeaderName::from_static("x-hamlet-csrf"),
+        ])
+        .supports_credentials()
+}
+
 /// Bind, configure, and run the HTTP server. Invoked by `main` after
 /// loading `Config`, the DB, and the broadcaster.
 pub async fn start_server(
@@ -93,6 +126,7 @@ pub async fn start_server(
     std::fs::create_dir_all(&emojis_dir)?;
     std::fs::create_dir_all(&message_attachments_dir)?;
     let config_data = Data::new(config.clone());
+    let cookie_config = Data::new(config.cookie.clone());
     let avatar_storage = Data::new(AvatarStorage {
         dir: config.uploads_dir.clone(),
     });
@@ -120,26 +154,17 @@ pub async fn start_server(
             EmbedFetcher::Disabled
         }),
         emoji_storage: emoji_storage.clone(),
+        cookie_config: cookie_config.clone(),
     };
 
     let bind_addr = config.bind_addr.clone();
     let avatars_dir = avatars_dir.clone();
     let emojis_dir = emojis_dir.clone();
+    let cors_config = config.cors.clone();
     tracing::info!(addr = %bind_addr, "starting server");
 
     HttpServer::new(move || {
-        let cors = Cors::default()
-            .allowed_origin_fn(|origin, _| {
-                // TODO(reno): this is my lazy way to get CORS working for local envs.
-                // Worth tightening to an explicit allowlist before any production deploy.
-                origin.as_bytes().starts_with(b"http://localhost")
-                    || origin.as_bytes().starts_with(b"http://127.0.0.1")
-            })
-            // NOTE(reno): These are dangerous - probably worth reconsidering if keeping CORS
-            // in production mode.
-            .allow_any_method()
-            .allow_any_header()
-            .supports_credentials();
+        let cors = cors_middleware(&cors_config);
 
         App::new()
             .wrap(TracingLogger::default())

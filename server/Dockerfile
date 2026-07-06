@@ -17,7 +17,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY tests ./tests
-RUN cargo build --release --locked --bin hamlet
+RUN cargo build --release --locked --bin hamlet --bin hamlet-admin
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd -m -u 1000 hamlet
 WORKDIR /app
 COPY --from=builder /app/target/release/hamlet /usr/local/bin/hamlet
+COPY --from=builder /app/target/release/hamlet-admin /usr/local/bin/hamlet-admin
 RUN mkdir -p \
         /var/lib/hamlet \
         /var/lib/hamlet/uploads \

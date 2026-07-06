@@ -5,7 +5,8 @@ use hamlet::{
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let config = Config::from_env();
+    let config = Config::try_from_env()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
     let _telemetry_guard = telemetry::init(&config.log_filter, config.sentry_dsn.as_deref());
 
     // `connect_database` prepares SQLite connection settings, keeps a sentinel

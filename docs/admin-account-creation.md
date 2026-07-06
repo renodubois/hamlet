@@ -5,6 +5,10 @@ line with the server admin CLI. The command writes directly to the configured
 SQLite database and reuses the same password hashing and user creation path as
 normal registration.
 
+Use this for production provisioning when
+`HAMLET_ACCOUNT_REGISTRATION_ENABLED=false`; it avoids opening public browser
+registration just to create the first or next account.
+
 ## Usage
 
 From the server project during local development or source-based hosting:
@@ -30,9 +34,9 @@ print the password.
 
 Run the CLI with the same database environment used by the server process:
 
-- `DATABASE_URL` overrides the database completely.
+- `HAMLET_DATABASE_URL` overrides the database completely.
 - `HAMLET_DATA_DIR` controls the default `hamlet.db` location when
-  `DATABASE_URL` is not set.
+  `HAMLET_DATABASE_URL` is not set.
 
 Examples:
 
@@ -44,12 +48,21 @@ HAMLET_DATA_DIR=/var/lib/hamlet \
 
 ```bash
 cd server
-DATABASE_URL='sqlite:///var/lib/hamlet/hamlet.db?mode=rwc' \
+HAMLET_DATABASE_URL='sqlite:///var/lib/hamlet/hamlet.db?mode=rwc' \
   cargo run --bin hamlet-admin -- create-user --username alice --password 'temporary-password'
 ```
 
-For Docker Compose, run the command from an environment that can access the same
-persistent SQLite volume or database URL as the server container.
+For Docker Compose deployments, use the shipped `hamlet-admin` binary in the
+server image so the command mounts the same persistent SQLite volume as the
+server container. From `server/`, after the image has been built or started:
+
+```bash
+docker compose -f docker-compose.yml --env-file .env run --rm --no-deps server \
+  hamlet-admin create-user --username alice --password 'temporary-password'
+```
+
+If you use the optional production LiveKit Compose file for normal server
+startup, it is not required for this one-shot provisioning command.
 
 ## Error behavior
 

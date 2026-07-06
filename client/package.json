@@ -10,6 +10,7 @@
     "dev": "vite",
     "build": "npm run build:renderer && npm run electron:build",
     "build:renderer": "vite build",
+    "build:web": "vite build && node scripts/prepare-web-dist.mjs",
     "serve": "vite preview",
     "electron:build": "node scripts/build-electron.mjs",
     "electron:dev": "node scripts/electron-dev.mjs",

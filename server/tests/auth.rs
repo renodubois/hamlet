@@ -8,13 +8,27 @@ use actix_web::{
     test, web,
 };
 use common::TestCtx;
-use hamlet::{Config, auth, configure_app, entity};
+use hamlet::{Config, CookieConfig, CookieSameSite, auth, configure_app, entity};
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 
 fn config_with_registration(account_registration_enabled: bool) -> Config {
     let mut config = Config::from_env();
     config.account_registration_enabled = account_registration_enabled;
     config
+}
+
+fn deps_with_cookie_config(ctx: &TestCtx, cookie_config: CookieConfig) -> hamlet::AppDeps {
+    let mut deps = ctx.deps();
+    deps.cookie_config = web::Data::new(cookie_config);
+    deps
+}
+
+fn set_cookie_header(resp: &actix_web::dev::ServiceResponse) -> &str {
+    resp.headers()
+        .get("set-cookie")
+        .expect("set-cookie header missing")
+        .to_str()
+        .unwrap()
 }
 
 // --- public config ---
@@ -74,11 +88,63 @@ async fn test_register_creates_user_and_sets_cookie() {
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert!(resp.status().is_success());
-    let cookie = resp
-        .headers()
-        .get("set-cookie")
-        .expect("set-cookie header missing");
-    assert!(cookie.to_str().unwrap().starts_with("session="));
+    let cookie = set_cookie_header(&resp);
+    assert!(cookie.starts_with("session="));
+    assert!(cookie.contains("HttpOnly"));
+    assert!(cookie.contains("SameSite=Lax"));
+    assert!(cookie.contains("Path=/"));
+    assert!(!cookie.contains("Secure"));
+}
+
+#[actix_web::test]
+async fn test_auth_endpoints_use_production_cookie_policy() {
+    let ctx = TestCtx::new().await;
+    let production_cookie = CookieConfig {
+        secure: true,
+        same_site: CookieSameSite::None,
+    };
+    let deps = deps_with_cookie_config(&ctx, production_cookie);
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(config_with_registration(true)))
+            .configure(|cfg| configure_app(cfg, deps.clone())),
+    )
+    .await;
+
+    let req = test::TestRequest::post()
+        .uri("/register")
+        .insert_header(ContentType::json())
+        .set_payload(serde_json::json!({"username": "alice", "password": "hunter2"}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert!(resp.status().is_success());
+    let cookie = set_cookie_header(&resp);
+    assert!(cookie.starts_with("session="));
+    assert!(cookie.contains("HttpOnly"));
+    assert!(cookie.contains("Path=/"));
+    assert!(cookie.contains("SameSite=None"));
+    assert!(cookie.contains("Secure"));
+
+    let req = test::TestRequest::post()
+        .uri("/login")
+        .insert_header(ContentType::json())
+        .set_payload(serde_json::json!({"username": "alice", "password": "hunter2"}).to_string())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert!(resp.status().is_success());
+    let cookie = set_cookie_header(&resp);
+    assert!(cookie.starts_with("session="));
+    assert!(cookie.contains("SameSite=None"));
+    assert!(cookie.contains("Secure"));
+
+    let req = test::TestRequest::post().uri("/logout").to_request();
+    let resp = test::call_service(&app, req).await;
+    assert!(resp.status().is_success());
+    let cookie = set_cookie_header(&resp);
+    assert!(cookie.starts_with("session="));
+    assert!(cookie.contains("Max-Age=0"));
+    assert!(cookie.contains("SameSite=None"));
+    assert!(cookie.contains("Secure"));
 }
 
 #[actix_web::test]
@@ -300,11 +366,11 @@ async fn test_logout_without_cookie_is_ok_and_clears() {
     let req = test::TestRequest::post().uri("/logout").to_request();
     let resp = test::call_service(&app, req).await;
     assert!(resp.status().is_success());
-    let cookie = resp
-        .headers()
-        .get("set-cookie")
-        .expect("set-cookie header missing");
-    assert!(cookie.to_str().unwrap().starts_with("session="));
+    let cookie = set_cookie_header(&resp);
+    assert!(cookie.starts_with("session="));
+    assert!(cookie.contains("Max-Age=0"));
+    assert!(cookie.contains("SameSite=Lax"));
+    assert!(!cookie.contains("Secure"));
 }
 
 #[actix_web::test]

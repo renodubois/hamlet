@@ -33,7 +33,9 @@ async function loginAndOpenGeneral(page: Page, username = "baipas") {
   await expect(page.locator("aside").getByText(username)).toBeVisible({ timeout: 30_000 });
   await initialSse;
 
-  const generalLink = page.getByRole("navigation", { name: /channels/i }).getByText("# general");
+  const generalLink = page
+    .getByRole("navigation", { name: /channels/i })
+    .getByRole("link", { name: "general" });
   const generalHref = await generalLink.getAttribute("href");
   expect(generalHref).toBeTruthy();
   if (!generalHref) throw new Error("general link is missing an href");

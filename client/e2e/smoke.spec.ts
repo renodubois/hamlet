@@ -18,9 +18,9 @@ test("logs in as the dev user and lands in a channel", async ({ page }) => {
   // that is depends on prior test ordering (the reorder spec promotes a
   // created channel), so just confirm login succeeded and the `general`
   // channel is reachable in the sidebar.
-  await expect(page.locator("aside").getByText("baipas")).toBeVisible();
+  await expect(page.locator("aside").getByText("baipas").last()).toBeVisible();
   await expect(
-    page.getByRole("navigation", { name: /channels/i }).getByText("# general"),
+    page.getByRole("navigation", { name: /channels/i }).getByRole("link", { name: "general" }),
   ).toBeVisible();
 });
 
@@ -52,7 +52,9 @@ async function loginAndOpenGeneral(page: Page) {
   // href from the sidebar keeps the test coupled to the real UI, while
   // `page.goto()` avoids flaky click-vs-drag behavior from the draggable
   // sidebar rows.
-  const generalLink = page.getByRole("navigation", { name: /channels/i }).getByText("# general");
+  const generalLink = page
+    .getByRole("navigation", { name: /channels/i })
+    .getByRole("link", { name: "general" });
   const generalHref = await generalLink.getAttribute("href");
   expect(generalHref).toBeTruthy();
   if (!generalHref) throw new Error("general link is missing an href");
