@@ -26,8 +26,11 @@
 //!   - http/https only — no file://, gopher://, etc.
 //!   - User-supplied URLs hit the network, so this is an SSRF surface. We
 //!     reject hostnames that resolve to a private/loopback/link-local IP
-//!     before issuing the request. Coarse — DNS rebinding can still bypass
-//!     on a second resolution — but better than nothing.
+//!     before issuing the request, including IPv4-mapped IPv6 forms like
+//!     `::ffff:127.0.0.1`. Redirects are followed manually and every hop's
+//!     host is re-validated, so a public URL can't 3xx us onto an internal
+//!     address. Residual gap: DNS rebinding between the safety lookup and the
+//!     client's own resolution can still bypass on a second resolution.
 //!   - 5s timeout, max 2 redirects, response body capped at 512 KiB.
 //!   - We do not inject oEmbed-provided HTML directly into any page. Instead
 //!     we parse out the first `<iframe src>` and require https; the client
@@ -157,6 +160,13 @@ fn is_unsafe_ip(ip: IpAddr) -> bool {
                 || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
         }
         IpAddr::V6(v6) => {
+            // IPv4-mapped addresses (`::ffff:a.b.c.d`) connect to the embedded
+            // IPv4 host once the socket is opened, so `::ffff:127.0.0.1` would
+            // otherwise slip past every v6 rule below. Apply the IPv4 denylist
+            // to the mapped address instead.
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_unsafe_ip(IpAddr::V4(mapped));
+            }
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
@@ -289,11 +299,7 @@ pub async fn fetch_embed(url: &str) -> Result<FetchedEmbed, FetchError> {
 
     // Generic path: fetch HTML, parse OG, optionally discover + fetch oEmbed.
     let client = build_client()?;
-    let resp = client
-        .get(parsed.clone())
-        .send()
-        .await
-        .map_err(|_| FetchError::Network)?;
+    let resp = send_checked(&client, parsed.clone()).await?;
     if !resp.status().is_success() {
         return Err(FetchError::BadStatus);
     }
@@ -345,10 +351,59 @@ async fn is_safe_http_url(url: &str) -> bool {
 fn build_client() -> Result<reqwest::Client, FetchError> {
     reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
+        // Redirects are followed manually by `send_checked` so every hop's
+        // host is re-validated against the SSRF denylist; reqwest's built-in
+        // policy would follow a `Location: http://127.0.0.1/...` unchecked.
+        .redirect(reqwest::redirect::Policy::none())
         .user_agent(USER_AGENT)
         .build()
         .map_err(|_| FetchError::Network)
+}
+
+/// Issue a GET for `start`, following up to `MAX_REDIRECTS` redirects while
+/// re-validating every `Location` target with the same host safety check
+/// applied to the initial URL. Without this an attacker-controlled public URL
+/// could 3xx-redirect the fetcher onto a loopback/internal address.
+///
+/// `start`'s host is assumed already validated by the caller.
+async fn send_checked(
+    client: &reqwest::Client,
+    start: Url,
+) -> Result<reqwest::Response, FetchError> {
+    let mut url = start;
+    let mut redirects = 0usize;
+    loop {
+        let resp = client
+            .get(url.clone())
+            .send()
+            .await
+            .map_err(|_| FetchError::Network)?;
+        if !resp.status().is_redirection() {
+            return Ok(resp);
+        }
+        // A 3xx with no usable Location isn't a redirect we can follow; hand
+        // it back and let the caller reject it on the non-success status.
+        let Some(location) = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+        else {
+            return Ok(resp);
+        };
+        if redirects >= MAX_REDIRECTS {
+            return Err(FetchError::Network);
+        }
+        redirects += 1;
+        let next = url.join(location).map_err(|_| FetchError::InvalidUrl)?;
+        if !matches!(next.scheme(), "http" | "https") {
+            return Err(FetchError::InvalidUrl);
+        }
+        let host = next.host_str().ok_or(FetchError::InvalidUrl)?;
+        if !host_is_safe(host).await {
+            return Err(FetchError::UnsafeHost);
+        }
+        url = next;
+    }
 }
 
 /// Fetch an oEmbed endpoint with `url=<target>&format=json` appended to any
@@ -375,11 +430,7 @@ async fn fetch_oembed_json(endpoint: &str, target_url: &str) -> Result<OembedRes
     }
 
     let client = build_client()?;
-    let resp = client
-        .get(oeu)
-        .send()
-        .await
-        .map_err(|_| FetchError::Network)?;
+    let resp = send_checked(&client, oeu).await?;
     if !resp.status().is_success() {
         return Err(FetchError::BadStatus);
     }
@@ -801,6 +852,86 @@ mod tests {
         assert!(!is_unsafe_ip("8.8.8.8".parse().unwrap()));
         assert!(!is_unsafe_ip("1.1.1.1".parse().unwrap()));
         assert!(!is_unsafe_ip("2606:4700:4700::1111".parse().unwrap()));
+    }
+
+    #[test]
+    fn is_unsafe_ip_blocks_ipv4_mapped_ipv6() {
+        // `::ffff:a.b.c.d` connects to the embedded IPv4 host, so the IPv4
+        // denylist must apply through the mapping.
+        assert!(is_unsafe_ip("::ffff:127.0.0.1".parse().unwrap()));
+        assert!(is_unsafe_ip("::ffff:10.0.0.1".parse().unwrap()));
+        assert!(is_unsafe_ip("::ffff:192.168.1.1".parse().unwrap()));
+        assert!(is_unsafe_ip("::ffff:169.254.1.1".parse().unwrap()));
+        assert!(is_unsafe_ip("::ffff:100.64.0.1".parse().unwrap()));
+        // Hex-form spelling of the same mapped range.
+        assert!(is_unsafe_ip("::ffff:7f00:1".parse().unwrap()));
+        // A mapped public address is still allowed.
+        assert!(!is_unsafe_ip("::ffff:8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn send_checked_rejects_redirect_to_loopback() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        actix_web::rt::System::new().block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            // One-shot server that 302-redirects to a loopback target. The
+            // start URL's host is not re-checked by send_checked (the caller
+            // validates it), so binding on loopback here is fine — the
+            // redirect target is what must be rejected.
+            actix_web::rt::spawn(async move {
+                if let Ok((mut sock, _)) = listener.accept().await {
+                    let mut buf = [0u8; 1024];
+                    let _ = sock.read(&mut buf).await;
+                    let resp = "HTTP/1.1 302 Found\r\n\
+                                Location: http://127.0.0.1:9/secret\r\n\
+                                Content-Length: 0\r\n\r\n";
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.flush().await;
+                }
+            });
+
+            let client = build_client().unwrap();
+            let start = Url::parse(&format!("http://{addr}/")).unwrap();
+            let err = send_checked(&client, start)
+                .await
+                .expect_err("redirect to loopback must be rejected");
+            assert!(
+                matches!(err, FetchError::UnsafeHost),
+                "expected UnsafeHost, got {err:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn send_checked_passes_through_non_redirect() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        actix_web::rt::System::new().block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            actix_web::rt::spawn(async move {
+                if let Ok((mut sock, _)) = listener.accept().await {
+                    let mut buf = [0u8; 1024];
+                    let _ = sock.read(&mut buf).await;
+                    let resp = "HTTP/1.1 200 OK\r\n\
+                                Content-Type: text/html\r\n\
+                                Content-Length: 2\r\n\r\nhi";
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.flush().await;
+                }
+            });
+
+            let client = build_client().unwrap();
+            let start = Url::parse(&format!("http://{addr}/")).unwrap();
+            let resp = send_checked(&client, start)
+                .await
+                .expect("non-redirect response should pass through");
+            assert!(resp.status().is_success());
+        });
     }
 
     #[test]

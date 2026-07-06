@@ -16,6 +16,7 @@ use crate::api::auth::UserResponse;
 use crate::auth::AuthUser;
 use crate::entity;
 use crate::error::AppError;
+use crate::photos::{ImageLimitError, UPLOAD_IMAGE_MAX_PIXELS, ensure_within_pixel_limit};
 use crate::util::now_unix_secs;
 
 const AVATAR_MAX_BYTES: usize = 2 * 1024 * 1024;
@@ -84,19 +85,12 @@ async fn upload_avatar(
     }
 
     // Decode, cover-crop to a square, resize to 256x256, re-encode as WebP.
-    let img = image::load_from_memory(&bytes).map_err(|_| AppError::InvalidRequest)?;
-    let (w, h) = (img.width(), img.height());
-    let side = w.min(h);
-    let x = (w - side) / 2;
-    let y = (h - side) / 2;
-    let cropped = img.crop_imm(x, y, side, side);
-    let resized = cropped.resize_exact(256, 256, image::imageops::FilterType::Lanczos3);
-
-    let mut out = Cursor::new(Vec::new());
-    resized
-        .write_to(&mut out, image::ImageFormat::WebP)
-        .map_err(|e| AppError::Internal(format!("encode webp: {e}")))?;
-    let webp = out.into_inner();
+    // A crafted small file can declare huge dimensions, so the pixel count is
+    // capped before the full decode, and the CPU-heavy decode/resize/encode
+    // runs on a blocking thread rather than stalling an async worker.
+    let webp = tokio::task::spawn_blocking(move || process_avatar_image(&bytes))
+        .await
+        .map_err(|e| AppError::Internal(format!("avatar processing task failed: {e}")))??;
 
     // Atomic write: <dir>/avatars/<id>.webp.tmp -> <dir>/avatars/<id>.webp
     let avatars_dir = storage.dir.join(AVATARS_SUBDIR);
@@ -119,6 +113,34 @@ async fn upload_avatar(
     let updated = model.update(db.get_ref()).await?;
 
     Ok(web::Json(UserResponse::from(updated)))
+}
+
+/// Decode `bytes`, cover-crop to a square, resize to 256x256, and re-encode as
+/// WebP. Rejects oversized images before decoding (decompression-bomb guard).
+/// Intended to run inside `spawn_blocking`.
+fn process_avatar_image(bytes: &[u8]) -> Result<Vec<u8>, AppError> {
+    match ensure_within_pixel_limit(bytes, UPLOAD_IMAGE_MAX_PIXELS) {
+        Ok(()) => {}
+        Err(ImageLimitError::TooLarge) => return Err(AppError::PayloadTooLarge),
+        Err(ImageLimitError::Unreadable) => return Err(AppError::InvalidRequest),
+    }
+
+    let img = image::load_from_memory(bytes).map_err(|_| AppError::InvalidRequest)?;
+    let (w, h) = (img.width(), img.height());
+    let side = w.min(h);
+    if side == 0 {
+        return Err(AppError::InvalidRequest);
+    }
+    let x = (w - side) / 2;
+    let y = (h - side) / 2;
+    let cropped = img.crop_imm(x, y, side, side);
+    let resized = cropped.resize_exact(256, 256, image::imageops::FilterType::Lanczos3);
+
+    let mut out = Cursor::new(Vec::new());
+    resized
+        .write_to(&mut out, image::ImageFormat::WebP)
+        .map_err(|e| AppError::Internal(format!("encode webp: {e}")))?;
+    Ok(out.into_inner())
 }
 
 #[delete("/me/avatar")]

@@ -28,6 +28,47 @@ fn make_png(side: u32) -> Vec<u8> {
     buf.into_inner()
 }
 
+/// A tiny, valid PNG (signature + IHDR only) that *declares* enormous
+/// dimensions. `image` reads the size from IHDR before decoding pixels, so
+/// this is a decompression-bomb probe: a few dozen bytes that would decode to
+/// gigabytes if the dimension guard weren't there.
+fn make_png_bomb(width: u32, height: u32) -> Vec<u8> {
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &b in data {
+            crc ^= u32::from(b);
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit depth, RGBA color type
+
+    fn write_chunk(kind: &[u8], data: &[u8], out: &mut Vec<u8>) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        let mut crc_input = Vec::from(kind);
+        crc_input.extend_from_slice(data);
+        out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+    }
+
+    let mut out = Vec::from(&b"\x89PNG\r\n\x1a\n"[..]);
+    write_chunk(b"IHDR", &ihdr, &mut out);
+    // A 2-byte zlib header is enough for dimension reading (which never
+    // decompresses) to succeed and report the IHDR size. That's the bomb: a
+    // tiny file declaring a huge image.
+    write_chunk(b"IDAT", &[0x78, 0x9c], &mut out);
+    write_chunk(b"IEND", &[], &mut out);
+    out
+}
+
 fn multipart_body(field: &str, filename: &str, content_type: &str, bytes: &[u8]) -> Vec<u8> {
     let mut body = Vec::new();
     body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
@@ -166,6 +207,39 @@ async fn test_upload_avatar_rejects_oversized() {
     // 3 MiB of PNG-looking bytes — larger than the 2 MiB cap.
     let oversized = vec![0u8; 3 * 1024 * 1024];
     let body = multipart_body("file", "big.png", "image/png", &oversized);
+    let req = test::TestRequest::post()
+        .uri("/me/avatar")
+        .insert_header(("content-type", multipart_content_type()))
+        .insert_header(alice.cookie_header())
+        .set_payload(body)
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+
+    std::fs::remove_dir_all(&uploads_dir).ok();
+}
+
+#[actix_web::test]
+async fn test_upload_avatar_rejects_pixel_bomb() {
+    let ctx = TestCtx::with_avatar_storage().await;
+    let alice = ctx.register("alice", "hunter2").await;
+    let uploads_dir = ctx.uploads_dir.clone().unwrap();
+    let storage = ctx.avatar_storage();
+    let app = test::init_service(
+        App::new()
+            .app_data(storage)
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
+
+    // Under the 2 MiB byte cap, but declares 6000 x 6000 (36M px, ~144 MB
+    // decoded RGBA) — over the pixel cap. Must be rejected on dimensions
+    // before any full decode/resize happens.
+    let bomb = make_png_bomb(6_000, 6_000);
+    assert!(bomb.len() < 2 * 1024 * 1024);
+    let body = multipart_body("file", "bomb.png", "image/png", &bomb);
     let req = test::TestRequest::post()
         .uri("/me/avatar")
         .insert_header(("content-type", multipart_content_type()))

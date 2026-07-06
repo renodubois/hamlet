@@ -14,6 +14,43 @@ use crate::error::AppError;
 pub(crate) const MAX_MESSAGE_PHOTOS: usize = 4;
 pub(crate) const PHOTO_MAX_BYTES: usize = 10 * 1024 * 1024;
 const PHOTO_MAX_PIXELS: u64 = 25_000_000;
+
+/// Pixel ceiling for avatar and emoji uploads. A tiny compressed file can
+/// declare enormous dimensions (a decompression bomb), so the avatar/emoji
+/// paths read the header and reject oversized images before the full decode
+/// allocates and the resize burns CPU. Matches the message-photo ceiling.
+pub(crate) const UPLOAD_IMAGE_MAX_PIXELS: u64 = 25_000_000;
+
+/// Outcome of the pre-decode header check shared by avatar/emoji uploads.
+#[derive(Debug)]
+pub(crate) enum ImageLimitError {
+    /// The bytes could not be parsed as a supported image header.
+    Unreadable,
+    /// The declared dimensions exceed the allowed pixel count.
+    TooLarge,
+}
+
+/// Read image header dimensions (cheap — no pixel data decoded) and reject
+/// anything over `max_pixels` before a caller performs a full decode. This is
+/// the decompression-bomb guard for the avatar and emoji endpoints, which
+/// otherwise decode straight from attacker-supplied bytes.
+pub(crate) fn ensure_within_pixel_limit(
+    bytes: &[u8],
+    max_pixels: u64,
+) -> Result<(), ImageLimitError> {
+    let (width, height) = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|_| ImageLimitError::Unreadable)?
+        .into_dimensions()
+        .map_err(|_| ImageLimitError::Unreadable)?;
+    if width == 0 || height == 0 {
+        return Err(ImageLimitError::Unreadable);
+    }
+    if u64::from(width).saturating_mul(u64::from(height)) > max_pixels {
+        return Err(ImageLimitError::TooLarge);
+    }
+    Ok(())
+}
 const FULL_IMAGE_MAX_EDGE: u32 = 2048;
 const THUMBNAIL_MAX_EDGE: u32 = 512;
 pub(crate) const STORED_PHOTO_CONTENT_TYPE: &str = "image/webp";
@@ -360,6 +397,79 @@ mod tests {
         assert!(matches!(
             validate_photo_dimensions(6_000, 5_000).unwrap_err(),
             AppError::PhotoDimensionsTooLarge
+        ));
+    }
+
+    /// PNG signature + IHDR chunk only, declaring `width`x`height`. `image`
+    /// reads dimensions from IHDR without decoding pixel data, so this lets us
+    /// exercise the decompression-bomb guard with a handful of bytes.
+    fn png_header_declaring(width: u32, height: u32) -> Vec<u8> {
+        fn crc32(data: &[u8]) -> u32 {
+            let mut crc = 0xFFFF_FFFFu32;
+            for &b in data {
+                crc ^= u32::from(b);
+                for _ in 0..8 {
+                    let mask = (crc & 1).wrapping_neg();
+                    crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+                }
+            }
+            !crc
+        }
+
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&width.to_be_bytes());
+        ihdr.extend_from_slice(&height.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit depth, RGBA color type
+
+        fn write_chunk(kind: &[u8], data: &[u8], out: &mut Vec<u8>) {
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            out.extend_from_slice(kind);
+            out.extend_from_slice(data);
+            let mut crc_input = Vec::from(kind);
+            crc_input.extend_from_slice(data);
+            out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+        }
+
+        let mut out = Vec::from(&b"\x89PNG\r\n\x1a\n"[..]);
+        write_chunk(b"IHDR", &ihdr, &mut out);
+        // `into_dimensions` reads chunk headers until the first IDAT; it never
+        // decompresses, so a 2-byte zlib header is enough for it to report the
+        // IHDR dimensions. That's the whole bomb: a tiny file declaring a huge
+        // image.
+        write_chunk(b"IDAT", &[0x78, 0x9c], &mut out);
+        write_chunk(b"IEND", &[], &mut out);
+        out
+    }
+
+    #[test]
+    fn ensure_within_pixel_limit_accepts_and_rejects_by_threshold() {
+        let bytes = image_bytes(100, 100, ImageFormat::Png); // 10_000 pixels
+        assert!(ensure_within_pixel_limit(&bytes, 10_000).is_ok());
+        assert!(matches!(
+            ensure_within_pixel_limit(&bytes, 9_999),
+            Err(ImageLimitError::TooLarge)
+        ));
+    }
+
+    #[test]
+    fn ensure_within_pixel_limit_rejects_bomb_via_header_without_decoding() {
+        // 6000 x 6000 = 36M pixels (> the 25M cap) is ~144 MB decoded RGBA:
+        // over our limit but under `image`'s own 512 MB alloc guard, so
+        // `into_dimensions` succeeds and our pixel-count check is what rejects
+        // it — from the header alone, using a few dozen bytes.
+        let bomb = png_header_declaring(6_000, 6_000);
+        assert!(bomb.len() < 100);
+        assert!(matches!(
+            ensure_within_pixel_limit(&bomb, UPLOAD_IMAGE_MAX_PIXELS),
+            Err(ImageLimitError::TooLarge)
+        ));
+    }
+
+    #[test]
+    fn ensure_within_pixel_limit_flags_unreadable_input() {
+        assert!(matches!(
+            ensure_within_pixel_limit(b"definitely not an image", UPLOAD_IMAGE_MAX_PIXELS),
+            Err(ImageLimitError::Unreadable)
         ));
     }
 

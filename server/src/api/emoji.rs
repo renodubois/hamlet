@@ -14,6 +14,7 @@ use crate::auth::AuthUser;
 use crate::broadcast::{BroadcastEvent, Broadcaster};
 use crate::entity;
 use crate::error::AppError;
+use crate::photos::{ImageLimitError, UPLOAD_IMAGE_MAX_PIXELS, ensure_within_pixel_limit};
 use crate::util::{generate_id, now_unix_secs};
 
 pub const EMOJIS_SUBDIR: &str = "emojis";
@@ -261,6 +262,13 @@ fn prepare_emoji_upload(
 }
 
 fn normalize_static_image(bytes: &[u8]) -> Result<Vec<u8>, AppError> {
+    // Guard against decompression bombs: reject oversized declared dimensions
+    // before the full decode allocates and the resize burns CPU.
+    match ensure_within_pixel_limit(bytes, UPLOAD_IMAGE_MAX_PIXELS) {
+        Ok(()) => {}
+        Err(ImageLimitError::TooLarge) => return Err(AppError::PayloadTooLarge),
+        Err(ImageLimitError::Unreadable) => return Err(AppError::UnsupportedEmojiFile),
+    }
     let img = image::load_from_memory(bytes).map_err(|_| AppError::UnsupportedEmojiFile)?;
     let (w, h) = (img.width(), img.height());
     let side = w.min(h);
@@ -338,8 +346,12 @@ async fn create_emoji(
         return Err(AppError::EmojiFileRequired);
     }
 
+    // Static emoji uploads decode/crop/resize/encode; run that CPU-heavy work
+    // off the async worker so a crafted image can't stall request handling.
     let content_type = content_type.unwrap_or_default();
-    let prepared = prepare_emoji_upload(&content_type, bytes)?;
+    let prepared = tokio::task::spawn_blocking(move || prepare_emoji_upload(&content_type, bytes))
+        .await
+        .map_err(|e| AppError::Internal(format!("emoji processing task failed: {e}")))??;
 
     let duplicate = entity::emoji::Entity::find()
         .filter(entity::emoji::Column::NormalizedName.eq(&normalized_name))

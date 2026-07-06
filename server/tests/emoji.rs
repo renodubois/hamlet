@@ -29,6 +29,44 @@ fn make_png(side: u32) -> Vec<u8> {
     buf.into_inner()
 }
 
+/// A tiny, dimension-reading-valid PNG that *declares* large dimensions
+/// without carrying the pixel data — a decompression-bomb probe. The dimension
+/// guard must reject it before any full decode.
+fn make_png_bomb(width: u32, height: u32) -> Vec<u8> {
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &b in data {
+            crc ^= u32::from(b);
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            }
+        }
+        !crc
+    }
+    fn write_chunk(kind: &[u8], data: &[u8], out: &mut Vec<u8>) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        let mut crc_input = Vec::from(kind);
+        crc_input.extend_from_slice(data);
+        out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+    }
+
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit depth, RGBA color type
+
+    let mut out = Vec::from(&b"\x89PNG\r\n\x1a\n"[..]);
+    write_chunk(b"IHDR", &ihdr, &mut out);
+    // A 2-byte zlib header is enough for dimension reading (no decompression)
+    // to succeed and report the IHDR size.
+    write_chunk(b"IDAT", &[0x78, 0x9c], &mut out);
+    write_chunk(b"IEND", &[], &mut out);
+    out
+}
+
 fn make_jpeg(side: u32) -> Vec<u8> {
     use image::{Rgb, RgbImage};
     let img = RgbImage::from_pixel(side, side, Rgb([180, 90, 30]));
@@ -380,6 +418,37 @@ async fn test_upload_animated_gif_and_webp_preserve_original_assets() {
         let written = uploads_dir.join("emojis").join(format!("{id}.{extension}"));
         assert_eq!(std::fs::read(&written).unwrap(), bytes);
     }
+
+    std::fs::remove_dir_all(&uploads_dir).ok();
+}
+
+#[actix_web::test]
+async fn test_upload_emoji_rejects_pixel_bomb() {
+    let ctx = TestCtx::with_avatar_storage().await;
+    let alice = ctx.register("alice", "hunter2").await;
+    let uploads_dir = ctx.uploads_dir.clone().unwrap();
+    let app = test::init_service(
+        App::new()
+            .service(actix_files::Files::new("/uploads", uploads_dir.clone()))
+            .configure(|cfg| configure_app(cfg, ctx.deps())),
+    )
+    .await;
+
+    // Tiny file (well under the byte cap) declaring 6000x6000 (36M px, over the
+    // pixel cap). Must be rejected on dimensions before decode/resize.
+    let bomb = make_png_bomb(6_000, 6_000);
+    assert!(bomb.len() < 2 * 1024 * 1024);
+    let body = emoji_multipart_body(Some("bomb"), Some(("bomb.png", "image/png", &bomb)));
+    let req = test::TestRequest::post()
+        .uri("/emojis")
+        .insert_header(("content-type", multipart_content_type()))
+        .insert_header(alice.cookie_header())
+        .set_payload(body)
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
 
     std::fs::remove_dir_all(&uploads_dir).ok();
 }
