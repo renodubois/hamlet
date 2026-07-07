@@ -51,6 +51,10 @@ const JSON_HEADERS_WITH_CSRF = {
 const CSRF_ONLY_HEADERS = { [CSRF_HEADER]: CSRF_TEST_TOKEN };
 
 describe("server url", () => {
+  const setHappyDomUrl = (url: string) => {
+    (window as typeof window & { happyDOM?: { setURL(url: string): void } }).happyDOM?.setURL(url);
+  };
+
   test("defaults when nothing is stored", () => {
     expect(getServerUrl()).toBe(DEFAULT_SERVER);
   });
@@ -59,6 +63,21 @@ describe("server url", () => {
     setServerUrl("http://example.test:9000");
     expect(getServerUrl()).toBe("http://example.test:9000");
     expect(localStorage.getItem("hamlet.serverUrl")).toBe("http://example.test:9000");
+  });
+
+  test("normalizes localhost API URLs when the local renderer uses 127.0.0.1", () => {
+    const originalUrl = window.location.href;
+    try {
+      setHappyDomUrl("http://127.0.0.1:1422/");
+
+      localStorage.setItem("hamlet.serverUrl", "http://localhost:3030");
+      expect(getServerUrl()).toBe("http://127.0.0.1:3030");
+
+      setServerUrl("http://localhost:3030");
+      expect(localStorage.getItem("hamlet.serverUrl")).toBe("http://127.0.0.1:3030");
+    } finally {
+      setHappyDomUrl(originalUrl);
+    }
   });
 });
 

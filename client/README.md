@@ -105,7 +105,10 @@ There are two different URLs to keep straight:
 
 Keep the server URL spelling stable while testing. The `localhost` and
 `127.0.0.1` spellings are different cookie hosts, so switching between them can
-look like a lost session even though the renderer origin did not change.
+look like a lost session even though the renderer origin did not change. When
+the local renderer is on the default `127.0.0.1` host, the client automatically
+rewrites saved `http://localhost:...` server URLs to `http://127.0.0.1:...` so
+SameSite=Lax cookies still work after the CSRF cookie changes.
 
 `HAMLET_RENDERER_URL` is a developer/test override for the renderer URL. The
 security policy still requires the origin to match the configured loopback

@@ -14,7 +14,7 @@ let cachedCsrfToken: CachedCsrfToken | undefined;
 let csrfTokenRequest: Promise<string> | undefined;
 
 export function getServerUrl(): string {
-  return localStorage.getItem("hamlet.serverUrl") ?? DEFAULT_SERVER;
+  return normalizeLoopbackServerUrl(localStorage.getItem("hamlet.serverUrl") ?? DEFAULT_SERVER);
 }
 
 export function resolveServerUrl(pathOrUrl: string): string {
@@ -31,7 +31,7 @@ export function resolveServerUrl(pathOrUrl: string): string {
 
 export function setServerUrl(url: string): void {
   clearCachedCsrfToken();
-  localStorage.setItem("hamlet.serverUrl", url);
+  localStorage.setItem("hamlet.serverUrl", normalizeLoopbackServerUrl(url));
 }
 
 export function clearCachedCsrfToken(): void {
@@ -51,6 +51,27 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
   const response = await fetch(`${serverUrl}${path}`, requestInit);
   if (isAuthBoundary(path, requestInit.method)) clearCachedCsrfToken();
   return response;
+}
+
+function normalizeLoopbackServerUrl(serverUrl: string): string {
+  // The renderer defaults to 127.0.0.1. Rewriting a saved localhost API URL to
+  // the same loopback host keeps local requests same-site so Lax cookies work.
+  if (typeof window === "undefined" || window.location.hostname !== "127.0.0.1") {
+    return serverUrl;
+  }
+
+  try {
+    const parsed = new URL(serverUrl);
+    if (parsed.protocol !== "http:" || parsed.hostname !== "localhost") return serverUrl;
+
+    parsed.hostname = window.location.hostname;
+    if (parsed.pathname === "/" && !parsed.search && !parsed.hash) {
+      return parsed.toString().replace(/\/$/, "");
+    }
+    return parsed.toString();
+  } catch {
+    return serverUrl;
+  }
 }
 
 function shouldAttachCsrf(path: string, method: string | undefined): boolean {
