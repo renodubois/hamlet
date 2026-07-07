@@ -46,7 +46,7 @@ Run commands from `client/` unless noted.
 | Renderer-only built preview      | `npm run build:renderer && npm run serve` | Serves built renderer assets on the same configured loopback origin for browser-only checks.                                                                                                                    |
 | Electron dev launch              | `npm run electron:dev`                    | Builds main/preload, starts Vite, waits for the configured renderer URL, then launches Electron with `HAMLET_RENDERER_URL` pointing at Vite. Server must already be running.                                    |
 | Build everything                 | `npm run build`                           | Builds renderer output in `dist/` and Electron main/preload output in `dist-electron/`.                                                                                                                         |
-| Static web build                 | `npm run build:web`                       | Runs a normal Vite renderer build, then writes GitHub Pages-friendly SPA fallback files (`dist/404.html` and `dist/.nojekyll`).                                                                                 |
+| Static web build                 | `npm run build:web`                       | Runs a normal Vite renderer build, then writes GitHub Pages-friendly SPA fallback files (`dist/404.html` and `dist/.nojekyll`). Set `HAMLET_BUILD_SOURCE_MAPS=true` to emit deployable `.map` files.            |
 | Electron-only build              | `npm run electron:build`                  | Builds only main/preload. Useful before launching multiple dev profiles against an already-running Vite server.                                                                                                 |
 | Local unpacked package           | `npm run package:unpacked`                | Runs `npm run build`, then writes `release/Hamlet Electron Alpha-<platform>-<arch>/`.                                                                                                                           |
 | Launch unpacked package          | `npm run package:launch`                  | Rebuilds/repackages, clears `HAMLET_RENDERER_URL`, and launches the unpacked app against the packaged loopback static renderer.                                                                                 |
@@ -101,7 +101,10 @@ There are two different URLs to keep straight:
   `http://127.0.0.1:3030`; set `VITE_HAMLET_DEFAULT_SERVER_URL` or
   `HAMLET_SERVER_URL` to change the default shown by a worktree. For static web
   builds, set `VITE_HAMLET_DEFAULT_SERVER_URL` before `npm run build:web` to
-  bake in the hosted API URL shown on the login screen.
+  bake in the hosted API URL shown on the login screen. Set
+  `HAMLET_BUILD_SOURCE_MAPS=true` to publish Vite source maps alongside the
+  static assets; the GitHub Pages deployment workflow enables this for deployed
+  builds.
 
 Keep the server URL spelling stable while testing. The `localhost` and
 `127.0.0.1` spellings are different cookie hosts, so switching between them can

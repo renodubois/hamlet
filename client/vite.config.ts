@@ -20,6 +20,17 @@ function rendererPort(env: Record<string, string>): number {
   return port;
 }
 
+function envFlag(env: Record<string, string>, key: string): boolean {
+  const rawValue = env[key]?.trim().toLowerCase();
+  if (rawValue === undefined || rawValue === "" || rawValue === "0" || rawValue === "false") {
+    return false;
+  }
+  if (rawValue === "1" || rawValue === "true") {
+    return true;
+  }
+  throw new Error(`Invalid ${key} "${env[key]}". Expected true/false or 1/0.`);
+}
+
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
@@ -30,6 +41,7 @@ export default defineConfig(({ mode }) => {
     "VITE_HAMLET_DEFAULT_SERVER_URL",
     envOr(env, "HAMLET_SERVER_URL", defaultServerUrl),
   );
+  const emitSourceMaps = envFlag(env, "HAMLET_BUILD_SOURCE_MAPS");
 
   return {
     plugins: [devtools(), solid()],
@@ -45,6 +57,9 @@ export default defineConfig(({ mode }) => {
       host: rendererHost,
       port,
       strictPort: true,
+    },
+    build: {
+      sourcemap: emitSourceMaps,
     },
     define: {
       "import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL": JSON.stringify(hamletServerUrl),

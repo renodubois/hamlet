@@ -46,6 +46,7 @@ jobs:
       - name: Build static renderer
         working-directory: client
         env:
+          HAMLET_BUILD_SOURCE_MAPS: "true"
           VITE_HAMLET_DEFAULT_SERVER_URL: ${{ inputs.api_url }}
           VITE_HAMLET_SENTRY_DSN: ${{ inputs.renderer_sentry_dsn }}
         run: npm run build:web
