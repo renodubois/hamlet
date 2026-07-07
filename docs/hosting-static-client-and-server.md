@@ -202,8 +202,12 @@ HAMLET_ACCOUNT_REGISTRATION_ENABLED=false
 # Optional server-side Sentry. Leave blank to disable.
 HAMLET_SENTRY_DSN=
 
-# Leave these empty if voice/video is disabled.
+# Leave LiveKit URL/credentials empty if voice/video is disabled.
+# LIVEKIT_URL is the server-side LiveKit URL. LIVEKIT_CLIENT_URL is the
+# browser-reachable signaling URL returned by /voice/token; leave it empty
+# when clients can use LIVEKIT_URL directly.
 LIVEKIT_URL=
+LIVEKIT_CLIENT_URL=
 LIVEKIT_API_KEY=
 LIVEKIT_API_SECRET=
 # Set when using the optional self-hosted LiveKit Compose file.
@@ -240,6 +244,8 @@ This keeps SQLite, public uploads, private message attachments, and server state
 
 If voice/video is not needed yet, do not include `docker-compose.livekit.yml` and leave `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` empty. Hamlet will still boot; voice endpoints return 503.
 
+If the Hamlet server reaches LiveKit through an internal URL but browsers must use a public domain, set both URLs. For example, with API traffic on `https://api.example.com` and LiveKit signaling on `wss://livekit.example.com`, use `LIVEKIT_CLIENT_URL=wss://livekit.example.com` so `/voice/token/*` returns the client-reachable address instead of the server-side `LIVEKIT_URL`.
+
 For self-hosted LiveKit, create `server/livekit.prod.yaml` on the host. API key and secret must match `server/.env`.
 
 ```yaml
@@ -268,8 +274,9 @@ For LiveKit Cloud:
 
 1. Do not run the local `livekit` service.
 2. Set `LIVEKIT_URL` to the Cloud project's `wss://...` URL.
-3. Set `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` to that project's credentials.
-4. In LiveKit Cloud, configure a webhook to `https://api.example.com/livekit/webhook` if you need participant/sidebar state to update from LiveKit webhooks.
+3. Leave `LIVEKIT_CLIENT_URL` empty unless clients need a different public URL.
+4. Set `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` to that project's credentials.
+5. In LiveKit Cloud, configure a webhook to `https://api.example.com/livekit/webhook` if you need participant/sidebar state to update from LiveKit webhooks.
 
 ### 5. Configure Caddy
 
@@ -390,6 +397,7 @@ Environment=HAMLET_ACCOUNT_REGISTRATION_ENABLED=false
 Environment=HAMLET_SENTRY_DSN=
 Environment=RUST_LOG=info
 # Environment=LIVEKIT_URL=wss://livekit.example.com
+# Environment=LIVEKIT_CLIENT_URL=wss://livekit.example.com
 # Environment=LIVEKIT_API_KEY=...
 # Environment=LIVEKIT_API_SECRET=...
 ExecStart=/usr/local/bin/hamlet

@@ -96,7 +96,7 @@ async fn mint_voice_token(
         .map_err(|e| AppError::Internal(format!("livekit token: {e}")))?;
 
     Ok(web::Json(VoiceTokenResponse {
-        url: cfg.url.clone(),
+        url: cfg.client_url.clone(),
         token,
         room,
     }))
@@ -1772,6 +1772,7 @@ mod tests {
 
         let voice_cfg = VoiceConfig {
             url: "ws://localhost:7880".to_string(),
+            client_url: "ws://localhost:7880".to_string(),
             api_key: "devkey".to_string(),
             api_secret: "devsecretdevsecretdevsecretdevsecret".to_string(),
         };
@@ -1819,7 +1820,8 @@ mod tests {
         let session = auth::create_session(&db, user.id).await.unwrap();
 
         let voice_cfg = VoiceConfig {
-            url: "ws://localhost:7880".to_string(),
+            url: "ws://livekit.internal:7880".to_string(),
+            client_url: "wss://voice.hamlet.chat".to_string(),
             api_key: "devkey".to_string(),
             api_secret: "devsecretdevsecretdevsecretdevsecret".to_string(),
         };
@@ -1846,7 +1848,8 @@ mod tests {
         let resp = test::call_service(&app, req).await;
         assert!(resp.status().is_success());
         let body: VoiceTokenResponse = test::read_body_json(resp).await;
-        assert_eq!(body.url, voice_cfg.url);
+        assert_eq!(body.url, voice_cfg.client_url);
+        assert_ne!(body.url, voice_cfg.url);
         assert_eq!(body.room, room_name(voice_chan_id));
 
         let verifier = livekit_api::access_token::TokenVerifier::with_api_key(

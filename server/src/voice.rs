@@ -16,29 +16,57 @@ use serde::Serialize;
 
 #[derive(Clone, Debug)]
 pub struct VoiceConfig {
+    /// LiveKit URL used by server-side code. This can be an internal address
+    /// that browsers/Electron clients cannot reach.
     pub url: String,
+    /// LiveKit signaling URL returned to clients from `/voice/token/*`.
+    pub client_url: String,
     pub api_key: String,
     pub api_secret: String,
 }
 
 impl VoiceConfig {
-    /// Read configuration from env (`LIVEKIT_URL`, `LIVEKIT_API_KEY`,
-    /// `LIVEKIT_API_SECRET`). Returns `None` when any variable is missing so
-    /// `cargo run` without LiveKit still boots — voice endpoints will then
-    /// return 503.
+    /// Read configuration from env (`LIVEKIT_URL`, `LIVEKIT_CLIENT_URL`,
+    /// `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`). Returns `None` when any
+    /// required variable is missing so `cargo run` without LiveKit still boots
+    /// — voice endpoints will then return 503. `LIVEKIT_CLIENT_URL` is optional
+    /// and falls back to `LIVEKIT_URL` for local deployments where server and
+    /// client use the same signaling URL.
     pub fn from_env() -> Option<Self> {
-        let url = std::env::var("LIVEKIT_URL").ok()?;
-        let api_key = std::env::var("LIVEKIT_API_KEY").ok()?;
-        let api_secret = std::env::var("LIVEKIT_API_SECRET").ok()?;
-        if url.is_empty() || api_key.is_empty() || api_secret.is_empty() {
-            return None;
-        }
+        let url = std::env::var("LIVEKIT_URL").ok();
+        let client_url = std::env::var("LIVEKIT_CLIENT_URL").ok();
+        let api_key = std::env::var("LIVEKIT_API_KEY").ok();
+        let api_secret = std::env::var("LIVEKIT_API_SECRET").ok();
+        Self::from_env_values(
+            url.as_deref(),
+            client_url.as_deref(),
+            api_key.as_deref(),
+            api_secret.as_deref(),
+        )
+    }
+
+    fn from_env_values(
+        url: Option<&str>,
+        client_url: Option<&str>,
+        api_key: Option<&str>,
+        api_secret: Option<&str>,
+    ) -> Option<Self> {
+        let url = non_empty_env_value(url)?;
+        let api_key = non_empty_env_value(api_key)?;
+        let api_secret = non_empty_env_value(api_secret)?;
+        let client_url = non_empty_env_value(client_url).unwrap_or(url);
+
         Some(Self {
-            url,
-            api_key,
-            api_secret,
+            url: url.to_owned(),
+            client_url: client_url.to_owned(),
+            api_key: api_key.to_owned(),
+            api_secret: api_secret.to_owned(),
         })
     }
+}
+
+fn non_empty_env_value(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !value.is_empty())
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -514,6 +542,78 @@ pub fn parse_channel_id(room_name: &str) -> Option<i64> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_config_defaults_client_url_to_livekit_url() {
+        let cfg = VoiceConfig::from_env_values(
+            Some("ws://livekit.internal:7880"),
+            None,
+            Some("devkey"),
+            Some("devsecretdevsecretdevsecretdevsecret"),
+        )
+        .unwrap();
+
+        assert_eq!(cfg.url, "ws://livekit.internal:7880");
+        assert_eq!(cfg.client_url, "ws://livekit.internal:7880");
+    }
+
+    #[test]
+    fn voice_config_uses_client_url_override() {
+        let cfg = VoiceConfig::from_env_values(
+            Some("ws://livekit.internal:7880"),
+            Some("wss://voice.hamlet.chat"),
+            Some("devkey"),
+            Some("devsecretdevsecretdevsecretdevsecret"),
+        )
+        .unwrap();
+
+        assert_eq!(cfg.url, "ws://livekit.internal:7880");
+        assert_eq!(cfg.client_url, "wss://voice.hamlet.chat");
+    }
+
+    #[test]
+    fn voice_config_requires_server_url_and_credentials() {
+        assert!(
+            VoiceConfig::from_env_values(
+                Some(""),
+                Some("wss://voice.hamlet.chat"),
+                Some("devkey"),
+                Some("devsecretdevsecretdevsecretdevsecret"),
+            )
+            .is_none()
+        );
+        assert!(
+            VoiceConfig::from_env_values(
+                Some("ws://livekit.internal:7880"),
+                Some("wss://voice.hamlet.chat"),
+                None,
+                Some("devsecretdevsecretdevsecretdevsecret"),
+            )
+            .is_none()
+        );
+        assert!(
+            VoiceConfig::from_env_values(
+                Some("ws://livekit.internal:7880"),
+                Some("wss://voice.hamlet.chat"),
+                Some("devkey"),
+                Some(""),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn empty_client_url_falls_back_to_server_url() {
+        let cfg = VoiceConfig::from_env_values(
+            Some("ws://livekit.internal:7880"),
+            Some(""),
+            Some("devkey"),
+            Some("devsecretdevsecretdevsecretdevsecret"),
+        )
+        .unwrap();
+
+        assert_eq!(cfg.client_url, "ws://livekit.internal:7880");
+    }
 
     fn p(channel_id: i64, user_id: i64) -> VoiceParticipant {
         VoiceParticipant {

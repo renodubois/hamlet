@@ -9,6 +9,7 @@ services:
       CARGO_TARGET_DIR: /app/target
       HAMLET_SEED_DEV_DATA: "true"
       LIVEKIT_URL: "${LIVEKIT_URL:-ws://127.0.0.1:7880}"
+      LIVEKIT_CLIENT_URL: "${LIVEKIT_CLIENT_URL:-}"
       LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:-devkey}"
       LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:-devsecretdevsecretdevsecretdevsecret}"
     volumes:

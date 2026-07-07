@@ -104,9 +104,11 @@ export default function ChannelSidebar(props: {
                   onDrop={(e) => handleDrop(e, channel.id, channels() ?? [])}
                   onDragEnd={clearDragState}
                 >
-                  <Show
-                    when={channel.type === "voice"}
-                    fallback={
+                  <Switch fallback={<p>unknown channel type: {channel.id}</p>}>
+                    <Match when={channel.type === "voice"}>
+                      <VoiceChannel channel={channel} />
+                    </Match>
+                    <Match when={channel.type === "text"}>
                       <A
                         href={`/channel/${channel.id}`}
                         activeClass="bg-gray-700 text-white font-medium"
@@ -162,10 +164,8 @@ export default function ChannelSidebar(props: {
                           </span>
                         </Show>
                       </A>
-                    }
-                  >
-                    <VoiceChannel channel={channel} />
-                  </Show>
+                    </Match>
+                  </Switch>
                 </div>
               )}
             </For>
