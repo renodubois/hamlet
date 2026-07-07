@@ -14,8 +14,20 @@ import type {
   VoiceParticipant,
 } from "../../api";
 
-const BASE = import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL ?? "http://127.0.0.1:3030";
+const CONFIGURED_SERVER_URL = import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL ?? "http://127.0.0.1";
+const BASE = originWithoutPort(CONFIGURED_SERVER_URL);
+const API_PORT = 3030;
+const API_BASE = `${BASE}:${API_PORT}`;
+const VOICE_PORT = 7880;
+const VOICE_BASE = `${BASE.replace(/^http/, "ws")}:${VOICE_PORT}`;
 const MAX_SAFE_MESSAGE_ID = Number.MAX_SAFE_INTEGER;
+
+function originWithoutPort(url: string): string {
+  const parsed = new URL(url);
+  parsed.port = "";
+  return parsed.origin;
+}
+
 const CSRF_COOKIE = "hamlet_csrf";
 const CSRF_TEST_TOKEN = "msw-csrf-token";
 
@@ -452,13 +464,13 @@ function hydrateMentionsFromText(currentState: HandlerState, text: string): Ment
 
 export function createHandlers(state: HandlerState) {
   return [
-    http.get(`${BASE}/config`, () =>
+    http.get(`${API_BASE}/config`, () =>
       HttpResponse.json({
         account_registration_enabled: state.accountRegistrationEnabled,
       }),
     ),
 
-    http.get(`${BASE}/csrf`, () => {
+    http.get(`${API_BASE}/csrf`, () => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       return HttpResponse.json(
         { token: CSRF_TEST_TOKEN },
@@ -470,12 +482,12 @@ export function createHandlers(state: HandlerState) {
       );
     }),
 
-    http.get(`${BASE}/me`, () => {
+    http.get(`${API_BASE}/me`, () => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       return HttpResponse.json(state.me);
     }),
 
-    http.put(`${BASE}/me`, async ({ request }) => {
+    http.put(`${API_BASE}/me`, async ({ request }) => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       const body = (await request.json()) as { display_name: string | null };
       const raw = body.display_name;
@@ -488,7 +500,7 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(state.me);
     }),
 
-    http.put(`${BASE}/me/password`, async ({ request }) => {
+    http.put(`${API_BASE}/me/password`, async ({ request }) => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       const body = (await request.json()) as {
         current_password?: string;
@@ -508,7 +520,7 @@ export function createHandlers(state: HandlerState) {
       return new HttpResponse(null, { status: 204 });
     }),
 
-    http.get(`${BASE}/users`, ({ request }) => {
+    http.get(`${API_BASE}/users`, ({ request }) => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       const url = new URL(request.url);
       const query = url.searchParams.get("q") ?? url.searchParams.get("query") ?? "";
@@ -517,7 +529,7 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(searchPublicUsers(state.users, query, limit));
     }),
 
-    http.post(`${BASE}/login`, async ({ request }) => {
+    http.post(`${API_BASE}/login`, async ({ request }) => {
       const body = (await request.json()) as { username: string; password: string };
       if (
         body.username === state.validCredentials.username &&
@@ -530,12 +542,12 @@ export function createHandlers(state: HandlerState) {
       return new HttpResponse(null, { status: 401 });
     }),
 
-    http.post(`${BASE}/logout`, () => {
+    http.post(`${API_BASE}/logout`, () => {
       state.me = null;
       return new HttpResponse(null, { status: 200 });
     }),
 
-    http.post(`${BASE}/register`, async ({ request }) => {
+    http.post(`${API_BASE}/register`, async ({ request }) => {
       if (!state.accountRegistrationEnabled) {
         return errorJson("registration_disabled", "account registration is disabled", 403);
       }
@@ -546,14 +558,14 @@ export function createHandlers(state: HandlerState) {
       return new HttpResponse(null, { status: 200 });
     }),
 
-    http.get(`${BASE}/channels`, () => HttpResponse.json(state.channels)),
+    http.get(`${API_BASE}/channels`, () => HttpResponse.json(state.channels)),
 
-    http.get(`${BASE}/read-states`, () => {
+    http.get(`${API_BASE}/read-states`, () => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       return HttpResponse.json(state.readStates);
     }),
 
-    http.put(`${BASE}/channels/:id/read-state`, async ({ request, params }) => {
+    http.put(`${API_BASE}/channels/:id/read-state`, async ({ request, params }) => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       const channelId = Number(params.id);
       const body = (await request.json()) as { last_visible_message_id: number };
@@ -578,9 +590,9 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(summary);
     }),
 
-    http.get(`${BASE}/emojis`, () => HttpResponse.json(state.customEmojis)),
+    http.get(`${API_BASE}/emojis`, () => HttpResponse.json(state.customEmojis)),
 
-    http.post(`${BASE}/emojis`, async ({ request }) => {
+    http.post(`${API_BASE}/emojis`, async ({ request }) => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       const form = await request.formData();
       const rawName = form.get("name");
@@ -616,7 +628,7 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(created, { status: 201 });
     }),
 
-    http.patch(`${BASE}/emojis/:id`, async ({ request, params }) => {
+    http.patch(`${API_BASE}/emojis/:id`, async ({ request, params }) => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       const id = Number(params.id);
       const body = (await request.json()) as { name?: string };
@@ -653,7 +665,7 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(updated);
     }),
 
-    http.delete(`${BASE}/emojis/:id`, ({ params }) => {
+    http.delete(`${API_BASE}/emojis/:id`, ({ params }) => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       const id = Number(params.id);
       const existing = state.customEmojis.find((emoji) => emoji.id === id);
@@ -665,7 +677,7 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(deleted);
     }),
 
-    http.post(`${BASE}/emojis/:id/restore`, ({ params }) => {
+    http.post(`${API_BASE}/emojis/:id/restore`, ({ params }) => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       const id = Number(params.id);
       const existing = state.customEmojis.find((emoji) => emoji.id === id);
@@ -692,12 +704,12 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(restored);
     }),
 
-    http.get(`${BASE}/messages/:id`, ({ params }) => {
+    http.get(`${API_BASE}/messages/:id`, ({ params }) => {
       const id = String(params.id);
       return HttpResponse.json(withReplyMetadataDefaultsList(state.messages[id] ?? []));
     }),
 
-    http.post(`${BASE}/message/:id`, async ({ request, params }) => {
+    http.post(`${API_BASE}/message/:id`, async ({ request, params }) => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       const channel = String(params.id);
       const channelId = Number(params.id);
@@ -786,7 +798,7 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(withReplyMetadataDefaults(message));
     }),
 
-    http.get(`${BASE}/threads/participated`, () => {
+    http.get(`${API_BASE}/threads/participated`, () => {
       const userId = state.me?.id;
       if (userId == null) return new HttpResponse(null, { status: 401 });
 
@@ -827,7 +839,7 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(previews);
     }),
 
-    http.get(`${BASE}/thread/:id`, ({ params, request }) => {
+    http.get(`${API_BASE}/thread/:id`, ({ params, request }) => {
       const rootId = Number(params.id);
       const url = new URL(request.url);
       const limitParam = Number(url.searchParams.get("limit") ?? "50");
@@ -874,7 +886,7 @@ export function createHandlers(state: HandlerState) {
       return new HttpResponse(null, { status: 404 });
     }),
 
-    http.post(`${BASE}/thread/:id/reply`, async ({ request, params }) => {
+    http.post(`${API_BASE}/thread/:id/reply`, async ({ request, params }) => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       const rootId = Number(params.id);
       const requestContentType = request.headers.get("content-type")?.toLowerCase() ?? "";
@@ -945,7 +957,7 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(withReplyMetadataDefaults(reply));
     }),
 
-    http.put(`${BASE}/message/:id`, async ({ request, params }) => {
+    http.put(`${API_BASE}/message/:id`, async ({ request, params }) => {
       const body = (await request.json()) as { text: string };
       const id = Number(params.id);
       let existing: Message | null = null;
@@ -985,7 +997,7 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(withReplyMetadataDefaults(updated));
     }),
 
-    http.post(`${BASE}/message/:id/reactions`, async ({ request, params }) => {
+    http.post(`${API_BASE}/message/:id/reactions`, async ({ request, params }) => {
       const id = Number(params.id);
       const body = (await request.json()) as import("../../api").ReactionRequest;
       const message = findMessageById(state, id);
@@ -1032,7 +1044,7 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(message.reactions);
     }),
 
-    http.delete(`${BASE}/message/:id/reactions`, async ({ request, params }) => {
+    http.delete(`${API_BASE}/message/:id/reactions`, async ({ request, params }) => {
       const id = Number(params.id);
       const body = (await request.json()) as import("../../api").ReactionRequest;
       const message = findMessageById(state, id);
@@ -1053,7 +1065,7 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(message.reactions);
     }),
 
-    http.delete(`${BASE}/message/:id`, ({ params }) => {
+    http.delete(`${API_BASE}/message/:id`, ({ params }) => {
       const id = Number(params.id);
       state.deletedMessageIds.push(id);
       for (const channel of Object.keys(state.messages)) {
@@ -1075,7 +1087,7 @@ export function createHandlers(state: HandlerState) {
       return new HttpResponse(null, { status: 404 });
     }),
 
-    http.post(`${BASE}/message/:id/suppress_embeds`, async ({ request, params }) => {
+    http.post(`${API_BASE}/message/:id/suppress_embeds`, async ({ request, params }) => {
       const id = Number(params.id);
       const body = (await request.json()) as { suppress: boolean };
       state.suppressedEmbeds.push({ id, suppress: body.suppress });
@@ -1108,7 +1120,7 @@ export function createHandlers(state: HandlerState) {
       return new HttpResponse(null, { status: 404 });
     }),
 
-    http.post(`${BASE}/channel`, async ({ request }) => {
+    http.post(`${API_BASE}/channel`, async ({ request }) => {
       const body = (await request.json()) as { name: string; type?: string };
       state.createdChannels.push(body);
       const nextPosition = state.channels.reduce((m, c) => Math.max(m, c.position), -1) + 1;
@@ -1123,7 +1135,7 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(newChannel);
     }),
 
-    http.put(`${BASE}/channels/order`, async ({ request }) => {
+    http.put(`${API_BASE}/channels/order`, async ({ request }) => {
       const body = (await request.json()) as { ids: number[] };
       const byId = new Map(state.channels.map((c) => [c.id, c]));
       if (body.ids.length !== state.channels.length || body.ids.some((id) => !byId.has(id))) {
@@ -1138,7 +1150,7 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(reordered);
     }),
 
-    http.post(`${BASE}/me/avatar`, async ({ request }) => {
+    http.post(`${API_BASE}/me/avatar`, async ({ request }) => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       const form = await request.formData();
       const file = form.get("file");
@@ -1153,7 +1165,7 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(state.me);
     }),
 
-    http.delete(`${BASE}/me/avatar`, () => {
+    http.delete(`${API_BASE}/me/avatar`, () => {
       if (!state.me) return new HttpResponse(null, { status: 401 });
       state.deletedAvatar = true;
       state.me = { ...state.me, avatar_url: null };
@@ -1161,12 +1173,12 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(state.me);
     }),
 
-    http.get(`${BASE}/voice/participants/:id`, ({ params }) => {
+    http.get(`${API_BASE}/voice/participants/:id`, ({ params }) => {
       const id = String(params.id);
       return HttpResponse.json(state.voiceParticipants[id] ?? []);
     }),
 
-    http.get(`${BASE}/voice/screen-shares`, ({ request }) => {
+    http.get(`${API_BASE}/voice/screen-shares`, ({ request }) => {
       const url = new URL(request.url);
       const channelId = url.searchParams.get("channel_id");
       const streams =
@@ -1176,7 +1188,7 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(streams);
     }),
 
-    http.get(`${BASE}/voice/cameras`, ({ request }) => {
+    http.get(`${API_BASE}/voice/cameras`, ({ request }) => {
       const url = new URL(request.url);
       const channelId = url.searchParams.get("channel_id");
       const streams =
@@ -1186,22 +1198,22 @@ export function createHandlers(state: HandlerState) {
       return HttpResponse.json(streams);
     }),
 
-    http.post(`${BASE}/typing/:id`, ({ params }) => {
+    http.post(`${API_BASE}/typing/:id`, ({ params }) => {
       state.typingPings.push(String(params.id));
       return new HttpResponse(null, { status: 204 });
     }),
 
-    http.post(`${BASE}/voice/token/:id`, ({ params }) => {
+    http.post(`${API_BASE}/voice/token/:id`, ({ params }) => {
       const id = Number(params.id);
       state.voiceTokensMinted.push(id);
       return HttpResponse.json({
-        url: "ws://localhost:7880",
+        url: VOICE_BASE,
         token: "fake-jwt",
         room: `channel-${id}`,
       });
     }),
 
-    http.post(`${BASE}/voice/status`, async ({ request }) => {
+    http.post(`${API_BASE}/voice/status`, async ({ request }) => {
       const body = (await request.json()) as { muted: boolean; deafened: boolean };
       state.voiceStatusUpdates.push(body);
       return new HttpResponse(null, { status: 204 });
