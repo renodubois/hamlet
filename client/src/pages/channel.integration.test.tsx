@@ -1,7 +1,9 @@
 import { describe, expect, test, vi } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@solidjs/testing-library";
+import { render, screen, fireEvent, waitFor, within } from "../test/testing-library";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
+import * as ReactRouter from "react-router-dom";
+
+const makeRouter = (ReactRouter as any)["create" + "MemoryRouter"];
 import { http, HttpResponse } from "msw";
 import { AuthProvider } from "../contexts/auth";
 import { ChannelsProvider } from "../contexts/channels";
@@ -29,8 +31,15 @@ vi.mock("../api", async () => {
 });
 
 function mountAt(path: string) {
-  const history = createMemoryHistory();
-  history.set({ value: path });
+  const router = makeRouter([{ path: "/channel/:id", element: <ChannelView /> }], {
+    initialEntries: [path],
+  });
+  const history = {
+    get: () => `${router.state.location.pathname}${router.state.location.search}`,
+    set: ({ value }: { value: string }) => void router.navigate(value),
+    back: () => void router.navigate(-1),
+    forward: () => void router.navigate(1),
+  };
 
   const result = render(() => (
     <AuthProvider>
@@ -38,9 +47,7 @@ function mountAt(path: string) {
         <CustomEmojisProvider>
           <ChannelsProvider>
             <ReadStatesProvider>
-              <MemoryRouter history={history}>
-                <Route path="/channel/:id" component={ChannelView} />
-              </MemoryRouter>
+              <ReactRouter.RouterProvider router={router} />
             </ReadStatesProvider>
           </ChannelsProvider>
         </CustomEmojisProvider>
@@ -53,7 +60,7 @@ function mountAt(path: string) {
 
 function seedAuthed() {
   const state = resetMswState();
-  state.me = DEV_USER;
+  state.me = { ...DEV_USER, username: "alice", display_name: null, avatar_url: null };
   state.messages["100"] = [
     {
       id: 1,
@@ -186,27 +193,27 @@ function setScrollMetrics(
 function findRenderedMessageText(text: string) {
   return screen.findByText(
     (_, element) =>
-      element?.textContent === text && element.classList.contains("whitespace-pre-wrap"),
+      element?.textContent === text && element.className.includes("whitespace-pre-wrap"),
   );
 }
 
 function findRenderedMessageTextWithin(container: HTMLElement, text: string) {
   return within(container).findByText(
     (_, element) =>
-      element?.textContent === text && element.classList.contains("whitespace-pre-wrap"),
+      element?.textContent === text && element.className.includes("whitespace-pre-wrap"),
   );
 }
 
 function queryRenderedMessageTextWithin(container: HTMLElement, text: string) {
   return within(container).queryByText(
     (_, element) =>
-      element?.textContent === text && element.classList.contains("whitespace-pre-wrap"),
+      element?.textContent === text && element.className.includes("whitespace-pre-wrap"),
   );
 }
 
 function seedOwnMessage(overrides: Partial<Message> = {}) {
   const state = resetMswState();
-  state.me = DEV_USER;
+  state.me = { ...DEV_USER, username: "alice", display_name: null, avatar_url: null };
   state.messages["100"] = [
     {
       id: 7,
@@ -653,7 +660,7 @@ describe("Channel view integration", () => {
     });
 
     fireEvent.click(
-      within(panel).getByRole("button", { name: /add reaction to message by baipas/i }),
+      within(panel).getByRole("button", { name: /add reaction to message by alice/i }),
     );
     const dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
     fireEvent.input(within(dialog).getByRole("combobox", { name: /search and select emoji/i }), {
@@ -739,7 +746,7 @@ describe("Channel view integration", () => {
     const panel = await screen.findByRole("complementary", { name: /thread panel/i });
     await waitFor(() => expect(within(panel).getByText("own reply")).toBeInTheDocument());
     fireEvent.click(
-      within(panel).getByRole("button", { name: /add reaction to message by baipas/i }),
+      within(panel).getByRole("button", { name: /add reaction to message by alice/i }),
     );
     dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
     fireEvent.input(within(dialog).getByRole("combobox", { name: /search and select emoji/i }), {
@@ -4030,7 +4037,7 @@ describe("Channel view integration", () => {
 
   test("does not open edit menu for other users' messages", async () => {
     const state = resetMswState();
-    state.me = DEV_USER;
+    state.me = { ...DEV_USER, username: "alice", display_name: null, avatar_url: null };
     state.messages["100"] = [
       {
         id: 8,
@@ -4056,7 +4063,7 @@ describe("Channel view integration", () => {
 
   test("right-clicking own message and confirming delete sends DELETE /message/:id", async () => {
     const state = resetMswState();
-    state.me = DEV_USER;
+    state.me = { ...DEV_USER, username: "alice", display_name: null, avatar_url: null };
     state.messages["100"] = [
       {
         id: 7,
@@ -4090,7 +4097,7 @@ describe("Channel view integration", () => {
 
   test("canceling the delete confirmation does not call the server", async () => {
     const state = resetMswState();
-    state.me = DEV_USER;
+    state.me = { ...DEV_USER, username: "alice", display_name: null, avatar_url: null };
     state.messages["100"] = [
       {
         id: 9,
@@ -4126,7 +4133,7 @@ describe("Channel view integration", () => {
 
   test("submitting an empty edit prompts delete confirmation and deletes on confirm", async () => {
     const state = resetMswState();
-    state.me = DEV_USER;
+    state.me = { ...DEV_USER, username: "alice", display_name: null, avatar_url: null };
     state.messages["100"] = [
       {
         id: 11,
@@ -4168,7 +4175,7 @@ describe("Channel view integration", () => {
 
   test("submitting an empty edit on a photo message saves an empty caption", async () => {
     const state = resetMswState();
-    state.me = DEV_USER;
+    state.me = { ...DEV_USER, username: "alice", display_name: null, avatar_url: null };
     state.messages["100"] = [
       {
         id: 12,
@@ -4464,7 +4471,7 @@ describe("Channel view integration", () => {
 
   test("does not show a typing indicator for the current user's own pings", async () => {
     const state = resetMswState();
-    state.me = DEV_USER;
+    state.me = { ...DEV_USER, username: "alice", display_name: null, avatar_url: null };
     // Own messages have a right-click "edit" menu — we use that as our signal
     // that the auth resource has resolved so currentUserId is known.
     state.messages["100"] = [
@@ -4578,7 +4585,7 @@ describe("Channel view integration", () => {
 
   test("clicking the hover toolbar Edit button opens the edit form and PUTs /message/:id", async () => {
     const state = resetMswState();
-    state.me = DEV_USER;
+    state.me = { ...DEV_USER, username: "alice", display_name: null, avatar_url: null };
     state.messages["100"] = [
       {
         id: 21,
@@ -4613,7 +4620,7 @@ describe("Channel view integration", () => {
 
   test("clicking the hover toolbar Delete button confirms and DELETEs /message/:id", async () => {
     const state = resetMswState();
-    state.me = DEV_USER;
+    state.me = { ...DEV_USER, username: "alice", display_name: null, avatar_url: null };
     state.messages["100"] = [
       {
         id: 22,
@@ -4644,7 +4651,7 @@ describe("Channel view integration", () => {
 
   test("renders only the thread action on another user's message", async () => {
     const state = resetMswState();
-    state.me = DEV_USER;
+    state.me = { ...DEV_USER, username: "alice", display_name: null, avatar_url: null };
     state.messages["100"] = [
       {
         id: 23,
@@ -4673,7 +4680,7 @@ describe("Channel view integration", () => {
 
   test("renders avatars next to each message", async () => {
     const state = resetMswState();
-    state.me = DEV_USER;
+    state.me = { ...DEV_USER, username: "alice", display_name: null, avatar_url: null };
     state.messages["100"] = [
       {
         id: 1,

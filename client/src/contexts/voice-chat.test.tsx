@@ -1,6 +1,6 @@
 import { describe, expect, beforeEach, test, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import { Show } from "solid-js";
+import { fireEvent, render, screen, waitFor } from "../test/testing-library";
+import { If } from "../hooks/react-state";
 import type { CameraStream } from "../api";
 
 const apiMock = vi.hoisted(() => ({
@@ -358,7 +358,7 @@ function VoiceHarness() {
       </div>
       <div data-testid="watching">{voice.watchingScreenShare()?.track_sid ?? "none"}</div>
       <div data-testid="watch-track">{voice.watchingScreenShareTrack() ? "video" : "none"}</div>
-      <Show when={voice.lastError()}>{(message) => <div role="alert">{message()}</div>}</Show>
+      <If when={voice.lastError()}>{(message) => <div role="alert">{message()}</div>}</If>
       <button type="button" onClick={() => void voice.join(42)}>
         Join 42
       </button>

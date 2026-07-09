@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { render, screen } from "@solidjs/testing-library";
+import { render, screen } from "../test/testing-library";
 import type { Embed } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
 import MessageEmbed from "./message-embed";
@@ -54,7 +54,7 @@ describe("<MessageEmbed>", () => {
     expect(iframe?.getAttribute("src")).toBe("https://www.youtube.com/embed/abc");
     expect(iframe?.getAttribute("sandbox")).toContain("allow-scripts");
     expect(iframe?.getAttribute("loading")).toBe("lazy");
-    expect(iframe?.getAttribute("referrerpolicy")).toBe("strict-origin-when-cross-origin");
+    expect(iframe?.getAttribute("referrerPolicy")).toBe("strict-origin-when-cross-origin");
     // Iframe exposes a title for screen readers (axe requires this).
     expect(iframe?.getAttribute("title")).toBeTruthy();
     // Header title is still present for context.
@@ -62,7 +62,7 @@ describe("<MessageEmbed>", () => {
     // `expectNoA11yViolations` not run here: axe tries to postMessage into
     // iframes for in-iframe rule checks and happy-dom can't satisfy that.
     // The outer-DOM a11y contract we care about (iframe has a `title`,
-    // sandbox/referrerpolicy set) is asserted directly above.
+    // sandbox/referrerPolicy set) is asserted directly above.
     void container;
   });
 

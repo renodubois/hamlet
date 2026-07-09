@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
-import { createSignal } from "solid-js";
+import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
+import { useSignalState } from "../hooks/react-state";
 import { describe, expect, test, vi } from "vitest";
 import type { EmojiEntry } from "../emoji/emoji-data";
 import { expectNoA11yViolations } from "../test/a11y";
@@ -83,8 +83,8 @@ const footerName = /emoji shortcodes/i;
 
 function renderHarness(initialOpen = true, onSelect = vi.fn(), onClose = vi.fn()) {
   return render(() => {
-    const [open, setOpen] = createSignal(initialOpen);
-    let anchor: HTMLButtonElement | undefined;
+    const [open, setOpen] = useSignalState(initialOpen);
+    let anchor: HTMLButtonElement | null | undefined;
     const close = () => {
       onClose();
       setOpen(false);

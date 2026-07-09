@@ -1,17 +1,17 @@
-import { createEffect, createSignal, onCleanup, Show } from "solid-js";
+import { useAfterRenderEffect, useSignalState, registerCleanup, If } from "../hooks/react-state";
 import { useAuth } from "../contexts/auth";
 import { getPublicServerConfig, getServerUrl } from "../api";
 
 export default function LoginScreen() {
   const auth = useAuth();
-  const [mode, setMode] = createSignal<"login" | "register">("login");
-  const [server, setServer] = createSignal(getServerUrl());
-  const [username, setUsername] = createSignal("");
-  const [password, setPassword] = createSignal("");
-  const [email, setEmail] = createSignal("");
-  const [error, setError] = createSignal<string | null>(null);
-  const [submitting, setSubmitting] = createSignal(false);
-  const [accountRegistrationEnabled, setAccountRegistrationEnabled] = createSignal(true);
+  const [mode, setMode] = useSignalState<"login" | "register">("login");
+  const [server, setServer] = useSignalState(getServerUrl());
+  const [username, setUsername] = useSignalState("");
+  const [password, setPassword] = useSignalState("");
+  const [email, setEmail] = useSignalState("");
+  const [error, setError] = useSignalState<string | null>(null);
+  const [submitting, setSubmitting] = useSignalState(false);
+  const [accountRegistrationEnabled, setAccountRegistrationEnabled] = useSignalState(true);
 
   const switchMode = (next: "login" | "register") => {
     if (next === "register" && !accountRegistrationEnabled()) return;
@@ -19,7 +19,7 @@ export default function LoginScreen() {
     setError(null);
   };
 
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     const currentServer = server().trim();
     let cancelled = false;
     if (!currentServer) {
@@ -35,16 +35,16 @@ export default function LoginScreen() {
         if (!cancelled) setAccountRegistrationEnabled(true);
       });
 
-    onCleanup(() => {
+    registerCleanup(() => {
       cancelled = true;
     });
   });
 
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     if (!accountRegistrationEnabled() && mode() === "register") switchMode("login");
   });
 
-  const handleSubmit = async (e: SubmitEvent) => {
+  const handleSubmit = async (e: any) => {
     e.preventDefault();
     setError(null);
     if (mode() === "register" && !accountRegistrationEnabled()) {
@@ -70,62 +70,62 @@ export default function LoginScreen() {
   };
 
   return (
-    <div class="flex h-screen items-center justify-center bg-gray-900">
-      <div class="bg-gray-800 rounded-lg p-8 w-96">
-        <h1 class="text-gray-100 text-2xl font-bold mb-6">
+    <div className="flex h-screen items-center justify-center bg-gray-900">
+      <div className="bg-gray-800 rounded-lg p-8 w-96">
+        <h1 className="text-gray-100 text-2xl font-bold mb-6">
           {mode() === "login" ? "Sign in" : "Create account"}
         </h1>
-        <form onSubmit={handleSubmit} class="flex flex-col gap-4">
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <input
-            class="bg-gray-700 text-gray-100 rounded-md p-3 placeholder-gray-400"
+            className="bg-gray-700 text-gray-100 rounded-md p-3 placeholder-gray-400"
             type="text"
             placeholder="Server URL"
             value={server()}
             onInput={(e) => setServer(e.currentTarget.value)}
           />
           <input
-            class="bg-gray-700 text-gray-100 rounded-md p-3 placeholder-gray-400"
+            className="bg-gray-700 text-gray-100 rounded-md p-3 placeholder-gray-400"
             type="text"
             placeholder="Username"
-            autocomplete="username"
+            autoComplete="username"
             value={username()}
             onInput={(e) => setUsername(e.currentTarget.value)}
           />
           <input
-            class="bg-gray-700 text-gray-100 rounded-md p-3 placeholder-gray-400"
+            className="bg-gray-700 text-gray-100 rounded-md p-3 placeholder-gray-400"
             type="password"
             placeholder="Password"
-            autocomplete={mode() === "login" ? "current-password" : "new-password"}
+            autoComplete={mode() === "login" ? "current-password" : "new-password"}
             value={password()}
             onInput={(e) => setPassword(e.currentTarget.value)}
           />
-          <Show when={mode() === "register" && accountRegistrationEnabled()}>
+          <If when={mode() === "register" && accountRegistrationEnabled()}>
             <input
-              class="bg-gray-700 text-gray-100 rounded-md p-3 placeholder-gray-400"
+              className="bg-gray-700 text-gray-100 rounded-md p-3 placeholder-gray-400"
               type="email"
               placeholder="Email (optional)"
-              autocomplete="email"
+              autoComplete="email"
               value={email()}
               onInput={(e) => setEmail(e.currentTarget.value)}
             />
-          </Show>
-          <Show when={error()}>
-            <p class="text-red-400 text-sm">{error()}</p>
-          </Show>
+          </If>
+          <If when={error()}>
+            <p className="text-red-400 text-sm">{error()}</p>
+          </If>
           <button
-            class="bg-blue-600 hover:bg-blue-700 text-white rounded-md p-3 font-medium disabled:opacity-50 transition-colors"
+            className="bg-blue-600 hover:bg-blue-700 text-white rounded-md p-3 font-medium disabled:opacity-50 transition-colors"
             type="submit"
             disabled={submitting()}
           >
             {submitting() ? "Please wait..." : mode() === "login" ? "Sign in" : "Create account"}
           </button>
         </form>
-        <Show when={import.meta.env.DEV}>
-          <div class="mt-4 border-t border-gray-700 pt-4">
-            <p class="text-gray-400 text-xs mb-2">Dev shortcuts</p>
-            <div class="flex gap-2">
+        <If when={import.meta.env.DEV}>
+          <div className="mt-4 border-t border-gray-700 pt-4">
+            <p className="text-gray-400 text-xs mb-2">Dev shortcuts</p>
+            <div className="flex gap-2">
               <button
-                class="flex-1 bg-gray-700 hover:bg-gray-600 text-gray-100 rounded-md p-3 font-medium disabled:opacity-50 transition-colors"
+                className="flex-1 bg-gray-700 hover:bg-gray-600 text-gray-100 rounded-md p-3 font-medium disabled:opacity-50 transition-colors"
                 type="button"
                 disabled={submitting()}
                 onClick={() => devLogin("baipas")}
@@ -133,7 +133,7 @@ export default function LoginScreen() {
                 Log in as baipas
               </button>
               <button
-                class="flex-1 bg-gray-700 hover:bg-gray-600 text-gray-100 rounded-md p-3 font-medium disabled:opacity-50 transition-colors"
+                className="flex-1 bg-gray-700 hover:bg-gray-600 text-gray-100 rounded-md p-3 font-medium disabled:opacity-50 transition-colors"
                 type="button"
                 disabled={submitting()}
                 onClick={() => devLogin("teo")}
@@ -142,27 +142,33 @@ export default function LoginScreen() {
               </button>
             </div>
           </div>
-        </Show>
-        <Show when={accountRegistrationEnabled()}>
-          <p class="text-gray-400 text-sm mt-4 text-center">
-            <Show
+        </If>
+        <If when={accountRegistrationEnabled()}>
+          <p className="text-gray-400 text-sm mt-4 text-center">
+            <If
               when={mode() === "login"}
               fallback={
                 <>
                   Have an account?{" "}
-                  <button class="text-blue-400 hover:underline" onClick={() => switchMode("login")}>
+                  <button
+                    className="text-blue-400 hover:underline"
+                    onClick={() => switchMode("login")}
+                  >
                     Sign in
                   </button>
                 </>
               }
             >
               Need an account?{" "}
-              <button class="text-blue-400 hover:underline" onClick={() => switchMode("register")}>
+              <button
+                className="text-blue-400 hover:underline"
+                onClick={() => switchMode("register")}
+              >
                 Create one
               </button>
-            </Show>
+            </If>
           </p>
-        </Show>
+        </If>
       </div>
     </div>
   );

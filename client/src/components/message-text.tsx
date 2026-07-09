@@ -1,13 +1,13 @@
 import {
-  Show,
-  createEffect,
-  createMemo,
-  createSignal,
-  createUniqueId,
-  onCleanup,
-  onMount,
+  If,
+  useAfterRenderEffect,
+  useComputedValue,
+  useSignalState,
+  useStableDomId,
+  registerCleanup,
+  useMountEffect,
   type JSX,
-} from "solid-js";
+} from "../hooks/react-state";
 import { resolveServerUrl, type CustomEmoji, type MentionUser } from "../api";
 import { useOptionalCustomEmojis } from "../contexts/custom-emojis";
 import { parseCustomEmojiMarkers } from "../emoji/custom-emojis";
@@ -26,7 +26,7 @@ const INTERACTIVE_CURRENT_USER_MENTION_CLASS = `${CURRENT_USER_MENTION_CLASS} cu
 const PREVIEW_WIDTH = 256;
 const PREVIEW_VERTICAL_GAP = 8;
 
-export type MentionClickHandler = (user: MentionUser, event: MouseEvent) => void;
+export type MentionClickHandler = (user: MentionUser, event: any) => void;
 
 export interface RichTextRenderOptions {
   text: string;
@@ -105,7 +105,7 @@ function renderCustomEmoji(
       src={resolveServerUrl(emoji.image_url)}
       alt={label}
       title={emoji.deleted_at === null ? label : `${label} (deleted)`}
-      class="inline-block h-6 w-6 align-text-bottom object-contain"
+      className="inline-block h-6 w-6 align-text-bottom object-contain"
     />
   );
 }
@@ -190,7 +190,7 @@ function renderPlainTextSegment(
 function renderMention(user: MentionUser, options: RichTextRenderOptions): JSX.Element {
   if (!options.onMentionClick) {
     return (
-      <span class={mentionClass(user, options.currentUserId)} title={`@${user.username}`}>
+      <span className={mentionClass(user, options.currentUserId)} title={`@${user.username}`}>
         {mentionLabel(user)}
       </span>
     );
@@ -199,11 +199,11 @@ function renderMention(user: MentionUser, options: RichTextRenderOptions): JSX.E
   return (
     <button
       type="button"
-      class={interactiveMentionClass(user, options.currentUserId)}
+      className={interactiveMentionClass(user, options.currentUserId)}
       title={`@${user.username}`}
       aria-label={mentionAccessibleName(user)}
       aria-haspopup="dialog"
-      onClick={(event) => options.onMentionClick?.(user, event)}
+      onClick={(event) => options.onMentionClick?.(user, event.nativeEvent ?? event)}
     >
       {mentionLabel(user)}
     </button>
@@ -218,7 +218,7 @@ export function renderRichText(options: RichTextRenderOptions): JSX.Element[] {
   for (const token of linkifyText(options.text)) {
     if (token.type === "link") {
       parts.push(
-        <a href={token.url} target="_blank" rel="noopener noreferrer" class={linkClass}>
+        <a href={token.url} target="_blank" rel="noopener noreferrer" className={linkClass}>
           {token.url}
         </a>,
       );
@@ -257,31 +257,32 @@ export default function MessageText(props: {
   mentions?: readonly MentionUser[];
   currentUserId?: number | null;
   class?: string;
+  className?: string;
   linkClass?: string;
   onMentionClick?: MentionClickHandler;
 }) {
   const customEmojis = useOptionalCustomEmojis();
   const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
-  const previewId = createUniqueId();
-  const [preview, setPreview] = createSignal<MentionPreviewState | null>(null);
-  const mentionedUsers = createMemo(() => mentionUsersById(props.mentions ?? []));
-  const previewUser = createMemo(() => {
+  const previewId = useStableDomId();
+  const [preview, setPreview] = useSignalState<MentionPreviewState | null>(null);
+  const mentionedUsers = useComputedValue(() => mentionUsersById(props.mentions ?? []));
+  const previewUser = useComputedValue(() => {
     const state = preview();
     if (!state) return null;
     return mentionedUsers().get(state.userId) ?? null;
   });
-  let popoverRef: HTMLDivElement | undefined;
+  let popoverRef: HTMLDivElement | null | undefined;
 
   const closePreview = () => setPreview(null);
 
   const handleMentionClick: MentionClickHandler = (user, event) => {
     event.stopPropagation();
-    const anchor = event.currentTarget as HTMLElement | null;
+    const anchor = (event.currentTarget ?? event.target) as HTMLElement | null;
     if (anchor) setPreview({ userId: user.id, anchor });
-    props.onMentionClick?.(user, event);
+    props.onMentionClick?.(user, event.nativeEvent ?? event);
   };
 
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     const state = preview();
     if (!state) return;
     if (!mentionedUsers().has(state.userId) || !textMentionsUser(props.text, state.userId)) {
@@ -289,7 +290,7 @@ export default function MessageText(props: {
     }
   });
 
-  onMount(() => {
+  useMountEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
       const state = preview();
       if (!state) return;
@@ -300,7 +301,7 @@ export default function MessageText(props: {
       closePreview();
     };
 
-    const onKeyDown = (event: KeyboardEvent) => {
+    const onKeyDown = (event: any) => {
       if (event.key === "Escape") closePreview();
     };
 
@@ -309,7 +310,7 @@ export default function MessageText(props: {
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("keydown", onKeyDown);
     window.addEventListener("scroll", onScroll, true);
-    onCleanup(() => {
+    registerCleanup(() => {
       document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("scroll", onScroll, true);
@@ -317,7 +318,7 @@ export default function MessageText(props: {
   });
 
   return (
-    <div class={props.class ?? DEFAULT_TEXT_CLASS}>
+    <div className={props.className ?? props.class ?? DEFAULT_TEXT_CLASS}>
       {renderRichText({
         text: props.text,
         mentions: props.mentions ?? [],
@@ -326,9 +327,9 @@ export default function MessageText(props: {
         linkClass: props.linkClass,
         onMentionClick: handleMentionClick,
       })}
-      <Show when={preview()}>
+      <If when={preview()}>
         {(state) => (
-          <Show when={previewUser()}>
+          <If when={previewUser()}>
             {(user) => {
               const display = () => mentionDisplayName(user());
               return (
@@ -339,22 +340,24 @@ export default function MessageText(props: {
                   }}
                   role="dialog"
                   aria-label={mentionPreviewLabel(user())}
-                  class="fixed z-50 rounded-lg border border-gray-200 bg-white p-3 text-gray-900 shadow-lg"
+                  className="fixed z-50 rounded-lg border border-gray-200 bg-white p-3 text-gray-900 shadow-lg"
                   style={previewPosition(state().anchor)}
                 >
-                  <div class="flex items-center gap-3">
+                  <div className="flex items-center gap-3">
                     <Avatar url={user().avatar_url} username={display()} size={48} />
-                    <div class="min-w-0">
-                      <div class="truncate text-sm font-semibold text-gray-950">{display()}</div>
-                      <div class="truncate text-sm text-gray-600">@{user().username}</div>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-gray-950">
+                        {display()}
+                      </div>
+                      <div className="truncate text-sm text-gray-600">@{user().username}</div>
                     </div>
                   </div>
                 </div>
               );
             }}
-          </Show>
+          </If>
         )}
-      </Show>
+      </If>
     </div>
   );
 }

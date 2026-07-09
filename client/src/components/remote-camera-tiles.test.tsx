@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
-import { render, screen, waitFor } from "@solidjs/testing-library";
-import { createSignal } from "solid-js";
+import { render, screen, waitFor } from "../test/testing-library";
+import { useSignalState } from "../hooks/react-state";
 import type { CameraStream } from "../api";
 import type { RemoteCameraTile } from "../contexts/voice-chat";
 import { expectNoA11yViolations } from "../test/a11y";
@@ -47,8 +47,8 @@ function setupTiles(
   initialTiles: readonly RemoteCameraTile[],
   activeChannelId: number | null = 42,
 ) {
-  const [tiles, setTiles] = createSignal<readonly RemoteCameraTile[]>(initialTiles);
-  const [active, setActive] = createSignal<number | null>(activeChannelId);
+  const [tiles, setTiles] = useSignalState<readonly RemoteCameraTile[]>(initialTiles);
+  const [active, setActive] = useSignalState<number | null>(activeChannelId);
   mockVoiceState.value = {
     activeChannelId: active,
     remoteCameraTiles: tiles,

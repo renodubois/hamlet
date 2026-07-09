@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { fireEvent, screen } from "@solidjs/testing-library";
-import { createResource, Show } from "solid-js";
+import { fireEvent, screen } from "../test/testing-library";
+import { useCallableResource, If } from "../hooks/react-state";
 import type { Channel, User } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
 import { renderWithRouter } from "../test/render";
@@ -40,9 +40,9 @@ vi.mock("./add-channel-modal", () => ({
 
 vi.mock("./settings-modal", () => ({
   default: (props: { open: boolean }) => (
-    <Show when={props.open}>
+    <If when={props.open}>
       <div data-testid="settings-modal-stub">settings-open</div>
-    </Show>
+    </If>
   ),
 }));
 
@@ -74,8 +74,8 @@ const USER: User = {
 };
 
 function fakeChannels(data: Channel[] | undefined) {
-  // createResource gives us something shaped like a Resource (loading/error/etc).
-  const [resource] = createResource(async () => data ?? []);
+  // useCallableResource gives us something shaped like a Resource (loading/error/etc).
+  const [resource] = useCallableResource(async () => data ?? []);
   const wrapped = (() => (data === undefined ? undefined : data)) as unknown as () => Channel[];
   Object.assign(wrapped, {
     loading: resource.loading,

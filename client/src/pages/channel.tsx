@@ -1,15 +1,16 @@
-import { useLocation, useNavigate, useParams } from "@solidjs/router";
+import { useEffect, useRef } from "react";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
-  createEffect,
-  Show,
-  createMemo,
-  createResource,
-  createSignal,
-  createUniqueId,
-  onCleanup,
-  onMount,
-} from "solid-js";
-import { createStore, reconcile } from "solid-js/store";
+  useAfterRenderEffect,
+  If,
+  useComputedValue,
+  useCallableResource,
+  useSignalState,
+  useStableDomId,
+  registerCleanup,
+  useMountEffect,
+} from "../hooks/react-state";
+import { useStoreState, preserveIdentity } from "../hooks/react-state";
 import ChannelMessages from "../components/channel-messages";
 import {
   PhotoAttachControl,
@@ -57,40 +58,51 @@ function parseThreadId(value: string | string[] | undefined): number | null {
 
 export default function ChannelView() {
   const params = useParams<{ id: string }>();
-  const location = useLocation();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { channels } = useChannels();
   const events = useEvents();
   const { user } = useAuth();
   const readStates = useReadStates();
   const channel = () => channels()?.find((c) => String(c.id) === params.id);
-  const [message, setMessage] = createSignal("");
-  const [submitting, setSubmitting] = createSignal(false);
-  const [replyTarget, setReplyTarget] = createSignal<Message | null>(null);
+  const [message, setMessage] = useSignalState("");
+  const [submitting, setSubmitting] = useSignalState(false);
+  const [replyTarget, setReplyTarget] = useSignalState<Message | null>(null);
   const photoSelection = createComposerPhotoSelection();
-  const photoSelectionErrorId = createUniqueId();
-  const replyBannerId = createUniqueId();
-  const [focusComposerRootId, setFocusComposerRootId] = createSignal<number | null>(null);
-  const [hasNewMessagesBelow, setHasNewMessagesBelow] = createSignal(false);
-  const openThreadRootId = createMemo(() => parseThreadId(location.query.thread));
+  const photoSelectionErrorId = useStableDomId();
+  const replyBannerId = useStableDomId();
+  const [focusComposerRootId, setFocusComposerRootId] = useSignalState<number | null>(null);
+  const [hasNewMessagesBelow, setHasNewMessagesBelow] = useSignalState(false);
+  const openThreadRootId = useComputedValue(() =>
+    parseThreadId(searchParams.get("thread") ?? undefined),
+  );
   // The Resource owns loading/error state for the initial fetch; the Store
-  // owns the reactive list that SSE events mutate granularly. createStore
+  // owns the reactive list that SSE events mutate granularly. useStoreState
   // means an embed update on one row only re-renders that row.
-  const [resource] = createResource(() => params.id, listMessages);
-  const [messages, setMessages] = createStore<Message[]>([]);
-  const [mentionUserCache, setMentionUserCache] = createSignal<Map<number, PublicUser>>(new Map());
-  let lastTypingSentAt = 0;
-  let composerRef: HTMLElement | undefined;
-  let messagesScrollRef: HTMLDivElement | undefined;
-  let markReadTimer: ReturnType<typeof setTimeout> | undefined;
-  let lastMarkReadKey: string | null = null;
+  const [resource] = useCallableResource(() => params.id ?? "", listMessages);
+  const [messages, setMessages] = useStoreState<Message[]>([]);
+  const [mentionUserCache, setMentionUserCache] = useSignalState<Map<number, PublicUser>>(
+    new Map(),
+  );
+  const lastTypingSentAtRef = useRef(0);
+  const composerRef = useRef<HTMLElement | null>(null);
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null);
+  const markReadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastMarkReadKeyRef = useRef<string | null>(null);
+  const paramsIdRef = useRef(params.id);
+  paramsIdRef.current = params.id;
+  const replyTargetRef = useRef(replyTarget());
+  replyTargetRef.current = replyTarget();
+  const userIdRef = useRef(user()?.id ?? null);
+  userIdRef.current = user()?.id ?? null;
+  const hasSeenInitialUserProfileRef = useRef(false);
 
   const scheduleActiveChannelMarkRead = () => {
-    if (!messagesScrollRef) return;
+    if (!messagesScrollRef.current) return;
     const channelId = Number(params.id);
     if (!Number.isSafeInteger(channelId) || channelId <= 0) return;
 
-    const marker = getViewportReadMarkerState(messagesScrollRef);
+    const marker = getViewportReadMarkerState(messagesScrollRef.current);
     if (
       !marker.rendererEligible ||
       !marker.nearBottom ||
@@ -100,11 +112,11 @@ export default function ChannelView() {
     }
 
     const markReadKey = `${channelId}:${marker.lastVisibleTopLevelMessageId}`;
-    if (lastMarkReadKey === markReadKey) return;
-    if (markReadTimer) clearTimeout(markReadTimer);
-    markReadTimer = setTimeout(() => {
-      if (!messagesScrollRef) return;
-      const current = getViewportReadMarkerState(messagesScrollRef);
+    if (lastMarkReadKeyRef.current === markReadKey) return;
+    if (markReadTimerRef.current) clearTimeout(markReadTimerRef.current);
+    markReadTimerRef.current = setTimeout(() => {
+      if (!messagesScrollRef.current) return;
+      const current = getViewportReadMarkerState(messagesScrollRef.current);
       if (
         !current.rendererEligible ||
         !current.nearBottom ||
@@ -113,22 +125,23 @@ export default function ChannelView() {
         return;
       }
       const currentKey = `${channelId}:${current.lastVisibleTopLevelMessageId}`;
-      lastMarkReadKey = currentKey;
+      lastMarkReadKeyRef.current = currentKey;
       void readStates.markRead(channelId, current.lastVisibleTopLevelMessageId);
     }, 120);
   };
 
   const scrollMessagesToBottom = (afterScroll?: () => void) => {
-    queueMicrotask(() => {
-      if (!messagesScrollRef) return;
-      messagesScrollRef.scrollTop = messagesScrollRef.scrollHeight;
-      setHasNewMessagesBelow(false);
-      afterScroll?.();
-    });
+    if (!messagesScrollRef.current) return;
+    messagesScrollRef.current.scrollTop = messagesScrollRef.current.scrollHeight;
+    setHasNewMessagesBelow(false);
+    afterScroll?.();
   };
 
   const handleMessagesScroll = () => {
-    if (messagesScrollRef && getViewportReadMarkerState(messagesScrollRef).nearBottom) {
+    if (
+      messagesScrollRef.current &&
+      getViewportReadMarkerState(messagesScrollRef.current).nearBottom
+    ) {
       setHasNewMessagesBelow(false);
     }
     scheduleActiveChannelMarkRead();
@@ -137,6 +150,12 @@ export default function ChannelView() {
   const jumpToLatestMessages = () => {
     scrollMessagesToBottom(scheduleActiveChannelMarkRead);
   };
+
+  const showNewMessagesBelow = () =>
+    hasNewMessagesBelow() ||
+    (messages.length > (resource()?.length ?? 0) &&
+      !!messagesScrollRef.current &&
+      !isNearScrollBottom(messagesScrollRef.current));
 
   const primeMentionUsers = (users: readonly PublicUser[]) => {
     if (users.length === 0) return;
@@ -165,24 +184,29 @@ export default function ChannelView() {
   };
 
   const mentionUsers = () => Array.from(mentionUserCache().values());
+  const displayedMessages = () => (messages.length > 0 ? messages : (resource() ?? []));
 
   // Reconcile the fetched array into the store on initial load and on every
-  // channel switch. The "id" key tells reconcile to diff items rather than
+  // channel switch. The "id" key tells preserveIdentity to diff items rather than
   // replace the whole array, so already-rendered rows survive when the same
   // message appears in both the old and new fetches.
-  createEffect(() => {
+  useEffect(() => {
     const data = resource();
     primeMentionUsersFromMessages(data ?? []);
-    setMessages(reconcile(data ?? [], { key: "id" }));
+    setMessages(preserveIdentity(data ?? [], { key: "id" }));
     scrollMessagesToBottom(scheduleActiveChannelMarkRead);
-  });
+  }, [params.id, resource.latest]);
 
   // When the current user's profile changes (display_name, avatar), patch
   // every message of theirs in place so the rendered list reflects the new
   // values without a refetch.
-  createEffect(() => {
+  useEffect(() => {
     const u = user();
     if (!u) return;
+    if (!hasSeenInitialUserProfileRef.current) {
+      hasSeenInitialUserProfileRef.current = true;
+      return;
+    }
     setMessages(
       (m) => m.user_id === u.id,
       (m) => ({
@@ -192,52 +216,52 @@ export default function ChannelView() {
         avatar_url: u.avatar_url,
       }),
     );
-  });
+  }, [user()?.avatar_url, user()?.display_name, user()?.id, user()?.username]);
 
   const channelPath = () => `/channel/${params.id}`;
 
   const threadPath = (rootMessageId: number) => `${channelPath()}?thread=${rootMessageId}`;
 
   const openThread = (root: Message, options?: { focusComposer?: boolean }) => {
+    void navigate(threadPath(root.id));
     setFocusComposerRootId(options?.focusComposer ? root.id : null);
-    navigate(threadPath(root.id), { scroll: false });
   };
 
   const closeThread = () => {
     setFocusComposerRootId(null);
-    navigate(channelPath(), { scroll: false });
+    void navigate(channelPath());
   };
 
   const selectInlineReplyTarget = (target: Message) => {
     if (target.deleted_at != null || target.parent_id != null) return;
     setReplyTarget(target);
-    queueMicrotask(() => composerRef?.focus());
+    queueMicrotask(() => composerRef.current?.focus());
   };
 
   const dismissInlineReplyTarget = () => {
     setReplyTarget(null);
-    queueMicrotask(() => composerRef?.focus());
+    queueMicrotask(() => composerRef.current?.focus());
   };
 
-  createEffect(() => {
+  useEffect(() => {
     if (params.id) {
       setReplyTarget(null);
       setHasNewMessagesBelow(false);
-      lastMarkReadKey = null;
+      lastMarkReadKeyRef.current = null;
     }
-  });
+  }, [params.id]);
 
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     const rootId = openThreadRootId();
-    if (rootId === null) {
-      setFocusComposerRootId(null);
-      return;
-    }
+    if (rootId === null) return;
     if (resource.loading) return;
-    const rootInChannel = messages.some((m) => m.id === rootId && m.parent_id == null);
+    const loadedMessages = resource();
+    const rootInChannel = (loadedMessages ?? messages).some(
+      (m) => m.id === rootId && m.parent_id == null,
+    );
     if (!rootInChannel) {
       setFocusComposerRootId(null);
-      navigate(channelPath(), { replace: true, scroll: false });
+      void navigate(channelPath(), { replace: true });
     }
   });
 
@@ -245,9 +269,9 @@ export default function ChannelView() {
     setMessage(value);
     if (value.length === 0) return;
     const now = Date.now();
-    if (now - lastTypingSentAt < TYPING_PING_INTERVAL_MS) return;
-    lastTypingSentAt = now;
-    void sendTyping(params.id);
+    if (now - lastTypingSentAtRef.current < TYPING_PING_INTERVAL_MS) return;
+    lastTypingSentAtRef.current = now;
+    void sendTyping(params.id ?? "");
   };
 
   const hasDraftContent = () => message().trim().length > 0 || photoSelection.photos().length > 0;
@@ -260,11 +284,11 @@ export default function ChannelView() {
   };
 
   const applyMessageUpdate = (m: Message) => {
-    if (String(m.channel_id) !== params.id) return;
+    if (String(m.channel_id) !== paramsIdRef.current) return;
     primeMentionUsers(m.mentions ?? []);
     setMessages((existing) => existing.id === m.id, m);
     patchVisibleReplyReferences(m.id, m);
-    if (replyTarget()?.id === m.id) {
+    if (replyTargetRef.current?.id === m.id) {
       setReplyTarget(m.deleted_at == null ? m : null);
     }
   };
@@ -277,7 +301,7 @@ export default function ChannelView() {
     const target = replyTarget();
     setSubmitting(true);
     try {
-      const response = await sendMessage(params.id, text, photos, {
+      const response = await sendMessage(params.id ?? "", text, photos, {
         replyToMessageId: target?.id,
       });
       if (!response.ok) return;
@@ -289,8 +313,8 @@ export default function ChannelView() {
       setMessage("");
       setReplyTarget(null);
       photoSelection.clearPhotos();
-      lastTypingSentAt = 0;
-      queueMicrotask(() => composerRef?.focus());
+      lastTypingSentAtRef.current = 0;
+      queueMicrotask(() => composerRef.current?.focus());
     } catch (e) {
       console.error("failed to send message", e);
     } finally {
@@ -298,12 +322,15 @@ export default function ChannelView() {
     }
   };
 
-  onMount(() => {
+  useMountEffect(() => {
     const unsubCreated = events.onMessage((m) => {
-      if (String(m.channel_id) !== params.id) return;
-      const shouldAutoFollow = messagesScrollRef ? isNearScrollBottom(messagesScrollRef) : true;
+      if (String(m.channel_id) !== paramsIdRef.current) return;
+      const shouldAutoFollow = messagesScrollRef.current
+        ? messagesScrollRef.current.scrollHeight > messagesScrollRef.current.clientHeight &&
+          isNearScrollBottom(messagesScrollRef.current)
+        : true;
       primeMentionUsers(m.mentions ?? []);
-      setMessages(messages.length, m);
+      setMessages((current) => [...current, m]);
       if (shouldAutoFollow) {
         scrollMessagesToBottom(scheduleActiveChannelMarkRead);
       } else {
@@ -315,20 +342,20 @@ export default function ChannelView() {
       applyMessageUpdate(m);
     });
     const unsubDeleted = events.onMessageDeleted((d) => {
-      if (String(d.channel_id) !== params.id) return;
+      if (String(d.channel_id) !== paramsIdRef.current) return;
       setMessages((arr) => arr.filter((existing) => existing.id !== d.id));
       patchVisibleReplyReferences(d.id, null);
-      if (replyTarget()?.id === d.id) setReplyTarget(null);
+      if (replyTargetRef.current?.id === d.id) setReplyTarget(null);
     });
     const unsubEmbeds = events.onMessageEmbedsUpdated((e) => {
-      if (String(e.channel_id) !== params.id) return;
+      if (String(e.channel_id) !== paramsIdRef.current) return;
       setMessages((existing) => existing.id === e.id, {
         suppress_embeds: e.suppress_embeds,
         embeds: e.embeds,
       });
     });
     const unsubReactions = events.onMessageReactionsUpdated((e) => {
-      if (String(e.channel_id) !== params.id) return;
+      if (String(e.channel_id) !== paramsIdRef.current) return;
       setMessages(
         (existing) => existing.id === e.id,
         (existing) => ({
@@ -336,20 +363,20 @@ export default function ChannelView() {
             existing.reactions ?? [],
             e.reactions,
             e.user_id,
-            user()?.id ?? null,
+            userIdRef.current,
           ),
         }),
       );
     });
     const unsubThreadReply = events.onThreadReplyCreated((e) => {
-      if (String(e.channel_id) !== params.id) return;
+      if (String(e.channel_id) !== paramsIdRef.current) return;
       primeMentionUsers(e.reply.mentions ?? []);
       setMessages((existing) => existing.id === e.root_message_id && existing.parent_id == null, {
         thread_summary: e.thread_summary,
       });
     });
     const unsubThreadReplyDeleted = events.onThreadReplyDeleted((e) => {
-      if (String(e.channel_id) !== params.id) return;
+      if (String(e.channel_id) !== paramsIdRef.current) return;
       setMessages((existing) => existing.id === e.root_message_id && existing.parent_id == null, {
         thread_summary: e.thread_summary ?? undefined,
       });
@@ -357,7 +384,7 @@ export default function ChannelView() {
     const onFocusOrVisibility = () => scheduleActiveChannelMarkRead();
     window.addEventListener("focus", onFocusOrVisibility);
     document.addEventListener("visibilitychange", onFocusOrVisibility);
-    onCleanup(() => {
+    registerCleanup(() => {
       unsubCreated();
       unsubUpdated();
       unsubDeleted();
@@ -367,7 +394,7 @@ export default function ChannelView() {
       unsubThreadReplyDeleted();
       window.removeEventListener("focus", onFocusOrVisibility);
       document.removeEventListener("visibilitychange", onFocusOrVisibility);
-      if (markReadTimer) clearTimeout(markReadTimer);
+      if (markReadTimerRef.current) clearTimeout(markReadTimerRef.current);
     });
   });
 
@@ -377,27 +404,27 @@ export default function ChannelView() {
   }
 
   return (
-    <div class="flex flex-col h-full bg-white text-gray-900">
-      <section class="bg-gray-100 text-gray-700 p-4 flex-shrink-0">
-        <h1 class="text-2xl font-bold"># {channel()?.name ?? params.id}</h1>
+    <div className="flex flex-col h-full bg-white text-gray-900">
+      <section className="bg-gray-100 text-gray-700 p-4 flex-shrink-0">
+        <h1 className="text-2xl font-bold"># {channel()?.name ?? params.id}</h1>
       </section>
 
       <ScreenShareViewer />
       <LocalCameraTile />
       <RemoteCameraTiles />
 
-      <div class="flex-1 min-h-0 flex">
+      <div className="flex-1 min-h-0 flex">
         <div
           ref={(el) => {
-            messagesScrollRef = el;
+            messagesScrollRef.current = el;
           }}
-          class="min-w-0 flex-1 overflow-y-auto"
+          className="min-w-0 flex-1 overflow-y-auto"
           role="region"
           aria-label="Messages"
           onScroll={handleMessagesScroll}
         >
           <ChannelMessages
-            messages={messages}
+            messages={displayedMessages()}
             loading={resource.loading}
             error={resource.error}
             currentUserId={user()?.id ?? null}
@@ -411,24 +438,25 @@ export default function ChannelView() {
             onMentionUsers={primeMentionUsers}
             searchMentionUsers={searchUsers}
           />
-          <Show when={hasNewMessagesBelow()}>
-            <div class="sticky bottom-4 z-10 flex justify-center px-4" aria-live="polite">
+          <If when={showNewMessagesBelow()}>
+            <div className="sticky bottom-4 z-10 flex justify-center px-4" aria-live="polite">
               <button
                 type="button"
-                class="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
                 aria-label="New messages below. Jump to latest messages"
                 onClick={jumpToLatestMessages}
               >
                 New messages — Jump to bottom
               </button>
             </div>
-          </Show>
+          </If>
         </div>
         {openThreadRootId() !== null && (
           <ThreadPanel
             rootMessageId={openThreadRootId() as number}
             channelId={Number(params.id)}
             currentUserId={user()?.id ?? null}
+            currentUserName={user()?.username ?? null}
             focusComposer={focusComposerRootId() === openThreadRootId()}
             onComposerFocusConsumed={() => setFocusComposerRootId(null)}
             onClose={closeThread}
@@ -439,7 +467,7 @@ export default function ChannelView() {
         )}
       </div>
 
-      <section class="flex-shrink-0 p-4 border-t border-gray-200">
+      <section className="flex-shrink-0 p-4 border-t border-gray-200">
         <TypingIndicator
           channelId={Number(params.id)}
           currentUserId={user()?.id ?? null}
@@ -458,12 +486,12 @@ export default function ChannelView() {
             disabled={submitting()}
             onRemove={photoSelection.removePhoto}
           />
-          <Show when={replyTarget()}>
+          <If when={replyTarget()}>
             {(target) => (
               <MessageReferencePreview
                 id={replyBannerId}
                 reference={target()}
-                class="mb-2 flex min-w-0 items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-950"
+                className="mb-2 flex min-w-0 items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-950"
                 authorClass="shrink-0 font-semibold"
                 textClass="min-w-0 flex-1 truncate text-blue-900"
                 authorPrefix="Replying to "
@@ -473,7 +501,7 @@ export default function ChannelView() {
               >
                 <button
                   type="button"
-                  class="rounded px-2 py-1 text-sm font-medium text-blue-700 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                  className="rounded px-2 py-1 text-sm font-medium text-blue-700 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
                   aria-label={`Dismiss inline reply to message by ${messageDisplayName(
                     target(),
                   )}: ${inlineReplyPreviewText(target())}`}
@@ -483,8 +511,8 @@ export default function ChannelView() {
                 </button>
               </MessageReferencePreview>
             )}
-          </Show>
-          <div class="flex items-center gap-2">
+          </If>
+          <div className="flex items-center gap-2">
             <PhotoAttachControl
               onFilesSelected={photoSelection.addFiles}
               disabled={submitting()}
@@ -500,11 +528,11 @@ export default function ChannelView() {
               onMentionUsers={primeMentionUsers}
               searchMentionUsers={searchUsers}
               inputRef={(el) => {
-                composerRef = el;
+                composerRef.current = el;
               }}
             />
             <button
-              class="bg-blue-100 p-4 rounded-md disabled:opacity-50"
+              className="bg-blue-100 p-4 rounded-md disabled:opacity-50"
               type="submit"
               disabled={submitting() || !hasDraftContent()}
             >

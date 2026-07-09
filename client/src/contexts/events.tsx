@@ -1,4 +1,4 @@
-import { createContext, onCleanup, onMount, useContext, type JSX } from "solid-js";
+import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
 import {
   messagesEventSource,
   type Channel,
@@ -57,15 +57,17 @@ export interface EventsContextValue {
   onConnected: (cb: Listener<void>) => () => void;
 }
 
-const EventsContext = createContext<EventsContextValue>();
+const EventsContext = createContext<EventsContextValue | undefined>(undefined);
 
-export function EventsProvider(props: { children: JSX.Element }) {
+export function EventsProvider(props: { children: ReactNode }) {
   // One Set per SSEEvent kind. Callbacks are stored as type-erased functions;
   // the typed `subscribe` wrapper below preserves the kind→data correspondence
   // from the SSEEvent discriminated union at the boundary.
-  const listeners = new Map<EventKind, Set<Listener<unknown>>>();
+  const listenersRef = useRef(new Map<EventKind, Set<Listener<unknown>>>());
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   function subscribe<K extends EventKind>(kind: K, cb: Listener<DataFor<K>>): () => void {
+    const listeners = listenersRef.current;
     let set = listeners.get(kind);
     if (!set) {
       set = new Set();
@@ -76,9 +78,8 @@ export function EventsProvider(props: { children: JSX.Element }) {
     return () => captured.delete(cb as Listener<unknown>);
   }
 
-  let eventSource: EventSource | null = null;
-
-  onMount(() => {
+  useEffect(() => {
+    const listeners = listenersRef.current;
     const es = messagesEventSource();
     es.onmessage = (m) => {
       if (m.data === "connected") {
@@ -102,40 +103,43 @@ export function EventsProvider(props: { children: JSX.Element }) {
     es.onopen = () => {
       listeners.get("connected")?.forEach((cb) => cb(undefined));
     };
-    eventSource = es;
-  });
+    eventSourceRef.current = es;
+    return () => {
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
+      listeners.clear();
+    };
+  }, []);
 
-  onCleanup(() => {
-    eventSource?.close();
-    eventSource = null;
-    listeners.clear();
-  });
-
-  const value: EventsContextValue = {
-    onMessage: (cb) => subscribe("message", cb),
-    onMessageUpdated: (cb) => subscribe("message_updated", cb),
-    onMessageDeleted: (cb) => subscribe("message_deleted", cb),
-    onMessageEmbedsUpdated: (cb) => subscribe("message_embeds_updated", cb),
-    onMessageReactionsUpdated: (cb) => subscribe("message_reactions_updated", cb),
-    onChannelCreated: (cb) => subscribe("channel_created", cb),
-    onChannelsReordered: (cb) => subscribe("channels_reordered", cb),
-    onEmojiCreated: (cb) => subscribe("emoji_created", cb),
-    onEmojiUpdated: (cb) => subscribe("emoji_updated", cb),
-    onEmojiDeleted: (cb) => subscribe("emoji_deleted", cb),
-    onVoiceParticipantJoined: (cb) => subscribe("voice_participant_joined", cb),
-    onVoiceParticipantLeft: (cb) => subscribe("voice_participant_left", cb),
-    onVoiceParticipantSpeakingChanged: (cb) => subscribe("voice_participant_speaking_changed", cb),
-    onVoiceParticipantStatusChanged: (cb) => subscribe("voice_participant_status_changed", cb),
-    onScreenShareStarted: (cb) => subscribe("screen_share_started", cb),
-    onScreenShareStopped: (cb) => subscribe("screen_share_stopped", cb),
-    onCameraVideoStarted: (cb) => subscribe("camera_video_started", cb),
-    onCameraVideoStopped: (cb) => subscribe("camera_video_stopped", cb),
-    onUserTyping: (cb) => subscribe("user_typing", cb),
-    onThreadReplyCreated: (cb) => subscribe("thread_reply_created", cb),
-    onThreadReplyDeleted: (cb) => subscribe("thread_reply_deleted", cb),
-    onReadStateUpdated: (cb) => subscribe("read_state_updated", cb),
-    onConnected: (cb) => subscribe("connected", cb),
-  };
+  const value: EventsContextValue = useMemo(
+    () => ({
+      onMessage: (cb) => subscribe("message", cb),
+      onMessageUpdated: (cb) => subscribe("message_updated", cb),
+      onMessageDeleted: (cb) => subscribe("message_deleted", cb),
+      onMessageEmbedsUpdated: (cb) => subscribe("message_embeds_updated", cb),
+      onMessageReactionsUpdated: (cb) => subscribe("message_reactions_updated", cb),
+      onChannelCreated: (cb) => subscribe("channel_created", cb),
+      onChannelsReordered: (cb) => subscribe("channels_reordered", cb),
+      onEmojiCreated: (cb) => subscribe("emoji_created", cb),
+      onEmojiUpdated: (cb) => subscribe("emoji_updated", cb),
+      onEmojiDeleted: (cb) => subscribe("emoji_deleted", cb),
+      onVoiceParticipantJoined: (cb) => subscribe("voice_participant_joined", cb),
+      onVoiceParticipantLeft: (cb) => subscribe("voice_participant_left", cb),
+      onVoiceParticipantSpeakingChanged: (cb) =>
+        subscribe("voice_participant_speaking_changed", cb),
+      onVoiceParticipantStatusChanged: (cb) => subscribe("voice_participant_status_changed", cb),
+      onScreenShareStarted: (cb) => subscribe("screen_share_started", cb),
+      onScreenShareStopped: (cb) => subscribe("screen_share_stopped", cb),
+      onCameraVideoStarted: (cb) => subscribe("camera_video_started", cb),
+      onCameraVideoStopped: (cb) => subscribe("camera_video_stopped", cb),
+      onUserTyping: (cb) => subscribe("user_typing", cb),
+      onThreadReplyCreated: (cb) => subscribe("thread_reply_created", cb),
+      onThreadReplyDeleted: (cb) => subscribe("thread_reply_deleted", cb),
+      onReadStateUpdated: (cb) => subscribe("read_state_updated", cb),
+      onConnected: (cb) => subscribe("connected", cb),
+    }),
+    [],
+  );
 
   return <EventsContext.Provider value={value}>{props.children}</EventsContext.Provider>;
 }

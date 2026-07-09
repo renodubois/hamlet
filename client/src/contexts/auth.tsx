@@ -1,4 +1,5 @@
-import { createContext, createResource, useContext, type JSX, type Resource } from "solid-js";
+import { createContext, useContext, type ReactNode } from "react";
+import { useCallableResource, type CallableResource } from "../hooks/react-state";
 import {
   getMe,
   login as apiLogin,
@@ -9,7 +10,7 @@ import {
 } from "../api";
 
 interface AuthContextValue {
-  user: Resource<User | null>;
+  user: CallableResource<User | null>;
   login: (server: string, username: string, password: string) => Promise<string | null>;
   register: (
     server: string,
@@ -21,10 +22,10 @@ interface AuthContextValue {
   refresh: () => void;
 }
 
-const AuthContext = createContext<AuthContextValue>();
+const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-export function AuthProvider(props: { children: JSX.Element }) {
-  const [user, { refetch }] = createResource(getMe);
+export function AuthProvider(props: { children: ReactNode }) {
+  const [user, { refetch }] = useCallableResource(getMe);
 
   const login = async (
     server: string,

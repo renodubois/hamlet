@@ -1,13 +1,13 @@
-import { createSignal, Show } from "solid-js";
+import { useSignalState, If } from "../hooks/react-state";
 import Modal from "./modal";
 import { createChannel, type ChannelType } from "../api";
 import { CHANNEL_NAME_MAX_LEN } from "../constants";
 
 export default function AddChannelModal(props: { open: boolean; onClose: () => void }) {
-  const [name, setName] = createSignal("");
-  const [type, setType] = createSignal<ChannelType>("text");
-  const [error, setError] = createSignal<string | null>(null);
-  const [submitting, setSubmitting] = createSignal(false);
+  const [name, setName] = useSignalState("");
+  const [type, setType] = useSignalState<ChannelType>("text");
+  const [error, setError] = useSignalState<string | null>(null);
+  const [submitting, setSubmitting] = useSignalState(false);
 
   const close = () => {
     setName("");
@@ -16,7 +16,7 @@ export default function AddChannelModal(props: { open: boolean; onClose: () => v
     props.onClose();
   };
 
-  const handleSubmit = async (e: SubmitEvent) => {
+  const handleSubmit = async (e: any) => {
     e.preventDefault();
     const trimmed = name().trim();
     if (trimmed.length === 0) {
@@ -53,19 +53,19 @@ export default function AddChannelModal(props: { open: boolean; onClose: () => v
 
   return (
     <Modal open={props.open} onClose={close} title="Add Channel">
-      <form onSubmit={handleSubmit} class="flex flex-col gap-3">
+      <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <input
-          class="bg-gray-700 text-gray-100 rounded-md p-3 placeholder-gray-400"
+          className="bg-gray-700 text-gray-100 rounded-md p-3 placeholder-gray-400"
           type="text"
           placeholder="Channel name"
-          autofocus
+          autoFocus
           maxLength={CHANNEL_NAME_MAX_LEN}
           value={name()}
           onInput={(e) => setName(e.currentTarget.value)}
         />
-        <fieldset class="flex gap-2">
-          <legend class="text-gray-300 text-sm mb-1">Channel type</legend>
-          <label class="flex-1 flex items-center gap-2 bg-gray-700 rounded-md px-3 py-2 cursor-pointer text-gray-100 text-sm">
+        <fieldset className="flex gap-2">
+          <legend className="text-gray-300 text-sm mb-1">Channel type</legend>
+          <label className="flex-1 flex items-center gap-2 bg-gray-700 rounded-md px-3 py-2 cursor-pointer text-gray-100 text-sm">
             <input
               type="radio"
               name="channel-type"
@@ -75,7 +75,7 @@ export default function AddChannelModal(props: { open: boolean; onClose: () => v
             />
             Text
           </label>
-          <label class="flex-1 flex items-center gap-2 bg-gray-700 rounded-md px-3 py-2 cursor-pointer text-gray-100 text-sm">
+          <label className="flex-1 flex items-center gap-2 bg-gray-700 rounded-md px-3 py-2 cursor-pointer text-gray-100 text-sm">
             <input
               type="radio"
               name="channel-type"
@@ -86,20 +86,20 @@ export default function AddChannelModal(props: { open: boolean; onClose: () => v
             Voice
           </label>
         </fieldset>
-        <Show when={error()}>
-          <p class="text-red-400 text-sm">{error()}</p>
-        </Show>
-        <div class="flex gap-2 justify-end">
+        <If when={error()}>
+          <p className="text-red-400 text-sm">{error()}</p>
+        </If>
+        <div className="flex gap-2 justify-end">
           <button
             type="button"
-            class="text-gray-300 hover:text-gray-100 text-sm px-3 py-2"
+            className="text-gray-300 hover:text-gray-100 text-sm px-3 py-2"
             onClick={close}
           >
             Cancel
           </button>
           <button
             type="submit"
-            class="bg-blue-600 hover:bg-blue-700 text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 transition-colors"
+            className="bg-blue-600 hover:bg-blue-700 text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 transition-colors"
             disabled={submitting()}
           >
             {submitting() ? "Creating..." : "Create"}

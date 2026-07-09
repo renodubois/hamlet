@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
 import userEvent from "@testing-library/user-event";
-import { createSignal } from "solid-js";
+import { useSignalState } from "../hooks/react-state";
 import type {
   CameraStream,
   CameraVideoStopped,
@@ -71,7 +71,7 @@ const screenShareStartedListeners = new Set<ScreenShareStartedListener>();
 const screenShareStoppedListeners = new Set<ScreenShareStoppedListener>();
 const cameraStartedListeners = new Set<CameraStartedListener>();
 const cameraStoppedListeners = new Set<CameraStoppedListener>();
-const [showEverywhere, setShowEverywhere] = createSignal(false);
+const [showEverywhere, setShowEverywhere] = useSignalState(false);
 
 vi.mock("../contexts/voice-chat", () => ({
   useVoiceChat: () => mockVoice,
@@ -124,17 +124,17 @@ vi.mock("../voice/settings", () => ({
 }));
 
 function makeVoiceMock(overrides?: Partial<MockVoiceChatApi>): MockVoiceChatApi {
-  const [activeChannelId, setActiveChannelId] = createSignal<number | null>(null);
-  const [isMuted, setIsMuted] = createSignal(false);
-  const [isDeafened, setIsDeafened] = createSignal(false);
-  const [isScreenSharing, setIsScreenSharing] = createSignal(false);
-  const [isScreenShareStarting, setIsScreenShareStarting] = createSignal(false);
-  const [isCameraEnabled, setIsCameraEnabled] = createSignal(false);
-  const [isCameraBusy, setIsCameraBusy] = createSignal(false);
-  const [watchingScreenShare, setWatchingScreenShare] = createSignal<ScreenShareStream | null>(
+  const [activeChannelId, setActiveChannelId] = useSignalState<number | null>(null);
+  const [isMuted, setIsMuted] = useSignalState(false);
+  const [isDeafened, setIsDeafened] = useSignalState(false);
+  const [isScreenSharing, setIsScreenSharing] = useSignalState(false);
+  const [isScreenShareStarting, setIsScreenShareStarting] = useSignalState(false);
+  const [isCameraEnabled, setIsCameraEnabled] = useSignalState(false);
+  const [isCameraBusy, setIsCameraBusy] = useSignalState(false);
+  const [watchingScreenShare, setWatchingScreenShare] = useSignalState<ScreenShareStream | null>(
     null,
   );
-  const [speakingUserIds, setSpeakingUserIds] = createSignal<ReadonlySet<number>>(new Set());
+  const [speakingUserIds, setSpeakingUserIds] = useSignalState<ReadonlySet<number>>(new Set());
   return {
     activeChannelId,
     setActiveChannelId,

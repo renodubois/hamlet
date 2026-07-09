@@ -1,6 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@solidjs/testing-library";
-import { Show } from "solid-js";
+import { render, screen, fireEvent, waitFor } from "../test/testing-library";
 import { AuthProvider, useAuth } from "../contexts/auth";
 import { resetMswState } from "../test/msw/server";
 import { assertExists } from "../test/render";
@@ -8,11 +7,8 @@ import LoginScreen from "./login";
 
 function Harness() {
   const auth = useAuth();
-  return (
-    <Show when={auth.user()} fallback={<LoginScreen />}>
-      {(user) => <div data-testid="welcome">welcome {user().username}</div>}
-    </Show>
-  );
+  const user = auth.user();
+  return user ? <div data-testid="welcome">welcome {user.username}</div> : <LoginScreen />;
 }
 
 function mount() {

@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
-import { render, screen, waitFor } from "@solidjs/testing-library";
+import { render, screen, waitFor } from "../test/testing-library";
 import userEvent from "@testing-library/user-event";
-import { createSignal } from "solid-js";
+import { useSignalState } from "../hooks/react-state";
 import type { ScreenShareStream } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
 
@@ -41,11 +41,11 @@ function makeScreenShare(overrides: Partial<ScreenShareStream> = {}): ScreenShar
 }
 
 function setupViewer(stream = makeScreenShare(), track = new FakeRemoteVideoTrack()) {
-  const [watchingScreenShare, setWatchingScreenShare] = createSignal<ScreenShareStream | null>(
+  const [watchingScreenShare, setWatchingScreenShare] = useSignalState<ScreenShareStream | null>(
     stream,
   );
   const [watchingScreenShareTrack, setWatchingScreenShareTrack] =
-    createSignal<FakeRemoteVideoTrack | null>(track);
+    useSignalState<FakeRemoteVideoTrack | null>(track);
   const stopWatchingScreenShare = vi.fn(async () => {
     setWatchingScreenShare(null);
     setWatchingScreenShareTrack(null);

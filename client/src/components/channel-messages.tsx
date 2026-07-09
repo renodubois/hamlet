@@ -1,4 +1,12 @@
-import { Component, For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import {
+  Component,
+  List,
+  If,
+  useComputedValue,
+  useSignalState,
+  registerCleanup,
+  useMountEffect,
+} from "../hooks/react-state";
 import {
   addMessageReaction,
   deleteMessage,
@@ -98,20 +106,22 @@ const ChannelMessages: Component<{
     ...CONSERVATIVE_EMOJIS,
     ...customEmojisToEntries(activeCustomEmojis()),
   ];
-  const visibleMessageIds = createMemo(() => new Set(props.messages.map((message) => message.id)));
+  const visibleMessageIds = useComputedValue(
+    () => new Set(props.messages.map((message) => message.id)),
+  );
   const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
-  const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null);
-  const [editingId, setEditingId] = createSignal<number | null>(null);
-  const [draft, setDraft] = createSignal("");
-  const [pendingDeleteId, setPendingDeleteId] = createSignal<number | null>(null);
-  const [reactionPicker, setReactionPicker] = createSignal<ReactionPickerState | null>(null);
+  const [contextMenu, setContextMenu] = useSignalState<ContextMenuState | null>(null);
+  const [editingId, setEditingId] = useSignalState<number | null>(null);
+  const [draft, setDraft] = useSignalState("");
+  const [pendingDeleteId, setPendingDeleteId] = useSignalState<number | null>(null);
+  const [reactionPicker, setReactionPicker] = useSignalState<ReactionPickerState | null>(null);
 
   const closeMenu = () => setContextMenu(null);
   const closeReactionPicker = () => setReactionPicker(null);
 
-  onMount(() => {
+  useMountEffect(() => {
     const onDocClick = () => closeMenu();
-    const onKey = (e: KeyboardEvent) => {
+    const onKey = (e: any) => {
       if (e.key === "Escape") {
         closeMenu();
         closeReactionPicker();
@@ -119,7 +129,7 @@ const ChannelMessages: Component<{
     };
     document.addEventListener("click", onDocClick);
     document.addEventListener("keydown", onKey);
-    onCleanup(() => {
+    registerCleanup(() => {
       document.removeEventListener("click", onDocClick);
       document.removeEventListener("keydown", onKey);
     });
@@ -288,28 +298,28 @@ const ChannelMessages: Component<{
     });
   };
 
-  const handleContextMenu = (e: MouseEvent, msg: Message) => {
+  const handleContextMenu = (e: any, msg: Message) => {
     if (!isOwnMessage(msg)) return;
     e.preventDefault();
     setContextMenu({ messageId: msg.id, x: e.clientX, y: e.clientY });
   };
 
   return (
-    <section class="bg-white text-gray-900 p-8 min-h-full flex flex-col justify-end">
-      <Show when={props.loading && props.messages.length === 0}>
+    <section className="bg-white text-gray-900 p-8 min-h-full flex flex-col justify-end">
+      <If when={props.loading && props.messages.length === 0}>
         <p>Loading...</p>
-      </Show>
-      <Show when={props.error}>
+      </If>
+      <If when={props.error}>
         <span>Error getting messages: {String(props.error)}</span>
-      </Show>
-      <For each={props.messages}>
+      </If>
+      <List each={props.messages}>
         {(message) => (
           <div
             id={channelMessageElementId(message.id)}
             data-message-id={String(message.id)}
             data-authored-by-current-user={isOwnMessage(message) ? "true" : undefined}
             data-mentioned-current-user={isMentionedCurrentUser(message) ? "true" : undefined}
-            class={messageRowClass(isOwnMessage(message), isMentionedCurrentUser(message))}
+            className={messageRowClass(isOwnMessage(message), isMentionedCurrentUser(message))}
             onContextMenu={(e) => handleContextMenu(e, message)}
           >
             <Avatar
@@ -317,17 +327,17 @@ const ChannelMessages: Component<{
               username={isDeletedMessage(message) ? "Deleted message" : messageDisplayName(message)}
               size={32}
             />
-            <div class="min-w-0 flex-1">
-              <Show
+            <div className="min-w-0 flex-1">
+              <If
                 when={!isDeletedMessage(message)}
                 fallback={
-                  <p class="italic text-gray-500" aria-label="Original message deleted">
+                  <p className="italic text-gray-500" aria-label="Original message deleted">
                     Original message deleted
                   </p>
                 }
               >
-                <div class="font-bold">{messageDisplayName(message)}</div>
-                <Show when={message.reply_to ?? message.reply_to_message_id ?? null}>
+                <div className="font-bold">{messageDisplayName(message)}</div>
+                <If when={message.reply_to ?? message.reply_to_message_id ?? null}>
                   <MessageReferencePreview
                     reference={message.reply_to ?? null}
                     targetId={referencedTargetId(message)}
@@ -337,8 +347,8 @@ const ChannelMessages: Component<{
                         : undefined
                     }
                   />
-                </Show>
-                <Show
+                </If>
+                <If
                   when={editingId() === message.id}
                   fallback={
                     <MessageText
@@ -349,7 +359,7 @@ const ChannelMessages: Component<{
                   }
                 >
                   <form
-                    class="flex gap-2 items-center"
+                    className="flex gap-2 items-center"
                     onSubmit={(e) => {
                       e.preventDefault();
                       void saveEdit(message);
@@ -374,35 +384,35 @@ const ChannelMessages: Component<{
                           cancelEditing();
                         }
                       }}
-                      class="flex min-w-0 flex-1 items-center gap-2"
+                      className="flex min-w-0 flex-1 items-center gap-2"
                       inputClass="bg-gray-100 rounded-md px-2 py-1 w-full"
                       emojiButtonClass="cursor-pointer rounded-md bg-gray-100 px-2 py-1 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400"
                       emojiButtonLabel="Open emoji picker for edit"
                     />
-                    <button type="submit" class="text-sm text-blue-600">
+                    <button type="submit" className="text-sm text-blue-600">
                       Save
                     </button>
-                    <button type="button" class="text-sm text-gray-500" onClick={cancelEditing}>
+                    <button type="button" className="text-sm text-gray-500" onClick={cancelEditing}>
                       Cancel
                     </button>
                   </form>
-                </Show>
-              </Show>
-              <Show when={!isDeletedMessage(message) && message.attachments.length > 0}>
+                </If>
+              </If>
+              <If when={!isDeletedMessage(message) && message.attachments.length > 0}>
                 <AttachmentGrid
                   attachments={message.attachments}
                   authorName={messageDisplayName(message)}
                 />
-              </Show>
-              <Show
+              </If>
+              <If
                 when={
                   !isDeletedMessage(message) &&
                   !message.suppress_embeds &&
                   message.embeds.length > 0
                 }
               >
-                <div class="flex flex-col gap-1">
-                  <For each={message.embeds}>
+                <div className="flex flex-col gap-1">
+                  <List each={message.embeds}>
                     {(embed) => (
                       <MessageEmbed
                         embed={embed}
@@ -411,16 +421,16 @@ const ChannelMessages: Component<{
                         }
                       />
                     )}
-                  </For>
+                  </List>
                 </div>
-              </Show>
-              <Show when={!isDeletedMessage(message)}>
+              </If>
+              <If when={!isDeletedMessage(message)}>
                 <ReactionRow
                   reactions={message.reactions ?? []}
                   onToggle={(reaction) => toggleReaction(message, reaction)}
                 />
-              </Show>
-              <Show when={message.thread_summary?.reply_count ? message.thread_summary : null}>
+              </If>
+              <If when={message.thread_summary?.reply_count ? message.thread_summary : null}>
                 {(summary) => {
                   const countText = () => replyCountLabel(summary().reply_count);
                   const lastReplyText = () =>
@@ -428,7 +438,7 @@ const ChannelMessages: Component<{
                   return (
                     <button
                       type="button"
-                      class="mt-1 text-sm font-medium text-blue-700 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-400 rounded"
+                      className="mt-1 text-sm font-medium text-blue-700 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-400 rounded"
                       title={`Last reply ${formatThreadTimestampTitle(summary().last_reply_created_at)}`}
                       aria-label={`Open thread with ${countText()}, last reply ${lastReplyText()}`}
                       onClick={() => props.onOpenThread?.(message, { focusComposer: false })}
@@ -437,20 +447,20 @@ const ChannelMessages: Component<{
                     </button>
                   );
                 }}
-              </Show>
+              </If>
             </div>
-            <Show when={hasAnyAction(message) && editingId() !== message.id}>
+            <If when={hasAnyAction(message) && editingId() !== message.id}>
               <div
                 role="toolbar"
                 aria-label={`Message actions for ${referencedMessageLabel(message)}`}
-                class="absolute -top-3 right-2 flex gap-1 rounded-md border border-gray-200 bg-white shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+                className="absolute -top-3 right-2 flex gap-1 rounded-md border border-gray-200 bg-white shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
               >
-                <Show when={canReact(message)}>
+                <If when={canReact(message)}>
                   <button
                     type="button"
                     aria-label={`Add reaction to message by ${messageDisplayName(message)}`}
                     title="Add reaction"
-                    class="p-1.5 rounded-md hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    className="p-1.5 rounded-md hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
                     onClick={(event) => {
                       event.stopPropagation();
                       setReactionPicker({ messageId: message.id, anchor: event.currentTarget });
@@ -458,35 +468,35 @@ const ChannelMessages: Component<{
                   >
                     <EmojiIcon size={14} />
                   </button>
-                </Show>
-                <Show when={canInlineReply(message)}>
+                </If>
+                <If when={canInlineReply(message)}>
                   <button
                     type="button"
                     aria-label={`Reply inline to ${referencedMessageLabel(message)}`}
                     title="Reply inline"
-                    class="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    className="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
                     onClick={() => props.onReplyToMessage?.(message)}
                   >
                     Reply
                   </button>
-                </Show>
-                <Show when={canOpenThread(message)}>
+                </If>
+                <If when={canOpenThread(message)}>
                   <button
                     type="button"
                     aria-label={`Reply in thread to ${referencedMessageLabel(message)}`}
                     title="Reply in thread"
-                    class="rounded-md bg-purple-50 px-2 py-1 text-xs font-medium text-purple-700 hover:bg-purple-100 focus:outline-none focus:ring-2 focus:ring-purple-400"
+                    className="rounded-md bg-purple-50 px-2 py-1 text-xs font-medium text-purple-700 hover:bg-purple-100 focus:outline-none focus:ring-2 focus:ring-purple-400"
                     onClick={() => props.onOpenThread?.(message, { focusComposer: true })}
                   >
                     Thread
                   </button>
-                </Show>
-                <Show when={isOwnMessage(message)}>
+                </If>
+                <If when={isOwnMessage(message)}>
                   <button
                     type="button"
                     aria-label="Edit"
                     title="Edit"
-                    class="p-1.5 rounded-md hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    className="p-1.5 rounded-md hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
                     onClick={() => startEditing(message)}
                   >
                     <EditIcon size={14} />
@@ -495,17 +505,17 @@ const ChannelMessages: Component<{
                     type="button"
                     aria-label="Delete"
                     title="Delete"
-                    class="p-1.5 rounded-md text-red-600 hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-400"
+                    className="p-1.5 rounded-md text-red-600 hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-400"
                     onClick={() => requestDelete(message.id)}
                   >
                     <DeleteIcon size={14} />
                   </button>
-                </Show>
+                </If>
               </div>
-            </Show>
+            </If>
           </div>
         )}
-      </For>
+      </List>
       <EmojiPicker
         open={reactionPicker() !== null}
         anchor={() => reactionPicker()?.anchor}
@@ -519,11 +529,11 @@ const ChannelMessages: Component<{
         }}
         onClose={closeReactionPicker}
       />
-      <Show when={contextMenu()}>
+      <If when={contextMenu()}>
         {(menu) => (
           <ul
             role="menu"
-            class="fixed z-50 bg-white border border-gray-200 rounded-md shadow-md py-1"
+            className="fixed z-50 bg-white border border-gray-200 rounded-md shadow-md py-1"
             style={{ top: `${menu().y}px`, left: `${menu().x}px` }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -531,7 +541,7 @@ const ChannelMessages: Component<{
               <button
                 role="menuitem"
                 type="button"
-                class="w-full text-left px-4 py-1 hover:bg-gray-100"
+                className="w-full text-left px-4 py-1 hover:bg-gray-100"
                 onClick={() => {
                   const id = menu().messageId;
                   const msg = props.messages.find((m) => m.id === id);
@@ -545,7 +555,7 @@ const ChannelMessages: Component<{
               <button
                 role="menuitem"
                 type="button"
-                class="w-full text-left px-4 py-1 text-red-600 hover:bg-red-50"
+                className="w-full text-left px-4 py-1 text-red-600 hover:bg-red-50"
                 onClick={() => requestDelete(menu().messageId)}
               >
                 Delete message
@@ -553,22 +563,22 @@ const ChannelMessages: Component<{
             </li>
           </ul>
         )}
-      </Show>
+      </If>
       <Modal open={pendingDeleteId() !== null} onClose={cancelDelete} title="Delete message?">
-        <p class="text-sm text-gray-200 mb-4">
+        <p className="text-sm text-gray-200 mb-4">
           This will permanently delete the message. This cannot be undone.
         </p>
-        <div class="flex gap-2 justify-end">
+        <div className="flex gap-2 justify-end">
           <button
             type="button"
-            class="text-gray-300 hover:text-gray-100 text-sm px-3 py-2"
+            className="text-gray-300 hover:text-gray-100 text-sm px-3 py-2"
             onClick={cancelDelete}
           >
             Cancel
           </button>
           <button
             type="button"
-            class="bg-red-600 hover:bg-red-700 text-white rounded-md px-4 py-2 text-sm font-medium transition-colors"
+            className="bg-red-600 hover:bg-red-700 text-white rounded-md px-4 py-2 text-sm font-medium transition-colors"
             onClick={() => void confirmDelete()}
           >
             Delete

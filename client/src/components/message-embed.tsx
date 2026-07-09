@@ -1,4 +1,4 @@
-import { Component, Match, Show, Switch } from "solid-js";
+import { Component, Case, If, Choose } from "../hooks/react-state";
 import type { Embed } from "../api";
 import { CloseIcon } from "./icons";
 
@@ -44,81 +44,81 @@ const MessageEmbed: Component<{
     props.embed.iframe_url !== null;
 
   return (
-    <div class="relative mt-1 max-w-xl rounded-md border-l-4 border-gray-300 bg-gray-50 p-3">
-      <Show when={props.onRemove}>
+    <div className="relative mt-1 max-w-xl rounded-md border-l-4 border-gray-300 bg-gray-50 p-3">
+      <If when={props.onRemove}>
         <button
           type="button"
           aria-label="Remove embed"
           title="Remove embed"
-          class="absolute top-1 right-1 z-10 p-1 rounded-md bg-white/80 text-gray-500 hover:bg-gray-200 hover:text-gray-800"
+          className="absolute top-1 right-1 z-10 p-1 rounded-md bg-white/80 text-gray-500 hover:bg-gray-200 hover:text-gray-800"
           onClick={() => props.onRemove?.()}
         >
           <CloseIcon size={14} />
         </button>
-      </Show>
+      </If>
 
-      <div class="text-xs text-gray-500">{props.embed.site_name ?? hostname()}</div>
-      <Show when={props.embed.title}>
+      <div className="text-xs text-gray-500">{props.embed.site_name ?? hostname()}</div>
+      <If when={props.embed.title}>
         <a
           href={props.embed.url}
           target="_blank"
           rel="noopener noreferrer"
-          class="block font-semibold text-blue-700 hover:underline"
+          className="block font-semibold text-blue-700 hover:underline"
         >
           {props.embed.title}
         </a>
-      </Show>
+      </If>
 
-      <Switch>
+      <Choose>
         {/* iframe branch */}
-        <Match when={hasIframe() && props.embed.iframe_url}>
+        <Case when={hasIframe() && props.embed.iframe_url}>
           {(iframeUrl) => (
-            <div class="mt-2 w-full" style={{ "aspect-ratio": aspectRatio() }}>
+            <div className="mt-2 w-full" style={{ aspectRatio: aspectRatio() }}>
               <iframe
-                class="w-full h-full rounded-md border-0"
+                className="w-full h-full rounded-md border-0"
                 src={iframeUrl()}
                 title={props.embed.title ?? "Embedded content"}
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                referrerpolicy="strict-origin-when-cross-origin"
+                allow="accelerometer; autoPlay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                referrerPolicy="strict-origin-when-cross-origin"
                 sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
                 loading="lazy"
-                allowfullscreen
+                allowFullScreen
               />
             </div>
           )}
-        </Match>
+        </Case>
 
         {/* photo branch */}
-        <Match when={props.embed.embed_type === "photo" && props.embed.image_url}>
+        <Case when={props.embed.embed_type === "photo" && props.embed.image_url}>
           {(imageUrl) => (
             <a href={props.embed.url} target="_blank" rel="noopener noreferrer">
               <img
                 src={imageUrl()}
                 alt={props.embed.title ?? ""}
                 loading="lazy"
-                class="mt-2 max-h-96 w-full rounded-md object-contain"
+                className="mt-2 max-h-96 w-full rounded-md object-contain"
               />
             </a>
           )}
-        </Match>
+        </Case>
 
         {/* link/card branch (default) */}
-        <Match when={true}>
-          <Show when={props.embed.description}>
-            <p class="mt-1 text-sm text-gray-700 line-clamp-3">{props.embed.description}</p>
-          </Show>
-          <Show when={props.embed.image_url}>
+        <Case when={true}>
+          <If when={props.embed.description}>
+            <p className="mt-1 text-sm text-gray-700 line-clamp-3">{props.embed.description}</p>
+          </If>
+          <If when={props.embed.image_url}>
             {(imageUrl) => (
               <img
                 src={imageUrl()}
                 alt=""
                 loading="lazy"
-                class="mt-2 max-h-64 rounded-md object-cover"
+                className="mt-2 max-h-64 rounded-md object-cover"
               />
             )}
-          </Show>
-        </Match>
-      </Switch>
+          </If>
+        </Case>
+      </Choose>
     </div>
   );
 };

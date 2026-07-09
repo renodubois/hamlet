@@ -1,48 +1,41 @@
-import {
-  createContext,
-  createResource,
-  onCleanup,
-  onMount,
-  useContext,
-  type JSX,
-  type Resource,
-} from "solid-js";
+import { createContext, useContext, useEffect, type ReactNode } from "react";
+import { useCallableResource, type CallableResource } from "../hooks/react-state";
 import { listChannels, reorderChannels, type Channel } from "../api";
 import { useAuth } from "./auth";
 import { useEvents } from "./events";
 
 interface ChannelsContextValue {
-  channels: Resource<Channel[]>;
+  channels: CallableResource<Channel[]>;
   refetch: () => void;
   reorder: (ids: number[]) => Promise<void>;
 }
 
-const ChannelsContext = createContext<ChannelsContextValue>();
+const ChannelsContext = createContext<ChannelsContextValue | undefined>(undefined);
 
 function sortByPosition(list: Channel[]): Channel[] {
   return [...list].sort((a, b) => a.position - b.position || a.id - b.id);
 }
 
-export function ChannelsProvider(props: { children: JSX.Element }) {
+export function ChannelsProvider(props: { children: ReactNode }) {
   const auth = useAuth();
   const events = useEvents();
-  const [channels, { refetch, mutate }] = createResource(
-    () => auth.user() || null,
+  const [channels, { refetch, mutate }] = useCallableResource(
+    () => auth.user()?.id ?? null,
     async () => sortByPosition(await listChannels()),
   );
 
-  onMount(() => {
+  useEffect(() => {
     const unsubCreated = events.onChannelCreated(() => {
       void refetch();
     });
     const unsubReordered = events.onChannelsReordered((list) => {
       mutate(sortByPosition(list));
     });
-    onCleanup(() => {
+    return () => {
       unsubCreated();
       unsubReordered();
-    });
-  });
+    };
+  }, [events, mutate, refetch]);
 
   async function reorder(ids: number[]): Promise<void> {
     const previous = channels();

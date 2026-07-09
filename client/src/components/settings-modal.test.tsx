@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
 import { delay, http, HttpResponse } from "msw";
 import { describe, expect, test, vi } from "vitest";
 import { type User } from "../api";

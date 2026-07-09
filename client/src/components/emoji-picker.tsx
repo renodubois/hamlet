@@ -1,14 +1,14 @@
+import { useEffect, useRef } from "react";
+import { flushSync } from "react-dom";
 import {
-  createEffect,
-  createMemo,
-  createSignal,
-  For,
-  Show,
-  onCleanup,
-  untrack,
+  useComputedValue,
+  useSignalState,
+  List,
+  If,
+  ignoreReactiveTracking,
+  PortalRoot,
   type JSX,
-} from "solid-js";
-import { Portal } from "solid-js/web";
+} from "../hooks/react-state";
 import { getServerUrl } from "../api";
 import { CONSERVATIVE_EMOJIS, type EmojiEntry } from "../emoji/emoji-data";
 import { searchEmojis } from "../emoji/emoji-search";
@@ -21,7 +21,10 @@ const EMOJI_RESULTS_GRID_ID = "emoji-results-grid";
 
 export const EMOJI_GRID_COLUMNS = 8;
 
-function pickerPosition(anchor: HTMLElement | undefined, panel: HTMLElement | undefined) {
+function pickerPosition(
+  anchor: HTMLElement | null | undefined,
+  panel: HTMLElement | null | undefined,
+) {
   const width = PICKER_WIDTH;
   const height = panel?.offsetHeight || PICKER_MAX_HEIGHT;
   const viewportWidth = window.innerWidth || width + VIEWPORT_MARGIN * 2;
@@ -92,7 +95,7 @@ function isArrowKey(key: string): boolean {
   return key === "ArrowLeft" || key === "ArrowRight" || key === "ArrowUp" || key === "ArrowDown";
 }
 
-function isModifiedKeyboardEvent(event: KeyboardEvent): boolean {
+function isModifiedKeyboardEvent(event: any): boolean {
   return event.shiftKey || event.ctrlKey || event.metaKey || event.altKey;
 }
 
@@ -102,37 +105,37 @@ function clampIndex(index: number, maxIndex: number): number {
 
 export default function EmojiPicker(props: {
   open: boolean;
-  anchor: () => HTMLElement | undefined;
+  anchor: () => HTMLElement | null | undefined;
   emojis?: readonly EmojiEntry[];
   onSelect: (emoji: string) => void;
   onClose: () => void;
 }) {
-  let panelRef: HTMLDivElement | undefined;
-  let searchRef: HTMLInputElement | undefined;
-  let gridScrollRef: HTMLDivElement | undefined;
-  let restoreFocusOnClose = true;
-  const [query, setQuery] = createSignal("");
-  const [activeIndex, setActiveIndex] = createSignal(-1);
-  const [panelStyle, setPanelStyle] = createSignal<JSX.CSSProperties>({
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const gridScrollRef = useRef<HTMLDivElement | null>(null);
+  const restoreFocusOnClose = useRef(true);
+  const [query, setQuery] = useSignalState("");
+  const [activeIndex, setActiveIndex] = useSignalState(-1);
+  const [panelStyle, setPanelStyle] = useSignalState<JSX.CSSProperties>({
     left: `${VIEWPORT_MARGIN}px`,
     top: `${VIEWPORT_MARGIN}px`,
     width: `${PICKER_WIDTH}px`,
   });
 
   const emojis = () => props.emojis ?? CONSERVATIVE_EMOJIS;
-  const filtered = createMemo(() => searchEmojis(query(), emojis()));
-  const rows = createMemo(() => chunkEmojis(filtered()));
-  const activeEntry = createMemo(() => {
+  const filtered = useComputedValue(() => searchEmojis(query(), emojis()));
+  const rows = useComputedValue(() => chunkEmojis(filtered()));
+  const activeEntry = useComputedValue(() => {
     const entry = filtered()[activeIndex()];
     return entry;
   });
-  const activeGridcellId = createMemo(() => {
+  const activeGridcellId = useComputedValue(() => {
     const entry = activeEntry();
     return entry ? emojiGridcellId(entry) : undefined;
   });
 
   const updatePosition = () => {
-    const position = pickerPosition(props.anchor(), panelRef);
+    const position = pickerPosition(props.anchor(), panelRef.current);
     setPanelStyle({
       left: `${position.left}px`,
       top: `${position.top}px`,
@@ -153,7 +156,7 @@ export default function EmojiPicker(props: {
 
     const currentIndex = activeIndex() >= 0 ? activeIndex() : 0;
     const nextIndex = clampIndex(currentIndex + delta, resultCount - 1);
-    setActiveIndex(nextIndex);
+    flushSync(() => setActiveIndex(nextIndex));
     queueMicrotask(() => scrollActiveEmojiIntoView(nextIndex));
   };
 
@@ -162,17 +165,18 @@ export default function EmojiPicker(props: {
     props.onClose();
   };
 
-  const handlePanelKeyDown = (event: KeyboardEvent) => {
+  const handlePanelKeyDown = (event: any) => {
     const activeElement = document.activeElement;
-    if (!activeElement || !panelRef?.contains(activeElement)) return;
+    if (!activeElement || !panelRef.current?.contains(activeElement)) return;
 
     if (event.key === "Tab") {
-      restoreFocusOnClose = false;
+      restoreFocusOnClose.current = false;
       props.onClose();
       return;
     }
 
-    if (event.isComposing) return;
+    const isComposing = Boolean(event.isComposing || event.nativeEvent?.isComposing);
+    if (isComposing) return;
 
     if (event.key === "Enter") {
       event.preventDefault();
@@ -185,7 +189,7 @@ export default function EmojiPicker(props: {
     }
 
     if (!isArrowKey(event.key)) return;
-    if (event.isComposing || isModifiedKeyboardEvent(event)) return;
+    if (isComposing || isModifiedKeyboardEvent(event)) return;
     if (filtered().length === 0) return;
 
     event.preventDefault();
@@ -202,28 +206,28 @@ export default function EmojiPicker(props: {
     }
   };
 
-  createEffect(() => {
+  useEffect(() => {
     if (!props.open) return;
 
-    restoreFocusOnClose = true;
+    restoreFocusOnClose.current = true;
     setQuery("");
-    setActiveIndex(untrack(() => (searchEmojis("", emojis()).length > 0 ? 0 : -1)));
+    setActiveIndex(ignoreReactiveTracking(() => (searchEmojis("", emojis()).length > 0 ? 0 : -1)));
     const previouslyFocused = document.activeElement as HTMLElement | null;
     queueMicrotask(() => {
-      if (gridScrollRef) gridScrollRef.scrollTop = 0;
+      if (gridScrollRef.current) gridScrollRef.current.scrollTop = 0;
       updatePosition();
-      searchRef?.focus();
+      searchRef.current?.focus();
     });
 
-    const handleKeyDown = (event: KeyboardEvent) => {
+    const handleKeyDown = (event: any) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
       props.onClose();
     };
-    const handleMouseDown = (event: MouseEvent) => {
+    const handleMouseDown = (event: any) => {
       const target = event.target as Node | null;
       if (!target) return;
-      if (panelRef?.contains(target)) return;
+      if (panelRef.current?.contains(target)) return;
       if (props.anchor()?.contains(target)) return;
       props.onClose();
     };
@@ -233,43 +237,44 @@ export default function EmojiPicker(props: {
     window.addEventListener("scroll", updatePosition, true);
     document.addEventListener("mousedown", handleMouseDown);
 
-    onCleanup(() => {
+    return () => {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
       document.removeEventListener("mousedown", handleMouseDown);
-      if (restoreFocusOnClose && panelRef?.contains(document.activeElement)) {
+      if (restoreFocusOnClose.current && panelRef.current?.contains(document.activeElement)) {
         previouslyFocused?.focus?.();
       }
-    });
-  });
+    };
+  }, [props.open]);
 
-  createEffect(() => {
+  useEffect(() => {
     const resultCount = filtered().length;
-    setActiveIndex(resultCount > 0 ? 0 : -1);
+    const nextActiveIndex = resultCount > 0 ? 0 : -1;
+    if (activeIndex() !== nextActiveIndex) setActiveIndex(nextActiveIndex);
 
     if (props.open) {
       queueMicrotask(updatePosition);
     }
-  });
+  }, [query(), props.emojis, props.open]);
 
   return (
-    <Show when={props.open}>
-      <Portal>
+    <If when={props.open}>
+      <PortalRoot>
         <div
           ref={(el) => {
-            panelRef = el;
+            panelRef.current = el;
           }}
           role="dialog"
           aria-label="Emoji picker"
-          class="fixed z-50 flex max-h-[360px] flex-col overflow-hidden rounded-lg border border-gray-700 bg-gray-800 text-gray-100 shadow-xl"
+          className="fixed z-50 flex max-h-[360px] flex-col overflow-hidden rounded-lg border border-gray-700 bg-gray-800 text-gray-100 shadow-xl"
           style={panelStyle()}
           onKeyDown={handlePanelKeyDown}
         >
-          <div class="flex-shrink-0 border-b border-gray-700 p-3">
+          <div className="flex-shrink-0 border-b border-gray-700 p-3">
             <input
               ref={(el) => {
-                searchRef = el;
+                searchRef.current = el;
               }}
               role="combobox"
               aria-label="Search and select emoji"
@@ -277,39 +282,39 @@ export default function EmojiPicker(props: {
               aria-haspopup="grid"
               aria-controls={EMOJI_RESULTS_GRID_ID}
               aria-activedescendant={activeGridcellId()}
-              class="w-full rounded-md border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-400/40"
+              className="w-full rounded-md border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-400/40"
               placeholder="Search emojis"
-              spellcheck="false"
+              spellCheck="false"
               value={query()}
               onInput={(event) => setQuery(event.currentTarget.value)}
             />
           </div>
           <div
             ref={(el) => {
-              gridScrollRef = el;
+              gridScrollRef.current = el;
             }}
-            class="max-h-[224px] overflow-y-auto p-3"
+            className="max-h-[224px] overflow-y-auto p-3"
           >
             <div
               id={EMOJI_RESULTS_GRID_ID}
-              class="space-y-1"
+              className="space-y-1"
               role="grid"
               aria-label="Emoji results"
             >
-              <Show
+              <If
                 when={filtered().length > 0}
                 fallback={
                   <div role="row">
-                    <div role="gridcell" class="px-2 py-6 text-center text-sm text-gray-400">
+                    <div role="gridcell" className="px-2 py-6 text-center text-sm text-gray-400">
                       No emojis found.
                     </div>
                   </div>
                 }
               >
-                <For each={rows()}>
+                <List each={rows()}>
                   {(row, rowIndex) => (
-                    <div class="flex gap-1" role="row">
-                      <For each={row}>
+                    <div className="flex gap-1" role="row">
+                      <List each={row}>
                         {(entry, cellIndex) => {
                           const index = () => rowIndex() * EMOJI_GRID_COLUMNS + cellIndex();
                           const isActive = () => activeIndex() === index();
@@ -326,7 +331,7 @@ export default function EmojiPicker(props: {
                               <button
                                 type="button"
                                 tabIndex={-1}
-                                class={`relative flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-xl leading-none focus:outline-none ${
+                                className={`relative flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-xl leading-none focus:outline-none ${
                                   isActive()
                                     ? "bg-blue-600 text-white shadow-inner ring-2 ring-blue-300"
                                     : "text-gray-100 hover:bg-gray-700 focus:bg-gray-700 focus:ring-2 focus:ring-blue-400"
@@ -336,7 +341,7 @@ export default function EmojiPicker(props: {
                                 onMouseDown={(event) => event.preventDefault()}
                                 onClick={() => selectEntry(entry)}
                               >
-                                <Show
+                                <If
                                   when={isCustomEmoji(entry) && entry.imageUrl}
                                   fallback={<span aria-hidden="true">{entry.emoji}</span>}
                                 >
@@ -344,44 +349,44 @@ export default function EmojiPicker(props: {
                                     <img
                                       src={resolveImageUrl(imageUrl())}
                                       alt=""
-                                      class="h-6 w-6 object-contain"
+                                      className="h-6 w-6 object-contain"
                                       aria-hidden="true"
                                     />
                                   )}
-                                </Show>
-                                <Show when={isCustomEmoji(entry) && entry.animated}>
+                                </If>
+                                <If when={isCustomEmoji(entry) && entry.animated}>
                                   <span
-                                    class="absolute bottom-0 right-0 rounded bg-purple-700 px-0.5 text-[8px] font-bold uppercase leading-3 text-white"
+                                    className="absolute bottom-0 right-0 rounded bg-purple-700 px-0.5 text-[8px] font-bold uppercase leading-3 text-white"
                                     aria-hidden="true"
                                     title="Animated custom emoji"
                                   >
                                     A
                                   </span>
-                                  <span class="sr-only">Animated custom emoji</span>
-                                </Show>
+                                  <span className="sr-only">Animated custom emoji</span>
+                                </If>
                               </button>
                             </div>
                           );
                         }}
-                      </For>
+                      </List>
                     </div>
                   )}
-                </For>
-              </Show>
+                </List>
+              </If>
             </div>
           </div>
-          <Show when={activeEntry()} keyed>
+          <If when={activeEntry()} keyed>
             {(entry) => (
               <div
-                class="flex-shrink-0 border-t border-gray-700 bg-gray-900 px-3 py-2"
+                className="flex-shrink-0 border-t border-gray-700 bg-gray-900 px-3 py-2"
                 role="group"
                 aria-label="Emoji shortcodes"
               >
-                <div class="flex items-start gap-3">
-                  <Show
+                <div className="flex items-start gap-3">
+                  <If
                     when={isCustomEmoji(entry) && entry.imageUrl}
                     fallback={
-                      <span class="text-2xl leading-none" aria-hidden="true">
+                      <span className="text-2xl leading-none" aria-hidden="true">
                         {entry.emoji}
                       </span>
                     }
@@ -390,29 +395,31 @@ export default function EmojiPicker(props: {
                       <img
                         src={resolveImageUrl(imageUrl())}
                         alt=""
-                        class="h-8 w-8 object-contain"
+                        className="h-8 w-8 object-contain"
                         aria-hidden="true"
                       />
                     )}
-                  </Show>
-                  <div class="flex flex-1 flex-wrap gap-1 text-xs text-gray-200">
-                    <Show when={isCustomEmoji(entry) && entry.animated}>
-                      <span class="rounded bg-purple-700 px-1.5 py-0.5 text-white">animated</span>
-                    </Show>
-                    <For each={entry.shortcodes}>
+                  </If>
+                  <div className="flex flex-1 flex-wrap gap-1 text-xs text-gray-200">
+                    <If when={isCustomEmoji(entry) && entry.animated}>
+                      <span className="rounded bg-purple-700 px-1.5 py-0.5 text-white">
+                        animated
+                      </span>
+                    </If>
+                    <List each={entry.shortcodes}>
                       {(shortcode) => (
-                        <code class="rounded bg-gray-800 px-1.5 py-0.5 text-blue-100">
+                        <code className="rounded bg-gray-800 px-1.5 py-0.5 text-blue-100">
                           {shortcode}
                         </code>
                       )}
-                    </For>
+                    </List>
                   </div>
                 </div>
               </div>
             )}
-          </Show>
+          </If>
         </div>
-      </Portal>
-    </Show>
+      </PortalRoot>
+    </If>
   );
 }

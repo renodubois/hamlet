@@ -1,5 +1,5 @@
-import { children, createEffect, ErrorBoundary, Suspense, type Component, Show } from "solid-js";
-import { useLocation, useNavigate, type RouteSectionProps } from "@solidjs/router";
+import React, { Suspense, type ReactNode } from "react";
+import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import ChannelSidebar from "./components/channel-sidebar";
 import { useAuth } from "./contexts/auth";
 import { ChannelsProvider, useChannels } from "./contexts/channels";
@@ -8,99 +8,108 @@ import { EventsProvider } from "./contexts/events";
 import { ReadStatesProvider } from "./contexts/read-states";
 import { type User } from "./api";
 import { VoiceChatProvider } from "./contexts/voice-chat";
+import { useAfterRenderEffect } from "./hooks/react-state";
 
 function ErrorPanel(props: { error: unknown; reset?: () => void; title?: string }) {
-  const message = () => (props.error instanceof Error ? props.error.message : String(props.error));
+  const message = props.error instanceof Error ? props.error.message : String(props.error);
   return (
-    <div class="p-8 max-w-lg" role="alert">
-      <h2 class="text-lg font-semibold text-red-700">{props.title ?? "Something went wrong"}</h2>
-      <p class="mt-2 text-sm text-gray-700">{message()}</p>
-      <Show when={props.reset}>
+    <div className="max-w-lg p-8" role="alert">
+      <h2 className="text-lg font-semibold text-red-700">
+        {props.title ?? "Something went wrong"}
+      </h2>
+      <p className="mt-2 text-sm text-gray-700">{message}</p>
+      {props.reset ? (
         <button
           type="button"
-          class="mt-4 bg-blue-600 hover:bg-blue-700 text-white rounded-md px-4 py-2 text-sm"
+          className="mt-4 rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700"
           onClick={() => props.reset?.()}
         >
           Try again
         </button>
-      </Show>
+      ) : null}
     </div>
   );
 }
 
-const AppShell: Component<{ children?: RouteSectionProps["children"]; user: User }> = (props) => {
+class RouteErrorBoundary extends React.Component<
+  { children: ReactNode },
+  { error: unknown; key: number }
+> {
+  state = { error: null as unknown, key: 0 };
+  static getDerivedStateFromError(error: unknown) {
+    return { error };
+  }
+  reset = () => this.setState((state) => ({ error: null, key: state.key + 1 }));
+  render() {
+    if (this.state.error) return <ErrorPanel error={this.state.error} reset={this.reset} />;
+    return <div key={this.state.key}>{this.props.children}</div>;
+  }
+}
+
+function AppShell(props: { user: User }) {
   const auth = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const { channels } = useChannels();
-  const outlet = children(() => props.children);
 
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     const ch = channels();
     if (location.pathname === "/" && ch && ch.length > 0) {
-      // Voice channels don't have a message view — pick the first text channel.
       const first = ch.find((c) => c.type === "text");
-      if (first) navigate(`/channel/${first.id}`, { replace: true });
+      if (first) void navigate(`/channel/${first.id}`, { replace: true });
     }
   });
 
   return (
-    <div class="flex h-screen">
-      <aside class="w-60 bg-gray-800 text-gray-100 flex-shrink-0 flex flex-col">
+    <div className="flex h-screen">
+      <aside className="flex w-60 flex-shrink-0 flex-col bg-gray-800 text-gray-100">
         <ChannelSidebar user={props.user} onLogout={auth.logout} onAvatarChange={auth.refresh} />
       </aside>
-      <main class="flex-1 flex flex-col min-w-0">
-        <ErrorBoundary fallback={(err, reset) => <ErrorPanel error={err} reset={reset} />}>
-          <Suspense>{outlet()}</Suspense>
-        </ErrorBoundary>
+      <main className="flex min-w-0 flex-1 flex-col">
+        <RouteErrorBoundary>
+          <Suspense fallback={null}>
+            <Outlet />
+          </Suspense>
+        </RouteErrorBoundary>
       </main>
     </div>
   );
-};
+}
 
-const App: Component<RouteSectionProps> = (props) => {
+export default function App() {
   const auth = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Route guard: send unauthenticated users to /login, and bounce signed-in
-  // users away from /login. Both happen as a side effect of auth state
-  // changes; the form on /login itself only needs to call auth.login().
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     const u = auth.user();
-    // Resource still loading on first paint — wait for the resolved value.
     if (u === undefined) return;
     const onLogin = location.pathname === "/login";
-    if (!u && !onLogin) navigate("/login", { replace: true });
-    else if (u && onLogin) navigate("/", { replace: true });
+    if (!u && !onLogin) void navigate("/login", { replace: true });
+    else if (u && onLogin) void navigate("/", { replace: true });
   });
 
-  return (
-    <Show when={auth.user() !== undefined} fallback={null}>
-      <Show
-        when={auth.user()}
-        fallback={
-          // Unauthenticated. Render the matched route (login). Any non-login
-          // path passes through here briefly while the effect above redirects.
-          <Show when={location.pathname === "/login"}>
-            <Suspense>{props.children}</Suspense>
-          </Show>
-        }
-      >
-        <EventsProvider>
-          <CustomEmojisProvider>
-            <ChannelsProvider>
-              <ReadStatesProvider>
-                <VoiceChatProvider>
-                  <AppShell user={auth.user() as User}>{props.children}</AppShell>
-                </VoiceChatProvider>
-              </ReadStatesProvider>
-            </ChannelsProvider>
-          </CustomEmojisProvider>
-        </EventsProvider>
-      </Show>
-    </Show>
-  );
-};
+  const currentUser = auth.user();
+  if (currentUser === undefined) return null;
+  if (!currentUser) {
+    return location.pathname === "/login" ? (
+      <Suspense fallback={null}>
+        <Outlet />
+      </Suspense>
+    ) : null;
+  }
 
-export default App;
+  return (
+    <EventsProvider>
+      <CustomEmojisProvider>
+        <ChannelsProvider>
+          <ReadStatesProvider>
+            <VoiceChatProvider>
+              <AppShell user={currentUser} />
+            </VoiceChatProvider>
+          </ReadStatesProvider>
+        </ChannelsProvider>
+      </CustomEmojisProvider>
+    </EventsProvider>
+  );
+}

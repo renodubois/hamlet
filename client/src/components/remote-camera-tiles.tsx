@@ -1,36 +1,47 @@
-import { createEffect, For, onCleanup, Show } from "solid-js";
+import { useRef } from "react";
+
+import { useAfterRenderEffect, List, registerCleanup, If } from "../hooks/react-state";
 import type { RemoteVideoTrack } from "livekit-client";
 import { useOptionalVoiceChat, type RemoteCameraTile } from "../contexts/voice-chat";
 import { cameraDisplayName } from "../voice/camera";
 import { CameraIcon } from "./icons";
 
 function AttachedRemoteCameraVideo(props: { track: RemoteVideoTrack; label: string }) {
-  let videoRef: HTMLVideoElement | undefined;
-  let attachedTrack: RemoteVideoTrack | null = null;
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const attachedElementRef = useRef<HTMLVideoElement | null>(null);
+  const attachedTrackRef = useRef<RemoteVideoTrack | null>(null);
 
-  createEffect(() => {
+  useAfterRenderEffect(() => {
+    const video = videoRef.current;
     const track = props.track;
-    if (!videoRef || attachedTrack === track) return;
-    if (attachedTrack) attachedTrack.detach(videoRef);
-    track.attach(videoRef);
-    attachedTrack = track;
+    const attachedTrack = attachedTrackRef.current;
+    if (!video || attachedTrack === track) return;
+    if (attachedTrack && attachedElementRef.current) {
+      attachedTrack.detach(attachedElementRef.current);
+    }
+    track.attach(video);
+    attachedElementRef.current = video;
+    attachedTrackRef.current = track;
   });
 
-  onCleanup(() => {
-    if (attachedTrack && videoRef) {
-      attachedTrack.detach(videoRef);
+  registerCleanup(() => {
+    const video = attachedElementRef.current ?? videoRef.current;
+    const attachedTrack = attachedTrackRef.current;
+    if (attachedTrack && video) {
+      attachedTrack.detach(video);
     }
-    attachedTrack = null;
+    attachedElementRef.current = null;
+    attachedTrackRef.current = null;
   });
 
   return (
     <video
       ref={(el) => {
-        videoRef = el;
+        videoRef.current = el;
       }}
-      class="h-full w-full rounded bg-black object-cover"
-      autoplay
-      playsinline
+      className="h-full w-full rounded bg-black object-cover"
+      autoPlay
+      playsInline
       aria-label={props.label}
     />
   );
@@ -41,14 +52,14 @@ function RemoteCameraTileCard(props: { tile: RemoteCameraTile }) {
 
   return (
     <article
-      class="min-w-0 rounded border border-gray-800 bg-gray-900/80 p-2"
+      className="min-w-0 rounded border border-gray-800 bg-gray-900/80 p-2"
       aria-label={`${name()}'s camera`}
     >
-      <div class="flex aspect-video items-center justify-center rounded bg-black">
-        <Show
+      <div className="flex aspect-video items-center justify-center rounded bg-black">
+        <If
           when={props.tile.track}
           fallback={
-            <p class="p-4 text-center text-sm text-gray-300" role="status">
+            <p className="p-4 text-center text-sm text-gray-300" role="status">
               Connecting to {name()}'s camera…
             </p>
           }
@@ -56,11 +67,11 @@ function RemoteCameraTileCard(props: { tile: RemoteCameraTile }) {
           {(track) => (
             <AttachedRemoteCameraVideo track={track()} label={`${name()}'s camera video`} />
           )}
-        </Show>
+        </If>
       </div>
-      <div class="mt-2 min-w-0">
-        <p class="truncate text-sm font-medium text-gray-100">{name()}</p>
-        <p class="text-xs text-gray-400">Camera</p>
+      <div className="mt-2 min-w-0">
+        <p className="truncate text-sm font-medium text-gray-100">{name()}</p>
+        <p className="text-xs text-gray-400">Camera</p>
       </div>
     </article>
   );
@@ -73,25 +84,25 @@ export default function RemoteCameraTiles() {
   const tiles = () => voice.remoteCameraTiles();
 
   return (
-    <Show when={voice.activeChannelId() != null && tiles().length > 0}>
+    <If when={voice.activeChannelId() != null && tiles().length > 0}>
       <section
-        class="flex-shrink-0 border-b border-gray-200 bg-gray-950 p-4 text-gray-100"
+        className="flex-shrink-0 border-b border-gray-200 bg-gray-950 p-4 text-gray-100"
         role="region"
         aria-label="Remote camera tiles"
       >
-        <div class="mb-3 flex items-center gap-2">
+        <div className="mb-3 flex items-center gap-2">
           <CameraIcon size={16} aria-hidden="true" />
-          <div class="min-w-0">
-            <p class="text-xs uppercase tracking-wide text-gray-400">Cameras</p>
-            <h2 class="text-lg font-semibold">
+          <div className="min-w-0">
+            <p className="text-xs uppercase tracking-wide text-gray-400">Cameras</p>
+            <h2 className="text-lg font-semibold">
               {tiles().length === 1 ? "1 camera live" : `${tiles().length} cameras live`}
             </h2>
           </div>
         </div>
-        <div class="grid max-h-72 grid-cols-1 gap-3 overflow-y-auto sm:grid-cols-2 xl:grid-cols-3">
-          <For each={tiles()}>{(tile) => <RemoteCameraTileCard tile={tile} />}</For>
+        <div className="grid max-h-72 grid-cols-1 gap-3 overflow-y-auto sm:grid-cols-2 xl:grid-cols-3">
+          <List each={tiles()}>{(tile) => <RemoteCameraTileCard tile={tile} />}</List>
         </div>
       </section>
-    </Show>
+    </If>
   );
 }

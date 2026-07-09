@@ -1,5 +1,5 @@
-import { createSignal, type Setter } from "solid-js";
-import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
+import { useSignalState, type ValueUpdater } from "../hooks/react-state";
+import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
 import { describe, expect, test, vi } from "vitest";
 import type { CustomEmoji, MentionUser } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
@@ -192,9 +192,9 @@ describe("<MessageText> mention previews", () => {
 
   test("uses current hydrated public profile data for mention labels and open previews", async () => {
     localStorage.setItem("hamlet.serverUrl", "http://hamlet.test:4040");
-    let setMentions: Setter<MentionUser[]> | undefined;
+    let setMentions: ValueUpdater<MentionUser[]> | undefined;
     render(() => {
-      const [mentions, updateMentions] = createSignal<MentionUser[]>([
+      const [mentions, updateMentions] = useSignalState<MentionUser[]>([
         { ...BOB, display_name: "Robert", avatar_url: "/avatars/bob-old.webp" },
       ]);
       setMentions = updateMentions;

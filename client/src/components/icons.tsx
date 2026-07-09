@@ -18,4 +18,4 @@ export {
   Smile as EmojiIcon,
   ImagePlus as ImagePlusIcon,
   X as CloseIcon,
-} from "lucide-solid";
+} from "lucide-react";

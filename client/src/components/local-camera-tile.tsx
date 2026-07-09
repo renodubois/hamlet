@@ -1,35 +1,46 @@
-import { createEffect, onCleanup, Show } from "solid-js";
+import { useRef } from "react";
+
+import { useAfterRenderEffect, registerCleanup, If } from "../hooks/react-state";
 import type { LocalVideoTrack } from "livekit-client";
 import { useOptionalVoiceChat } from "../contexts/voice-chat";
 
 function AttachedLocalCameraVideo(props: { track: LocalVideoTrack; label: string }) {
-  let videoRef: HTMLVideoElement | undefined;
-  let attachedTrack: LocalVideoTrack | null = null;
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const attachedElementRef = useRef<HTMLVideoElement | null>(null);
+  const attachedTrackRef = useRef<LocalVideoTrack | null>(null);
 
-  createEffect(() => {
+  useAfterRenderEffect(() => {
+    const video = videoRef.current;
     const track = props.track;
-    if (!videoRef || attachedTrack === track) return;
-    if (attachedTrack) attachedTrack.detach(videoRef);
-    track.attach(videoRef);
-    attachedTrack = track;
+    const attachedTrack = attachedTrackRef.current;
+    if (!video || attachedTrack === track) return;
+    if (attachedTrack && attachedElementRef.current) {
+      attachedTrack.detach(attachedElementRef.current);
+    }
+    track.attach(video);
+    attachedElementRef.current = video;
+    attachedTrackRef.current = track;
   });
 
-  onCleanup(() => {
-    if (attachedTrack && videoRef) {
-      attachedTrack.detach(videoRef);
+  registerCleanup(() => {
+    const video = attachedElementRef.current ?? videoRef.current;
+    const attachedTrack = attachedTrackRef.current;
+    if (attachedTrack && video) {
+      attachedTrack.detach(video);
     }
-    attachedTrack = null;
+    attachedElementRef.current = null;
+    attachedTrackRef.current = null;
   });
 
   return (
     <video
       ref={(el) => {
-        videoRef = el;
+        videoRef.current = el;
       }}
-      class="aspect-video h-40 rounded bg-black object-cover"
-      autoplay
+      className="aspect-video h-40 rounded bg-black object-cover"
+      autoPlay
       muted
-      playsinline
+      playsInline
       aria-label={props.label}
     />
   );
@@ -40,23 +51,23 @@ export default function LocalCameraTile() {
   if (!voice) return null;
 
   return (
-    <Show when={voice.localCameraTrack()}>
+    <If when={voice.localCameraTrack()}>
       {(track) => (
         <section
-          class="flex-shrink-0 border-b border-gray-200 bg-gray-950 p-4 text-gray-100"
+          className="flex-shrink-0 border-b border-gray-200 bg-gray-950 p-4 text-gray-100"
           role="region"
           aria-label="Local camera preview"
         >
-          <div class="flex flex-wrap items-center gap-4">
+          <div className="flex flex-wrap items-center gap-4">
             <AttachedLocalCameraVideo track={track()} label="Your camera video" />
-            <div class="min-w-0">
-              <p class="text-xs uppercase tracking-wide text-gray-400">Camera on</p>
-              <h2 class="text-lg font-semibold">Your camera</h2>
-              <p class="text-sm text-gray-300">Only your local preview is shown here.</p>
+            <div className="min-w-0">
+              <p className="text-xs uppercase tracking-wide text-gray-400">Camera on</p>
+              <h2 className="text-lg font-semibold">Your camera</h2>
+              <p className="text-sm text-gray-300">Only your local preview is shown here.</p>
             </div>
           </div>
         </section>
       )}
-    </Show>
+    </If>
   );
 }

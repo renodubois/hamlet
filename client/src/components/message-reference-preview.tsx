@@ -1,4 +1,4 @@
-import { For, Show, type JSX } from "solid-js";
+import { List, If, type JSX } from "../hooks/react-state";
 import { messageDisplayName, resolveServerUrl, type CustomEmoji } from "../api";
 import { useOptionalCustomEmojis } from "../contexts/custom-emojis";
 import { parseCustomEmojiMarkers, type CustomEmojiMarkerToken } from "../emoji/custom-emojis";
@@ -42,6 +42,7 @@ export interface MessageReferencePreviewProps {
   reference?: MessageReferencePreviewSource | null;
   targetId?: number | null;
   class?: string;
+  className?: string;
   authorClass?: string;
   textClass?: string;
   authorPrefix?: string;
@@ -168,7 +169,7 @@ function renderCustomEmojiToken(token: PreviewCustomEmojiToken): JSX.Element {
       src={resolveServerUrl(token.emoji.image_url)}
       alt={token.label}
       title={token.emoji.deleted_at === null ? token.label : `${token.label} (deleted)`}
-      class="inline-block h-4 w-4 align-text-bottom object-contain"
+      className="inline-block h-4 w-4 align-text-bottom object-contain"
     />
   );
 }
@@ -180,20 +181,20 @@ function PreviewText(props: { reference: MessageReferencePreviewSource }) {
   const tokens = () => textTokens(text(), customEmojiById);
 
   return (
-    <Show
+    <If
       when={props.reference.deleted_at == null && text().length > 0}
       fallback={messageReferencePreviewText(props.reference)}
     >
-      <For each={tokens()}>
+      <List each={tokens()}>
         {(token) => (token.kind === "text" ? token.value : renderCustomEmojiToken(token))}
-      </For>
-    </Show>
+      </List>
+    </If>
   );
 }
 
 export default function MessageReferencePreview(props: MessageReferencePreviewProps) {
   const rootClass = () => {
-    const base = props.class ?? DEFAULT_ROOT_CLASS;
+    const base = props.className ?? props.class ?? DEFAULT_ROOT_CLASS;
     return props.onActivate
       ? `${base} cursor-pointer rounded-sm text-left hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-400`
       : base;
@@ -207,29 +208,29 @@ export default function MessageReferencePreview(props: MessageReferencePreviewPr
     )}`;
   const content = () => (
     <>
-      <span class={authorClass()}>{`${props.authorPrefix ?? ""}${referenceAuthorName(
+      <span className={authorClass()}>{`${props.authorPrefix ?? ""}${referenceAuthorName(
         props.reference,
       )}`}</span>
-      <span aria-hidden="true" class="shrink-0 text-gray-400">
+      <span aria-hidden="true" className="shrink-0 text-gray-400">
         —
       </span>
-      <span class={textClass()}>
-        <Show when={props.reference} fallback="Original message unavailable">
+      <span className={textClass()}>
+        <If when={props.reference} fallback="Original message unavailable">
           {(reference) => <PreviewText reference={reference()} />}
-        </Show>
+        </If>
       </span>
       {props.children}
     </>
   );
 
   return (
-    <Show
+    <If
       when={props.onActivate}
       keyed
       fallback={
         <div
           id={props.id}
-          class={rootClass()}
+          className={rootClass()}
           role={props.role}
           aria-live={props.ariaLive}
           aria-label={ariaLabel()}
@@ -242,7 +243,7 @@ export default function MessageReferencePreview(props: MessageReferencePreviewPr
         <button
           id={props.id}
           type="button"
-          class={rootClass()}
+          className={rootClass()}
           aria-live={props.ariaLive}
           aria-label={ariaLabel()}
           onClick={() => onActivate()}
@@ -250,6 +251,6 @@ export default function MessageReferencePreview(props: MessageReferencePreviewPr
           {content()}
         </button>
       )}
-    </Show>
+    </If>
   );
 }

@@ -1,5 +1,5 @@
-import { render, screen, waitFor } from "@solidjs/testing-library";
-import { For, Show } from "solid-js";
+import { render, screen, waitFor } from "../test/testing-library";
+import { List, If } from "../hooks/react-state";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { AuthProvider } from "./auth";
 import { CustomEmojisProvider, useCustomEmojis } from "./custom-emojis";
@@ -15,8 +15,8 @@ function Probe() {
     <div>
       <p>all {registry.allEmojis()?.length ?? 0}</p>
       <p>active {registry.activeEmojis().length}</p>
-      <Show when={deleted()}>{(emoji) => <p>lookup {emoji().name}</p>}</Show>
-      <For each={registry.activeEmojis()}>{(emoji) => <span>{emoji.name}</span>}</For>
+      <If when={deleted()}>{(emoji) => <p>lookup {emoji().name}</p>}</If>
+      <List each={registry.activeEmojis()}>{(emoji) => <span>{emoji.name}</span>}</List>
     </div>
   );
 }

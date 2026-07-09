@@ -1,4 +1,4 @@
-import * as Sentry from "@sentry/solid";
+import * as Sentry from "@sentry/react";
 
 type SentryInitOptions = NonNullable<Parameters<typeof Sentry.init>[0]>;
 

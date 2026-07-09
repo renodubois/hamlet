@@ -1,4 +1,15 @@
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { useRef } from "react";
+
+import {
+  useAfterRenderEffect,
+  useComputedValue,
+  useSignalState,
+  List,
+  registerCleanup,
+  useMountEffect,
+  If,
+  useStaticSignalRerender,
+} from "../hooks/react-state";
 import {
   listCameraStreams,
   listScreenShareStreams,
@@ -52,20 +63,23 @@ function sortScreenShares(streams: ScreenShareStream[]): ScreenShareStream[] {
 }
 
 export default function VoiceChannel(props: { channel: Channel }) {
+  useStaticSignalRerender();
   const events = useEvents();
   const voice = useVoiceChat();
-  const [participants, setParticipants] = createSignal<VoiceParticipant[]>([]);
-  const [screenShares, setScreenShares] = createSignal<ScreenShareStream[]>([]);
-  const [cameraStreams, setCameraStreams] = createSignal<CameraStream[]>([]);
-  const [screenShareAnnouncement, setScreenShareAnnouncement] = createSignal("");
-  const [cameraAnnouncement, setCameraAnnouncement] = createSignal("");
-  const [localError, setLocalError] = createSignal<string | null>(null);
+  const [participants, setParticipants] = useSignalState<VoiceParticipant[]>([]);
+  const [screenShares, setScreenShares] = useSignalState<ScreenShareStream[]>([]);
+  const [cameraStreams, setCameraStreams] = useSignalState<CameraStream[]>([]);
+  const [screenShareAnnouncement, setScreenShareAnnouncement] = useSignalState("");
+  const [cameraAnnouncement, setCameraAnnouncement] = useSignalState("");
+  const [localError, setLocalError] = useSignalState<string | null>(null);
   // Speakers known from SSE broadcasts — used to render the ring when we're
   // NOT connected to this channel. In-channel speakers come from LiveKit via
   // voice.speakingUserIds() instead.
-  const [remoteSpeakers, setRemoteSpeakers] = createSignal<ReadonlySet<number>>(new Set());
-  const stoppedScreenShareKeys = new Set<string>();
-  const stoppedCameraKeys = new Set<string>();
+  const [remoteSpeakers, setRemoteSpeakers] = useSignalState<ReadonlySet<number>>(new Set());
+  const stoppedScreenShareKeysRef = useRef(new Set<string>());
+  const stoppedCameraKeysRef = useRef(new Set<string>());
+  const stoppedScreenShareKeys = stoppedScreenShareKeysRef.current;
+  const stoppedCameraKeys = stoppedCameraKeysRef.current;
 
   const isActive = () => voice.activeChannelId() === props.channel.id;
   const isBusy = () => voice.isConnecting();
@@ -74,21 +88,21 @@ export default function VoiceChannel(props: { channel: Channel }) {
     return watched ? isSameScreenShare(watched, stream) : false;
   };
 
-  const speakingIds = createMemo<ReadonlySet<number>>(() => {
+  const speakingIds = useComputedValue<ReadonlySet<number>>(() => {
     if (isActive()) return voice.speakingUserIds();
     if (showSpeakingIndicatorsEverywhere()) return remoteSpeakers();
     return new Set();
   });
 
-  const sharingUserIds = createMemo<ReadonlySet<number>>(
+  const sharingUserIds = useComputedValue<ReadonlySet<number>>(
     () => new Set(screenShares().map((stream) => stream.sharer_user_id)),
   );
 
-  const cameraUserIds = createMemo<ReadonlySet<number>>(
+  const cameraUserIds = useComputedValue<ReadonlySet<number>>(
     () => new Set(cameraStreams().map((stream) => stream.sharer_user_id)),
   );
 
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     if (!isActive()) return;
     voice.syncRemoteCameraStreams(props.channel.id, cameraStreams());
   });
@@ -141,7 +155,7 @@ export default function VoiceChannel(props: { channel: Channel }) {
     }
   }
 
-  onMount(() => {
+  useMountEffect(() => {
     void listVoiceParticipants(props.channel.id)
       .then(setParticipants)
       .catch(() => {
@@ -303,7 +317,7 @@ export default function VoiceChannel(props: { channel: Channel }) {
       }
     });
 
-    onCleanup(() => {
+    registerCleanup(() => {
       unsubJoined();
       unsubLeft();
       unsubSpeaking();
@@ -317,14 +331,14 @@ export default function VoiceChannel(props: { channel: Channel }) {
   });
 
   return (
-    <div class="flex flex-col">
+    <div className="flex flex-col">
       <button
         type="button"
-        class="w-full flex items-center gap-2 px-3 py-1.5 rounded text-sm text-left disabled:opacity-50"
-        classList={{
-          "bg-gray-700 text-white font-medium": isActive(),
-          "text-gray-400 hover:bg-gray-700 hover:text-gray-200": !isActive(),
-        }}
+        className={`w-full flex items-center gap-2 px-3 py-1.5 rounded text-sm text-left disabled:opacity-50 ${
+          isActive()
+            ? "bg-gray-700 text-white font-medium"
+            : "text-gray-400 hover:bg-gray-700 hover:text-gray-200"
+        }`}
         onClick={() => void handleToggleJoin()}
         disabled={isBusy()}
         aria-pressed={isActive()}
@@ -336,81 +350,81 @@ export default function VoiceChannel(props: { channel: Channel }) {
         draggable={false}
       >
         <VoiceChannelIcon size={14} aria-hidden="true" />
-        <span class="flex-1 truncate">{props.channel.name}</span>
-        <Show when={isBusy() && voice.activeChannelId() !== props.channel.id}>
-          <span class="text-xs text-gray-400" aria-hidden="true">
+        <span className="flex-1 truncate">{props.channel.name}</span>
+        <If when={isBusy() && voice.activeChannelId() !== props.channel.id}>
+          <span className="text-xs text-gray-400" aria-hidden="true">
             …
           </span>
-        </Show>
+        </If>
       </button>
 
-      <Show when={participants().length > 0}>
+      <If when={participants().length > 0}>
         <ul
-          class="ml-6 mt-1 flex flex-col gap-0.5"
+          className="ml-6 mt-1 flex flex-col gap-0.5"
           aria-label={`Participants in ${props.channel.name}`}
         >
-          <For each={participants()}>
+          <List each={participants()}>
             {(p) => (
-              <li class="flex items-center gap-2 px-2 py-1 text-xs text-gray-300">
+              <li className="flex items-center gap-2 px-2 py-1 text-xs text-gray-300">
                 <Avatar
                   url={p.avatar_url}
                   username={p.username}
                   size={18}
                   isSpeaking={speakingIds().has(p.user_id)}
                 />
-                <span class="truncate">{p.username}</span>
-                <Show when={p.muted}>
+                <span className="truncate">{p.username}</span>
+                <If when={p.muted}>
                   <span
-                    class="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-gray-900/70 text-red-300"
+                    className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-gray-900/70 text-red-300"
                     role="img"
                     aria-label={`${p.username} is muted`}
                     title={`${p.username} is muted`}
                   >
                     <MicOffIcon size={12} aria-hidden="true" />
                   </span>
-                </Show>
-                <Show when={p.deafened}>
+                </If>
+                <If when={p.deafened}>
                   <span
-                    class="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-gray-900/70 text-red-300"
+                    className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-gray-900/70 text-red-300"
                     role="img"
                     aria-label={`${p.username} is deafened`}
                     title={`${p.username} is deafened`}
                   >
                     <HeadphoneOffIcon size={12} aria-hidden="true" />
                   </span>
-                </Show>
-                <Show when={sharingUserIds().has(p.user_id)}>
+                </If>
+                <If when={sharingUserIds().has(p.user_id)}>
                   <span
-                    class="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-green-900/60 text-green-300"
+                    className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-green-900/60 text-green-300"
                     role="img"
                     aria-label={`${p.username} is sharing screen`}
                     title={`${p.username} is sharing screen`}
                   >
                     <ScreenShareIcon size={12} aria-hidden="true" />
                   </span>
-                </Show>
-                <Show when={cameraUserIds().has(p.user_id)}>
+                </If>
+                <If when={cameraUserIds().has(p.user_id)}>
                   <span
-                    class="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-blue-900/60 text-blue-300"
+                    className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-blue-900/60 text-blue-300"
                     role="img"
                     aria-label={`${p.username} has camera on`}
                     title={`${p.username} has camera on`}
                   >
                     <CameraIcon size={12} aria-hidden="true" />
                   </span>
-                </Show>
+                </If>
               </li>
             )}
-          </For>
+          </List>
         </ul>
-      </Show>
+      </If>
 
-      <Show when={cameraStreams().length > 0 && !isActive()}>
+      <If when={cameraStreams().length > 0 && !isActive()}>
         <section
-          class="ml-6 mt-1 mb-1 rounded border border-blue-900/70 bg-blue-950/20 p-2"
+          className="ml-6 mt-1 mb-1 rounded border border-blue-900/70 bg-blue-950/20 p-2"
           aria-label={`Active cameras in ${props.channel.name}`}
         >
-          <div class="flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-blue-300">
+          <div className="flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-blue-300">
             <CameraIcon size={12} aria-hidden="true" />
             <span>
               {cameraStreams().length === 1
@@ -418,16 +432,16 @@ export default function VoiceChannel(props: { channel: Channel }) {
                 : `${cameraStreams().length} cameras live`}
             </span>
           </div>
-          <p class="mt-1 text-[11px] text-gray-400">Join voice to view cameras.</p>
+          <p className="mt-1 text-[11px] text-gray-400">Join voice to view cameras.</p>
         </section>
-      </Show>
+      </If>
 
-      <Show when={screenShares().length > 0}>
+      <If when={screenShares().length > 0}>
         <section
-          class="ml-6 mt-1 mb-1 rounded border border-green-900/70 bg-green-950/20 p-2"
+          className="ml-6 mt-1 mb-1 rounded border border-green-900/70 bg-green-950/20 p-2"
           aria-label={`Active screen shares in ${props.channel.name}`}
         >
-          <div class="mb-1 flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-green-300">
+          <div className="mb-1 flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-green-300">
             <ScreenShareIcon size={12} aria-hidden="true" />
             <span>
               {screenShares().length === 1
@@ -436,28 +450,27 @@ export default function VoiceChannel(props: { channel: Channel }) {
             </span>
           </div>
           <ul
-            class="flex max-h-28 flex-col gap-1 overflow-y-auto"
+            className="flex max-h-28 flex-col gap-1 overflow-y-auto"
             aria-label={`Screen shares in ${props.channel.name}`}
           >
-            <For each={screenShares()}>
+            <List each={screenShares()}>
               {(stream) => {
                 const name = screenShareDisplayName(stream);
                 return (
-                  <li class="flex items-center gap-2 rounded bg-gray-900/60 px-2 py-1 text-xs text-gray-200">
+                  <li className="flex items-center gap-2 rounded bg-gray-900/60 px-2 py-1 text-xs text-gray-200">
                     <Avatar url={stream.avatar_url} username={name} size={16} />
-                    <span class="min-w-0 flex-1 truncate">{name}'s screen</span>
-                    <Show
+                    <span className="min-w-0 flex-1 truncate">{name}'s screen</span>
+                    <If
                       when={isActive()}
                       fallback={
-                        <span class="flex-shrink-0 text-[11px] text-gray-400">Join voice</span>
+                        <span className="flex-shrink-0 text-[11px] text-gray-400">Join voice</span>
                       }
                     >
                       <button
                         type="button"
-                        class="flex-shrink-0 rounded bg-green-700 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-green-600 disabled:opacity-50"
-                        classList={{
-                          "bg-gray-700 text-green-200": isWatchingStream(stream),
-                        }}
+                        className={`flex-shrink-0 rounded bg-green-700 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-green-600 disabled:opacity-50 ${
+                          isWatchingStream(stream) ? "bg-gray-700 text-green-200" : ""
+                        }`}
                         disabled={isBusy() || isWatchingStream(stream)}
                         aria-label={
                           isWatchingStream(stream)
@@ -467,43 +480,41 @@ export default function VoiceChannel(props: { channel: Channel }) {
                         aria-pressed={isWatchingStream(stream)}
                         onClick={() => void handleWatchScreenShare(stream)}
                       >
-                        <Show when={isWatchingStream(stream)} fallback="Watch">
+                        <If when={isWatchingStream(stream)} fallback="Watch">
                           Watching
-                        </Show>
+                        </If>
                       </button>
-                    </Show>
+                    </If>
                   </li>
                 );
               }}
-            </For>
+            </List>
           </ul>
         </section>
-      </Show>
+      </If>
 
-      <Show when={screenShareAnnouncement()}>
-        <p class="sr-only" role="status" aria-live="polite">
+      <If when={screenShareAnnouncement()}>
+        <p className="sr-only" role="status" aria-live="polite">
           {screenShareAnnouncement()}
         </p>
-      </Show>
-      <Show when={cameraAnnouncement()}>
-        <p class="sr-only" role="status" aria-live="polite">
+      </If>
+      <If when={cameraAnnouncement()}>
+        <p className="sr-only" role="status" aria-live="polite">
           {cameraAnnouncement()}
         </p>
-      </Show>
+      </If>
 
-      <Show when={isActive()}>
+      <If when={isActive()}>
         <div
-          class="ml-6 mt-1 mb-1 flex items-center gap-1"
+          className="ml-6 mt-1 mb-1 flex items-center gap-1"
           role="group"
           aria-label="Voice controls"
         >
           <button
             type="button"
-            class="p-1.5 rounded hover:bg-gray-700"
-            classList={{
-              "text-green-300 bg-gray-700": voice.isCameraEnabled(),
-              "text-gray-300": !voice.isCameraEnabled(),
-            }}
+            className={`p-1.5 rounded hover:bg-gray-700 ${
+              voice.isCameraEnabled() ? "text-green-300 bg-gray-700" : "text-gray-300"
+            }`}
             aria-pressed={voice.isCameraEnabled()}
             aria-busy={voice.isCameraBusy()}
             aria-label={
@@ -519,55 +530,53 @@ export default function VoiceChannel(props: { channel: Channel }) {
             disabled={voice.isCameraBusy()}
             onClick={() => void handleToggleCamera()}
           >
-            <Show
+            <If
               when={voice.isCameraEnabled()}
               fallback={<CameraIcon size={14} aria-hidden="true" />}
             >
               <CameraOffIcon size={14} aria-hidden="true" />
-            </Show>
+            </If>
           </button>
           <button
             type="button"
-            class="p-1.5 rounded hover:bg-gray-700"
-            classList={{
-              "text-green-300 bg-gray-700": voice.isScreenSharing(),
-              "text-gray-300": !voice.isScreenSharing(),
-            }}
+            className={`p-1.5 rounded hover:bg-gray-700 ${
+              voice.isScreenSharing() ? "text-green-300 bg-gray-700" : "text-gray-300"
+            }`}
             aria-pressed={voice.isScreenSharing()}
             aria-label={voice.isScreenSharing() ? "Stop sharing screen" : "Share screen"}
             disabled={voice.isScreenShareStarting()}
             onClick={() => void handleToggleScreenShare()}
           >
-            <Show
+            <If
               when={voice.isScreenSharing()}
               fallback={<ScreenShareIcon size={14} aria-hidden="true" />}
             >
               <ScreenShareOffIcon size={14} aria-hidden="true" />
-            </Show>
+            </If>
           </button>
         </div>
-        <Show when={voice.isCameraEnabled() || voice.isCameraBusy()}>
-          <p class="ml-6 mb-1 text-xs text-green-300" role="status">
-            <Show
+        <If when={voice.isCameraEnabled() || voice.isCameraBusy()}>
+          <p className="ml-6 mb-1 text-xs text-green-300" role="status">
+            <If
               when={!voice.isCameraBusy()}
               fallback={voice.isCameraEnabled() ? "Stopping camera…" : "Starting camera…"}
             >
               Camera on
-            </Show>
+            </If>
           </p>
-        </Show>
-        <Show when={voice.isScreenSharing()}>
-          <p class="ml-6 mb-1 text-xs text-green-300" role="status">
+        </If>
+        <If when={voice.isScreenSharing()}>
+          <p className="ml-6 mb-1 text-xs text-green-300" role="status">
             Sharing screen
           </p>
-        </Show>
-      </Show>
+        </If>
+      </If>
 
-      <Show when={localError() || voice.lastError()}>
-        <p class="ml-6 mb-1 text-xs text-red-400" role="alert">
+      <If when={localError() || voice.lastError()}>
+        <p className="ml-6 mb-1 text-xs text-red-400" role="alert">
           {localError() ?? voice.lastError()}
         </p>
-      </Show>
+      </If>
     </div>
   );
 }

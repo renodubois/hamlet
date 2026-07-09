@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor } from "../test/testing-library";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { expectNoA11yViolations } from "../test/a11y";
 import VoiceSettings from "./voice-settings";
@@ -346,7 +346,7 @@ describe("<VoiceSettings>", () => {
 
   test("requests microphone access on mount to surface the OS permission prompt early", async () => {
     render(() => <VoiceSettings />);
-    // The warm-up fires in onMount; wait for it to land.
+    // The warm-up fires in useMountEffect; wait for it to land.
     await waitFor(() => {
       expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true });
     });

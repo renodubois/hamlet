@@ -1,6 +1,6 @@
 # Hamlet Electron Alpha
 
-Electron/Solid desktop client for Hamlet. By default it keeps the renderer on
+Electron/React desktop client for Hamlet. By default it keeps the renderer on
 `http://127.0.0.1:1422`; worktrees can override the loopback renderer port with
 `HAMLET_RENDERER_PORT` so multiple app instances can run side by side.
 
@@ -366,7 +366,7 @@ and [`../docs/webcam-video-calls-manual-qa.md`](../docs/webcam-video-calls-manua
 
 ## Architecture and boundary notes
 
-- `src/` is the Solid renderer. It owns auth, channels, messages, avatars,
+- `src/` is the React renderer. It owns auth, channels, messages, avatars,
   embeds, typing, SSE, localStorage preferences, and LiveKit/WebRTC calls.
 - `electron/preload.ts` is intentionally empty. Do not expose raw IPC or broad
   system APIs to the renderer.

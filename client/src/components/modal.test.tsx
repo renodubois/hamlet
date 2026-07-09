@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen } from "@solidjs/testing-library";
-import { createSignal } from "solid-js";
+import { fireEvent, render, screen } from "../test/testing-library";
+import { useSignalState } from "../hooks/react-state";
 import Modal from "./modal";
 
 function mount(open: boolean, onClose = vi.fn()) {
@@ -78,14 +78,14 @@ describe("<Modal>", () => {
     opener.remove();
   });
 
-  test("respects [autofocus] children when opened", () => {
+  test("respects [autoFocus] children when opened", () => {
     render(() => (
       <Modal open onClose={() => {}} title="Hello">
         <input placeholder="first" />
-        <input placeholder="autofocused" autofocus />
+        <input placeholder="autoFocused" autoFocus />
       </Modal>
     ));
-    expect(document.activeElement).toBe(screen.getByPlaceholderText("autofocused"));
+    expect(document.activeElement).toBe(screen.getByPlaceholderText("autoFocused"));
   });
 
   test("Tab from the last focusable wraps to the first", () => {
@@ -137,7 +137,7 @@ describe("<Modal>", () => {
   });
 
   test("restores focus to the previously focused element on close", () => {
-    const [open, setOpen] = createSignal(false);
+    const [open, setOpen] = useSignalState(false);
     render(() => (
       <div>
         <button type="button">opener</button>

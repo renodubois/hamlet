@@ -1,4 +1,4 @@
-import { For, Show, createSignal, createUniqueId } from "solid-js";
+import { List, If, useSignalState, useStableDomId } from "../hooks/react-state";
 import { getServerUrl, type ReactionSummary } from "../api";
 
 function resolveImageUrl(url: string): string {
@@ -50,14 +50,14 @@ export default function ReactionRow(props: {
   reactions: readonly ReactionSummary[];
   onToggle: (reaction: ReactionSummary) => void;
 }) {
-  const rowId = createUniqueId();
-  const [activePreviewKey, setActivePreviewKey] = createSignal<string | null>(null);
+  const rowId = useStableDomId();
+  const [activePreviewKey, setActivePreviewKey] = useSignalState<string | null>(null);
   const visibleReactions = () => props.reactions.filter((reaction) => reaction.count > 0);
 
   return (
-    <Show when={visibleReactions().length > 0}>
-      <div class="mt-1 flex flex-wrap gap-1" aria-label="Message reactions">
-        <For each={visibleReactions()}>
+    <If when={visibleReactions().length > 0}>
+      <div className="mt-1 flex flex-wrap gap-1" aria-label="Message reactions">
+        <List each={visibleReactions()}>
           {(reaction, index) => {
             const key = () => reactionKey(reaction);
             const previewId = () => `${rowId}-reaction-preview-${index()}`;
@@ -65,7 +65,7 @@ export default function ReactionRow(props: {
             const canToggle = () => !isDeletedCustomReaction(reaction) || reaction.me_reacted;
 
             return (
-              <span class="relative inline-flex">
+              <span className="relative inline-flex">
                 <button
                   type="button"
                   aria-pressed={reaction.me_reacted}
@@ -73,7 +73,7 @@ export default function ReactionRow(props: {
                   aria-describedby={previewId()}
                   title={previewText()}
                   disabled={!canToggle()}
-                  class={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 ${
+                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 ${
                     reaction.me_reacted
                       ? "border-blue-300 bg-blue-50 font-medium text-blue-700 shadow-sm"
                       : canToggle()
@@ -90,12 +90,12 @@ export default function ReactionRow(props: {
                     if (document.activeElement !== event.currentTarget) setActivePreviewKey(null);
                   }}
                 >
-                  <Show when={reaction.me_reacted}>
-                    <span aria-hidden="true" class="text-xs leading-none">
+                  <If when={reaction.me_reacted}>
+                    <span aria-hidden="true" className="text-xs leading-none">
                       ✓
                     </span>
-                  </Show>
-                  <Show
+                  </If>
+                  <If
                     when={reaction.kind === "custom" ? reaction : null}
                     fallback={<span aria-hidden="true">{reactionDisplayLabel(reaction)}</span>}
                   >
@@ -105,41 +105,41 @@ export default function ReactionRow(props: {
                           src={resolveImageUrl(customReaction().image_url)}
                           alt=""
                           title={reactionDisplayLabel(customReaction())}
-                          class="h-5 w-5 object-contain"
+                          className="h-5 w-5 object-contain"
                           aria-hidden="true"
                         />
-                        <span class="sr-only">{reactionDisplayLabel(customReaction())}</span>
-                        <Show when={customReaction().animated}>
+                        <span className="sr-only">{reactionDisplayLabel(customReaction())}</span>
+                        <If when={customReaction().animated}>
                           <span
-                            class="rounded bg-purple-700 px-0.5 text-[8px] font-bold uppercase leading-3 text-white"
+                            className="rounded bg-purple-700 px-0.5 text-[8px] font-bold uppercase leading-3 text-white"
                             title="Animated custom emoji"
                             aria-hidden="true"
                           >
                             A
                           </span>
-                          <span class="sr-only">Animated custom emoji</span>
-                        </Show>
+                          <span className="sr-only">Animated custom emoji</span>
+                        </If>
                       </>
                     )}
-                  </Show>
+                  </If>
                   <span>{reaction.count}</span>
                 </button>
-                <span id={previewId()} class="sr-only">
+                <span id={previewId()} className="sr-only">
                   {previewText()}
                 </span>
-                <Show when={activePreviewKey() === key()}>
+                <If when={activePreviewKey() === key()}>
                   <span
                     role="tooltip"
-                    class="absolute bottom-full left-1/2 z-20 mb-1 w-max max-w-xs -translate-x-1/2 rounded-md bg-gray-900 px-2 py-1 text-xs font-medium text-white shadow-lg"
+                    className="absolute bottom-full left-1/2 z-20 mb-1 w-max max-w-xs -translate-x-1/2 rounded-md bg-gray-900 px-2 py-1 text-xs font-medium text-white shadow-lg"
                   >
                     {previewText()}
                   </span>
-                </Show>
+                </If>
               </span>
             );
           }}
-        </For>
+        </List>
       </div>
-    </Show>
+    </If>
   );
 }

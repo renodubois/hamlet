@@ -1,25 +1,14 @@
-import { lazy } from "solid-js";
-import type { RouteDefinition } from "@solidjs/router";
+import { createElement } from "react";
+import type { RouteObject } from "react-router-dom";
+import ChannelView from "./pages/channel";
+import LoginScreen from "./pages/login";
+import ThreadsPage from "./pages/threads";
+import NotFound from "./errors/404";
 
-export const routes: RouteDefinition[] = [
-  {
-    path: "/login",
-    component: lazy(() => import("./pages/login")),
-  },
-  {
-    path: "/channel/:id",
-    component: lazy(() => import("./pages/channel")),
-  },
-  {
-    path: "/threads",
-    component: lazy(() => import("./pages/threads")),
-  },
-  {
-    path: "/",
-    component: () => null,
-  },
-  {
-    path: "**",
-    component: lazy(() => import("./errors/404")),
-  },
+export const routes: RouteObject[] = [
+  { path: "/login", element: createElement(LoginScreen) },
+  { path: "/channel/:id", element: createElement(ChannelView) },
+  { path: "/threads", element: createElement(ThreadsPage) },
+  { path: "/", element: null },
+  { path: "*", element: createElement(NotFound) },
 ];

@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen } from "@solidjs/testing-library";
-import { createSignal } from "solid-js";
+import { fireEvent, render, screen } from "../test/testing-library";
+import { useSignalState } from "../hooks/react-state";
 import VoiceStatusControls from "./voice-status-controls";
 
 interface MockVoiceChatApi {
@@ -22,9 +22,9 @@ vi.mock("../contexts/voice-chat", () => ({
 }));
 
 function setup() {
-  const [activeChannelId, setActiveChannelId] = createSignal<number | null>(null);
-  const [isMuted, setIsMuted] = createSignal(false);
-  const [isDeafened, setIsDeafened] = createSignal(false);
+  const [activeChannelId, setActiveChannelId] = useSignalState<number | null>(null);
+  const [isMuted, setIsMuted] = useSignalState(false);
+  const [isDeafened, setIsDeafened] = useSignalState(false);
   mockVoice = {
     activeChannelId,
     setActiveChannelId,

@@ -1,5 +1,5 @@
-import { render, screen, waitFor } from "@solidjs/testing-library";
-import { createSignal, onCleanup, onMount } from "solid-js";
+import { render, screen, waitFor } from "../test/testing-library";
+import { useSignalState, registerCleanup, useMountEffect } from "../hooks/react-state";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { EventsProvider, useEvents } from "./events";
 import { makeCameraStream, makeScreenShareStream } from "../test/fixtures";
@@ -7,17 +7,17 @@ import { FakeEventSource, latestFakeEventSource, resetFakeEventSources } from ".
 
 function ReadStateEventProbe() {
   const events = useEvents();
-  const [readState, setReadState] = createSignal("none");
-  const [connectedCount, setConnectedCount] = createSignal(0);
+  const [readState, setReadState] = useSignalState("none");
+  const [connectedCount, setConnectedCount] = useSignalState(0);
 
-  onMount(() => {
+  useMountEffect(() => {
     const unsubscribeReadState = events.onReadStateUpdated((summary) => {
       setReadState(`${summary.channel_id}:${summary.last_read_message_id}:${summary.has_unread}`);
     });
     const unsubscribeConnected = events.onConnected(() => {
       setConnectedCount((count) => count + 1);
     });
-    onCleanup(() => {
+    registerCleanup(() => {
       unsubscribeReadState();
       unsubscribeConnected();
     });
@@ -33,12 +33,12 @@ function ReadStateEventProbe() {
 
 function MediaEventProbe() {
   const events = useEvents();
-  const [screenStarted, setScreenStarted] = createSignal("none");
-  const [screenStopped, setScreenStopped] = createSignal("none");
-  const [cameraStarted, setCameraStarted] = createSignal("none");
-  const [cameraStopped, setCameraStopped] = createSignal("none");
+  const [screenStarted, setScreenStarted] = useSignalState("none");
+  const [screenStopped, setScreenStopped] = useSignalState("none");
+  const [cameraStarted, setCameraStarted] = useSignalState("none");
+  const [cameraStopped, setCameraStopped] = useSignalState("none");
 
-  onMount(() => {
+  useMountEffect(() => {
     const unsubscribeScreenStarted = events.onScreenShareStarted((stream) => {
       setScreenStarted(`${stream.channel_id}:${stream.sharer_user_id}:${stream.track_sid}`);
     });
@@ -51,7 +51,7 @@ function MediaEventProbe() {
     const unsubscribeCameraStopped = events.onCameraVideoStopped((stream) => {
       setCameraStopped(`${stream.channel_id}:${stream.sharer_user_id}:${stream.track_sid}`);
     });
-    onCleanup(() => {
+    registerCleanup(() => {
       unsubscribeScreenStarted();
       unsubscribeScreenStopped();
       unsubscribeCameraStarted();

@@ -1,5 +1,5 @@
-import { A } from "@solidjs/router";
-import { createResource, For, Show } from "solid-js";
+import { Link } from "react-router-dom";
+import { useCallableResource, List, If } from "../hooks/react-state";
 import { listParticipatedThreads, messageDisplayName, type Message } from "../api";
 import AttachmentGrid from "../components/attachment-grid";
 import MessageText from "../components/message-text";
@@ -52,12 +52,12 @@ function previewMessageStateClass(
 
 function PreviewAttachments(props: { message: Message }) {
   return (
-    <Show when={!isDeletedMessage(props.message) && props.message.attachments.length > 0}>
+    <If when={!isDeletedMessage(props.message) && props.message.attachments.length > 0}>
       <AttachmentGrid
         attachments={props.message.attachments}
         authorName={messageDisplayName(props.message)}
       />
-    </Show>
+    </If>
   );
 }
 
@@ -70,26 +70,26 @@ function ReplyPreview(props: { reply: Message; currentUserId: number | null }) {
       data-message-id={String(props.reply.id)}
       data-authored-by-current-user={authoredByCurrentUser() ? "true" : undefined}
       data-mentioned-current-user={mentionedCurrentUser() ? "true" : undefined}
-      class={`rounded-md border-l-4 px-3 py-2 ${previewMessageStateClass(
+      className={`rounded-md border-l-4 px-3 py-2 ${previewMessageStateClass(
         props.reply,
         props.currentUserId,
         "border-transparent",
         "bg-gray-50",
       )}`}
     >
-      <Show
+      <If
         when={!isDeletedMessage(props.reply)}
-        fallback={<p class="italic text-gray-500">Reply deleted</p>}
+        fallback={<p className="italic text-gray-500">Reply deleted</p>}
       >
-        <p class="text-xs font-semibold text-gray-600">{messageDisplayName(props.reply)}</p>
+        <p className="text-xs font-semibold text-gray-600">{messageDisplayName(props.reply)}</p>
         <MessageText
           text={props.reply.text}
           mentions={props.reply.mentions ?? []}
           currentUserId={props.currentUserId}
-          class="mt-1 whitespace-pre-wrap break-words text-sm text-gray-800"
+          className="mt-1 whitespace-pre-wrap break-words text-sm text-gray-800"
         />
         <PreviewAttachments message={props.reply} />
-      </Show>
+      </If>
     </li>
   );
 }
@@ -97,7 +97,7 @@ function ReplyPreview(props: { reply: Message; currentUserId: number | null }) {
 export default function ThreadsView() {
   const { user } = useAuth();
   const currentUserId = () => user()?.id ?? null;
-  const [threads] = createResource(listParticipatedThreads);
+  const [threads] = useCallableResource(listParticipatedThreads);
 
   const previewMentionsCurrentUser = (thread: {
     root: Message;
@@ -107,29 +107,29 @@ export default function ThreadsView() {
     thread.recent_replies.some((reply) => messageMentionsCurrentUser(reply, currentUserId()));
 
   return (
-    <section class="flex h-full flex-col bg-white text-gray-900">
-      <header class="flex-shrink-0 border-b border-gray-200 bg-gray-100 p-4 text-gray-700">
-        <h1 class="text-2xl font-bold">Threads</h1>
-        <p class="mt-1 text-sm text-gray-600">Conversations you have participated in.</p>
+    <section className="flex h-full flex-col bg-white text-gray-900">
+      <header className="flex-shrink-0 border-b border-gray-200 bg-gray-100 p-4 text-gray-700">
+        <h1 className="text-2xl font-bold">Threads</h1>
+        <p className="mt-1 text-sm text-gray-600">Conversations you have participated in.</p>
       </header>
 
-      <div class="min-h-0 flex-1 overflow-y-auto p-4">
-        <Show when={threads.loading}>
-          <p class="text-gray-600">Loading threads...</p>
-        </Show>
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        <If when={threads.loading}>
+          <p className="text-gray-600">Loading threads...</p>
+        </If>
 
-        <Show when={threads.error}>
-          <p role="alert" class="text-red-700">
+        <If when={threads.error}>
+          <p role="alert" className="text-red-700">
             Error loading threads: {String(threads.error)}
           </p>
-        </Show>
+        </If>
 
-        <Show when={threads()?.length === 0}>
-          <p class="text-gray-600">No participated threads yet.</p>
-        </Show>
+        <If when={threads()?.length === 0}>
+          <p className="text-gray-600">No participated threads yet.</p>
+        </If>
 
-        <div class="space-y-4">
-          <For each={threads() ?? []}>
+        <div className="space-y-4">
+          <List each={threads() ?? []}>
             {(thread) => {
               const replyCountText = () =>
                 `${thread.reply_count} ${thread.reply_count === 1 ? "reply" : "replies"}`;
@@ -139,15 +139,15 @@ export default function ThreadsView() {
                   data-mentioned-current-user={
                     previewMentionsCurrentUser(thread) ? "true" : undefined
                   }
-                  class={`rounded-lg border p-4 shadow-sm transition-colors ${
+                  className={`rounded-lg border p-4 shadow-sm transition-colors ${
                     previewMentionsCurrentUser(thread)
                       ? "border-yellow-300 bg-yellow-50/40 ring-1 ring-inset ring-yellow-200"
                       : "border-gray-200 bg-white"
                   }`}
                 >
-                  <div class="flex flex-wrap items-center justify-between gap-2">
-                    <p class="text-sm font-semibold text-blue-700"># {thread.channel.name}</p>
-                    <p class="text-xs text-gray-500">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-blue-700"># {thread.channel.name}</p>
+                    <p className="text-xs text-gray-500">
                       {replyCountText()} •{" "}
                       <time dateTime={formatDateTime(thread.last_reply_created_at)}>
                         Last reply {formatTimestamp(thread.last_reply_created_at)}
@@ -163,49 +163,49 @@ export default function ThreadsView() {
                     data-mentioned-current-user={
                       messageMentionsCurrentUser(thread.root, currentUserId()) ? "true" : undefined
                     }
-                    class={`mt-3 rounded-r-md border-l-4 py-2 pl-3 pr-2 ${previewMessageStateClass(
+                    className={`mt-3 rounded-r-md border-l-4 py-2 pl-3 pr-2 ${previewMessageStateClass(
                       thread.root,
                       currentUserId(),
                       "border-gray-200",
                       "",
                     )}`}
                   >
-                    <Show
+                    <If
                       when={!isDeletedMessage(thread.root)}
-                      fallback={<p class="italic text-gray-500">Original message deleted</p>}
+                      fallback={<p className="italic text-gray-500">Original message deleted</p>}
                     >
-                      <p class="text-sm font-semibold text-gray-700">
+                      <p className="text-sm font-semibold text-gray-700">
                         {messageDisplayName(thread.root)}
                       </p>
                       <MessageText
                         text={thread.root.text}
                         mentions={thread.root.mentions ?? []}
                         currentUserId={currentUserId()}
-                        class="mt-1 whitespace-pre-wrap break-words text-gray-900"
+                        className="mt-1 whitespace-pre-wrap break-words text-gray-900"
                       />
                       <PreviewAttachments message={thread.root} />
-                    </Show>
+                    </If>
                   </div>
 
-                  <Show when={thread.recent_replies.length > 0}>
-                    <ol class="mt-3 space-y-2" aria-label="Recent replies">
-                      <For each={thread.recent_replies}>
+                  <If when={thread.recent_replies.length > 0}>
+                    <ol className="mt-3 space-y-2" aria-label="Recent replies">
+                      <List each={thread.recent_replies}>
                         {(reply) => <ReplyPreview reply={reply} currentUserId={currentUserId()} />}
-                      </For>
+                      </List>
                     </ol>
-                  </Show>
+                  </If>
 
-                  <A
-                    href={threadHref()}
-                    class="mt-3 inline-flex text-sm font-medium text-blue-700 hover:text-blue-900"
+                  <Link
+                    to={threadHref()}
+                    className="mt-3 inline-flex text-sm font-medium text-blue-700 hover:text-blue-900"
                     aria-label={`Open full thread in # ${thread.channel.name}`}
                   >
                     View all replies
-                  </A>
+                  </Link>
                 </article>
               );
             }}
-          </For>
+          </List>
         </div>
       </div>
     </section>

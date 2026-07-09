@@ -1,4 +1,6 @@
-import { createEffect, createUniqueId, onCleanup, Show, type JSX } from "solid-js";
+import { useLayoutEffect, useRef } from "react";
+
+import { useStableDomId, If, type JSX } from "../hooks/react-state";
 
 // Stack of currently-mounted modal content elements, topmost last. Nested modals
 // use this so only the topmost one handles keyboard input (Tab trap, Escape).
@@ -10,7 +12,7 @@ const FOCUSABLE_SELECTOR = [
   "input:not([disabled])",
   "select:not([disabled])",
   "textarea:not([disabled])",
-  "[tabindex]:not([tabindex='-1'])",
+  "[tabIndex]:not([tabIndex='-1'])",
 ].join(",");
 
 function getFocusable(container: HTMLElement): HTMLElement[] {
@@ -24,27 +26,34 @@ export default function Modal(props: {
   size?: "sm" | "lg";
   children: JSX.Element;
 }) {
-  let contentRef: HTMLDivElement | undefined;
-  const setContentRef = (el: HTMLDivElement) => {
-    contentRef = el;
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const setContentRef = (el: HTMLDivElement | null) => {
+    contentRef.current = el;
   };
-  const titleId = createUniqueId();
+  const titleId = useStableDomId();
 
-  createEffect(() => {
+  useLayoutEffect(() => {
     if (!props.open) return;
-    const content = contentRef;
+    const content = contentRef.current;
     if (!content) return;
 
     const previouslyFocused = document.activeElement as HTMLElement | null;
     modalStack.push(content);
 
-    // Initial focus: respect [autofocus] inside children, then first focusable,
-    // else the dialog container itself (it has tabindex="-1").
-    const autofocusEl = content.querySelector<HTMLElement>("[autofocus]");
-    const initialFocus = autofocusEl ?? getFocusable(content)[0] ?? content;
+    // Initial focus: respect [autoFocus] inside children, then first focusable,
+    // else the dialog container itself (it has tabIndex="-1").
+    const activeInside = content.contains(document.activeElement)
+      ? (document.activeElement as HTMLElement)
+      : null;
+    const autoFocusEl = getFocusable(content).find(
+      (element) =>
+        element.hasAttribute("autofocus") ||
+        ("autofocus" in element && Boolean((element as HTMLInputElement).autofocus)),
+    );
+    const initialFocus = activeInside ?? autoFocusEl ?? getFocusable(content)[0] ?? content;
     initialFocus.focus();
 
-    const handler = (e: KeyboardEvent) => {
+    const handler = (e: any) => {
       if (modalStack[modalStack.length - 1] !== content) return;
       if (e.key === "Escape") {
         e.preventDefault();
@@ -78,20 +87,20 @@ export default function Modal(props: {
     };
     window.addEventListener("keydown", handler);
 
-    onCleanup(() => {
+    return () => {
       window.removeEventListener("keydown", handler);
       const i = modalStack.indexOf(content);
       if (i >= 0) modalStack.splice(i, 1);
       previouslyFocused?.focus?.();
-    });
+    };
   });
 
   const sizeClass = () => (props.size === "lg" ? "w-4xl" : "w-96");
 
   return (
-    <Show when={props.open}>
+    <If when={props.open}>
       <div
-        class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
         onClick={(e) => {
           if (e.currentTarget === e.target) props.onClose();
         }}
@@ -101,16 +110,16 @@ export default function Modal(props: {
           role="dialog"
           aria-modal="true"
           aria-labelledby={titleId}
-          tabindex="-1"
-          class={`max-h-[90vh] overflow-y-auto bg-gray-800 text-gray-100 rounded-lg p-6 shadow-xl outline-none ${sizeClass()}`}
+          tabIndex={-1}
+          className={`max-h-[90vh] overflow-y-auto bg-gray-800 text-gray-100 rounded-lg p-6 shadow-xl outline-none ${sizeClass()}`}
         >
-          <div class="flex items-center justify-between mb-4">
-            <h2 id={titleId} class="text-lg font-semibold">
+          <div className="flex items-center justify-between mb-4">
+            <h2 id={titleId} className="text-lg font-semibold">
               {props.title}
             </h2>
             <button
               type="button"
-              class="text-gray-400 hover:text-gray-100 text-xl leading-none"
+              className="text-gray-400 hover:text-gray-100 text-xl leading-none"
               onClick={props.onClose}
               aria-label="Close"
             >
@@ -120,6 +129,6 @@ export default function Modal(props: {
           {props.children}
         </div>
       </div>
-    </Show>
+    </If>
   );
 }

@@ -8,7 +8,7 @@ import { serverUrl } from "./test-config";
 // Playwright's `locator.dragTo` drives HTML5 DnD via synthesized mouse
 // events, which Chromium sometimes refuses to convert into the
 // `dragstart`/`dragover`/`drop` sequence our sidebar listens for. Drive
-// the sequence directly in a single in-page call so Solid's reactive
+// the sequence directly in a single in-page call so React's state updates
 // updates happen back-to-back without any round-trips to the test runner.
 async function dragByEvents(source: Locator, target: Locator): Promise<void> {
   const sourceId = await source.getAttribute("data-channel-id");

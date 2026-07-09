@@ -1,4 +1,13 @@
-import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { useRef } from "react";
+
+import {
+  useAfterRenderEffect,
+  useSignalState,
+  List,
+  registerCleanup,
+  useMountEffect,
+  If,
+} from "../hooks/react-state";
 import {
   VOICE_INPUT_STORAGE_KEY,
   VOICE_OUTPUT_STORAGE_KEY,
@@ -35,46 +44,46 @@ export default function VoiceSettings() {
   const supported = mediaDevicesSupported();
   const canPickOutput = sinkIdSupported();
 
-  const [inputDevices, setInputDevices] = createSignal<MediaDeviceInfo[]>([]);
-  const [outputDevices, setOutputDevices] = createSignal<MediaDeviceInfo[]>([]);
-  const [cameraDevices, setCameraDevices] = createSignal<MediaDeviceInfo[]>([]);
+  const [inputDevices, setInputDevices] = useSignalState<MediaDeviceInfo[]>([]);
+  const [outputDevices, setOutputDevices] = useSignalState<MediaDeviceInfo[]>([]);
+  const [cameraDevices, setCameraDevices] = useSignalState<MediaDeviceInfo[]>([]);
   // `true` until audio warm-up resolves (success or silent failure). Stays `false`
   // on unsupported platforms so the fallback banner isn't obscured by the overlay.
-  const [isLoading, setIsLoading] = createSignal(supported);
-  const [inputId, setInputId] = createSignal<string>(
+  const [isLoading, setIsLoading] = useSignalState(supported);
+  const [inputId, setInputId] = useSignalState<string>(
     localStorage.getItem(VOICE_INPUT_STORAGE_KEY) ?? DEFAULT_DEVICE_ID,
   );
-  const [outputId, setOutputId] = createSignal<string>(
+  const [outputId, setOutputId] = useSignalState<string>(
     localStorage.getItem(VOICE_OUTPUT_STORAGE_KEY) ?? DEFAULT_DEVICE_ID,
   );
-  const [cameraId, setCameraId] = createSignal<string>(
+  const [cameraId, setCameraId] = useSignalState<string>(
     localStorage.getItem(VOICE_CAMERA_STORAGE_KEY) ?? DEFAULT_DEVICE_ID,
   );
-  const [noiseSuppression, setNoiseSuppression] = createSignal<boolean>(
+  const [noiseSuppression, setNoiseSuppression] = useSignalState<boolean>(
     getNoiseSuppressionEnabled(),
   );
-  const [inputGain, setInputGain] = createSignal<number>(getInputGain());
-  const [showSpeakingEverywhere, setShowSpeakingEverywhere] = createSignal<boolean>(
+  const [inputGain, setInputGain] = useSignalState<number>(getInputGain());
+  const [showSpeakingEverywhere, setShowSpeakingEverywhere] = useSignalState<boolean>(
     showSpeakingEverywhereSignal(),
   );
-  const [micTesting, setMicTesting] = createSignal(false);
-  const [micLevel, setMicLevel] = createSignal(0);
-  const [micError, setMicError] = createSignal<string | null>(null);
-  const [outputError, setOutputError] = createSignal<string | null>(null);
-  const [playingTestSound, setPlayingTestSound] = createSignal(false);
-  const [cameraPreviewStream, setCameraPreviewStream] = createSignal<MediaStream | null>(null);
-  const [cameraPreviewStarting, setCameraPreviewStarting] = createSignal(false);
-  const [cameraError, setCameraError] = createSignal<string | null>(null);
+  const [micTesting, setMicTesting] = useSignalState(false);
+  const [micLevel, setMicLevel] = useSignalState(0);
+  const [micError, setMicError] = useSignalState<string | null>(null);
+  const [outputError, setOutputError] = useSignalState<string | null>(null);
+  const [playingTestSound, setPlayingTestSound] = useSignalState(false);
+  const [cameraPreviewStream, setCameraPreviewStream] = useSignalState<MediaStream | null>(null);
+  const [cameraPreviewStarting, setCameraPreviewStarting] = useSignalState(false);
+  const [cameraError, setCameraError] = useSignalState<string | null>(null);
 
   let micStream: MediaStream | null = null;
   let micCtx: AudioContext | null = null;
   let micRaf: number | null = null;
-  let cameraVideoRef: HTMLVideoElement | undefined;
-  let cameraPreviewRequestId = 0;
-  let isDisposed = false;
-  let inputSelectRef: HTMLSelectElement | undefined;
-  let outputSelectRef: HTMLSelectElement | undefined;
-  let cameraSelectRef: HTMLSelectElement | undefined;
+  const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
+  const cameraPreviewRequestIdRef = useRef(0);
+  const isDisposedRef = useRef(false);
+  let inputSelectRef: HTMLSelectElement | null | undefined;
+  let outputSelectRef: HTMLSelectElement | null | undefined;
+  let cameraSelectRef: HTMLSelectElement | null | undefined;
   const setInputSelectRef = (el: HTMLSelectElement) => {
     inputSelectRef = el;
   };
@@ -85,21 +94,22 @@ export default function VoiceSettings() {
     cameraSelectRef = el;
   };
   const attachCameraPreview = () => {
-    if (!cameraVideoRef) return;
+    const video = cameraVideoRef.current;
+    if (!video) return;
     const stream = cameraPreviewStream();
     try {
-      if (cameraVideoRef.srcObject !== stream) cameraVideoRef.srcObject = stream;
+      if (video.srcObject !== stream) video.srcObject = stream;
       if (stream) {
-        const playPromise = cameraVideoRef.play();
+        const playPromise = video.play();
         if (playPromise) void playPromise.catch(() => {});
       }
     } catch {
-      // Assigning srcObject is enough for the local preview; autoplay or test-DOM
+      // Assigning srcObject is enough for the local preview; autoPlay or test-DOM
       // media assignment failures should not replace actionable device errors.
     }
   };
-  const setCameraVideoRef = (el: HTMLVideoElement) => {
-    cameraVideoRef = el;
+  const setCameraVideoRef = (el: HTMLVideoElement | null) => {
+    cameraVideoRef.current = el;
     attachCameraPreview();
   };
 
@@ -201,19 +211,19 @@ export default function VoiceSettings() {
     if (stream) {
       stream.getTracks().forEach((t) => t.stop());
     }
-    if (cameraVideoRef) cameraVideoRef.srcObject = null;
+    if (cameraVideoRef.current) cameraVideoRef.current.srcObject = null;
     setCameraPreviewStream(null);
   };
 
   const stopCameraPreview = () => {
-    cameraPreviewRequestId += 1;
+    cameraPreviewRequestIdRef.current += 1;
     setCameraPreviewStarting(false);
     clearCameraPreviewStream();
   };
 
   const startCameraPreview = async (selectedCameraId = cameraId()) => {
-    const requestId = cameraPreviewRequestId + 1;
-    cameraPreviewRequestId = requestId;
+    const requestId = cameraPreviewRequestIdRef.current + 1;
+    cameraPreviewRequestIdRef.current = requestId;
     setCameraError(null);
     setCameraPreviewStarting(true);
     clearCameraPreviewStream();
@@ -223,18 +233,18 @@ export default function VoiceSettings() {
         video: selectedCameraId ? { deviceId: { exact: selectedCameraId } } : true,
       };
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      if (isDisposed || requestId !== cameraPreviewRequestId) {
+      if (isDisposedRef.current || requestId !== cameraPreviewRequestIdRef.current) {
         stream.getTracks().forEach((t) => t.stop());
         return;
       }
       setCameraPreviewStream(stream);
       void refreshDevices();
     } catch (e) {
-      if (!isDisposed && requestId === cameraPreviewRequestId) {
+      if (!isDisposedRef.current && requestId === cameraPreviewRequestIdRef.current) {
         setCameraError(e instanceof Error ? e.message : "Could not access camera");
       }
     } finally {
-      if (!isDisposed && requestId === cameraPreviewRequestId) {
+      if (!isDisposedRef.current && requestId === cameraPreviewRequestIdRef.current) {
         setCameraPreviewStarting(false);
       }
     }
@@ -272,7 +282,9 @@ export default function VoiceSettings() {
         audio.srcObject = dest.stream;
         try {
           await (
-            audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }
+            audio as HTMLAudioElement & {
+              setSinkId?: (id: string) => Promise<void>;
+            }
           ).setSinkId?.(id);
         } catch (e) {
           setOutputError(
@@ -298,23 +310,25 @@ export default function VoiceSettings() {
     }
   };
 
-  onMount(() => {
+  useMountEffect(() => {
     if (!supported) return;
     void refreshDevices();
     void primeDeviceLabels();
     navigator.mediaDevices.addEventListener("devicechange", refreshDevices);
   });
 
-  createEffect(attachCameraPreview);
+  useAfterRenderEffect(attachCameraPreview);
 
-  createEffect(() => localStorage.setItem(VOICE_INPUT_STORAGE_KEY, inputId()));
-  createEffect(() => localStorage.setItem(VOICE_OUTPUT_STORAGE_KEY, outputId()));
-  createEffect(() => localStorage.setItem(VOICE_CAMERA_STORAGE_KEY, cameraId()));
-  createEffect(() =>
+  useAfterRenderEffect(() => localStorage.setItem(VOICE_INPUT_STORAGE_KEY, inputId()));
+  useAfterRenderEffect(() => localStorage.setItem(VOICE_OUTPUT_STORAGE_KEY, outputId()));
+  useAfterRenderEffect(() => localStorage.setItem(VOICE_CAMERA_STORAGE_KEY, cameraId()));
+  useAfterRenderEffect(() =>
     localStorage.setItem(VOICE_NOISE_SUPPRESSION_STORAGE_KEY, noiseSuppression() ? "on" : "off"),
   );
-  createEffect(() => localStorage.setItem(VOICE_INPUT_GAIN_STORAGE_KEY, String(inputGain())));
-  createEffect(() => {
+  useAfterRenderEffect(() =>
+    localStorage.setItem(VOICE_INPUT_GAIN_STORAGE_KEY, String(inputGain())),
+  );
+  useAfterRenderEffect(() => {
     const v = showSpeakingEverywhere();
     localStorage.setItem(VOICE_SHOW_SPEAKING_EVERYWHERE_KEY, v ? "on" : "off");
     setShowSpeakingEverywhereSignal(v);
@@ -323,21 +337,21 @@ export default function VoiceSettings() {
   // <select>'s `value` only applies if the matching <option> already exists. The
   // device list loads asynchronously, so we also reapply the value whenever the
   // options change.
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     inputDevices();
     if (inputSelectRef) inputSelectRef.value = inputId();
   });
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     outputDevices();
     if (outputSelectRef) outputSelectRef.value = outputId();
   });
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     cameraDevices();
     if (cameraSelectRef) cameraSelectRef.value = cameraId();
   });
 
-  onCleanup(() => {
-    isDisposed = true;
+  registerCleanup(() => {
+    isDisposedRef.current = true;
     stopMicTest();
     stopCameraPreview();
     if (supported) {
@@ -350,38 +364,38 @@ export default function VoiceSettings() {
   const cameraLabel = (d: MediaDeviceInfo, i: number) => d.label || `Camera ${i + 1}`;
 
   return (
-    <div class="relative flex flex-col gap-6">
-      <Show when={isLoading()}>
+    <div className="relative flex flex-col gap-6">
+      <If when={isLoading()}>
         <div
           role="status"
           aria-live="polite"
-          class="absolute inset-0 z-10 flex items-center justify-center rounded-md bg-gray-800/60 backdrop-blur-sm"
+          className="absolute inset-0 z-10 flex items-center justify-center rounded-md bg-gray-800/60 backdrop-blur-sm"
         >
-          <div class="flex items-center gap-3 text-sm text-gray-100">
+          <div className="flex items-center gap-3 text-sm text-gray-100">
             <span
               aria-hidden="true"
-              class="inline-block h-4 w-4 animate-spin rounded-full border-2 border-gray-500 border-t-blue-400"
+              className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-gray-500 border-t-blue-400"
             />
             <span>Loading media devices…</span>
           </div>
         </div>
-      </Show>
+      </If>
 
-      <Show when={!supported}>
-        <p class="text-red-400" role="alert">
+      <If when={!supported}>
+        <p className="text-red-400" role="alert">
           This platform does not expose media device APIs, so voice and video chat are unavailable
           here.
         </p>
-      </Show>
+      </If>
 
-      <div class="flex flex-col gap-2">
-        <label for="voice-input-select" class="font-medium text-gray-100">
+      <div className="flex flex-col gap-2">
+        <label htmlFor="voice-input-select" className="font-medium text-gray-100">
           Input device
         </label>
         <select
           id="voice-input-select"
           ref={setInputSelectRef}
-          class="bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+          className="bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
           value={inputId()}
           disabled={!supported}
           onChange={(e) => {
@@ -393,22 +407,22 @@ export default function VoiceSettings() {
           }}
         >
           <option value={DEFAULT_DEVICE_ID}>System default</option>
-          <For each={inputDevices()}>
+          <List each={inputDevices()}>
             {(d, i) => <option value={d.deviceId}>{inputLabel(d, i())}</option>}
-          </For>
+          </List>
         </select>
 
-        <div class="flex items-center gap-3 mt-1">
+        <div className="flex items-center gap-3 mt-1">
           <button
             type="button"
-            class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-md px-4 py-2 text-sm font-medium"
+            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-md px-4 py-2 text-sm font-medium"
             onClick={toggleMicTest}
             disabled={!supported}
           >
             {micTesting() ? "Stop test" : "Test microphone"}
           </button>
           <div
-            class="flex-1 h-2 bg-gray-700 rounded overflow-hidden"
+            className="flex-1 h-2 bg-gray-700 rounded overflow-hidden"
             role="meter"
             aria-label="Microphone input level"
             aria-valuemin={0}
@@ -416,31 +430,31 @@ export default function VoiceSettings() {
             aria-valuenow={Math.round(micLevel() * 100)}
           >
             <div
-              class="h-full bg-green-500 transition-[width] duration-75"
+              className="h-full bg-green-500 transition-[width] duration-75"
               style={{ width: `${Math.round(micLevel() * 100)}%` }}
             />
           </div>
         </div>
-        <Show when={micError()}>
+        <If when={micError()}>
           {(msg) => (
-            <p class="text-red-400 text-sm" role="alert">
+            <p className="text-red-400 text-sm" role="alert">
               {msg()}
             </p>
           )}
-        </Show>
-        <Show when={micTesting()}>
-          <p class="text-xs text-gray-400">Speak into your mic — the bar should move.</p>
-        </Show>
+        </If>
+        <If when={micTesting()}>
+          <p className="text-xs text-gray-400">Speak into your mic — the bar should move.</p>
+        </If>
       </div>
 
-      <div class="flex flex-col gap-2">
-        <label for="voice-camera-select" class="font-medium text-gray-100">
+      <div className="flex flex-col gap-2">
+        <label htmlFor="voice-camera-select" className="font-medium text-gray-100">
           Camera
         </label>
         <select
           id="voice-camera-select"
           ref={setCameraSelectRef}
-          class="bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+          className="bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
           value={cameraId()}
           disabled={!supported}
           onChange={(e) => {
@@ -450,130 +464,130 @@ export default function VoiceSettings() {
           }}
         >
           <option value={DEFAULT_DEVICE_ID}>System default</option>
-          <For each={cameraDevices()}>
+          <List each={cameraDevices()}>
             {(d, i) => <option value={d.deviceId}>{cameraLabel(d, i())}</option>}
-          </For>
+          </List>
         </select>
 
-        <div class="mt-1 flex items-center gap-3">
+        <div className="mt-1 flex items-center gap-3">
           <button
             type="button"
-            class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-md px-4 py-2 text-sm font-medium"
+            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-md px-4 py-2 text-sm font-medium"
             onClick={toggleCameraPreview}
             disabled={!supported}
             aria-busy={cameraPreviewStarting()}
           >
-            <Show
+            <If
               when={cameraPreviewStarting()}
               fallback={cameraPreviewStream() ? "Stop preview" : "Preview camera"}
             >
               Starting preview…
-            </Show>
+            </If>
           </button>
-          <Show when={cameraPreviewStream()}>
-            <p class="text-xs text-gray-400">Your camera preview stays local to this device.</p>
-          </Show>
+          <If when={cameraPreviewStream()}>
+            <p className="text-xs text-gray-400">Your camera preview stays local to this device.</p>
+          </If>
         </div>
-        <Show when={cameraPreviewStream()}>
+        <If when={cameraPreviewStream()}>
           <video
             ref={setCameraVideoRef}
             aria-label="Camera preview"
-            autoplay
+            autoPlay
             muted
-            playsinline
-            class="mt-2 aspect-video w-full max-w-sm rounded-md bg-black object-cover"
+            playsInline
+            className="mt-2 aspect-video w-full max-w-sm rounded-md bg-black object-cover"
           />
-        </Show>
-        <Show when={cameraError()}>
+        </If>
+        <If when={cameraError()}>
           {(msg) => (
-            <p class="text-red-400 text-sm" role="alert">
+            <p className="text-red-400 text-sm" role="alert">
               {msg()}
             </p>
           )}
-        </Show>
+        </If>
       </div>
 
-      <div class="flex flex-col gap-2">
-        <label for="voice-output-select" class="font-medium text-gray-100">
+      <div className="flex flex-col gap-2">
+        <label htmlFor="voice-output-select" className="font-medium text-gray-100">
           Output device
         </label>
         <select
           id="voice-output-select"
           ref={setOutputSelectRef}
-          class="bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+          className="bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
           value={outputId()}
           disabled={!supported || !canPickOutput}
           onChange={(e) => setOutputId(e.currentTarget.value)}
         >
           <option value={DEFAULT_DEVICE_ID}>System default</option>
-          <For each={outputDevices()}>
+          <List each={outputDevices()}>
             {(d, i) => <option value={d.deviceId}>{outputLabel(d, i())}</option>}
-          </For>
+          </List>
         </select>
-        <Show when={supported && !canPickOutput}>
-          <p class="text-xs text-gray-400">
+        <If when={supported && !canPickOutput}>
+          <p className="text-xs text-gray-400">
             This platform plays audio through the system default device; per-app output selection is
             not supported here.
           </p>
-        </Show>
+        </If>
 
-        <div class="mt-1">
+        <div className="mt-1">
           <button
             type="button"
-            class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-md px-4 py-2 text-sm font-medium"
+            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-md px-4 py-2 text-sm font-medium"
             onClick={() => void playTestSound()}
             disabled={!supported || playingTestSound()}
           >
             {playingTestSound() ? "Playing..." : "Play test sound"}
           </button>
         </div>
-        <Show when={outputError()}>
+        <If when={outputError()}>
           {(msg) => (
-            <p class="text-red-400 text-sm" role="alert">
+            <p className="text-red-400 text-sm" role="alert">
               {msg()}
             </p>
           )}
-        </Show>
+        </If>
       </div>
 
-      <div class="flex flex-col gap-3 border-t border-gray-700 pt-4">
-        <label class="flex items-start gap-3 cursor-pointer">
+      <div className="flex flex-col gap-3 border-t border-gray-700 pt-4">
+        <label className="flex items-start gap-3 cursor-pointer">
           <input
             type="checkbox"
-            class="mt-0.5"
+            className="mt-0.5"
             checked={noiseSuppression()}
             disabled={!supported}
             onChange={(e) => setNoiseSuppression(e.currentTarget.checked)}
           />
-          <span class="flex flex-col gap-0.5">
-            <span class="font-medium text-gray-100">Noise suppression</span>
-            <span class="text-xs text-gray-400">
+          <span className="flex flex-col gap-0.5">
+            <span className="font-medium text-gray-100">Noise suppression</span>
+            <span className="text-xs text-gray-400">
               Filters steady background noise (fans, typing). Uses the browser's built-in processor.
             </span>
           </span>
         </label>
 
-        <label class="flex items-start gap-3 cursor-pointer">
+        <label className="flex items-start gap-3 cursor-pointer">
           <input
             type="checkbox"
-            class="mt-0.5"
+            className="mt-0.5"
             checked={showSpeakingEverywhere()}
             onChange={(e) => setShowSpeakingEverywhere(e.currentTarget.checked)}
           />
-          <span class="flex flex-col gap-0.5">
-            <span class="font-medium text-gray-100">
-              Show speaking indicators for voice channels I'm not in
+          <span className="flex flex-col gap-0.5">
+            <span className="font-medium text-gray-100">
+              If speaking indicators for voice channels I'm not in
             </span>
-            <span class="text-xs text-gray-400">
+            <span className="text-xs text-gray-400">
               Highlights speakers in the sidebar even when you haven't joined the channel.
             </span>
           </span>
         </label>
 
-        <div class="flex flex-col gap-1">
-          <label for="voice-input-gain" class="flex items-center justify-between">
-            <span class="font-medium text-gray-100">Input volume</span>
-            <span class="text-xs text-gray-400" aria-hidden="true">
+        <div className="flex flex-col gap-1">
+          <label htmlFor="voice-input-gain" className="flex items-center justify-between">
+            <span className="font-medium text-gray-100">Input volume</span>
+            <span className="text-xs text-gray-400" aria-hidden="true">
               {Math.round(inputGain() * 100)}%
             </span>
           </label>
@@ -585,10 +599,12 @@ export default function VoiceSettings() {
             step="0.05"
             value={inputGain()}
             disabled={!supported}
-            class="w-full"
+            className="w-full"
             onInput={(e) => setInputGain(Number.parseFloat(e.currentTarget.value))}
           />
-          <p class="text-xs text-gray-400">Adjusts how loud your voice is to other participants.</p>
+          <p className="text-xs text-gray-400">
+            Adjusts how loud your voice is to other participants.
+          </p>
         </div>
       </div>
     </div>

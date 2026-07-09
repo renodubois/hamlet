@@ -1,22 +1,45 @@
-/* @refresh reload */
-import "solid-devtools";
 import "./index.css";
-import * as Sentry from "@sentry/solid";
+import * as Sentry from "@sentry/react";
 
-import { ErrorBoundary } from "solid-js";
-import { render } from "solid-js/web";
+import { StrictMode, type ReactNode } from "react";
+import { createRoot } from "react-dom/client";
+import { BrowserRouter, Route, Routes } from "react-router-dom";
 
 import App from "./App";
-import { Router } from "@solidjs/router";
-import { routes } from "./routes";
 import { AuthProvider } from "./contexts/auth";
+import NotFound from "./errors/404";
+import ChannelView from "./pages/channel";
+import LoginScreen from "./pages/login";
+import ThreadsPage from "./pages/threads";
 import { initializeRendererSentry } from "./sentry";
 
-const sentryEnabled = initializeRendererSentry();
-const AppErrorBoundary = sentryEnabled
-  ? Sentry.withSentryErrorBoundary(ErrorBoundary)
-  : ErrorBoundary;
+function ErrorFallback({ error, resetError }: { error: unknown; resetError?: () => void }) {
+  return (
+    <div className="p-8" role="alert">
+      <h2 className="text-lg font-semibold text-red-700">Something went wrong</h2>
+      <p className="mt-2 text-sm text-gray-700">
+        {error instanceof Error ? error.message : String(error)}
+      </p>
+      {resetError ? (
+        <button
+          type="button"
+          className="mt-4 rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700"
+          onClick={resetError}
+        >
+          Try again
+        </button>
+      ) : null}
+    </div>
+  );
+}
 
+class RendererErrorBoundary extends Sentry.ErrorBoundary {
+  override render(): ReactNode {
+    return super.render();
+  }
+}
+
+const sentryEnabled = initializeRendererSentry();
 const root = document.getElementById("root");
 
 if (!(root instanceof HTMLElement)) {
@@ -25,22 +48,37 @@ if (!(root instanceof HTMLElement)) {
   );
 }
 
-render(
-  () => (
-    <AppErrorBoundary
-      fallback={(err) => (
-        <div class="p-8" role="alert">
-          <h2 class="text-lg font-semibold text-red-700">Something went wrong</h2>
-          <p class="mt-2 text-sm text-gray-700">
-            {err instanceof Error ? err.message : String(err)}
-          </p>
-        </div>
+const app = (
+  <StrictMode>
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route element={<App />}>
+            <Route index element={null} />
+            <Route path="login" element={<LoginScreen />} />
+            <Route path="channel/:id" element={<ChannelView />} />
+            <Route path="threads" element={<ThreadsPage />} />
+            <Route path="*" element={<NotFound />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
+  </StrictMode>
+);
+
+createRoot(root).render(
+  sentryEnabled ? (
+    <RendererErrorBoundary
+      fallback={(fallbackProps) => (
+        <ErrorFallback
+          error={fallbackProps.error}
+          resetError={fallbackProps.resetError ? () => fallbackProps.resetError() : undefined}
+        />
       )}
     >
-      <AuthProvider>
-        <Router root={App}>{routes}</Router>
-      </AuthProvider>
-    </AppErrorBoundary>
+      {app}
+    </RendererErrorBoundary>
+  ) : (
+    app
   ),
-  root,
 );

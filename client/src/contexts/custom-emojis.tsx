@@ -1,14 +1,11 @@
+import { createContext, useContext, useEffect, type ReactNode } from "react";
 import {
-  createContext,
-  createMemo,
-  createResource,
-  createSignal,
-  onCleanup,
-  useContext,
-  type Accessor,
-  type JSX,
-  type Resource,
-} from "solid-js";
+  useCallableResource,
+  useComputedValue,
+  useSignalState,
+  type CallableResource,
+  type Getter,
+} from "../hooks/react-state";
 import {
   deleteCustomEmoji,
   listCustomEmojis,
@@ -21,10 +18,10 @@ import { useAuth } from "./auth";
 import { useOptionalEvents } from "./events";
 
 export interface CustomEmojisContextValue {
-  allEmojis: Resource<CustomEmoji[]>;
-  activeEmojis: Accessor<CustomEmoji[]>;
+  allEmojis: CallableResource<CustomEmoji[]>;
+  activeEmojis: Getter<CustomEmoji[]>;
   byId: (id: number) => CustomEmoji | null;
-  error: Accessor<Error | null>;
+  error: Getter<Error | null>;
   refresh: () => void;
   create: (name: string, file: Blob | File) => Promise<CustomEmoji>;
   rename: (id: number, name: string) => Promise<CustomEmoji>;
@@ -32,7 +29,7 @@ export interface CustomEmojisContextValue {
   restore: (id: number) => Promise<CustomEmoji>;
 }
 
-const CustomEmojisContext = createContext<CustomEmojisContextValue>();
+const CustomEmojisContext = createContext<CustomEmojisContextValue | undefined>(undefined);
 
 function upsertEmoji(list: CustomEmoji[] | undefined, emoji: CustomEmoji): CustomEmoji[] {
   const current = list ?? [];
@@ -43,11 +40,11 @@ function upsertEmoji(list: CustomEmoji[] | undefined, emoji: CustomEmoji): Custo
   return [emoji, ...current];
 }
 
-export function CustomEmojisProvider(props: { children: JSX.Element }) {
+export function CustomEmojisProvider(props: { children: ReactNode }) {
   const auth = useAuth();
   const events = useOptionalEvents();
-  const [error, setError] = createSignal<Error | null>(null);
-  const [allEmojis, { refetch, mutate }] = createResource(
+  const [error, setError] = useSignalState<Error | null>(null);
+  const [allEmojis, { refetch, mutate }] = useCallableResource(
     () => auth.user()?.id ?? null,
     async () => {
       setError(null);
@@ -60,10 +57,15 @@ export function CustomEmojisProvider(props: { children: JSX.Element }) {
     },
   );
 
-  const activeEmojis = createMemo(() => (allEmojis() ?? []).filter((e) => e.deleted_at === null));
-  const byIdMap = createMemo(() => new Map((allEmojis() ?? []).map((e) => [e.id, e])));
+  const activeEmojis = useComputedValue(() =>
+    (allEmojis() ?? []).filter((e) => e.deleted_at === null),
+  );
+  const byIdMap = useComputedValue(
+    () => new Map<number, CustomEmoji>((allEmojis() ?? []).map((e: CustomEmoji) => [e.id, e])),
+  );
 
-  if (events) {
+  useEffect(() => {
+    if (!events) return;
     const eventUnsubscribers = [
       events.onEmojiCreated((emoji) => {
         mutate((current) => upsertEmoji(current, emoji));
@@ -75,10 +77,10 @@ export function CustomEmojisProvider(props: { children: JSX.Element }) {
         mutate((current) => upsertEmoji(current, emoji));
       }),
     ];
-    onCleanup(() => {
+    return () => {
       eventUnsubscribers.forEach((unsubscribe) => unsubscribe());
-    });
-  }
+    };
+  }, [events, mutate]);
 
   const create = async (name: string, file: Blob | File) => {
     const emoji = await uploadCustomEmoji(name, file);

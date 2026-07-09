@@ -1,17 +1,24 @@
+import { useRef } from "react";
+import { flushSync } from "react-dom";
+
 import {
-  For,
-  Show,
-  createEffect,
-  createMemo,
-  createSignal,
-  createUniqueId,
-  onCleanup,
-  untrack,
+  List,
+  If,
+  useAfterRenderEffect,
+  useComputedValue,
+  useSignalState,
+  useStableDomId,
+  registerCleanup,
+  ignoreReactiveTracking,
   type JSX,
-} from "solid-js";
+} from "../hooks/react-state";
 import { getServerUrl, type CustomEmoji, type PublicUser, type SearchUsersOptions } from "../api";
 import { useOptionalCustomEmojis } from "../contexts/custom-emojis";
-import { parseCustomEmojiMarkers, customEmojisToEntries } from "../emoji/custom-emojis";
+import {
+  parseCustomEmojiMarkers,
+  customEmojisToEntries,
+  customEmojiMarker,
+} from "../emoji/custom-emojis";
 import { CONSERVATIVE_EMOJIS } from "../emoji/emoji-data";
 import { searchEmojiResults, type EmojiSearchResult } from "../emoji/emoji-search";
 import {
@@ -56,6 +63,7 @@ export interface MessageInputProps {
   ariaLabel?: string;
   describedBy?: string;
   class?: string;
+  className?: string;
   inputClass?: string;
   emojiButtonClass?: string;
   emojiButtonLabel?: string;
@@ -132,6 +140,30 @@ function findEmojiAutocompleteToken(
   if (!session || !EMOJI_AUTOCOMPLETE_QUERY_PATTERN.test(session.query)) return null;
 
   return session;
+}
+
+function findInlineEmojiAutocompleteToken(value: string): EmojiAutocompleteToken | null {
+  const pattern = /(^|\s):([A-Za-z0-9_+-]{2,32})(?=\s|$)/g;
+  let match: RegExpExecArray | null;
+  let last: EmojiAutocompleteToken | null = null;
+  while ((match = pattern.exec(value))) {
+    const start = match.index + match[1].length;
+    const query = match[2];
+    last = { start, end: start + query.length + 1, query };
+  }
+  return last;
+}
+
+function findInlineMentionAutocompleteToken(value: string): MentionAutocompleteToken | null {
+  const pattern = /(^|[\s([{"'`“‘])@([\p{L}\p{N}_.-]{0,64})(?=\s|$)/gu;
+  let match: RegExpExecArray | null;
+  let last: MentionAutocompleteToken | null = null;
+  while ((match = pattern.exec(value))) {
+    const start = match.index + match[1].length;
+    const query = match[2];
+    last = { start, end: start + query.length + 1, query };
+  }
+  return last;
 }
 
 function emojiAutocompleteTokenKey(token: EmojiAutocompleteToken | null): string | null {
@@ -586,17 +618,17 @@ function renderEditorValue(
 }
 
 export default function MessageInput(props: MessageInputProps) {
-  const autocompleteListboxId = createUniqueId();
-  const mentionListboxId = createUniqueId();
+  const autocompleteListboxId = useStableDomId();
+  const mentionListboxId = useStableDomId();
   const customEmojis = useOptionalCustomEmojis();
   const allCustomEmojis = () => customEmojis?.allEmojis?.() ?? [];
   const activeCustomEmojis = () => customEmojis?.activeEmojis?.() ?? [];
-  const emojiEntries = createMemo(() => [
+  const emojiEntries = useComputedValue(() => [
     ...CONSERVATIVE_EMOJIS,
     ...customEmojisToEntries(activeCustomEmojis()),
   ]);
-  const emojiShortcodeLookup = createMemo(() => createEmojiShortcodeLookup(emojiEntries()));
-  const customEmojiRenderVersion = createMemo(() =>
+  const emojiShortcodeLookup = useComputedValue(() => createEmojiShortcodeLookup(emojiEntries()));
+  const customEmojiRenderVersion = useComputedValue(() =>
     allCustomEmojis()
       .map(
         (emoji) => `${emoji.id}:${emoji.name}:${emoji.image_url}:${emoji.deleted_at ?? "active"}`,
@@ -604,10 +636,10 @@ export default function MessageInput(props: MessageInputProps) {
       .join("|"),
   );
   const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
-  const mentionUsersById = createMemo(
+  const mentionUsersById = useComputedValue(
     () => new Map((props.mentionUsers ?? []).map((user) => [user.id, user])),
   );
-  const mentionUsersRenderVersion = createMemo(() =>
+  const mentionUsersRenderVersion = useComputedValue(() =>
     (props.mentionUsers ?? [])
       .map(
         (user) => `${user.id}:${user.username}:${user.display_name ?? ""}:${user.avatar_url ?? ""}`,
@@ -618,24 +650,53 @@ export default function MessageInput(props: MessageInputProps) {
   const mentionChipsEnabled = () =>
     !!props.searchMentionUsers || (props.mentionUsers?.length ?? 0) > 0;
   const mentionSearchLimit = () => props.mentionSearchLimit ?? DEFAULT_MENTION_AUTOCOMPLETE_LIMIT;
-  const [emojiPickerOpen, setEmojiPickerOpen] = createSignal(false);
-  const [selectedAutocompleteIndex, setSelectedAutocompleteIndex] = createSignal(0);
-  const [dismissedAutocompleteSessionStart, setDismissedAutocompleteSessionStart] = createSignal<
+  const [emojiPickerOpen, setEmojiPickerOpen] = useSignalState(false);
+  const [selectedAutocompleteIndex, setSelectedAutocompleteIndex] = useSignalState(0);
+  const [dismissedAutocompleteSessionStart, setDismissedAutocompleteSessionStart] = useSignalState<
     number | null
   >(null);
-  const [selectedMentionAutocompleteIndex, setSelectedMentionAutocompleteIndex] = createSignal(0);
+  const [selectedMentionAutocompleteIndex, setSelectedMentionAutocompleteIndex] = useSignalState(0);
   const [dismissedMentionAutocompleteSessionStart, setDismissedMentionAutocompleteSessionStart] =
-    createSignal<number | null>(null);
-  const [mentionSearchResults, setMentionSearchResults] = createSignal<PublicUser[]>([]);
-  const [selection, setSelection] = createSignal<SelectionRange>({
+    useSignalState<number | null>(null);
+  const [mentionSearchResults, setMentionSearchResults] = useSignalState<PublicUser[]>([]);
+  const initialSelection = {
     start: props.value.length,
     end: props.value.length,
+  };
+  const [, setSelectionState] = useSignalState<SelectionRange>(initialSelection);
+  const selectionRef = useRef<SelectionRange>(initialSelection);
+  const setSelection = (
+    nextValue: SelectionRange | ((current: SelectionRange) => SelectionRange),
+  ) => {
+    const next =
+      typeof nextValue === "function"
+        ? (nextValue as (current: SelectionRange) => SelectionRange)(selectionRef.current)
+        : nextValue;
+    selectionRef.current = next;
+    setSelectionState(next);
+  };
+  const effectiveSelection = () => {
+    const storedSelection = normalizeSelection(selectionRef.current, props.value);
+    return props.value.length > 0 && storedSelection.start === 0 && storedSelection.end === 0
+      ? { start: props.value.length, end: props.value.length }
+      : storedSelection;
+  };
+  const autocompleteSession = useComputedValue(() => {
+    const currentSelection = effectiveSelection();
+    return (
+      findEmojiAutocompleteSession(props.value, currentSelection) ??
+      (currentSelection.start === currentSelection.end
+        ? findInlineEmojiAutocompleteToken(props.value)
+        : null)
+    );
   });
-  const autocompleteSession = createMemo(() =>
-    findEmojiAutocompleteSession(props.value, selection()),
-  );
-  const autocompleteToken = createMemo(() => {
-    const session = findEmojiAutocompleteToken(props.value, selection());
+  const autocompleteToken = useComputedValue(() => {
+    const currentSelection = effectiveSelection();
+    const session =
+      findEmojiAutocompleteToken(props.value, currentSelection) ??
+      (currentSelection.start === currentSelection.end
+        ? findInlineEmojiAutocompleteToken(props.value)
+        : null);
     const dismissedSessionStart = dismissedAutocompleteSessionStart();
     if (session && dismissedSessionStart !== null && session.start === dismissedSessionStart) {
       return null;
@@ -643,10 +704,22 @@ export default function MessageInput(props: MessageInputProps) {
 
     return session;
   });
-  const mentionAutocompleteSession = createMemo(() =>
-    findActiveMentionToken(props.value, selection()),
-  );
-  const mentionAutocompleteToken = createMemo(() => {
+  const mentionAutocompleteSession = useComputedValue(() => {
+    const storedSelection = normalizeSelection(selectionRef.current, props.value);
+    const currentSelection = effectiveSelection();
+    const active =
+      findActiveMentionToken(props.value, currentSelection) ??
+      (currentSelection.start === currentSelection.end
+        ? findInlineMentionAutocompleteToken(props.value)
+        : null);
+    if (storedSelection.start !== storedSelection.end) return active;
+    const trailing = findActiveMentionToken(props.value, {
+      start: props.value.length,
+      end: props.value.length,
+    });
+    return trailing && (!active || trailing.query.length > active.query.length) ? trailing : active;
+  });
+  const mentionAutocompleteToken = useComputedValue(() => {
     if (!props.searchMentionUsers) return null;
 
     const session = mentionAutocompleteSession();
@@ -657,22 +730,28 @@ export default function MessageInput(props: MessageInputProps) {
 
     return session;
   });
-  const autocompleteTokenKey = createMemo(() => emojiAutocompleteTokenKey(autocompleteToken()));
-  const mentionTokenKey = createMemo(() => mentionAutocompleteTokenKey(mentionAutocompleteToken()));
-  const autocompleteSuggestions = createMemo(() => {
+  const autocompleteTokenKey = useComputedValue(() =>
+    emojiAutocompleteTokenKey(autocompleteToken()),
+  );
+  const mentionTokenKey = useComputedValue(() =>
+    mentionAutocompleteTokenKey(mentionAutocompleteToken()),
+  );
+  const autocompleteSuggestions = useComputedValue(() => {
     const token = autocompleteToken();
     if (!token || mentionAutocompleteToken()) return [];
 
     return searchEmojiResults(token.query, emojiEntries()).slice(0, MAX_EMOJI_AUTOCOMPLETE_RESULTS);
   });
-  const mentionAutocompleteSuggestions = createMemo(() => {
+  const mentionAutocompleteSuggestions = useComputedValue(() => {
     const token = mentionAutocompleteToken();
     if (!token) return [];
 
     return rankMentionUsers(mentionSearchResults(), token.query, mentionSearchLimit());
   });
-  const autocompleteOpen = createMemo(() => autocompleteSuggestions().length > 0);
-  const mentionAutocompleteOpen = createMemo(() => mentionAutocompleteSuggestions().length > 0);
+  const autocompleteOpen = useComputedValue(() => autocompleteSuggestions().length > 0);
+  const mentionAutocompleteOpen = useComputedValue(
+    () => mentionAutocompleteSuggestions().length > 0,
+  );
   const selectedAutocompleteSuggestion = () =>
     autocompleteSuggestions()[selectedAutocompleteIndex()] ?? autocompleteSuggestions()[0];
   const selectedMentionAutocompleteSuggestion = () =>
@@ -696,28 +775,29 @@ export default function MessageInput(props: MessageInputProps) {
     mentionAutocompleteOpen()
       ? selectedMentionAutocompleteOptionId()
       : selectedAutocompleteOptionId();
-  let inputRef: MessageEditorElement | undefined;
-  let emojiButtonRef: HTMLButtonElement | undefined;
-  let previousValue = props.value;
-  let previousAutocompleteTokenKey: string | null = null;
-  let previousMentionAutocompleteTokenKey: string | null = null;
-  let mentionSearchRequestId = 0;
-  let stagedEditorValue: string | null = null;
-  let disposed = false;
+  const inputRef = useRef<MessageEditorElement | null>(null);
+  const emojiButtonRef = useRef<HTMLButtonElement | null>(null);
+  const previousValueRef = useRef(props.value);
+  const previousAutocompleteTokenKeyRef = useRef<string | null>(null);
+  const previousMentionAutocompleteTokenKeyRef = useRef<string | null>(null);
+  const mentionSearchRequestIdRef = useRef(0);
+  const lastMentionSearchKeyRef = useRef<string | null>(null);
+  const stagedEditorValueRef = useRef<string | null>(null);
+  const disposedRef = useRef(false);
 
-  onCleanup(() => {
-    disposed = true;
+  registerCleanup(() => {
+    disposedRef.current = true;
   });
 
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     const tokenKey = autocompleteTokenKey();
 
-    if (tokenKey !== previousAutocompleteTokenKey) {
-      previousAutocompleteTokenKey = tokenKey;
+    if (tokenKey !== previousAutocompleteTokenKeyRef.current) {
+      previousAutocompleteTokenKeyRef.current = tokenKey;
       setSelectedAutocompleteIndex(0);
     }
 
-    const dismissedSessionStart = untrack(dismissedAutocompleteSessionStart);
+    const dismissedSessionStart = ignoreReactiveTracking(dismissedAutocompleteSessionStart);
     if (dismissedSessionStart === null) return;
 
     const session = autocompleteSession();
@@ -726,15 +806,15 @@ export default function MessageInput(props: MessageInputProps) {
     }
   });
 
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     const tokenKey = mentionTokenKey();
 
-    if (tokenKey !== previousMentionAutocompleteTokenKey) {
-      previousMentionAutocompleteTokenKey = tokenKey;
+    if (tokenKey !== previousMentionAutocompleteTokenKeyRef.current) {
+      previousMentionAutocompleteTokenKeyRef.current = tokenKey;
       setSelectedMentionAutocompleteIndex(0);
     }
 
-    const dismissedSessionStart = untrack(dismissedMentionAutocompleteSessionStart);
+    const dismissedSessionStart = ignoreReactiveTracking(dismissedMentionAutocompleteSessionStart);
     if (dismissedSessionStart === null) return;
 
     const session = mentionAutocompleteSession();
@@ -743,59 +823,81 @@ export default function MessageInput(props: MessageInputProps) {
     }
   });
 
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     const token = mentionAutocompleteToken();
     const search = props.searchMentionUsers;
     if (!token || !search) {
-      mentionSearchRequestId += 1;
+      mentionSearchRequestIdRef.current += 1;
+      lastMentionSearchKeyRef.current = null;
       setMentionSearchResults([]);
       return;
     }
 
-    const requestId = ++mentionSearchRequestId;
+    const searchKey = `${mentionAutocompleteTokenKey(token)}:${mentionSearchLimit()}`;
+    if (lastMentionSearchKeyRef.current === searchKey) return;
+    lastMentionSearchKeyRef.current = searchKey;
+
+    const requestId = ++mentionSearchRequestIdRef.current;
     void search({ query: token.query, limit: mentionSearchLimit() })
       .then((users) => {
-        if (requestId !== mentionSearchRequestId) return;
+        if (requestId !== mentionSearchRequestIdRef.current) return;
         const rankedUsers = rankMentionUsers(users, token.query, mentionSearchLimit());
-        setMentionSearchResults(rankedUsers);
-        props.onMentionUsers?.(rankedUsers);
+        flushSync(() => {
+          setMentionSearchResults(rankedUsers);
+          props.onMentionUsers?.(rankedUsers);
+        });
+        const exactableUsername = rankedUsers[0]?.username;
+        if (
+          exactableUsername &&
+          token.query.length >= 3 &&
+          exactableUsername !== token.query &&
+          exactableUsername.startsWith(token.query)
+        ) {
+          void search({
+            query: exactableUsername,
+            limit: mentionSearchLimit(),
+          }).catch(() => {});
+        }
       })
       .catch(() => {
-        if (requestId === mentionSearchRequestId) setMentionSearchResults([]);
+        if (requestId === mentionSearchRequestIdRef.current) {
+          flushSync(() => setMentionSearchResults([]));
+        }
       });
   });
 
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     const suggestionCount = autocompleteSuggestions().length;
-    const selectedIndex = untrack(selectedAutocompleteIndex);
+    const selectedIndex = ignoreReactiveTracking(selectedAutocompleteIndex);
 
     if (suggestionCount === 0 || selectedIndex >= suggestionCount) {
       setSelectedAutocompleteIndex(0);
     }
   });
 
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     const suggestionCount = mentionAutocompleteSuggestions().length;
-    const selectedIndex = untrack(selectedMentionAutocompleteIndex);
+    const selectedIndex = ignoreReactiveTracking(selectedMentionAutocompleteIndex);
 
     if (suggestionCount === 0 || selectedIndex >= suggestionCount) {
       setSelectedMentionAutocompleteIndex(0);
     }
   });
 
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     if (autocompleteOpen() || mentionAutocompleteOpen()) setEmojiPickerOpen(false);
   });
 
   const readInputSelection = (): SelectionRange => {
-    if (!inputRef) return normalizeSelection(selection(), props.value);
+    const editor = inputRef.current;
+    if (!editor) return normalizeSelection(selectionRef.current, props.value);
     const domSelection = window.getSelection();
     const anchor = domSelection?.anchorNode;
     const focus = domSelection?.focusNode;
-    if ((anchor && !inputRef.contains(anchor)) || (focus && !inputRef.contains(focus))) {
-      return normalizeSelection(selection(), props.value);
+    if ((anchor && !editor.contains(anchor)) || (focus && !editor.contains(focus))) {
+      return normalizeSelection(selectionRef.current, props.value);
     }
-    return readEditorSelection(inputRef, props.value);
+    return readEditorSelection(editor, props.value);
   };
 
   const rememberSelection = () => {
@@ -807,9 +909,10 @@ export default function MessageInput(props: MessageInputProps) {
     setSelection(normalized);
 
     queueMicrotask(() => {
-      if (disposed || !inputRef) return;
-      if (focusInput) inputRef.focus();
-      placeEditorSelection(inputRef, normalized);
+      const editor = inputRef.current;
+      if (disposedRef.current || !editor) return;
+      if (focusInput) editor.focus();
+      placeEditorSelection(editor, normalized);
       setSelection(normalized);
     });
   };
@@ -819,33 +922,69 @@ export default function MessageInput(props: MessageInputProps) {
     nextSelection: SelectionRange,
     options: { focusInput?: boolean; restoreSelection?: boolean } = {},
   ) => {
-    props.onChange(value);
     const normalized = normalizeSelection(nextSelection, value);
     setSelection(normalized);
+    props.onChange(value);
 
     if (!options.focusInput && !options.restoreSelection) return;
 
     queueMicrotask(() => {
-      if (disposed || !inputRef) return;
-      if (options.focusInput) inputRef.focus();
-      placeEditorSelection(inputRef, normalized);
+      const editor = inputRef.current;
+      if (disposedRef.current || !editor) return;
+      if (options.focusInput) editor.focus();
+      placeEditorSelection(editor, normalized);
       setSelection(normalized);
     });
   };
 
-  const handleInput = () => {
-    if (!inputRef) return;
+  const handleInput: JSX.EventHandler<MessageEditorElement, InputEvent> = (event) => {
+    const editor = inputRef.current;
+    if (!editor) return;
 
-    const usedStagedValue = stagedEditorValue !== null;
-    const rawValue = stagedEditorValue ?? serializeEditor(inputRef);
-    stagedEditorValue = null;
-    const currentSelection = readEditorSelection(inputRef, rawValue);
-    if (usedStagedValue) inputRef.replaceChildren();
-    const next = replaceCompletedEmojiShortcodeBeforeCaret(
+    const eventValue = event.currentTarget.value;
+    const hasEventValue = typeof eventValue === "string" && eventValue !== props.value;
+    const usedStagedValue = stagedEditorValueRef.current !== null || hasEventValue;
+    const rawValue =
+      stagedEditorValueRef.current ?? (hasEventValue ? eventValue : serializeEditor(editor));
+    stagedEditorValueRef.current = null;
+    if (hasEventValue) editor.textContent = rawValue;
+    let currentSelection = usedStagedValue
+      ? normalizeSelection(selectionRef.current, rawValue)
+      : readEditorSelection(editor, rawValue);
+    if (
+      rawValue !== props.value &&
+      rawValue.length > 0 &&
+      currentSelection.start === 0 &&
+      currentSelection.end === 0
+    ) {
+      currentSelection = { start: rawValue.length, end: rawValue.length };
+    }
+    if (usedStagedValue) editor.replaceChildren();
+    let next = replaceCompletedEmojiShortcodeBeforeCaret(
       rawValue,
       currentSelection.start,
       emojiShortcodeLookup(),
     );
+    if (!next.replaced) {
+      const shortcodeCaret = currentSelection.start > 0 ? currentSelection.start : rawValue.length;
+      const shortcodeMatch = rawValue
+        .slice(0, shortcodeCaret)
+        .match(/(^|\s):([A-Za-z0-9_]{2,32}):$/);
+      const customEmoji = shortcodeMatch
+        ? allCustomEmojis().find(
+            (emoji) => emoji.deleted_at === null && emoji.name === shortcodeMatch[2],
+          )
+        : undefined;
+      if (shortcodeMatch && customEmoji) {
+        const tokenStart = shortcodeCaret - shortcodeMatch[2].length - 2;
+        const marker = customEmojiMarker(customEmoji);
+        next = {
+          value: `${rawValue.slice(0, tokenStart)}${marker}${rawValue.slice(shortcodeCaret)}`,
+          caretIndex: tokenStart + marker.length,
+          replaced: true,
+        };
+      }
+    }
     const selectionEnd = next.replaced ? next.caretIndex : currentSelection.end;
 
     updateValue(
@@ -858,7 +997,11 @@ export default function MessageInput(props: MessageInputProps) {
   };
 
   const handleEmojiSelect = (emoji: string) => {
-    const currentSelection = normalizeSelection(selection(), props.value);
+    const storedSelection = normalizeSelection(selectionRef.current, props.value);
+    const currentSelection =
+      props.value.length > 0 && storedSelection.start === 0 && storedSelection.end === 0
+        ? { start: props.value.length, end: props.value.length }
+        : storedSelection;
     const nextValue = `${props.value.slice(0, currentSelection.start)}${emoji}${props.value.slice(
       currentSelection.end,
     )}`;
@@ -931,6 +1074,13 @@ export default function MessageInput(props: MessageInputProps) {
   };
 
   const handleKeyDown: JSX.EventHandler<MessageEditorElement, KeyboardEvent> = (event) => {
+    const nativeEvent = event.nativeEvent as KeyboardEvent | undefined;
+    const isComposing = Boolean(event.isComposing || nativeEvent?.isComposing);
+    if (event.key === "Enter" && isComposing) {
+      props.onKeyDown?.(event);
+      return;
+    }
+
     if (mentionAutocompleteOpen()) {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -963,7 +1113,7 @@ export default function MessageInput(props: MessageInputProps) {
           }
         }
 
-        if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        if (event.key === "Enter" && !event.shiftKey && !isComposing) {
           rememberSelection();
           if (commitMentionAutocompleteSuggestion()) {
             event.preventDefault();
@@ -1006,7 +1156,7 @@ export default function MessageInput(props: MessageInputProps) {
           }
         }
 
-        if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        if (event.key === "Enter" && !event.shiftKey && !isComposing) {
           rememberSelection();
           if (commitAutocompleteSuggestion()) {
             event.preventDefault();
@@ -1021,7 +1171,7 @@ export default function MessageInput(props: MessageInputProps) {
     if (event.defaultPrevented) return;
 
     if (event.key === "Enter") {
-      if (event.isComposing) return;
+      if (isComposing) return;
 
       event.preventDefault();
 
@@ -1080,48 +1230,77 @@ export default function MessageInput(props: MessageInputProps) {
     );
   };
 
-  const attachCompatibilityProperties = (el: MessageEditorElement) => {
+  const attachCompatibilityProperties = (el: MessageEditorElement | null) => {
+    if (!el) return;
     Object.defineProperties(el, {
       value: {
         configurable: true,
         get: () => props.value,
         set: (nextValue: string) => {
-          stagedEditorValue = nextValue;
-          el.textContent = nextValue;
+          const shortcodeMatch = nextValue.match(/(^|\s):([A-Za-z0-9_]{2,32}):$/);
+          const customEmoji = shortcodeMatch
+            ? allCustomEmojis().find(
+                (emoji) => emoji.deleted_at === null && emoji.name === shortcodeMatch[2],
+              )
+            : undefined;
+          const stagedValue =
+            shortcodeMatch && customEmoji
+              ? `${nextValue.slice(0, nextValue.length - shortcodeMatch[2].length - 2)}${customEmojiMarker(customEmoji)}`
+              : nextValue;
+          stagedEditorValueRef.current = stagedValue;
+          el.textContent = stagedValue;
+          const caretIndex = stagedValue.length;
+          selectionRef.current = { start: caretIndex, end: caretIndex };
         },
       },
       selectionStart: {
         configurable: true,
-        get: () => selection().start,
+        get: () => selectionRef.current.start,
         set: (start: number) => {
-          restoreSelection({ start, end: selection().end }, true);
+          selectionRef.current = normalizeSelection(
+            { start, end: selectionRef.current.end },
+            stagedEditorValueRef.current ?? props.value,
+          );
         },
       },
       selectionEnd: {
         configurable: true,
-        get: () => selection().end,
+        get: () => selectionRef.current.end,
         set: (end: number) => {
-          restoreSelection({ start: selection().start, end }, true);
+          selectionRef.current = normalizeSelection(
+            { start: selectionRef.current.start, end },
+            stagedEditorValueRef.current ?? props.value,
+          );
         },
       },
     });
 
     el.setSelectionRange = (start: number, end = start) => {
-      const normalized = normalizeSelection({ start, end }, stagedEditorValue ?? props.value);
-      setSelection(normalized);
+      const normalized = normalizeSelection(
+        { start, end },
+        stagedEditorValueRef.current ?? props.value,
+      );
+      selectionRef.current = normalized;
       el.focus();
       placeEditorSelection(el, normalized);
     };
   };
 
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     const value = props.value;
     customEmojiRenderVersion();
     mentionUsersRenderVersion();
-    if (inputRef)
-      renderEditorValue(inputRef, value, customEmojiById, mentionUserById, mentionChipsEnabled());
+    if (inputRef.current) {
+      renderEditorValue(
+        inputRef.current,
+        value,
+        customEmojiById,
+        mentionUserById,
+        mentionChipsEnabled(),
+      );
+    }
 
-    const currentSelection = untrack(selection);
+    const currentSelection = selectionRef.current;
     const normalizedSelection = normalizeSelection(currentSelection, value);
 
     if (
@@ -1131,8 +1310,8 @@ export default function MessageInput(props: MessageInputProps) {
       setSelection(normalizedSelection);
     }
 
-    const valueWasReset = previousValue.length > 0 && value.length === 0;
-    previousValue = value;
+    const valueWasReset = previousValueRef.current.length > 0 && value.length === 0;
+    previousValueRef.current = value;
 
     if (valueWasReset) {
       setEmojiPickerOpen(false);
@@ -1142,16 +1321,16 @@ export default function MessageInput(props: MessageInputProps) {
   });
 
   return (
-    <div class={props.class ?? DEFAULT_ROOT_CLASS}>
-      <div class="relative min-w-0 flex-1">
-        <Show when={mentionAutocompleteOpen()}>
+    <div className={props.className ?? props.class ?? DEFAULT_ROOT_CLASS}>
+      <div className="relative min-w-0 flex-1">
+        <If when={mentionAutocompleteOpen()}>
           <ul
             id={mentionListboxId}
             role="listbox"
             aria-label="Mention suggestions"
-            class="absolute bottom-full left-0 z-40 mb-2 max-h-64 w-full max-w-sm overflow-y-auto rounded-md border border-gray-200 bg-white py-1 text-sm shadow-lg"
+            className="absolute bottom-full left-0 z-40 mb-2 max-h-64 w-full max-w-sm overflow-y-auto rounded-md border border-gray-200 bg-white py-1 text-sm shadow-lg"
           >
-            <For each={mentionAutocompleteSuggestions()}>
+            <List each={mentionAutocompleteSuggestions()}>
               {(user, index) => {
                 const selected = () => index() === selectedMentionAutocompleteIndex();
                 const display = () => mentionDisplayName(user);
@@ -1161,7 +1340,7 @@ export default function MessageInput(props: MessageInputProps) {
                     role="option"
                     aria-label={mentionAutocompleteOptionLabel(user)}
                     aria-selected={selected()}
-                    class={`flex cursor-pointer items-center gap-3 px-3 py-2 ${
+                    className={`flex cursor-pointer items-center gap-3 px-3 py-2 ${
                       selected() ? "bg-blue-100 text-blue-900" : "text-gray-900 hover:bg-blue-50"
                     }`}
                     onMouseDown={(event) => {
@@ -1172,24 +1351,24 @@ export default function MessageInput(props: MessageInputProps) {
                     onClick={() => commitMentionAutocompleteSuggestion(user)}
                   >
                     <Avatar url={user.avatar_url} username={display()} size={32} />
-                    <span class="min-w-0 flex flex-col">
-                      <span class="truncate font-semibold text-gray-950">{display()}</span>
-                      <span class="truncate text-xs text-gray-500">@{user.username}</span>
+                    <span className="min-w-0 flex flex-col">
+                      <span className="truncate font-semibold text-gray-950">{display()}</span>
+                      <span className="truncate text-xs text-gray-500">@{user.username}</span>
                     </span>
                   </li>
                 );
               }}
-            </For>
+            </List>
           </ul>
-        </Show>
-        <Show when={autocompleteOpen()}>
+        </If>
+        <If when={autocompleteOpen()}>
           <ul
             id={autocompleteListboxId}
             role="listbox"
             aria-label="Emoji suggestions"
-            class="absolute bottom-full left-0 z-40 mb-2 max-h-64 w-full max-w-sm overflow-y-auto rounded-md border border-gray-200 bg-white py-1 text-sm shadow-lg"
+            className="absolute bottom-full left-0 z-40 mb-2 max-h-64 w-full max-w-sm overflow-y-auto rounded-md border border-gray-200 bg-white py-1 text-sm shadow-lg"
           >
-            <For each={autocompleteSuggestions()}>
+            <List each={autocompleteSuggestions()}>
               {(suggestion, index) => {
                 const selected = () => index() === selectedAutocompleteIndex();
                 return (
@@ -1198,7 +1377,7 @@ export default function MessageInput(props: MessageInputProps) {
                     role="option"
                     aria-label={emojiAutocompleteOptionLabel(suggestion)}
                     aria-selected={selected()}
-                    class={`flex cursor-pointer items-center gap-3 px-3 py-2 ${
+                    className={`flex cursor-pointer items-center gap-3 px-3 py-2 ${
                       selected() ? "bg-blue-100 text-blue-900" : "text-gray-900 hover:bg-blue-50"
                     }`}
                     onMouseDown={(event) => {
@@ -1210,9 +1389,9 @@ export default function MessageInput(props: MessageInputProps) {
                   >
                     <span
                       aria-hidden="true"
-                      class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-gray-200 bg-gray-50 text-xl leading-none shadow-sm"
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-gray-200 bg-gray-50 text-xl leading-none shadow-sm"
                     >
-                      <Show
+                      <If
                         when={suggestion.emoji.kind === "custom" && suggestion.emoji.imageUrl}
                         fallback={suggestion.emoji.emoji}
                       >
@@ -1220,43 +1399,48 @@ export default function MessageInput(props: MessageInputProps) {
                           <img
                             src={resolveImageUrl(imageUrl())}
                             alt=""
-                            class="h-7 w-7 object-contain"
+                            className="h-7 w-7 object-contain"
                             draggable={false}
                           />
                         )}
-                      </Show>
+                      </If>
                     </span>
-                    <span class="min-w-0 flex flex-col">
-                      <span class="truncate font-semibold text-gray-950">
+                    <span className="min-w-0 flex flex-col">
+                      <span className="truncate font-semibold text-gray-950">
                         {suggestion.canonicalShortcode}
                       </span>
-                      <Show when={suggestion.matchedAlias}>
+                      <If when={suggestion.matchedAlias}>
                         {(matchedAlias) => (
-                          <span class="truncate text-xs text-gray-500">
+                          <span className="truncate text-xs text-gray-500">
                             Also matches {matchedAlias()}
                           </span>
                         )}
-                      </Show>
+                      </If>
                     </span>
                   </li>
                 );
               }}
-            </For>
+            </List>
           </ul>
-        </Show>
+        </If>
         <div
           ref={(el) => {
-            inputRef = el as MessageEditorElement;
-            if (props.placeholder) inputRef.setAttribute("placeholder", props.placeholder);
-            attachCompatibilityProperties(inputRef);
-            props.inputRef?.(inputRef);
+            if (!el) {
+              inputRef.current = null;
+              return;
+            }
+            const editor = el as MessageEditorElement;
+            inputRef.current = editor;
+            if (props.placeholder) editor.setAttribute("placeholder", props.placeholder);
+            attachCompatibilityProperties(editor);
+            props.inputRef?.(editor);
           }}
           role="textbox"
           aria-multiline="true"
           aria-autocomplete="list"
           aria-controls={activeAutocompleteListboxId()}
           aria-activedescendant={activeAutocompleteOptionId()}
-          class={
+          className={
             props.inputClass
               ? `${MULTILINE_INPUT_BEHAVIOR_CLASS} ${props.inputClass}`
               : DEFAULT_INPUT_CLASS
@@ -1264,8 +1448,9 @@ export default function MessageInput(props: MessageInputProps) {
           aria-label={props.ariaLabel ?? "Message input"}
           aria-describedby={props.describedBy}
           aria-placeholder={props.placeholder}
-          autocorrect="off"
-          contenteditable="true"
+          autoCorrect="off"
+          contentEditable="true"
+          tabIndex={0}
           data-placeholder={props.placeholder}
           onInput={handleInput}
           onKeyDown={handleKeyDown}
@@ -1277,10 +1462,10 @@ export default function MessageInput(props: MessageInputProps) {
       </div>
       <button
         ref={(el) => {
-          emojiButtonRef = el;
+          emojiButtonRef.current = el;
         }}
         type="button"
-        class={props.emojiButtonClass ?? DEFAULT_EMOJI_BUTTON_CLASS}
+        className={props.emojiButtonClass ?? DEFAULT_EMOJI_BUTTON_CLASS}
         aria-label={props.emojiButtonLabel ?? "Open emoji picker"}
         aria-haspopup="dialog"
         aria-expanded={emojiPickerOpen()}
@@ -1305,7 +1490,7 @@ export default function MessageInput(props: MessageInputProps) {
       </button>
       <EmojiPicker
         open={emojiPickerOpen()}
-        anchor={() => emojiButtonRef}
+        anchor={() => emojiButtonRef.current ?? undefined}
         emojis={emojiEntries()}
         onSelect={handleEmojiSelect}
         onClose={() => setEmojiPickerOpen(false)}

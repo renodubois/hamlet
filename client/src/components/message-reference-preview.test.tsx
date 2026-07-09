@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen } from "../test/testing-library";
 import type { CustomEmoji } from "../api";
 
 const customEmojiContext = vi.hoisted(() => ({

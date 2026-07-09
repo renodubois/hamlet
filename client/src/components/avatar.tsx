@@ -1,5 +1,5 @@
 import { toSvg } from "jdenticon";
-import { Show } from "solid-js";
+import { If } from "../hooks/react-state";
 import { getServerUrl } from "../api";
 
 function resolveUrl(url: string): string {
@@ -16,21 +16,20 @@ export default function Avatar(props: {
   const label = () => `${props.username}'s avatar`;
   return (
     <span
-      class="inline-block overflow-hidden rounded-full bg-gray-700 flex-shrink-0"
-      classList={{
-        "ring-2 ring-green-500": !!props.isSpeaking,
-      }}
+      className={`inline-block overflow-hidden rounded-full bg-gray-700 flex-shrink-0 ${
+        props.isSpeaking ? "ring-2 ring-green-500" : ""
+      }`}
       style={{ width: `${props.size}px`, height: `${props.size}px` }}
       aria-label={label()}
       role="img"
     >
-      <Show
+      <If
         when={props.url}
         fallback={
           <span
             aria-hidden="true"
             style={{ width: `${props.size}px`, height: `${props.size}px` }}
-            innerHTML={toSvg(props.username, props.size)}
+            dangerouslySetInnerHTML={{ __html: toSvg(props.username, props.size) }}
           />
         }
       >
@@ -40,10 +39,10 @@ export default function Avatar(props: {
             alt=""
             width={props.size}
             height={props.size}
-            class="block w-full h-full object-cover"
+            className="block w-full h-full object-cover"
           />
         )}
-      </Show>
+      </If>
     </span>
   );
 }

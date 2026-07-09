@@ -1,4 +1,13 @@
-import { createContext, createMemo, createSignal, onCleanup, type JSX, useContext } from "solid-js";
+import { useRef } from "react";
+
+import {
+  createContext,
+  useComputedValue,
+  useSignalState,
+  registerCleanup,
+  type JSX,
+  useContext,
+} from "../hooks/react-state";
 import {
   type LocalTrackPublication,
   type LocalVideoTrack,
@@ -151,92 +160,96 @@ function stopCameraPublicationTrack(publication: LocalTrackPublication | undefin
   }
 }
 
-const VoiceChatContext = createContext<VoiceChatContextValue>();
+const VoiceChatContext = createContext<VoiceChatContextValue | undefined>(undefined);
 
 export function VoiceChatProvider(props: { children: JSX.Element }) {
-  const [activeChannelId, setActiveChannelId] = createSignal<number | null>(null);
-  const [isConnecting, setIsConnecting] = createSignal(false);
-  const [isMuted, setIsMuted] = createSignal(false);
-  const [isDeafened, setIsDeafened] = createSignal(false);
-  const [isScreenSharing, setIsScreenSharing] = createSignal(false);
-  const [isScreenShareStarting, setIsScreenShareStarting] = createSignal(false);
-  const [isCameraEnabled, setIsCameraEnabled] = createSignal(false);
-  const [isCameraBusy, setIsCameraBusy] = createSignal(false);
-  const [localCameraTrack, setLocalCameraTrack] = createSignal<LocalVideoTrack | null>(null);
-  const [remoteCameraStreams, setRemoteCameraStreams] = createSignal<CameraStream[]>([]);
-  const [remoteCameraTracks, setRemoteCameraTracks] = createSignal<
+  const [activeChannelId, setActiveChannelId] = useSignalState<number | null>(null);
+  const [isConnecting, setIsConnecting] = useSignalState(false);
+  const [isMuted, setIsMuted] = useSignalState(false);
+  const [isDeafened, setIsDeafened] = useSignalState(false);
+  const [isScreenSharing, setIsScreenSharing] = useSignalState(false);
+  const [isScreenShareStarting, setIsScreenShareStarting] = useSignalState(false);
+  const [isCameraEnabled, setIsCameraEnabled] = useSignalState(false);
+  const [isCameraBusy, setIsCameraBusy] = useSignalState(false);
+  const [localCameraTrack, setLocalCameraTrack] = useSignalState<LocalVideoTrack | null>(null);
+  const [remoteCameraStreams, setRemoteCameraStreams] = useSignalState<CameraStream[]>([]);
+  const [remoteCameraTracks, setRemoteCameraTracks] = useSignalState<
     ReadonlyMap<string, RemoteVideoTrack>
   >(new Map());
-  const remoteCameraTiles = createMemo<readonly RemoteCameraTile[]>(() => {
+  const remoteCameraTiles = useComputedValue<readonly RemoteCameraTile[]>(() => {
     const tracks = remoteCameraTracks();
     return remoteCameraStreams().map((stream) => ({
       stream,
       track: tracks.get(cameraKey(stream)) ?? null,
     }));
   });
-  const [watchingScreenShare, setWatchingScreenShare] = createSignal<ScreenShareStream | null>(
+  const [watchingScreenShare, setWatchingScreenShare] = useSignalState<ScreenShareStream | null>(
     null,
   );
   const [watchingScreenShareTrack, setWatchingScreenShareTrack] =
-    createSignal<RemoteVideoTrack | null>(null);
-  const [lastError, setLastError] = createSignal<string | null>(null);
-  const [speakingUserIds, setSpeakingUserIds] = createSignal<ReadonlySet<number>>(new Set());
+    useSignalState<RemoteVideoTrack | null>(null);
+  const [lastError, setLastError] = useSignalState<string | null>(null);
+  const [speakingUserIds, setSpeakingUserIds] = useSignalState<ReadonlySet<number>>(new Set());
 
-  const audio = createAudioRouter();
-  let room: Room | null = null;
-  let screenSharePublication: LocalTrackPublication | undefined;
-  let cleanupScreenShareTrackEnded: (() => void) | undefined;
-  let cameraPublication: LocalTrackPublication | undefined;
-  let cleanupCameraTrackEnded: (() => void) | undefined;
+  const audioRef = useRef<ReturnType<typeof createAudioRouter> | null>(null);
+  if (!audioRef.current) audioRef.current = createAudioRouter();
+  const roomRef = useRef<Room | null>(null);
+  const screenSharePublicationRef = useRef<LocalTrackPublication | undefined>(undefined);
+  const cleanupScreenShareTrackEndedRef = useRef<(() => void) | undefined>(undefined);
+  const cameraPublicationRef = useRef<LocalTrackPublication | undefined>(undefined);
+  const cleanupCameraTrackEndedRef = useRef<(() => void) | undefined>(undefined);
   // Last speaking state we POSTed for the local participant, so we only emit
   // on transitions rather than on every IsSpeakingChanged callback.
-  let lastLocalSpeaking = false;
+  const lastLocalSpeakingRef = useRef(false);
   // user_id → speaking (true). Absent keys are not speaking. Rebuilt into the
   // reactive speakingUserIds signal on every transition.
-  const speakingById = new Map<number, boolean>();
+  const speakingByIdRef = useRef(new Map<number, boolean>());
   // The control mutations touch LiveKit and the server, so serialize them and
-  // keep the latest requested state outside Solid signals. That prevents rapid
+  // keep the latest requested state outside React render state. That prevents rapid
   // mute/deafen clicks from posting stale status bits out of order.
-  let desiredMuted = false;
-  let desiredDeafened = false;
-  let mutedBeforeDeafen: boolean | null = null;
-  let controlUpdate: Promise<void> = Promise.resolve();
+  const desiredMutedRef = useRef(false);
+  const desiredDeafenedRef = useRef(false);
+  const mutedBeforeDeafenRef = useRef<boolean | null>(null);
+  const controlUpdateRef = useRef<Promise<void>>(Promise.resolve());
+  const audio = audioRef.current;
 
   function enqueueControlUpdate(update: () => Promise<void>): Promise<void> {
-    const run = controlUpdate.catch(() => {}).then(update);
-    controlUpdate = run.catch(() => {});
+    const run = controlUpdateRef.current.catch(() => {}).then(update);
+    controlUpdateRef.current = run.catch(() => {});
     return run;
   }
 
   function clearScreenShareState(): void {
-    cleanupScreenShareTrackEnded?.();
-    cleanupScreenShareTrackEnded = undefined;
-    screenSharePublication = undefined;
+    cleanupScreenShareTrackEndedRef.current?.();
+    cleanupScreenShareTrackEndedRef.current = undefined;
+    screenSharePublicationRef.current = undefined;
     setIsScreenSharing(false);
     setIsScreenShareStarting(false);
   }
 
   function bindScreenSharePublication(publication: LocalTrackPublication, currentRoom: Room): void {
-    cleanupScreenShareTrackEnded?.();
-    cleanupScreenShareTrackEnded = undefined;
-    screenSharePublication = publication;
+    cleanupScreenShareTrackEndedRef.current?.();
+    cleanupScreenShareTrackEndedRef.current = undefined;
+    screenSharePublicationRef.current = publication;
 
     const mediaTrack = publication.track?.mediaStreamTrack;
     if (!mediaTrack) return;
 
     const handleEnded = () => {
-      if (room !== currentRoom || screenSharePublication !== publication) return;
+      if (roomRef.current !== currentRoom || screenSharePublicationRef.current !== publication)
+        return;
       clearScreenShareState();
       void currentRoom.localParticipant.setScreenShareEnabled(false).catch(() => {});
     };
     mediaTrack.addEventListener("ended", handleEnded, { once: true });
-    cleanupScreenShareTrackEnded = () => mediaTrack.removeEventListener("ended", handleEnded);
+    cleanupScreenShareTrackEndedRef.current = () =>
+      mediaTrack.removeEventListener("ended", handleEnded);
   }
 
   function clearCameraState(): void {
-    cleanupCameraTrackEnded?.();
-    cleanupCameraTrackEnded = undefined;
-    cameraPublication = undefined;
+    cleanupCameraTrackEndedRef.current?.();
+    cleanupCameraTrackEndedRef.current = undefined;
+    cameraPublicationRef.current = undefined;
     setLocalCameraTrack(null);
     setIsCameraEnabled(false);
     setIsCameraBusy(false);
@@ -246,9 +259,9 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     const track = localVideoTrackFromPublication(publication);
     if (!track) return;
 
-    cleanupCameraTrackEnded?.();
-    cleanupCameraTrackEnded = undefined;
-    cameraPublication = publication;
+    cleanupCameraTrackEndedRef.current?.();
+    cleanupCameraTrackEndedRef.current = undefined;
+    cameraPublicationRef.current = publication;
     setLocalCameraTrack(track);
     setIsCameraEnabled(true);
 
@@ -256,11 +269,11 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     if (!mediaTrack) return;
 
     const handleEnded = () => {
-      if (room !== currentRoom || cameraPublication !== publication) return;
+      if (roomRef.current !== currentRoom || cameraPublicationRef.current !== publication) return;
       void stopLocalCamera(false).catch(() => {});
     };
     mediaTrack.addEventListener("ended", handleEnded, { once: true });
-    cleanupCameraTrackEnded = () => mediaTrack.removeEventListener("ended", handleEnded);
+    cleanupCameraTrackEndedRef.current = () => mediaTrack.removeEventListener("ended", handleEnded);
   }
 
   async function unpublishCameraPublication(
@@ -279,7 +292,7 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     setWatchingScreenShareTrack(null);
   }
 
-  function stopWatchingScreenShareInRoom(currentRoom = room): void {
+  function stopWatchingScreenShareInRoom(currentRoom = roomRef.current): void {
     clearWatchedScreenShareState();
     updateAllRemotePublicationSubscriptions(currentRoom);
   }
@@ -360,7 +373,7 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
   }
 
   function syncRemoteCameraStreams(channelId: number, streams: readonly CameraStream[]): void {
-    const currentRoom = room;
+    const currentRoom = roomRef.current;
     if (!currentRoom || activeChannelId() !== channelId) return;
     const normalized = normalizeRemoteCameraStreams(channelId, streams, currentRoom);
     setRemoteCameraStreams(normalized);
@@ -457,7 +470,7 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     }
   }
 
-  function updateAllRemotePublicationSubscriptions(currentRoom = room): void {
+  function updateAllRemotePublicationSubscriptions(currentRoom = roomRef.current): void {
     currentRoom?.remoteParticipants.forEach((participant) => {
       participant.trackPublications.forEach((publication) => {
         updateRemotePublicationSubscription(publication, participant);
@@ -468,7 +481,10 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
   function findScreenSharePublication(
     currentRoom: Room,
     stream: ScreenShareStream,
-  ): { participant: RemoteParticipant; publication: RemoteTrackPublication } | null {
+  ): {
+    participant: RemoteParticipant;
+    publication: RemoteTrackPublication;
+  } | null {
     const participant = currentRoom.remoteParticipants.get(stream.participant_identity);
     const publication = participant?.trackPublications.get(stream.track_sid);
     if (!participant || !publication || !isRemoteScreenShareVideoPublication(publication)) {
@@ -478,14 +494,14 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
   }
 
   async function stopLocalScreenShare(reportErrors: boolean): Promise<void> {
-    const currentRoom = room;
+    const currentRoom = roomRef.current;
     const existingPublication = currentRoom?.localParticipant.getTrackPublication(
       Track.Source.ScreenShare,
     );
     const shouldStop =
       isScreenSharing() ||
       isScreenShareStarting() ||
-      screenSharePublication != null ||
+      screenSharePublicationRef.current != null ||
       existingPublication != null;
 
     clearScreenShareState();
@@ -503,7 +519,7 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
   }
 
   async function startScreenShare(): Promise<void> {
-    const currentRoom = room;
+    const currentRoom = roomRef.current;
     if (!currentRoom || activeChannelId() == null) {
       const message = "Join a voice channel before sharing your screen.";
       setLastError(message);
@@ -514,7 +530,7 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     const existingPublication = currentRoom.localParticipant.getTrackPublication(
       Track.Source.ScreenShare,
     );
-    if (isScreenSharing() || screenSharePublication || existingPublication) {
+    if (isScreenSharing() || screenSharePublicationRef.current || existingPublication) {
       if (existingPublication && isScreenSharePublication(existingPublication)) {
         bindScreenSharePublication(existingPublication, currentRoom);
         setIsScreenSharing(true);
@@ -536,7 +552,7 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
       if (!sharePublication || !isScreenSharePublication(sharePublication)) {
         throw new Error("Screen share track was not published");
       }
-      if (room !== currentRoom || activeChannelId() == null) {
+      if (roomRef.current !== currentRoom || activeChannelId() == null) {
         await currentRoom.localParticipant.setScreenShareEnabled(false).catch(() => {});
         clearScreenShareState();
         return;
@@ -546,7 +562,7 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     } catch (e) {
       clearScreenShareState();
       await currentRoom.localParticipant.setScreenShareEnabled(false).catch(() => {});
-      if (room !== currentRoom || activeChannelId() == null) return;
+      if (roomRef.current !== currentRoom || activeChannelId() == null) return;
       const message = formatScreenShareStartError(e);
       setLastError(message);
       throw new Error(message);
@@ -561,16 +577,16 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
   }
 
   async function stopLocalCamera(reportErrors: boolean): Promise<void> {
-    const currentRoom = room;
+    const currentRoom = roomRef.current;
     const existingPublication = currentRoom?.localParticipant.getTrackPublication(
       Track.Source.Camera,
     );
-    const publication = cameraPublication ?? existingPublication;
+    const publication = cameraPublicationRef.current ?? existingPublication;
     const shouldStop =
       isCameraEnabled() ||
       isCameraBusy() ||
       localCameraTrack() != null ||
-      cameraPublication != null ||
+      cameraPublicationRef.current != null ||
       existingPublication != null;
 
     if (!currentRoom || !shouldStop) {
@@ -588,7 +604,7 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
         throw new Error(message);
       }
     } finally {
-      if (!cameraPublication || cameraPublication === publication) {
+      if (!cameraPublicationRef.current || cameraPublicationRef.current === publication) {
         clearCameraState();
       } else {
         setIsCameraBusy(false);
@@ -598,7 +614,7 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
   }
 
   async function startCamera(): Promise<void> {
-    const currentRoom = room;
+    const currentRoom = roomRef.current;
     if (!currentRoom || activeChannelId() == null) {
       const message = "Join a voice channel before turning on your camera.";
       setLastError(message);
@@ -609,7 +625,7 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     const existingPublication = currentRoom.localParticipant.getTrackPublication(
       Track.Source.Camera,
     );
-    if (isCameraEnabled() || cameraPublication || existingPublication) {
+    if (isCameraEnabled() || cameraPublicationRef.current || existingPublication) {
       if (existingPublication && isCameraPublication(existingPublication)) {
         bindCameraPublication(existingPublication, currentRoom);
       }
@@ -633,11 +649,15 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
       if (!localVideoTrackFromPublication(cameraTrackPublication)) {
         throw new Error("Camera track was not published");
       }
-      if (room !== currentRoom || activeChannelId() == null) {
+      if (roomRef.current !== currentRoom || activeChannelId() == null) {
         await unpublishCameraPublication(currentRoom, cameraTrackPublication).catch(() => {
           stopCameraPublicationTrack(cameraTrackPublication);
         });
-        if (!cameraPublication || cameraPublication === cameraTrackPublication) clearCameraState();
+        if (
+          !cameraPublicationRef.current ||
+          cameraPublicationRef.current === cameraTrackPublication
+        )
+          clearCameraState();
         return;
       }
       bindCameraPublication(cameraTrackPublication, currentRoom);
@@ -648,8 +668,9 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
           stopCameraPublicationTrack(published);
         });
       }
-      if (!published || !cameraPublication || cameraPublication === published) clearCameraState();
-      if (room !== currentRoom || activeChannelId() == null) return;
+      if (!published || !cameraPublicationRef.current || cameraPublicationRef.current === published)
+        clearCameraState();
+      if (roomRef.current !== currentRoom || activeChannelId() == null) return;
       const message = formatCameraStartError(e);
       setLastError(message);
       throw new Error(message);
@@ -664,7 +685,7 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
   }
 
   async function watchScreenShare(stream: ScreenShareStream): Promise<void> {
-    const currentRoom = room;
+    const currentRoom = roomRef.current;
     if (!currentRoom || activeChannelId() !== stream.channel_id) {
       const message = "Join the sharer's voice channel before watching their screen.";
       setLastError(message);
@@ -696,15 +717,15 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
 
   async function leave(): Promise<void> {
     // Capture channel id before we reset it so the final "stopped speaking"
-    // broadcast lands in the correct room.
+    // broadcast lands in the correct roomRef.current.
     const leavingChannelId = activeChannelId();
-    if (room) {
-      const r = room;
+    if (roomRef.current) {
+      const r = roomRef.current;
       await stopLocalCamera(false).catch(() => {});
       await stopLocalScreenShare(false).catch(() => {});
       clearRemoteCameraState();
       stopWatchingScreenShareInRoom(r);
-      room = null;
+      roomRef.current = null;
       await r.disconnect().catch(() => {});
     }
     clearCameraState();
@@ -713,12 +734,12 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     clearRemoteCameraState();
     audio.detachAll();
     setActiveChannelId(null);
-    speakingById.clear();
+    speakingByIdRef.current.clear();
     setSpeakingUserIds(new Set<number>());
-    if (lastLocalSpeaking && leavingChannelId != null) {
+    if (lastLocalSpeakingRef.current && leavingChannelId != null) {
       void postVoiceSpeaking(leavingChannelId, false);
     }
-    lastLocalSpeaking = false;
+    lastLocalSpeakingRef.current = false;
   }
 
   async function join(channelId: number): Promise<void> {
@@ -726,14 +747,14 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     setIsConnecting(true);
     try {
       // Auto-leave any current session before switching.
-      if (room) await leave();
+      if (roomRef.current) await leave();
 
       // Publish current controls before connecting so LiveKit's join webhook
       // can include pre-call mute/deafen status in the SSE join payload.
-      const effectiveMuted = desiredMuted || desiredDeafened;
-      if (effectiveMuted !== desiredMuted) desiredMuted = effectiveMuted;
+      const effectiveMuted = desiredMutedRef.current || desiredDeafenedRef.current;
+      if (effectiveMuted !== desiredMutedRef.current) desiredMutedRef.current = effectiveMuted;
       if (effectiveMuted !== isMuted()) setIsMuted(effectiveMuted);
-      await postVoiceStatus(effectiveMuted, desiredDeafened);
+      await postVoiceStatus(effectiveMuted, desiredDeafenedRef.current);
 
       const { url, token } = await getVoiceToken(channelId);
 
@@ -806,13 +827,13 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
       newRoom.on(RoomEvent.LocalTrackUnpublished, (publication) => {
         if (
           isScreenSharePublication(publication) &&
-          (!screenSharePublication || publication === screenSharePublication)
+          (!screenSharePublicationRef.current || publication === screenSharePublicationRef.current)
         ) {
           clearScreenShareState();
         }
         if (
           isCameraPublication(publication) &&
-          (!cameraPublication || publication === cameraPublication)
+          (!cameraPublicationRef.current || publication === cameraPublicationRef.current)
         ) {
           clearCameraState();
         }
@@ -821,18 +842,19 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
       newRoom.on(RoomEvent.Disconnected, () => {
         // LiveKit disconnected us (server-side kick, network failure, etc.).
         stopCameraPublicationTrack(
-          cameraPublication ?? newRoom.localParticipant.getTrackPublication(Track.Source.Camera),
+          cameraPublicationRef.current ??
+            newRoom.localParticipant.getTrackPublication(Track.Source.Camera),
         );
-        room = null;
+        roomRef.current = null;
         clearCameraState();
         clearScreenShareState();
         clearWatchedScreenShareState();
         clearRemoteCameraState();
         audio.detachAll();
         setActiveChannelId(null);
-        speakingById.clear();
+        speakingByIdRef.current.clear();
         setSpeakingUserIds(new Set<number>());
-        lastLocalSpeaking = false;
+        lastLocalSpeakingRef.current = false;
       });
 
       // Per-participant speaking detection is meaningfully snappier than
@@ -843,13 +865,13 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
         const id = Number(p.identity);
         if (!Number.isFinite(id)) return;
         p.on(ParticipantEvent.IsSpeakingChanged, (speaking: boolean) => {
-          const prev = speakingById.get(id) ?? false;
+          const prev = speakingByIdRef.current.get(id) ?? false;
           if (speaking === prev) return;
-          if (speaking) speakingById.set(id, true);
-          else speakingById.delete(id);
-          setSpeakingUserIds(new Set(speakingById.keys()));
-          if (isLocal && speaking !== lastLocalSpeaking) {
-            lastLocalSpeaking = speaking;
+          if (speaking) speakingByIdRef.current.set(id, true);
+          else speakingByIdRef.current.delete(id);
+          setSpeakingUserIds(new Set(speakingByIdRef.current.keys()));
+          if (isLocal && speaking !== lastLocalSpeakingRef.current) {
+            lastLocalSpeakingRef.current = speaking;
             // `channelId` is captured directly — activeChannelId() isn't set
             // until after connect() resolves, but this listener can fire as
             // soon as the mic track publishes.
@@ -858,7 +880,7 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
         });
       };
 
-      // Register room-level participant churn handlers up front so we don't
+      // Register roomRef.current-level participant churn handlers up front so we don't
       // miss joins/leaves that fire during or right after connect().
       newRoom.on(RoomEvent.ParticipantConnected, (p) => {
         wireSpeakingListener(p, false);
@@ -897,19 +919,19 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
         }
         const id = Number(p.identity);
         if (!Number.isFinite(id)) return;
-        if (speakingById.delete(id)) {
-          setSpeakingUserIds(new Set(speakingById.keys()));
+        if (speakingByIdRef.current.delete(id)) {
+          setSpeakingUserIds(new Set(speakingByIdRef.current.keys()));
         }
       });
 
-      audio.setDeafened(desiredDeafened);
+      audio.setDeafened(desiredDeafenedRef.current);
       await newRoom.connect(url, token, { autoSubscribe: false });
       updateAllRemotePublicationSubscriptions(newRoom);
       await newRoom.localParticipant.setMicrophoneEnabled(!effectiveMuted);
 
       // Identity on the local participant is only populated after connect
       // resolves, so we wire these listeners here. Remote participants that
-      // were already in the room at join-time also need manual wiring —
+      // were already in the roomRef.current at join-time also need manual wiring —
       // ParticipantConnected only fires for subsequent joiners.
       wireSpeakingListener(newRoom.localParticipant, true);
       newRoom.remoteParticipants.forEach((p) => wireSpeakingListener(p, false));
@@ -919,7 +941,7 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
       // the default capture path is already publishing.
       await applyInputGain(newRoom, getInputGain()).catch(() => {});
 
-      room = newRoom;
+      roomRef.current = newRoom;
       setActiveChannelId(channelId);
     } catch (e) {
       setLastError(e instanceof Error ? e.message : "Could not join voice channel");
@@ -931,16 +953,16 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
 
   async function toggleMuted(): Promise<void> {
     return enqueueControlUpdate(async () => {
-      const currentRoom = room;
-      const previousMuted = desiredMuted;
-      const previousDeafened = desiredDeafened;
-      const previousMutedBeforeDeafen = mutedBeforeDeafen;
+      const currentRoom = roomRef.current;
+      const previousMuted = desiredMutedRef.current;
+      const previousDeafened = desiredDeafenedRef.current;
+      const previousMutedBeforeDeafen = mutedBeforeDeafenRef.current;
       const nextMuted = !previousMuted;
       const nextDeafened = previousDeafened && nextMuted;
 
-      desiredMuted = nextMuted;
-      desiredDeafened = nextDeafened;
-      if (!nextDeafened && previousDeafened) mutedBeforeDeafen = null;
+      desiredMutedRef.current = nextMuted;
+      desiredDeafenedRef.current = nextDeafened;
+      if (!nextDeafened && previousDeafened) mutedBeforeDeafenRef.current = null;
 
       const undeafenBeforeEnablingMic = previousDeafened && !nextDeafened && !nextMuted;
       if (undeafenBeforeEnablingMic) {
@@ -953,9 +975,9 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
           await currentRoom.localParticipant.setMicrophoneEnabled(!nextMuted);
         }
       } catch (e) {
-        desiredMuted = previousMuted;
-        desiredDeafened = previousDeafened;
-        mutedBeforeDeafen = previousMutedBeforeDeafen;
+        desiredMutedRef.current = previousMuted;
+        desiredDeafenedRef.current = previousDeafened;
+        mutedBeforeDeafenRef.current = previousMutedBeforeDeafen;
         if (undeafenBeforeEnablingMic) {
           audio.setDeafened(previousDeafened);
           setIsDeafened(previousDeafened);
@@ -974,16 +996,16 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
 
   async function toggleDeafened(): Promise<void> {
     return enqueueControlUpdate(async () => {
-      const currentRoom = room;
-      const previousMuted = desiredMuted;
-      const previousDeafened = desiredDeafened;
-      const previousMutedBeforeDeafen = mutedBeforeDeafen;
+      const currentRoom = roomRef.current;
+      const previousMuted = desiredMutedRef.current;
+      const previousDeafened = desiredDeafenedRef.current;
+      const previousMutedBeforeDeafen = mutedBeforeDeafenRef.current;
       const nextDeafened = !previousDeafened;
-      const nextMuted = nextDeafened ? true : (mutedBeforeDeafen ?? previousMuted);
+      const nextMuted = nextDeafened ? true : (mutedBeforeDeafenRef.current ?? previousMuted);
 
-      desiredMuted = nextMuted;
-      desiredDeafened = nextDeafened;
-      mutedBeforeDeafen = nextDeafened ? previousMuted : null;
+      desiredMutedRef.current = nextMuted;
+      desiredDeafenedRef.current = nextDeafened;
+      mutedBeforeDeafenRef.current = nextDeafened ? previousMuted : null;
 
       const undeafenBeforeEnablingMic = previousDeafened && !nextDeafened && !nextMuted;
       if (undeafenBeforeEnablingMic) {
@@ -996,9 +1018,9 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
           await currentRoom.localParticipant.setMicrophoneEnabled(!nextMuted);
         }
       } catch (e) {
-        desiredMuted = previousMuted;
-        desiredDeafened = previousDeafened;
-        mutedBeforeDeafen = previousMutedBeforeDeafen;
+        desiredMutedRef.current = previousMuted;
+        desiredDeafenedRef.current = previousDeafened;
+        mutedBeforeDeafenRef.current = previousMutedBeforeDeafen;
         if (undeafenBeforeEnablingMic) {
           audio.setDeafened(previousDeafened);
           setIsDeafened(previousDeafened);
@@ -1015,7 +1037,7 @@ export function VoiceChatProvider(props: { children: JSX.Element }) {
     });
   }
 
-  onCleanup(() => {
+  registerCleanup(() => {
     void leave();
   });
 

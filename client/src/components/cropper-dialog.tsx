@@ -1,5 +1,6 @@
+import { useRef } from "react";
 import Cropper from "cropperjs";
-import { createEffect, createSignal, onCleanup, Show } from "solid-js";
+import { useAfterRenderEffect, useSignalState, registerCleanup, If } from "../hooks/react-state";
 import Modal from "./modal";
 
 export default function CropperDialog(props: {
@@ -8,46 +9,56 @@ export default function CropperDialog(props: {
   onCancel: () => void;
   onSave: (blob: Blob) => Promise<void>;
 }) {
-  let imgRef: HTMLImageElement | undefined;
-  const setImgRef = (el: HTMLImageElement) => {
-    imgRef = el;
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const setImgRef = (el: HTMLImageElement | null) => {
+    imgRef.current = el;
   };
-  let cropper: Cropper | null = null;
-  const [objectUrl, setObjectUrl] = createSignal<string | null>(null);
-  const [saving, setSaving] = createSignal(false);
-  const [error, setError] = createSignal<string | null>(null);
+  const cropperRef = useRef<Cropper | null>(null);
+  const objectUrlRef = useRef<{ file: File; url: string } | null>(null);
+  const [objectUrl, setObjectUrl] = useSignalState<string | null>(null);
+  const [saving, setSaving] = useSignalState(false);
+  const [error, setError] = useSignalState<string | null>(null);
 
-  createEffect(() => {
+  registerCleanup(() => {
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current.url);
+    objectUrlRef.current = null;
+  });
+
+  useAfterRenderEffect(() => {
     if (!props.open || !props.file) {
+      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current.url);
+      objectUrlRef.current = null;
       setObjectUrl(null);
       return;
     }
+    if (objectUrlRef.current?.file === props.file) return;
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current.url);
     const url = URL.createObjectURL(props.file);
+    objectUrlRef.current = { file: props.file, url };
     setObjectUrl(url);
-    onCleanup(() => URL.revokeObjectURL(url));
   });
 
-  createEffect(() => {
+  useAfterRenderEffect(() => {
     const url = objectUrl();
-    const img = imgRef;
-    if (!url || !img) return;
+    const img = imgRef.current;
+    if (!url || !img || cropperRef.current) return;
 
-    cropper = new Cropper(img, {});
-    const selection = cropper.getCropperSelection();
+    cropperRef.current = new Cropper(img, {});
+    const selection = cropperRef.current.getCropperSelection();
     if (selection) {
       selection.aspectRatio = 1;
       selection.initialCoverage = 0.8;
     }
 
-    onCleanup(() => {
-      cropper?.destroy();
-      cropper = null;
+    registerCleanup(() => {
+      cropperRef.current?.destroy();
+      cropperRef.current = null;
     });
   });
 
   const handleSave = async () => {
     setError(null);
-    const selection = cropper?.getCropperSelection();
+    const selection = cropperRef.current?.getCropperSelection();
     if (!selection) {
       setError("Cropper not ready");
       return;
@@ -72,18 +83,18 @@ export default function CropperDialog(props: {
 
   return (
     <Modal open={props.open} onClose={props.onCancel} title="Crop your picture" size="lg">
-      <Show when={objectUrl()}>
+      <If when={objectUrl()}>
         {(u) => (
-          <div class="max-h-[60vh] overflow-hidden flex justify-center items-center bg-gray-900 rounded">
-            <img ref={setImgRef} src={u()} alt="" class="max-w-full max-h-[50vh]" />
+          <div className="max-h-[60vh] overflow-hidden flex justify-center items-center bg-gray-900 rounded">
+            <img ref={setImgRef} src={u()} alt="" className="max-w-full max-h-[50vh]" />
           </div>
         )}
-      </Show>
-      <Show when={error()}>{(msg) => <p class="text-red-400 text-sm mt-3">{msg()}</p>}</Show>
-      <div class="flex gap-2 justify-end mt-4">
+      </If>
+      <If when={error()}>{(msg) => <p className="text-red-400 text-sm mt-3">{msg()}</p>}</If>
+      <div className="flex gap-2 justify-end mt-4">
         <button
           type="button"
-          class="text-gray-300 hover:text-gray-100 text-sm px-3 py-2 disabled:opacity-50"
+          className="text-gray-300 hover:text-gray-100 text-sm px-3 py-2 disabled:opacity-50"
           onClick={props.onCancel}
           disabled={saving()}
         >
@@ -91,7 +102,7 @@ export default function CropperDialog(props: {
         </button>
         <button
           type="button"
-          class="bg-blue-600 hover:bg-blue-700 text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 transition-colors"
+          className="bg-blue-600 hover:bg-blue-700 text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 transition-colors"
           onClick={handleSave}
           disabled={saving()}
         >

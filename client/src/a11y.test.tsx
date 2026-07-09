@@ -1,5 +1,5 @@
 import { describe, test } from "vitest";
-import { render } from "@solidjs/testing-library";
+import { render } from "./test/testing-library";
 import Modal from "./components/modal";
 import LoginScreen from "./pages/login";
 import { AuthProvider } from "./contexts/auth";

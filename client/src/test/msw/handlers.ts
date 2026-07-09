@@ -15,8 +15,9 @@ import type {
 } from "../../api";
 
 const CONFIGURED_SERVER_URL = import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL ?? "http://127.0.0.1";
+const CONFIGURED_URL = new URL(CONFIGURED_SERVER_URL);
 const BASE = originWithoutPort(CONFIGURED_SERVER_URL);
-const API_PORT = 3030;
+const API_PORT = Number(CONFIGURED_URL.port || 3030);
 const API_BASE = `${BASE}:${API_PORT}`;
 const VOICE_PORT = 7880;
 const VOICE_BASE = `${BASE.replace(/^http/, "ws")}:${VOICE_PORT}`;

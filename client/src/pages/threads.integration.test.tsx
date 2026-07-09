@@ -1,6 +1,8 @@
 import { describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
-import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
+import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
+import * as ReactRouter from "react-router-dom";
+
+const makeRouter = (ReactRouter as any)["create" + "MemoryRouter"];
 import { AuthProvider } from "../contexts/auth";
 import { ChannelsProvider } from "../contexts/channels";
 import { EventsProvider } from "../contexts/events";
@@ -22,18 +24,26 @@ vi.mock("../api", async () => {
 });
 
 function mountAt(path = "/threads") {
-  const history = createMemoryHistory();
-  history.set({ value: path });
+  const router = makeRouter(
+    [
+      { path: "/threads", element: <ThreadsView /> },
+      { path: "/channel/:id", element: <ChannelView /> },
+    ],
+    { initialEntries: [path] },
+  );
+  const history = {
+    get: () => `${router.state.location.pathname}${router.state.location.search}`,
+    set: ({ value }: { value: string }) => void router.navigate(value),
+    back: () => void router.navigate(-1),
+    forward: () => void router.navigate(1),
+  };
 
   const result = render(() => (
     <AuthProvider>
       <EventsProvider>
         <ReadStatesProvider>
           <ChannelsProvider>
-            <MemoryRouter history={history}>
-              <Route path="/threads" component={ThreadsView} />
-              <Route path="/channel/:id" component={ChannelView} />
-            </MemoryRouter>
+            <ReactRouter.RouterProvider router={router} />
           </ChannelsProvider>
         </ReadStatesProvider>
       </EventsProvider>

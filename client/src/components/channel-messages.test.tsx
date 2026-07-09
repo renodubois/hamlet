@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
 import userEvent from "@testing-library/user-event";
 import type { Message, PublicUser, SearchUsersOptions } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
@@ -154,7 +154,7 @@ describe("<ChannelMessages> message text rendering", () => {
     const messageText = screen.getByText(
       (_, element) =>
         element?.textContent === "first line\nsecond line\nthird line" &&
-        element.classList.contains("whitespace-pre-wrap"),
+        element.className.includes("whitespace-pre-wrap"),
     );
     expect(messageText.textContent).toBe("first line\nsecond line\nthird line");
     expect(messageText).toHaveClass(
@@ -557,12 +557,12 @@ describe("<ChannelMessages> attachments", () => {
     const openButtons = screen.getAllByRole("button", { name: /open photo \d of 2 from them/i });
     expect(openButtons).toHaveLength(2);
     expect(openButtons[0]).toHaveStyle({
-      "aspect-ratio": "640 / 480",
+      aspectRatio: "640 / 480",
       width: "448px",
       "max-width": "100%",
     });
     expect(openButtons[1]).toHaveStyle({
-      "aspect-ratio": "300 / 500",
+      aspectRatio: "300 / 500",
       width: "230px",
     });
   });

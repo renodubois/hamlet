@@ -1,5 +1,3 @@
-import { createSignal } from "solid-js";
-
 export const VOICE_INPUT_STORAGE_KEY = "hamlet:voice:input_device";
 export const VOICE_OUTPUT_STORAGE_KEY = "hamlet:voice:output_device";
 export const VOICE_CAMERA_STORAGE_KEY = "hamlet:voice:camera_device";
@@ -7,16 +5,17 @@ export const VOICE_NOISE_SUPPRESSION_STORAGE_KEY = "hamlet:voice:noise_suppressi
 export const VOICE_INPUT_GAIN_STORAGE_KEY = "hamlet:voice:input_gain";
 export const VOICE_SHOW_SPEAKING_EVERYWHERE_KEY = "hamlet:voice:show_speaking_everywhere";
 
-// Module-scope signal so toggling the checkbox in the modal updates the
-// sidebar live without a storage-event round trip. Consumers read via the
-// exported getter.
-const [showSpeakingEverywhere, setShowSpeakingEverywhereInternal] = createSignal<boolean>(
+let showSpeakingEverywhere =
   typeof localStorage !== "undefined" &&
-    localStorage.getItem(VOICE_SHOW_SPEAKING_EVERYWHERE_KEY) === "on",
-);
+  localStorage.getItem(VOICE_SHOW_SPEAKING_EVERYWHERE_KEY) === "on";
 
-export const showSpeakingIndicatorsEverywhere = showSpeakingEverywhere;
-export const setShowSpeakingEverywhereSignal = setShowSpeakingEverywhereInternal;
+export function showSpeakingIndicatorsEverywhere(): boolean {
+  return showSpeakingEverywhere;
+}
+
+export function setShowSpeakingEverywhereSignal(value: boolean | ((current: boolean) => boolean)) {
+  showSpeakingEverywhere = typeof value === "function" ? value(showSpeakingEverywhere) : value;
+}
 
 export function getNoiseSuppressionEnabled(): boolean {
   // Default on — matches getUserMedia default and is what most users expect.

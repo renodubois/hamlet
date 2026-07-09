@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
-import { createSignal } from "solid-js";
+import { useSignalState } from "../hooks/react-state";
 import { describe, expect, test, vi } from "vitest";
 import type { PublicUser, SearchUsersOptions } from "../api";
 import { AuthProvider } from "../contexts/auth";
@@ -100,8 +100,8 @@ function renderMentionHarness(
   const searchMentionUsers = options.searchMentionUsers ?? vi.fn(async () => MENTION_USER_FIXTURES);
 
   const result = render(() => {
-    const [value, setValue] = createSignal(initialValue);
-    const [mentionUsers, setMentionUsers] = createSignal<readonly PublicUser[]>(
+    const [value, setValue] = useSignalState(initialValue);
+    const [mentionUsers, setMentionUsers] = useSignalState<readonly PublicUser[]>(
       options.initialMentionUsers ?? [],
     );
 
@@ -130,12 +130,12 @@ function renderMentionHarness(
 
 function renderMentionFormHarness(initialValue = "", searchMentionUsers?: MentionSearch) {
   const changes: string[] = [];
-  const onSubmit = vi.fn((event: SubmitEvent) => event.preventDefault());
+  const onSubmit = vi.fn((event: any) => event.preventDefault());
   const search = searchMentionUsers ?? vi.fn(async () => MENTION_USER_FIXTURES);
 
   const result = render(() => {
-    const [value, setValue] = createSignal(initialValue);
-    const [mentionUsers, setMentionUsers] = createSignal<readonly PublicUser[]>([]);
+    const [value, setValue] = useSignalState(initialValue);
+    const [mentionUsers, setMentionUsers] = useSignalState<readonly PublicUser[]>([]);
 
     return (
       <form onSubmit={onSubmit}>
@@ -164,7 +164,7 @@ function renderHarness(initialValue = "") {
   let setExternalValue: (value: string) => void = () => {};
 
   const result = render(() => {
-    const [value, setValue] = createSignal(initialValue);
+    const [value, setValue] = useSignalState(initialValue);
     setExternalValue = (nextValue: string) => setValue(nextValue);
 
     return (
@@ -194,7 +194,7 @@ function renderHarnessWithCustomEmojis(
   });
 
   const result = render(() => {
-    const [value, setValue] = createSignal(initialValue);
+    const [value, setValue] = useSignalState(initialValue);
 
     return (
       <AuthProvider>
@@ -268,10 +268,10 @@ function setDomSelection(container: Node, offset: number) {
 
 function renderFormHarness(initialValue = "") {
   const changes: string[] = [];
-  const onSubmit = vi.fn((event: SubmitEvent) => event.preventDefault());
+  const onSubmit = vi.fn((event: any) => event.preventDefault());
 
   const result = render(() => {
-    const [value, setValue] = createSignal(initialValue);
+    const [value, setValue] = useSignalState(initialValue);
 
     return (
       <form onSubmit={onSubmit}>
@@ -292,13 +292,13 @@ function renderFormHarness(initialValue = "") {
   return { ...result, changes, onSubmit };
 }
 
-function keyDown(input: HTMLElement, init: KeyboardEventInit): KeyboardEvent {
+function keyDown(input: HTMLElement, init: KeyboardEventInit): any {
   const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
   input.dispatchEvent(event);
   return event;
 }
 
-function composingEnter(input: HTMLElement): KeyboardEvent {
+function composingEnter(input: HTMLElement): any {
   const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
   Object.defineProperty(event, "isComposing", { value: true });
   input.dispatchEvent(event);
@@ -627,7 +627,7 @@ describe("<MessageInput>", () => {
   });
 
   test("Escape dismisses mention autocomplete before owner keyboard handlers", async () => {
-    const ownerKeyDown = vi.fn((event: KeyboardEvent) => {
+    const ownerKeyDown = vi.fn((event: any) => {
       if (event.key === "Escape") event.preventDefault();
     });
     renderMentionHarness("", { onKeyDown: ownerKeyDown });
@@ -809,7 +809,7 @@ describe("<MessageInput>", () => {
       }),
     );
     render(() => {
-      const [value, setValue] = createSignal("");
+      const [value, setValue] = useSignalState("");
 
       return (
         <AuthProvider>
@@ -1057,13 +1057,13 @@ describe("<MessageInput>", () => {
   });
 
   test("autocomplete shortcuts take priority over owner keyboard handlers while open", async () => {
-    const ownerKeyDown = vi.fn((event: KeyboardEvent) => {
+    const ownerKeyDown = vi.fn((event: any) => {
       if (event.key === "Enter" || event.key === "Escape") event.preventDefault();
     });
 
     const changes: string[] = [];
     render(() => {
-      const [value, setValue] = createSignal(":sm");
+      const [value, setValue] = useSignalState(":sm");
 
       return (
         <MessageInput

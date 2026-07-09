@@ -1,4 +1,4 @@
-import { render, screen } from "@solidjs/testing-library";
+import { render, screen } from "../test/testing-library";
 import { describe, expect, test } from "vitest";
 import { expectNoA11yViolations } from "../test/a11y";
 import Avatar from "./avatar";

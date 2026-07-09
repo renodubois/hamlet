@@ -1,13 +1,13 @@
 import {
   createContext,
-  createEffect,
-  createSignal,
-  onCleanup,
-  onMount,
+  useCallback,
   useContext,
-  type Accessor,
-  type JSX,
-} from "solid-js";
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { listReadStates, markChannelRead, type ReadStateSummary } from "../api";
 import { useAuth } from "./auth";
 import { useOptionalEvents } from "./events";
@@ -22,7 +22,7 @@ import {
 } from "../read-states/read-state-transitions";
 
 interface ReadStatesContextValue {
-  states: Accessor<ReadStateByChannel>;
+  states: ReadStateByChannel;
   readState: (channelId: number) => ReadStateSummary | undefined;
   hasUnread: (channelId: number) => boolean;
   mentionCount: (channelId: number) => number;
@@ -30,58 +30,63 @@ interface ReadStatesContextValue {
   refetchSnapshot: () => Promise<void>;
 }
 
-const ReadStatesContext = createContext<ReadStatesContextValue>();
+const ReadStatesContext = createContext<ReadStatesContextValue | undefined>(undefined);
 
-export function ReadStatesProvider(props: { children: JSX.Element }) {
+export function ReadStatesProvider(props: { children: ReactNode }) {
   const auth = useAuth();
   const events = useOptionalEvents();
-  const [states, setStates] = createSignal<ReadStateByChannel>({});
-  let requestId = 0;
+  const [states, setStates] = useState<ReadStateByChannel>({});
+  const requestId = useRef(0);
+  const currentUserRef = useRef(auth.user());
+  currentUserRef.current = auth.user();
 
-  async function refetchSnapshot(): Promise<void> {
-    const currentUser = auth.user();
+  const refetchSnapshot = useCallback(async (): Promise<void> => {
+    const currentUser = currentUserRef.current;
     if (!currentUser) {
       setStates({});
       return;
     }
 
-    const id = ++requestId;
+    const id = ++requestId.current;
     try {
       const snapshot = await listReadStates();
-      if (id === requestId) setStates(applyReadStateSnapshot(snapshot));
+      if (id === requestId.current) setStates(applyReadStateSnapshot(snapshot));
     } catch (err) {
       console.warn("failed to load read-state snapshot", err);
     }
-  }
+  }, []);
 
-  async function markRead(channelId: number, lastVisibleMessageId: number): Promise<void> {
-    const currentUser = auth.user();
-    if (!currentUser) return;
+  const markRead = useCallback(
+    async (channelId: number, lastVisibleMessageId: number): Promise<void> => {
+      const currentUser = currentUserRef.current;
+      if (!currentUser) return;
 
-    try {
-      const summary = await markChannelRead(channelId, lastVisibleMessageId);
-      setStates((current) => applyReadStateUpdate(current, summary));
-    } catch (err) {
-      console.warn("failed to mark channel read", err);
-    }
-  }
+      try {
+        const summary = await markChannelRead(channelId, lastVisibleMessageId);
+        setStates((current) => applyReadStateUpdate(current, summary));
+      } catch (err) {
+        console.warn("failed to mark channel read", err);
+      }
+    },
+    [],
+  );
 
-  createEffect(() => {
+  useEffect(() => {
     const currentUser = auth.user();
     if (!currentUser) {
-      requestId += 1;
+      requestId.current += 1;
       setStates({});
       return;
     }
     void refetchSnapshot();
-  });
+  }, [auth.user(), refetchSnapshot]);
 
-  onMount(() => {
+  useEffect(() => {
     const cleanupCallbacks: Array<() => void> = [];
     if (events) {
       cleanupCallbacks.push(
         events.onMessage((message) => {
-          const currentUser = auth.user();
+          const currentUser = currentUserRef.current;
           if (!currentUser) return;
           if (message.created_at == null) {
             void refetchSnapshot();
@@ -107,21 +112,24 @@ export function ReadStatesProvider(props: { children: JSX.Element }) {
     window.addEventListener("focus", recoverSnapshot);
     document.addEventListener("visibilitychange", recoverSnapshot);
 
-    onCleanup(() => {
+    return () => {
       cleanupCallbacks.forEach((cleanup) => cleanup());
       window.removeEventListener("focus", recoverSnapshot);
       document.removeEventListener("visibilitychange", recoverSnapshot);
-    });
-  });
+    };
+  }, [events, refetchSnapshot]);
 
-  const value: ReadStatesContextValue = {
-    states,
-    readState: (channelId) => readStateForChannel(states(), channelId),
-    hasUnread: (channelId) => channelHasUnread(states(), channelId),
-    mentionCount: (channelId) => channelMentionCount(states(), channelId),
-    markRead,
-    refetchSnapshot,
-  };
+  const value: ReadStatesContextValue = useMemo(
+    () => ({
+      states,
+      readState: (channelId) => readStateForChannel(states, channelId),
+      hasUnread: (channelId) => channelHasUnread(states, channelId),
+      mentionCount: (channelId) => channelMentionCount(states, channelId),
+      markRead,
+      refetchSnapshot,
+    }),
+    [markRead, refetchSnapshot, states],
+  );
 
   return <ReadStatesContext.Provider value={value}>{props.children}</ReadStatesContext.Provider>;
 }

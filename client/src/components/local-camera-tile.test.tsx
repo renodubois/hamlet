@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
-import { render, screen, waitFor } from "@solidjs/testing-library";
-import { createSignal } from "solid-js";
+import { render, screen, waitFor } from "../test/testing-library";
+import { useSignalState } from "../hooks/react-state";
 import { expectNoA11yViolations } from "../test/a11y";
 
 class FakeLocalVideoTrack {
@@ -21,7 +21,7 @@ vi.mock("../contexts/voice-chat", () => ({
 import LocalCameraTile from "./local-camera-tile";
 
 function setupTile(track = new FakeLocalVideoTrack()) {
-  const [localCameraTrack, setLocalCameraTrack] = createSignal<FakeLocalVideoTrack | null>(track);
+  const [localCameraTrack, setLocalCameraTrack] = useSignalState<FakeLocalVideoTrack | null>(track);
   mockVoiceState.value = {
     localCameraTrack,
   };

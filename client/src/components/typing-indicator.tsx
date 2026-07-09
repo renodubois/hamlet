@@ -1,4 +1,7 @@
-import { Show, createSignal, onCleanup, onMount } from "solid-js";
+import { useRef } from "react";
+import { flushSync } from "react-dom";
+
+import { If, useSignalState, useMountEffect } from "../hooks/react-state";
 import type { Message, UserTyping } from "../api";
 import type { EventsContextValue } from "../contexts/events";
 import { TYPING_EXPIRY_MS } from "../constants";
@@ -32,7 +35,9 @@ interface TypingEntry {
 
 export default function TypingIndicator(props: Props) {
   const now = () => (props.now ?? Date.now)();
-  const [entries, setEntries] = createSignal<Record<number, TypingEntry>>({});
+  const [entries, setEntries] = useSignalState<Record<number, TypingEntry>>({});
+  const propsRef = useRef(props);
+  propsRef.current = props;
 
   const prune = () => {
     const cutoff = now() - TYPING_EXPIRY_MS;
@@ -59,31 +64,33 @@ export default function TypingIndicator(props: Props) {
     });
   };
 
-  const unsubscribers: Array<() => void> = [];
-  let timer: number | undefined;
-
-  onMount(() => {
-    unsubscribers.push(
+  useMountEffect(() => {
+    const unsubscribers = [
       props.events.onUserTyping((t: UserTyping) => {
-        if (t.channel_id !== props.channelId) return;
-        if (props.currentUserId !== null && t.user_id === props.currentUserId) return;
-        setEntries((prev) => ({
-          ...prev,
-          [t.user_id]: { username: t.username, lastSeen: now() },
-        }));
+        if (t.channel_id !== propsRef.current.channelId) return;
+        if (
+          propsRef.current.currentUserId !== null &&
+          t.user_id === propsRef.current.currentUserId
+        ) {
+          return;
+        }
+        flushSync(() => {
+          setEntries((prev) => ({
+            ...prev,
+            [t.user_id]: { username: t.username, lastSeen: now() },
+          }));
+        });
       }),
       props.events.onMessage((m: Message) => {
-        if (m.channel_id !== props.channelId) return;
-        clearUser(m.user_id);
+        if (m.channel_id !== propsRef.current.channelId) return;
+        flushSync(() => clearUser(m.user_id));
       }),
-    );
-    timer = window.setInterval(prune, TYPING_SWEEP_MS);
-  });
-
-  onCleanup(() => {
-    unsubscribers.forEach((unsubscribe) => unsubscribe());
-    unsubscribers.length = 0;
-    if (timer !== undefined) window.clearInterval(timer);
+    ];
+    const timer = window.setInterval(prune, TYPING_SWEEP_MS);
+    return () => {
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
+      window.clearInterval(timer);
+    };
   });
 
   const usernames = () =>
@@ -94,30 +101,30 @@ export default function TypingIndicator(props: Props) {
   const message = () => formatTypingMessage(usernames());
 
   return (
-    <Show when={message()} keyed>
+    <If when={message()} keyed>
       {(text) => (
         <div
-          class="flex items-center gap-2 text-xs text-gray-500 px-1 pb-1 h-5"
+          className="flex items-center gap-2 text-xs text-gray-500 px-1 pb-1 h-5"
           aria-live="polite"
           data-testid="typing-indicator"
         >
-          <span class="inline-flex items-center gap-0.5" aria-hidden="true">
+          <span className="inline-flex items-center gap-0.5" aria-hidden="true">
             <span
-              class="inline-block w-1 h-1 rounded-full bg-gray-500 animate-bounce"
-              style={{ "animation-delay": "0ms" }}
+              className="inline-block w-1 h-1 rounded-full bg-gray-500 animate-bounce"
+              style={{ animationDelay: "0ms" }}
             />
             <span
-              class="inline-block w-1 h-1 rounded-full bg-gray-500 animate-bounce"
-              style={{ "animation-delay": "150ms" }}
+              className="inline-block w-1 h-1 rounded-full bg-gray-500 animate-bounce"
+              style={{ animationDelay: "150ms" }}
             />
             <span
-              class="inline-block w-1 h-1 rounded-full bg-gray-500 animate-bounce"
-              style={{ "animation-delay": "300ms" }}
+              className="inline-block w-1 h-1 rounded-full bg-gray-500 animate-bounce"
+              style={{ animationDelay: "300ms" }}
             />
           </span>
           <span>{text}</span>
         </div>
       )}
-    </Show>
+    </If>
   );
 }

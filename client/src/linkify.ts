@@ -15,7 +15,7 @@ export type LinkifyToken = { type: "text"; value: string } | { type: "link"; url
 
 const URL_RE = /https?:\/\/[^\s<>"']+/gi;
 
-// Matches the server's `trim_url` trailing set.
+// Casees the server's `trim_url` trailing set.
 const TRAILING = `.,;:!?)]}'"\`>`;
 
 function stripTrailing(candidate: string): { url: string; tail: string } {

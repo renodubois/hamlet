@@ -1,6 +1,5 @@
 import { defineConfig, loadEnv } from "vite";
-import solid from "vite-plugin-solid";
-import devtools from "solid-devtools/vite";
+import react from "@vitejs/plugin-react";
 
 const defaultRendererHost = "127.0.0.1";
 const defaultRendererPort = 1422;
@@ -44,7 +43,7 @@ export default defineConfig(({ mode }) => {
   const emitSourceMaps = envFlag(env, "HAMLET_BUILD_SOURCE_MAPS");
 
   return {
-    plugins: [devtools(), solid()],
+    plugins: [react()],
 
     // Worktrees can override HAMLET_RENDERER_PORT to run side by side.
     clearScreen: false,
