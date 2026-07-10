@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -59,6 +61,11 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       sourcemap: emitSourceMaps,
+    },
+    resolve: {
+      alias: {
+        "@": resolve(process.cwd(), "src"),
+      },
     },
     define: {
       "import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL": JSON.stringify(hamletServerUrl),
