@@ -21,7 +21,7 @@ New functionality should come with tests. The Electron client has a full test st
 
 Before marking any change as done, run the relevant checks for the side you touched:
 
-- **`client/`** — `npm run fmt`, `npm run lint`, `npm run typecheck`, `npm run test`. Run `npm run test:e2e` if the change could affect a smoke-tested flow (login, sending messages, shell launch). Run `npm run size` if the change might affect bundle size.
+- **`client/`** — `pnpm run fmt`, `pnpm run lint`, `pnpm run typecheck`, `pnpm run test`. Run `pnpm run test:e2e` if the change could affect a smoke-tested flow (login, sending messages, shell launch). Run `pnpm run size` if the change might affect bundle size.
 - **`server/`** — follow `server/CLAUDE.md` for its test/format/lint commands.
 
 A single `scripts/check.sh` runs the default checks both sides expose — fmt, lint, typecheck/clippy, tests, and (if installed) `cargo audit` — in the order CI would. `scripts/check.sh server` or `scripts/check.sh client` scopes to one side; `--fix` applies formatter fixes before running the rest; `--e2e` adds the Playwright E2E suite. Use E2E testing for features whenever it feels necessary for confidence; prefer more testing over less. Use it as a pre-push gate.
@@ -39,14 +39,14 @@ Start both in separate terminals:
 cd server && cargo run
 
 # Terminal 2 — Electron app
-cd client && npm run electron:dev
+cd client && pnpm run electron:dev
 ```
 
 The frontend defaults to `http://127.0.0.1:3030`; this is configurable at login and stored in localStorage. The Electron renderer uses the fixed local origin `http://127.0.0.1:1422` in development and packaged modes.
 
 ### Docker Compose (server + LiveKit)
 
-The server side also runs under Docker Compose, which brings up `server` and a self-hosted `livekit` container together. Compose is for the backend only — the Electron client still runs on the host with `npm run electron:dev`. Compose files live in `server/`, so run these from there:
+The server side also runs under Docker Compose, which brings up `server` and a self-hosted `livekit` container together. Compose is for the backend only — the Electron client still runs on the host with `pnpm run electron:dev`. Compose files live in `server/`, so run these from there:
 
 ```bash
 cd server

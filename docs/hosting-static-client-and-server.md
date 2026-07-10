@@ -28,7 +28,7 @@ The hosted web-client path is no longer blocked on localhost-only assumptions. T
 - CSRF protection is enabled for browser-shaped unsafe authenticated writes. `POST /login`, `POST /register`, and `POST /logout` are exempt so a fresh browser can authenticate or clear a stale session. Authenticated clients can call `GET /csrf` to receive `{ "token": "..." }` and a non-HttpOnly `hamlet_csrf` cookie; unsafe `POST`, `PUT`, `PATCH`, and `DELETE` requests echo the token in `X-Hamlet-CSRF`.
 - `server/docker-compose.yml` is the production API baseline. It publishes the API on loopback by default, stores SQLite/uploads under one `hamlet_data` volume, disables development seed data, and leaves LiveKit optional. `server/docker-compose.livekit.yml` adds self-hosted LiveKit for production. `server/docker-compose.override.yml` is the development hot-reload stack with local LiveKit defaults.
 - The production Docker image builds and ships both `hamlet` and `hamlet-admin`, so operators can provision accounts inside the deployed image while public registration remains disabled.
-- Static web output is first-class via `npm run build:web`, which runs the Vite renderer build and prepares GitHub Pages SPA fallback files.
+- Static web output is first-class via `pnpm run build:web`, which runs the Vite renderer build and prepares GitHub Pages SPA fallback files.
 - Renderer telemetry is opt-in via `VITE_HAMLET_SENTRY_DSN`; server telemetry is separate and opt-in via `HAMLET_SENTRY_DSN`.
 
 ## Additional tools/services needed
@@ -37,7 +37,7 @@ Minimum:
 
 - Domain DNS control for your client/API/LiveKit subdomains.
 - GitHub Pages or another static host.
-- Node.js/npm for the client build. The project has `package-lock.json`; use `npm ci` in automation.
+- Node.js 24.13.0+ and pnpm 11.11.0+ for the client build. The project has `pnpm-lock.yaml`; use `pnpm install --frozen-lockfile` in automation.
 - An Ubuntu Server host or VPS.
 - Docker Engine with the Compose plugin, or a Rust toolchain plus systemd if not using Docker.
 - A reverse proxy with trusted TLS certificates. Caddy is the simplest option because it manages HTTPS automatically; Nginx + Certbot is also fine.
@@ -88,19 +88,19 @@ From the repo root:
 
 ```bash
 cd client
-npm ci
-npm run fmt:check
-npm run lint
-npm run typecheck
-npm run test
+pnpm install --frozen-lockfile
+pnpm run fmt:check
+pnpm run lint
+pnpm run typecheck
+pnpm run test
 VITE_HAMLET_DEFAULT_SERVER_URL=https://api.example.com \
 VITE_HAMLET_SENTRY_DSN= \
-npm run build:web
+pnpm run build:web
 ```
 
 Notes:
 
-- Use `npm run build:web` for static hosting. It runs the Vite renderer build, copies `dist/index.html` to `dist/404.html` for GitHub Pages deep-link fallback, and writes `dist/.nojekyll`.
+- Use `pnpm run build:web` for static hosting. It runs the Vite renderer build, copies `dist/index.html` to `dist/404.html` for GitHub Pages deep-link fallback, and writes `dist/.nojekyll`.
 - `VITE_HAMLET_DEFAULT_SERVER_URL` is baked into the static bundle as the default server URL shown by the login screen. Users can still override the server URL in localStorage from the login UI.
 - `VITE_HAMLET_SENTRY_DSN` is optional. Leave it unset or empty to disable renderer-side Sentry. This is separate from server-side `HAMLET_SENTRY_DSN`.
 - The API URL must be HTTPS. An HTTPS static page cannot use an insecure `http://` API because of browser mixed-content rules.

@@ -8,7 +8,7 @@
   "scripts": {
     "start": "vite",
     "dev": "vite",
-    "build": "npm run build:renderer && npm run electron:build",
+    "build": "pnpm run build:renderer && pnpm run electron:build",
     "build:renderer": "vite build",
     "build:web": "vite build && node scripts/prepare-web-dist.mjs",
     "serve": "vite preview",
@@ -17,21 +17,21 @@
     "electron:build": "node scripts/build-electron.mjs",
     "electron:dev": "node scripts/electron-dev.mjs",
     "electron:typecheck": "tsc -p tsconfig.electron.json --noEmit",
-    "package:unpacked": "npm run build && node scripts/package-unpacked.mjs",
-    "package:launch": "npm run package:unpacked && node scripts/launch-unpacked.mjs",
-    "package:smoke": "npm run package:unpacked && playwright test -c playwright.package.config.ts",
+    "package:unpacked": "pnpm run build && node scripts/package-unpacked.mjs",
+    "package:launch": "pnpm run package:unpacked && node scripts/launch-unpacked.mjs",
+    "package:smoke": "pnpm run package:unpacked && playwright test -c playwright.package.config.ts",
     "package:full": "node scripts/package-full-deferred.mjs package:full",
     "lint": "oxlint -c oxlint.config.json . --format stylish",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
-    "typecheck": "tsc --noEmit && npm run electron:typecheck",
+    "typecheck": "tsc --noEmit && pnpm run electron:typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "npm run test:e2e:renderer && npm run test:e2e:electron",
+    "test:e2e": "pnpm run test:e2e:renderer && pnpm run test:e2e:electron",
     "test:e2e:renderer": "playwright test -c playwright.config.ts",
     "test:e2e:voice:browser": "node scripts/test-browser-voice.mjs",
-    "test:e2e:electron": "npm run build && playwright test -c playwright.electron.config.ts",
-    "size": "npm run build && size-limit"
+    "test:e2e:electron": "pnpm run build && playwright test -c playwright.electron.config.ts",
+    "size": "pnpm run build && size-limit"
   },
   "dependencies": {
     "@sentry/react": "^10.64.0",
@@ -53,7 +53,7 @@
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
-    "@types/node": "^22.0.0",
+    "@types/node": "^24.13.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
@@ -76,8 +76,10 @@
     "vitest-axe": "^0.1.0"
   },
   "engines": {
-    "node": "^20.19.0 || >=22.12.0"
+    "node": ">=24.13.0",
+    "pnpm": ">=11.11.0"
   },
+  "packageManager": "pnpm@11.11.0",
   "msw": {
     "workerDirectory": [
       ".storybook/public"

@@ -29,15 +29,15 @@ Out of scope for this MVP: camera chat, screen-share audio, recording, persisten
   ```bash
   scripts/check.sh server
   scripts/check.sh client
-  cd client && npm run test:e2e:voice:browser
-  cd client && xvfb-run -a npm run test:e2e:electron  # Linux/headless only
+  cd client && pnpm run test:e2e:voice:browser
+  cd client && xvfb-run -a pnpm run test:e2e:electron  # Linux/headless only
   ```
 
 ## Environment matrix
 
 Record each target before release. Do not mark the tracker issue complete until every required platform/environment has been evaluated or explicitly waived.
 
-| Platform | Browser renderer dev (`npm run dev`) | Electron dev (`npm run electron:dev`) | Unpacked packaged Electron (`npm run package:launch`) | Notes / owner / date |
+| Platform | Browser renderer dev (`pnpm run dev`) | Electron dev (`pnpm run electron:dev`) | Unpacked packaged Electron (`pnpm run package:launch`) | Notes / owner / date |
 | --- | --- | --- | --- | --- |
 | macOS | [ ] | [ ] | [ ] | |
 | Windows | [ ] | [ ] | [ ] | |

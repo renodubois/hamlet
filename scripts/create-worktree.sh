@@ -492,7 +492,7 @@ write_env_files() {
   local livekit_url="ws://127.0.0.1:${livekit_port}"
 
   cat > "$dir/.hamlet-worktree.env" <<EOF
-# Source this file before running cargo/npm commands in this worktree:
+# Source this file before running cargo/pnpm commands in this worktree:
 #   source .hamlet-worktree.env
 export HAMLET_SERVER_PORT=${server_port}
 export HAMLET_SERVER_URL=${server_url}
@@ -566,5 +566,5 @@ Use this worktree like this:
   cd $worktree_dir
   source .hamlet-worktree.env
   cd server && cargo run              # or: docker compose up
-  cd ../client && npm run electron:dev
+  cd ../client && pnpm run electron:dev
 NEXT

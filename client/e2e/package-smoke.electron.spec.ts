@@ -51,7 +51,7 @@ async function resolvePackagedExecutable(manifest: LastUnpackedManifest): Promis
     [
       "Could not find the unpacked Hamlet Electron Alpha executable.",
       `Package path: ${manifest.packagePath ?? "unknown"}`,
-      "Run npm run package:unpacked before running package smoke coverage.",
+      "Run pnpm run package:unpacked before running package smoke coverage.",
     ].join("\n"),
   );
 }

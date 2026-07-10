@@ -30,15 +30,15 @@ Out of scope: recording, virtual backgrounds, moderation camera controls, public
 
   ```bash
   scripts/check.sh client
-  cd client && npm run test:e2e:voice:browser
-  cd client && xvfb-run -a npm run test:e2e:electron  # Linux/headless only
+  cd client && pnpm run test:e2e:voice:browser
+  cd client && xvfb-run -a pnpm run test:e2e:electron  # Linux/headless only
   ```
 
 ## Environment matrix
 
 Record each target before release. Mark unsupported/waived cells with the reason, owner, and date.
 
-| Platform | Browser renderer dev (`npm run dev`) | Electron dev (`npm run electron:dev`) | Unpacked packaged Electron (`npm run package:launch`) | Notes / owner / date |
+| Platform | Browser renderer dev (`pnpm run dev`) | Electron dev (`pnpm run electron:dev`) | Unpacked packaged Electron (`pnpm run package:launch`) | Notes / owner / date |
 | --- | --- | --- | --- | --- |
 | macOS | [ ] | [ ] | [ ] | |
 | Windows | [ ] | [ ] | [ ] | |

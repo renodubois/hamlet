@@ -1,0 +1,15 @@
+allowBuilds:
+  esbuild: true
+  msw: true
+minimumReleaseAgeExclude:
+  - "@storybook/addon-a11y@10.5.0"
+  - "@storybook/builder-vite@10.5.0"
+  - "@storybook/csf-plugin@10.5.0"
+  - "@storybook/react-dom-shim@10.5.0"
+  - "@storybook/react-vite@10.5.0"
+  - "@storybook/react@10.5.0"
+  - storybook@10.5.0
+
+# note(reno): this is interesting and maybe I want this enabled in the future
+# but i'm going to leave it off for now
+# minimumReleaseAgeStrict: true

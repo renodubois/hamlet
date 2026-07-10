@@ -19,7 +19,7 @@ Usage:
   scripts/check.sh --e2e                   # also run Playwright E2E tests
 
 Client checks:
-  electron -> client/: npm run fmt:check (or fmt with --fix), lint,
+  electron -> client/: pnpm run fmt:check (or fmt with --fix), lint,
               typecheck, test
 
 Optional checks:
@@ -138,13 +138,13 @@ client_checks() {
 
   cd "$REPO_ROOT/client"
   if (( fix )); then
-    run "client: npm run fmt" npm run fmt
+    run "client: pnpm run fmt" pnpm run fmt
   else
-    run "client: npm run fmt:check" npm run fmt:check
+    run "client: pnpm run fmt:check" pnpm run fmt:check
   fi
-  run "client: npm run lint" npm run lint
-  run "client: npm run typecheck" npm run typecheck
-  run "client: npm run test" npm run test
+  run "client: pnpm run lint" pnpm run lint
+  run "client: pnpm run typecheck" pnpm run typecheck
+  run "client: pnpm run test" pnpm run test
 }
 
 client_e2e_checks() {
@@ -153,7 +153,7 @@ client_e2e_checks() {
   fi
 
   cd "$REPO_ROOT/client"
-  run "client: npm run test:e2e" npm run test:e2e
+  run "client: pnpm run test:e2e" pnpm run test:e2e
 }
 
 case "$target" in

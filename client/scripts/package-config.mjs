@@ -137,7 +137,7 @@ export async function assertPackagePrerequisites(rootDir) {
       [
         "Cannot build the Hamlet Electron Alpha unpacked package because required inputs are missing:",
         ...missing.map((relativePath) => `  - ${relativePath}`),
-        "Run npm run build before packaging and keep packaging/icons populated.",
+        "Run pnpm run build before packaging and keep packaging/icons populated.",
       ].join("\n"),
     );
   }
@@ -240,7 +240,7 @@ export async function resolvePackagedExecutable(manifest) {
     [
       `Could not find the unpacked ${ALPHA_PACKAGE_METADATA.productName} executable.`,
       `Package path: ${manifest.packagePath ?? "unknown"}`,
-      "Run npm run package:unpacked before launching the packaged app.",
+      "Run pnpm run package:unpacked before launching the packaged app.",
     ].join("\n"),
   );
 }
@@ -254,7 +254,7 @@ export function packagedLaunchEnvironment(env = process.env) {
 export function formatDeferredDistributionMessage(commandName = "package:full") {
   return [
     `${commandName} is intentionally deferred for the Electron alpha.`,
-    `Use npm run package:unpacked for local unpacked packages that can be launched side by side.`,
+    `Use pnpm run package:unpacked for local unpacked packages that can be launched side by side.`,
     `Deferred release work: ${DEFERRED_DISTRIBUTION_FEATURES.join(", ")}.`,
   ].join("\n");
 }

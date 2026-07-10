@@ -395,7 +395,7 @@ async function assertRendererRoot(rootDir: string): Promise<void> {
   } catch (cause) {
     if (cause instanceof StaticRendererStartupError) throw cause;
     throw new StaticRendererStartupError(
-      `Renderer build is missing or unreadable at ${rootDir}. Run npm run build:renderer before launching production Electron.`,
+      `Renderer build is missing or unreadable at ${rootDir}. Run pnpm run build:renderer before launching production Electron.`,
       { code: "MISSING_RENDERER_DIST", cause },
     );
   }

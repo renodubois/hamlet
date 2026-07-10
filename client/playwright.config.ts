@@ -57,7 +57,7 @@ export default defineConfig({
       },
     },
     {
-      command: "npm run dev",
+      command: "pnpm run dev",
       url: rendererUrl,
       reuseExistingServer: !hamletEnv.CI,
       timeout: 60_000,

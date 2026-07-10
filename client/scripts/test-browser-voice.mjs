@@ -14,6 +14,7 @@ const serverPrivateUploadsDir = new URL("../../server/private-uploads/", import.
 loadLocalEnv();
 const composeProjectName = process.env.HAMLET_VOICE_COMPOSE_PROJECT ?? "hamlet_voice_e2e";
 const keepCompose = process.env.HAMLET_VOICE_KEEP_COMPOSE === "1";
+const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const serverUrl =
   process.env.HAMLET_SERVER_URL ??
   process.env.VITE_HAMLET_DEFAULT_SERVER_URL ??
@@ -105,7 +106,7 @@ async function main() {
     console.log(`[voice-e2e] waiting for LiveKit on ${livekitHost}:${livekitPort}`);
     await waitForTcp(livekitHost, livekitPort, 60_000);
     console.log("[voice-e2e] running Playwright browser voice test");
-    await run("npx", ["playwright", "test", "-c", "playwright.voice.config.ts"], {
+    await run(pnpmBin, ["exec", "playwright", "test", "-c", "playwright.voice.config.ts"], {
       cwd: clientDir,
     });
   } finally {

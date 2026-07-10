@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadLocalEnv(rootDir);
 const rendererUrl = process.env.HAMLET_RENDERER_URL ?? defaultRendererUrl();
-const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
+const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const electronBin = path.join(
   rootDir,
   "node_modules",
@@ -24,9 +24,9 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   });
 }
 
-await run(npmBin, ["run", "electron:build"]);
+await run(pnpmBin, ["run", "electron:build"]);
 
-const vite = spawnChild(npmBin, ["run", "dev"], {
+const vite = spawnChild(pnpmBin, ["run", "dev"], {
   env: { ...process.env, BROWSER: "none" },
 });
 

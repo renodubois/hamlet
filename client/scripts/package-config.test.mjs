@@ -89,7 +89,7 @@ describe("Electron alpha package metadata", () => {
       "public distribution",
     ]);
     expect(deferredMessage).toContain("intentionally deferred");
-    expect(deferredMessage).toContain("npm run package:unpacked");
+    expect(deferredMessage).toContain("pnpm run package:unpacked");
     for (const feature of DEFERRED_DISTRIBUTION_FEATURES) {
       expect(deferredMessage).toContain(feature);
     }

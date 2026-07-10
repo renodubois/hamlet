@@ -31,7 +31,7 @@ try {
 
   console.log(`${ALPHA_PACKAGE_METADATA.productName} unpacked package created:`);
   console.log(`  ${packagePath}`);
-  console.log("Launch it with: npm run package:launch");
+  console.log("Launch it with: pnpm run package:launch");
 } catch (error) {
   console.error(error instanceof Error ? error.message : error);
   process.exitCode = 1;

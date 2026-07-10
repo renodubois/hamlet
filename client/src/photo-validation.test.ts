@@ -72,9 +72,9 @@ describe("message photo validation", () => {
 
   test("rejects unsupported formats, MIME/signature mismatches, and animated WebP", async () => {
     const issues = await validateMessagePhotos([
-      new File([TINY_PNG_BYTES], "wrong.jpg", { type: "image/jpeg" }),
+      imageFile("wrong.jpg", "image/jpeg", TINY_PNG_BYTES),
       new File(["gif"], "dance.gif", { type: "image/gif" }),
-      new File([animatedWebpHeader()], "animated.webp", { type: "image/webp" }),
+      imageFile("animated.webp", "image/webp", animatedWebpHeader()),
     ]);
 
     expect(issues.map((issue) => issue.kind)).toEqual([
