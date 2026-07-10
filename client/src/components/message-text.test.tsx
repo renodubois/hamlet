@@ -1,7 +1,7 @@
 import { useSignalState, type ValueUpdater } from "../hooks/react-state";
 import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
 import { describe, expect, test, vi } from "vitest";
-import type { CustomEmoji, MentionUser } from "../api";
+import type { Channel, CustomEmoji, MentionUser } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
 import { assertExists } from "../test/render";
 import MessageText, { renderRichText } from "./message-text";
@@ -38,6 +38,11 @@ const PARTY: CustomEmoji = {
   deleted_at: null,
 };
 
+const CHANNELS: Channel[] = [
+  { id: 100, name: "general", position: 0, type: "text" },
+  { id: 200, name: "voice", position: 1, type: "voice" },
+];
+
 function customEmojiById(id: number): CustomEmoji | null {
   return id === PARTY.id ? PARTY : null;
 }
@@ -48,8 +53,9 @@ describe("renderRichText", () => {
     render(() => (
       <div data-testid="rich-text">
         {renderRichText({
-          text: "hi <@2> and <@1> <:party:123> missing <@999> <:ghost:999> malformed <@abc> javascript:alert(1) https://example.test/path again <@2>",
+          text: "hi <@2> and <@1> <:party:123> see <#100> voice <#200> missing <@999> <#999> <:ghost:999> malformed <@abc> javascript:alert(1) https://example.test/path again <@2>",
           mentions: [BOB, SELF],
+          channels: CHANNELS,
           customEmojiById,
           currentUserId: SELF.id,
           onMentionClick,
@@ -77,10 +83,20 @@ describe("renderRichText", () => {
     );
 
     const richText = screen.getByTestId("rich-text");
-    expect(richText).toHaveTextContent("missing <@999>");
+    const channelLink = screen.getByRole("link", { name: "#general" });
+    expect(channelLink).toHaveAttribute("href", "/channel/100");
+    expect(screen.getByText("#voice")).toHaveAttribute("title", "#voice (voice)");
+    expect(richText).toHaveTextContent("missing <@999> <#999>");
     expect(richText).toHaveTextContent("malformed <@abc>");
     expect(richText).toHaveTextContent("javascript:alert(1)");
     expect(screen.queryByRole("link", { name: /javascript/i })).toBeNull();
+  });
+
+  test("renders channel mentions as static labels through MessageText props", () => {
+    render(() => <MessageText text="join <#100> then <#999>" channels={CHANNELS} />);
+
+    expect(screen.getByRole("link", { name: "#general" })).toHaveAttribute("href", "/channel/100");
+    expect(screen.getByText(/then <#999>/)).toBeInTheDocument();
   });
 
   test("renders mentions as static labels when no click handler is provided", () => {

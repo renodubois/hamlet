@@ -145,7 +145,6 @@ export default function AttachmentGrid(props: {
                       <img
                         src={thumbnailUrl()}
                         alt={alt()}
-                        loading="lazy"
                         decoding="async"
                         width={positiveDimension(attachment.thumbnail_width)}
                         height={positiveDimension(attachment.thumbnail_height)}

@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { useSignalState } from "../hooks/react-state";
 import { describe, expect, test, vi } from "vitest";
-import type { PublicUser, SearchUsersOptions } from "../api";
+import type { Channel, PublicUser, SearchUsersOptions } from "../api";
 import { AuthProvider } from "../contexts/auth";
 import { CustomEmojisProvider } from "../contexts/custom-emojis";
 import { expectNoA11yViolations } from "../test/a11y";
@@ -69,6 +69,13 @@ const MENTION_USER_FIXTURES: PublicUser[] = [
   },
 ];
 
+const CHANNEL_FIXTURES: Channel[] = [
+  { id: 100, name: "general", position: 0, type: "text" },
+  { id: 200, name: "random", position: 1, type: "text" },
+  { id: 300, name: "voice", position: 2, type: "voice" },
+  { id: 400, name: "project-planning", position: 3, type: "text" },
+];
+
 type MentionSearch = (options: SearchUsersOptions) => Promise<PublicUser[]>;
 
 function mergeUsers(current: readonly PublicUser[], discovered: readonly PublicUser[]) {
@@ -126,6 +133,62 @@ function renderMentionHarness(
   });
 
   return { ...result, changes, discoveredUsers, searchMentionUsers };
+}
+
+function renderChannelHarness(
+  initialValue = "",
+  options: {
+    channels?: readonly Channel[];
+    onKeyDown?: MessageInputProps["onKeyDown"];
+  } = {},
+) {
+  const changes: string[] = [];
+  const result = render(() => {
+    const [value, setValue] = useSignalState(initialValue);
+
+    return (
+      <MessageInput
+        value={value()}
+        onChange={(nextValue) => {
+          changes.push(nextValue);
+          setValue(nextValue);
+        }}
+        ariaLabel="Compose message"
+        placeholder="Send a new message..."
+        channels={options.channels ?? CHANNEL_FIXTURES}
+        onKeyDown={options.onKeyDown}
+      />
+    );
+  });
+
+  return { ...result, changes };
+}
+
+function renderChannelFormHarness(initialValue = "") {
+  const changes: string[] = [];
+  const onSubmit = vi.fn((event: any) => event.preventDefault());
+
+  const result = render(() => {
+    const [value, setValue] = useSignalState(initialValue);
+
+    return (
+      <form onSubmit={onSubmit}>
+        <MessageInput
+          value={value()}
+          onChange={(nextValue) => {
+            changes.push(nextValue);
+            setValue(nextValue);
+          }}
+          ariaLabel="Compose message"
+          placeholder="Send a new message..."
+          channels={CHANNEL_FIXTURES}
+        />
+        <button type="submit">Send</button>
+      </form>
+    );
+  });
+
+  return { ...result, changes, onSubmit };
 }
 
 function renderMentionFormHarness(initialValue = "", searchMentionUsers?: MentionSearch) {
@@ -692,6 +755,170 @@ describe("<MessageInput>", () => {
       expect(input.value).toBe("hello <@2> missing <@999>!");
     });
     expect(changes.at(-1)).toBe("hello <@2> missing <@999>!");
+  });
+
+  test("shows channel autocomplete for a boundary-valid # token and suggests text channels only", async () => {
+    const { container } = renderChannelHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, "see #");
+
+    const listbox = await screen.findByRole("listbox", { name: /channel suggestions/i });
+    const options = within(listbox).getAllByRole("option");
+    expect(options.map((option) => option.getAttribute("aria-label"))).toEqual([
+      "Channel #general",
+      "Channel #random",
+      "Channel #project-planning",
+    ]);
+    expect(screen.queryByRole("option", { name: /channel #voice/i })).toBeNull();
+    expect(options[0]).toHaveAttribute("aria-selected", "true");
+    expect(options[0]).toHaveAccessibleName(/channel #general/i);
+    expect(input).toHaveAttribute("aria-autocomplete", "list");
+    expect(input).toHaveAttribute("aria-controls", listbox.id);
+    expect(input).toHaveAttribute("aria-activedescendant", options[0].id);
+    await expectNoA11yViolations(container, "message input channel autocomplete");
+  });
+
+  test.each([
+    ["selected text", "#general", 0, "#general".length],
+    ["word-attached hash", "abc#general", "abc#general".length, "abc#general".length],
+    [
+      "URL-like text",
+      "https://example.test/#general",
+      "https://example.test/#general".length,
+      "https://example.test/#general".length,
+    ],
+  ])(
+    "does not show channel autocomplete for %s",
+    async (_, value, selectionStart, selectionEnd) => {
+      renderChannelHarness();
+      const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+      inputFromUser(input, value, selectionEnd);
+      setInputSelection(input, selectionStart, selectionEnd);
+
+      await waitFor(() => {
+        expect(screen.queryByRole("listbox", { name: /channel suggestions/i })).toBeNull();
+      });
+    },
+  );
+
+  test("Enter commits a selected channel before form submit and renders it as a chip", async () => {
+    const { changes, onSubmit } = renderChannelFormHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, "hello #gen world", "hello #gen".length);
+    await screen.findByRole("listbox", { name: /channel suggestions/i });
+
+    const event = keyDown(input, { key: "Enter" });
+
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => {
+      expect(input.value).toBe("hello <#100> world");
+      expect(input.selectionStart).toBe("hello <#100> ".length);
+      expect(within(input).getByText("#general")).toHaveClass("bg-gray-200", "text-gray-800");
+    });
+    expect(screen.queryByText("<#100>")).toBeNull();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(changes.at(-1)).toBe("hello <#100> world");
+  });
+
+  test("Tab, mouse, and arrow keys work for channel autocomplete", async () => {
+    const { changes } = renderChannelHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, "#");
+    const listbox = await screen.findByRole("listbox", { name: /channel suggestions/i });
+    const options = within(listbox).getAllByRole("option");
+
+    let event = keyDown(input, { key: "ArrowUp" });
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(options.at(-1)).toHaveAttribute("aria-selected", "true"));
+
+    event = keyDown(input, { key: "ArrowDown" });
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(options[0]).toHaveAttribute("aria-selected", "true"));
+
+    event = keyDown(input, { key: "Tab" });
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(input.value).toBe("<#100> "));
+    expect(changes.at(-1)).toBe("<#100> ");
+
+    inputFromUser(input, "#ran");
+    const random = await screen.findByRole("option", { name: /channel #random/i });
+    const mouseDown = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    fireEvent(random, mouseDown);
+    expect(mouseDown.defaultPrevented).toBe(true);
+    fireEvent.click(random);
+
+    await waitFor(() => {
+      expect(input.value).toBe("<#200> ");
+      expect(document.activeElement).toBe(input);
+    });
+  });
+
+  test("Escape dismisses channel autocomplete before owner keyboard handlers", async () => {
+    const ownerKeyDown = vi.fn((event: any) => {
+      if (event.key === "Escape") event.preventDefault();
+    });
+    renderChannelHarness("", { onKeyDown: ownerKeyDown });
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    inputFromUser(input, "#gen");
+    await screen.findByRole("listbox", { name: /channel suggestions/i });
+
+    const event = keyDown(input, { key: "Escape" });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(ownerKeyDown).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(screen.queryByRole("listbox", { name: /channel suggestions/i })).toBeNull();
+    });
+  });
+
+  test("renders known channel markers as chips, leaves unknown markers readable, and edits safely", async () => {
+    const { changes } = renderChannelHarness("hello <#100> missing <#999>");
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    expect(input.value).toBe("hello <#100> missing <#999>");
+    await waitFor(() => {
+      expect(within(input).getByText("#general")).toHaveClass("bg-gray-200", "text-gray-800");
+    });
+    expect(input.textContent).toContain("<#999>");
+    expect(screen.queryByText("<#100>")).toBeNull();
+
+    input.append(document.createTextNode("!"));
+    setDomSelection(input, input.childNodes.length);
+    fireEvent.input(input);
+
+    await waitFor(() => {
+      expect(input.value).toBe("hello <#100> missing <#999>!");
+    });
+    expect(changes.at(-1)).toBe("hello <#100> missing <#999>!");
+  });
+
+  test("navigates and deletes channel chips as whole markers", async () => {
+    const marker = "<#100>";
+    const { changes } = renderChannelHarness(`one\n${marker}\ntwo`);
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    await within(input).findByText("#general");
+
+    setInputSelection(input, "one\n".length);
+    fireEvent.keyDown(input, { key: "ArrowRight" });
+    await waitFor(() => {
+      expect(input.selectionStart).toBe(`one\n${marker}`.length);
+    });
+
+    fireEvent.keyDown(input, { key: "ArrowLeft" });
+    await waitFor(() => {
+      expect(input.selectionStart).toBe("one\n".length);
+    });
+
+    fireEvent.keyDown(input, { key: "Delete" });
+    await waitFor(() => {
+      expect(input.value).toBe("one\n\ntwo");
+    });
+    expect(changes).toContain("one\n\ntwo");
   });
 
   test("shows native emoji autocomplete suggestions for a boundary-valid prefix", async () => {

@@ -1,19 +1,20 @@
-import { cloneElement, Fragment, isValidElement } from "react";
-
 import {
-  If,
-  useAfterRenderEffect,
-  useComputedValue,
-  useSignalState,
-  useStableDomId,
-  registerCleanup,
-  useMountEffect,
-  type JSX,
-} from "../hooks/react-state";
-import { resolveServerUrl, type CustomEmoji, type MentionUser } from "../api";
+  cloneElement,
+  Fragment,
+  isValidElement,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+
+import { useStableDomId, type JSX } from "../hooks/react-state";
+import { resolveServerUrl, type Channel, type CustomEmoji, type MentionUser } from "../api";
+import { useOptionalChannels } from "../contexts/channels";
 import { useOptionalCustomEmojis } from "../contexts/custom-emojis";
 import { parseCustomEmojiMarkers } from "../emoji/custom-emojis";
 import { linkifyText } from "../linkify";
+import { parseChannelMarkers } from "../mentions/channel-mentions";
 import { mentionDisplayName, parseMentionMarkers } from "../mentions/mentions";
 import Avatar from "./avatar";
 
@@ -21,6 +22,9 @@ const DEFAULT_TEXT_CLASS = "whitespace-pre-wrap break-words [overflow-wrap:anywh
 const DEFAULT_LINK_CLASS = "text-blue-700 hover:underline break-all";
 const DEFAULT_MENTION_CLASS =
   "inline rounded bg-blue-100 px-1 py-0 font-medium text-blue-800 align-baseline";
+const DEFAULT_CHANNEL_MENTION_CLASS =
+  "inline rounded bg-gray-200 px-1 py-0 font-medium text-gray-800 align-baseline";
+const CHANNEL_LINK_CLASS = `${DEFAULT_CHANNEL_MENTION_CLASS} hover:bg-gray-300 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-400`;
 const INTERACTIVE_MENTION_CLASS = `${DEFAULT_MENTION_CLASS} cursor-pointer border-0 hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-400`;
 const CURRENT_USER_MENTION_CLASS =
   "inline rounded bg-yellow-100 px-1 py-0 font-semibold text-yellow-900 align-baseline";
@@ -34,13 +38,14 @@ export interface RichTextRenderOptions {
   text: string;
   mentions?: readonly MentionUser[];
   customEmojiById: (id: number) => CustomEmoji | null;
+  channels?: readonly Channel[];
   currentUserId?: number | null;
   linkClass?: string;
   onMentionClick?: MentionClickHandler;
 }
 
 interface MarkerRange {
-  type: "mention" | "custom-emoji";
+  type: "mention" | "custom-emoji" | "channel";
   start: number;
   end: number;
   marker: string;
@@ -49,7 +54,7 @@ interface MarkerRange {
 }
 
 interface MentionPreviewState {
-  userId: number;
+  user: MentionUser;
   anchor: HTMLElement;
 }
 
@@ -57,6 +62,14 @@ function mentionUsersById(mentions: readonly MentionUser[]): Map<number, Mention
   const byId = new Map<number, MentionUser>();
   for (const mention of mentions) {
     if (!byId.has(mention.id)) byId.set(mention.id, mention);
+  }
+  return byId;
+}
+
+function channelsById(channels: readonly Channel[]): Map<number, Channel> {
+  const byId = new Map<number, Channel>();
+  for (const channel of channels) {
+    if (!byId.has(channel.id)) byId.set(channel.id, channel);
   }
   return byId;
 }
@@ -149,12 +162,30 @@ function collectMarkerRanges(text: string): MarkerRange[] {
     cursor += token.marker.length;
   }
 
+  cursor = 0;
+  for (const token of parseChannelMarkers(text)) {
+    if (token.type === "text") {
+      cursor += token.value.length;
+      continue;
+    }
+
+    ranges.push({
+      type: "channel",
+      start: cursor,
+      end: cursor + token.marker.length,
+      marker: token.marker,
+      id: token.id,
+    });
+    cursor += token.marker.length;
+  }
+
   return ranges.sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
 function renderPlainTextSegment(
   text: string,
   mentionedUsers: ReadonlyMap<number, MentionUser>,
+  knownChannels: ReadonlyMap<number, Channel>,
   options: RichTextRenderOptions,
 ): JSX.Element[] {
   const parts: JSX.Element[] = [];
@@ -171,6 +202,9 @@ function renderPlainTextSegment(
       } else {
         parts.push(range.marker);
       }
+    } else if (range.type === "channel") {
+      const channel = knownChannels.get(range.id);
+      parts.push(channel ? renderChannelMention(channel) : range.marker);
     } else {
       parts.push(
         renderCustomEmoji(
@@ -212,6 +246,23 @@ function renderMention(user: MentionUser, options: RichTextRenderOptions): JSX.E
   );
 }
 
+function renderChannelMention(channel: Channel): JSX.Element {
+  const label = `#${channel.name}`;
+  if (channel.type !== "text") {
+    return (
+      <span className={DEFAULT_CHANNEL_MENTION_CLASS} title={`${label} (${channel.type})`}>
+        {label}
+      </span>
+    );
+  }
+
+  return (
+    <a className={CHANNEL_LINK_CLASS} href={`/channel/${channel.id}`} title={label}>
+      {label}
+    </a>
+  );
+}
+
 function keyedRichTextPart(part: JSX.Element, key: string): JSX.Element {
   if (isValidElement(part)) return cloneElement(part, { key });
   return <Fragment key={key}>{part}</Fragment>;
@@ -219,6 +270,7 @@ function keyedRichTextPart(part: JSX.Element, key: string): JSX.Element {
 
 export function renderRichText(options: RichTextRenderOptions): JSX.Element[] {
   const mentionedUsers = mentionUsersById(options.mentions ?? []);
+  const knownChannels = channelsById(options.channels ?? []);
   const linkClass = options.linkClass ?? DEFAULT_LINK_CLASS;
   const parts: JSX.Element[] = [];
   let partIndex = 0;
@@ -235,7 +287,12 @@ export function renderRichText(options: RichTextRenderOptions): JSX.Element[] {
         </a>,
       );
     } else {
-      for (const part of renderPlainTextSegment(token.value, mentionedUsers, options)) {
+      for (const part of renderPlainTextSegment(
+        token.value,
+        mentionedUsers,
+        knownChannels,
+        options,
+      )) {
         pushPart(part);
       }
     }
@@ -274,62 +331,71 @@ export default function MessageText(props: {
   className?: string;
   linkClass?: string;
   onMentionClick?: MentionClickHandler;
+  channels?: readonly Channel[];
 }) {
   const customEmojis = useOptionalCustomEmojis();
+  const optionalChannels = useOptionalChannels();
   const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
+  const channels = props.channels ?? optionalChannels?.channels() ?? [];
   const previewId = useStableDomId();
-  const [preview, setPreview] = useSignalState<MentionPreviewState | null>(null);
-  const mentionedUsers = useComputedValue(() => mentionUsersById(props.mentions ?? []));
-  const previewUser = useComputedValue(() => {
-    const state = preview();
-    if (!state) return null;
-    return mentionedUsers().get(state.userId) ?? null;
-  });
-  let popoverRef: HTMLDivElement | null | undefined;
+  const [preview, setPreview] = useState<MentionPreviewState | null>(null);
+  const previewRef = useRef<MentionPreviewState | null>(preview);
+  previewRef.current = preview;
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+  const previewOpenedAtRef = useRef(0);
+  const mentionedUsers = useMemo(() => mentionUsersById(props.mentions ?? []), [props.mentions]);
+  const previewUser = preview ? (mentionedUsers.get(preview.user.id) ?? preview.user) : null;
 
   const closePreview = () => setPreview(null);
 
   const handleMentionClick: MentionClickHandler = (user, event) => {
+    previewOpenedAtRef.current = performance.now();
     event.stopPropagation();
-    const anchor = (event.currentTarget ?? event.target) as HTMLElement | null;
-    if (anchor) setPreview({ userId: user.id, anchor });
+    const eventTarget = event.currentTarget ?? event.target;
+    const anchor =
+      eventTarget instanceof HTMLElement
+        ? eventTarget
+        : document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : document.body;
+    setPreview({ user, anchor });
     props.onMentionClick?.(user, event.nativeEvent ?? event);
   };
 
-  useAfterRenderEffect(() => {
-    const state = preview();
-    if (!state) return;
-    if (!mentionedUsers().has(state.userId) || !textMentionsUser(props.text, state.userId)) {
-      closePreview();
-    }
+  useEffect(() => {
+    if (!preview) return;
+    if (!textMentionsUser(props.text, preview.user.id)) closePreview();
   });
 
-  useMountEffect(() => {
+  useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
-      const state = preview();
+      const state = previewRef.current;
       if (!state) return;
 
       const target = event.target;
       if (!(target instanceof Node)) return;
-      if (state.anchor.contains(target) || popoverRef?.contains(target)) return;
+      if (state.anchor.contains(target) || popoverRef.current?.contains(target)) return;
       closePreview();
     };
 
-    const onKeyDown = (event: any) => {
+    const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") closePreview();
     };
 
-    const onScroll = () => closePreview();
+    const onScroll = (event: Event) => {
+      if (event.isTrusted && performance.now() - previewOpenedAtRef.current < 250) return;
+      closePreview();
+    };
 
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("keydown", onKeyDown);
     window.addEventListener("scroll", onScroll, true);
-    registerCleanup(() => {
+    return () => {
       document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("scroll", onScroll, true);
-    });
-  });
+    };
+  }, []);
 
   return (
     <div className={props.className ?? props.class ?? DEFAULT_TEXT_CLASS}>
@@ -337,41 +403,37 @@ export default function MessageText(props: {
         text: props.text,
         mentions: props.mentions ?? [],
         customEmojiById,
+        channels,
         currentUserId: props.currentUserId,
         linkClass: props.linkClass,
         onMentionClick: handleMentionClick,
       })}
-      <If when={preview()}>
-        {(state) => (
-          <If when={previewUser()}>
-            {(user) => {
-              const display = () => mentionDisplayName(user());
-              return (
-                <div
-                  id={previewId}
-                  ref={(el) => {
-                    popoverRef = el;
-                  }}
-                  role="dialog"
-                  aria-label={mentionPreviewLabel(user())}
-                  className="fixed z-50 rounded-lg border border-gray-200 bg-white p-3 text-gray-900 shadow-lg"
-                  style={previewPosition(state().anchor)}
-                >
-                  <div className="flex items-center gap-3">
-                    <Avatar url={user().avatar_url} username={display()} size={48} />
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold text-gray-950">
-                        {display()}
-                      </div>
-                      <div className="truncate text-sm text-gray-600">@{user().username}</div>
-                    </div>
-                  </div>
-                </div>
-              );
-            }}
-          </If>
-        )}
-      </If>
+      {preview && previewUser ? (
+        <div
+          id={previewId}
+          ref={(el) => {
+            popoverRef.current = el;
+          }}
+          role="dialog"
+          aria-label={mentionPreviewLabel(previewUser)}
+          className="fixed z-50 rounded-lg border border-gray-200 bg-white p-3 text-gray-900 shadow-lg"
+          style={previewPosition(preview.anchor)}
+        >
+          <div className="flex items-center gap-3">
+            <Avatar
+              url={previewUser.avatar_url}
+              username={mentionDisplayName(previewUser)}
+              size={48}
+            />
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-gray-950">
+                {mentionDisplayName(previewUser)}
+              </div>
+              <div className="truncate text-sm text-gray-600">@{previewUser.username}</div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

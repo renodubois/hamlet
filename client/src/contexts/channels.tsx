@@ -68,8 +68,12 @@ export function ChannelsProvider(props: { children: ReactNode }) {
   );
 }
 
+export function useOptionalChannels() {
+  return useContext(ChannelsContext);
+}
+
 export function useChannels() {
-  const ctx = useContext(ChannelsContext);
+  const ctx = useOptionalChannels();
   if (!ctx) throw new Error("useChannels must be used inside ChannelsProvider");
   return ctx;
 }

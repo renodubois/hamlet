@@ -549,8 +549,8 @@ describe("<ChannelMessages> attachments", () => {
     const grid = screen.getByRole("list", { name: /2 photo attachments/i });
     expect(grid).toHaveClass("grid", "gap-2", "max-w-xl", "grid-cols-2");
     expect(screen.getByRole("img", { name: /photo 1 of 2 from them/i })).toHaveAttribute(
-      "loading",
-      "lazy",
+      "decoding",
+      "async",
     );
     expect(screen.getByRole("img", { name: /photo 2 of 2 from them/i })).toBeInTheDocument();
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
