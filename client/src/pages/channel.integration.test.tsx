@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "../test/testing-library";
+import { act, render, screen, fireEvent, waitFor, within } from "../test/testing-library";
 import userEvent from "@testing-library/user-event";
 import * as ReactRouter from "react-router-dom";
 
@@ -92,20 +92,20 @@ function seedAuthed() {
   return state;
 }
 
-function nextMessageId(prev: Message[]): number {
-  return prev.reduce((max, m) => Math.max(max, m.id), 0) + 1;
-}
-
 function setInputSelection(input: HTMLInputElement, start: number, end = start) {
-  input.focus();
-  input.setSelectionRange(start, end);
-  fireEvent.select(input);
+  act(() => {
+    input.focus();
+    input.setSelectionRange(start, end);
+    fireEvent.select(input);
+  });
 }
 
 function inputFromUser(input: HTMLInputElement, value: string, caretIndex = value.length) {
-  input.value = value;
-  input.setSelectionRange(caretIndex, caretIndex);
-  fireEvent.input(input);
+  act(() => {
+    input.value = value;
+    input.setSelectionRange(caretIndex, caretIndex);
+    fireEvent.input(input);
+  });
 }
 
 function deferred<T = void>() {
@@ -282,6 +282,26 @@ describe("Channel view integration", () => {
     });
   });
 
+  test("bottom-anchors short message lists and scrolls initial load to latest", async () => {
+    seedAuthed();
+    mountAt("/channel/100");
+    const scroll = setScrollMetrics(messagesRegion(), {
+      scrollHeight: 1000,
+      clientHeight: 100,
+      scrollTop: 0,
+    });
+
+    await waitFor(() => expect(screen.getByText("world")).toBeInTheDocument());
+
+    expect(messagesRegion()).toHaveClass("flex", "flex-col");
+    expect(assertExists(messagesRegion().querySelector("section"), "messages section")).toHaveClass(
+      "min-h-full",
+      "flex-1",
+      "justify-end",
+    );
+    await waitFor(() => expect(scroll.scrollTop).toBe(1000));
+  });
+
   test("marks the focused near-bottom active channel read with the last visible message", async () => {
     const focusSpy = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const state = seedAuthed();
@@ -312,6 +332,7 @@ describe("Channel view integration", () => {
       clientHeight: 100,
       scrollTop: 100,
     });
+    fireEvent.scroll(messagesRegion());
     assertExists(latestFakeEventSource(), "latestFakeEventSource").pushMessage({
       id: 3,
       user_id: 2,
@@ -340,6 +361,38 @@ describe("Channel view integration", () => {
     focusSpy.mockRestore();
   });
 
+  test("incoming messages near the bottom keep following the latest message", async () => {
+    const focusSpy = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    seedAuthed();
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("world")).toBeInTheDocument());
+    const scroll = setScrollMetrics(messagesRegion(), {
+      scrollHeight: 1000,
+      clientHeight: 100,
+      scrollTop: 920,
+    });
+    assertExists(latestFakeEventSource(), "latestFakeEventSource").pushMessage({
+      id: 3,
+      user_id: 2,
+      channel_id: 100,
+      parent_id: null,
+      text: "auto-followed",
+      username: "bob",
+      display_name: null,
+      avatar_url: null,
+      suppress_embeds: false,
+      mentions: [],
+      attachments: [],
+      embeds: [],
+    });
+
+    await waitFor(() => expect(screen.getByText("auto-followed")).toBeInTheDocument());
+    await waitFor(() => expect(scroll.scrollTop).toBe(1000));
+    expect(screen.queryByRole("button", { name: /new messages below/i })).toBeNull();
+    focusSpy.mockRestore();
+  });
+
   test("jumping to newest messages scrolls to bottom and hands off to mark-read", async () => {
     const focusSpy = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const state = seedAuthed();
@@ -352,6 +405,7 @@ describe("Channel view integration", () => {
       clientHeight: 100,
       scrollTop: 100,
     });
+    fireEvent.scroll(messagesRegion());
     assertExists(latestFakeEventSource(), "latestFakeEventSource").pushMessage({
       id: 4,
       user_id: 2,
@@ -1892,7 +1946,7 @@ describe("Channel view integration", () => {
 
     const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
     es.pushMessage({
-      id: nextMessageId([]),
+      id: 3,
       user_id: 3,
       channel_id: 100,
       text: "hot off the wire",

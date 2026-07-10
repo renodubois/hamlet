@@ -1,3 +1,5 @@
+import { cloneElement, Fragment, isValidElement } from "react";
+
 import {
   If,
   useAfterRenderEffect,
@@ -210,20 +212,32 @@ function renderMention(user: MentionUser, options: RichTextRenderOptions): JSX.E
   );
 }
 
+function keyedRichTextPart(part: JSX.Element, key: string): JSX.Element {
+  if (isValidElement(part)) return cloneElement(part, { key });
+  return <Fragment key={key}>{part}</Fragment>;
+}
+
 export function renderRichText(options: RichTextRenderOptions): JSX.Element[] {
   const mentionedUsers = mentionUsersById(options.mentions ?? []);
   const linkClass = options.linkClass ?? DEFAULT_LINK_CLASS;
   const parts: JSX.Element[] = [];
+  let partIndex = 0;
+  const pushPart = (part: JSX.Element) => {
+    parts.push(keyedRichTextPart(part, `part-${partIndex}`));
+    partIndex += 1;
+  };
 
   for (const token of linkifyText(options.text)) {
     if (token.type === "link") {
-      parts.push(
+      pushPart(
         <a href={token.url} target="_blank" rel="noopener noreferrer" className={linkClass}>
           {token.url}
         </a>,
       );
     } else {
-      parts.push(...renderPlainTextSegment(token.value, mentionedUsers, options));
+      for (const part of renderPlainTextSegment(token.value, mentionedUsers, options)) {
+        pushPart(part);
+      }
     }
   }
 

@@ -114,9 +114,12 @@ describe("ReadStatesProvider", () => {
     expect(screen.getByText("mentions 0")).toBeInTheDocument();
     expect(markChannelReadMock).toHaveBeenCalledWith(10, 20);
 
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     markChannelReadMock.mockRejectedValueOnce(new Error("network"));
     fireEvent.click(screen.getByRole("button", { name: /mark read/i }));
     await waitFor(() => expect(markChannelReadMock).toHaveBeenCalledTimes(2));
+    expect(warnSpy).toHaveBeenCalledWith("failed to mark channel read", expect.any(Error));
+    warnSpy.mockRestore();
   });
 
   test("applies read-state SSE updates and refetches on stream and focus recovery", async () => {

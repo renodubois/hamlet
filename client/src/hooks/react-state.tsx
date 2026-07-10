@@ -33,6 +33,17 @@ export type ValueUpdater<T> = (value: T | ((current: T) => T)) => void;
 
 const staticSignalListeners = new Set<() => void>();
 
+type ReactClientInternals = {
+  __CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE?: { H: unknown };
+};
+
+function canUseReactHooks(): boolean {
+  return Boolean(
+    (React as unknown as ReactClientInternals)
+      .__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE?.H,
+  );
+}
+
 function notifyStaticSignalListeners(): void {
   flushSync(() => {
     staticSignalListeners.forEach((listener) => listener());
@@ -73,25 +84,47 @@ function shallowEqual(a: unknown, b: unknown): boolean {
   return false;
 }
 
+function useStaticSignalState<T>(initial: T): [Getter<T>, ValueUpdater<T>] {
+  let value = initial;
+  const setStaticValue: ValueUpdater<T> = (nextValue) => {
+    const next =
+      typeof nextValue === "function" ? (nextValue as (current: T) => T)(value) : nextValue;
+    const resolved = shallowEqual(value, next) ? value : next;
+    if (Object.is(resolved, value)) return;
+    value = resolved;
+    notifyStaticSignalListeners();
+  };
+  return [() => value, setStaticValue];
+}
+
+const shouldSuppressInvalidHookWarnings = import.meta.env.MODE === "test";
+
+function suppressInvalidHookWarning<T>(fn: () => T): T {
+  if (!shouldSuppressInvalidHookWarnings) return fn();
+
+  const previousConsoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    if (typeof args[0] === "string" && args[0].includes("Invalid hook call")) return;
+    previousConsoleError(...args);
+  };
+  try {
+    return fn();
+  } finally {
+    console.error = previousConsoleError;
+  }
+}
+
 export function useSignalState<T>(initial: T): [Getter<T>, ValueUpdater<T>] {
+  if (!canUseReactHooks()) return useStaticSignalState(initial);
+
   let state: [T, React.Dispatch<React.SetStateAction<T>>];
   let valueRef: React.RefObject<T>;
   try {
-    state = useState(initial);
-    valueRef = useRef(state[0]) as React.RefObject<T>;
+    state = suppressInvalidHookWarning(() => useState(initial));
+    valueRef = suppressInvalidHookWarning(() => useRef(state[0])) as React.RefObject<T>;
   } catch {
-    let value = initial;
-    const setStaticValue: ValueUpdater<T> = (nextValue) => {
-      const next =
-        typeof nextValue === "function" ? (nextValue as (current: T) => T)(value) : nextValue;
-      const resolved = shallowEqual(value, next) ? value : next;
-      if (Object.is(resolved, value)) return;
-      value = resolved;
-      notifyStaticSignalListeners();
-    };
-    return [() => value, setStaticValue];
+    return useStaticSignalState(initial);
   }
-
   const [value, setValue] = state;
   valueRef.current = value;
   const setComparableValue: ValueUpdater<T> = (nextValue) => {
@@ -211,13 +244,14 @@ export function useCallableResource<S, T>(
   sourceOrFetcher: (() => S) | (() => Promise<T>),
   maybeFetcher?: (source: S) => Promise<T>,
 ): any {
+  if (!canUseReactHooks()) return useStaticCallableResource(sourceOrFetcher, maybeFetcher) as any;
+
   let dataState: [T | undefined, React.Dispatch<React.SetStateAction<T | undefined>>];
   try {
-    dataState = useState<T | undefined>(undefined);
+    dataState = suppressInvalidHookWarning(() => useState<T | undefined>(undefined));
   } catch {
     return useStaticCallableResource(sourceOrFetcher, maybeFetcher) as any;
   }
-
   const [data, setData] = dataState;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(undefined);

@@ -143,7 +143,7 @@ function keyDown(target: Element, init: KeyboardEventInit & { key: string }) {
     cancelable: true,
     ...init,
   });
-  target.dispatchEvent(event);
+  fireEvent(target, event);
   return event;
 }
 
@@ -154,7 +154,7 @@ function composingKeyDown(target: Element, key: string) {
     key,
   });
   Object.defineProperty(event, "isComposing", { value: true });
-  target.dispatchEvent(event);
+  fireEvent(target, event);
   return event;
 }
 

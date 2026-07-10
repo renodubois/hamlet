@@ -8,6 +8,15 @@ export default defineConfig({
   },
   test: {
     environment: "happy-dom",
+    environmentOptions: {
+      happyDOM: {
+        settings: {
+          navigation: {
+            disableChildFrameNavigation: true,
+          },
+        },
+      },
+    },
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     include: [

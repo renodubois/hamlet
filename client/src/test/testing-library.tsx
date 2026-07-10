@@ -7,10 +7,11 @@ import {
   waitFor,
   within,
   cleanup,
+  act,
   type RenderOptions,
 } from "@testing-library/react";
 
-export { fireEvent, screen, waitFor, within, cleanup };
+export { fireEvent, screen, waitFor, within, cleanup, act };
 
 export function render(
   ui: React.ReactElement | (() => React.ReactElement),

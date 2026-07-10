@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   useAfterRenderEffect,
@@ -73,6 +73,7 @@ export default function ChannelView() {
   const replyBannerId = useStableDomId();
   const [focusComposerRootId, setFocusComposerRootId] = useSignalState<number | null>(null);
   const [hasNewMessagesBelow, setHasNewMessagesBelow] = useSignalState(false);
+  const [scrollToBottomRequestVersion, setScrollToBottomRequestVersion] = useState(0);
   const openThreadRootId = useComputedValue(() =>
     parseThreadId(searchParams.get("thread") ?? undefined),
   );
@@ -96,6 +97,7 @@ export default function ChannelView() {
   const userIdRef = useRef(user()?.id ?? null);
   userIdRef.current = user()?.id ?? null;
   const hasSeenInitialUserProfileRef = useRef(false);
+  const pendingScrollToBottomRef = useRef<{ afterScroll?: () => void } | null>(null);
 
   const scheduleActiveChannelMarkRead = () => {
     if (!messagesScrollRef.current) return;
@@ -137,11 +139,17 @@ export default function ChannelView() {
     afterScroll?.();
   };
 
+  const requestScrollMessagesToBottom = (afterScroll?: () => void) => {
+    pendingScrollToBottomRef.current = { afterScroll };
+    setScrollToBottomRequestVersion((version) => version + 1);
+  };
+
   const handleMessagesScroll = () => {
-    if (
-      messagesScrollRef.current &&
-      getViewportReadMarkerState(messagesScrollRef.current).nearBottom
-    ) {
+    if (!messagesScrollRef.current) return;
+    const marker = getViewportReadMarkerState(messagesScrollRef.current);
+    if (!marker.nearBottom) {
+      pendingScrollToBottomRef.current = null;
+    } else {
       setHasNewMessagesBelow(false);
     }
     scheduleActiveChannelMarkRead();
@@ -150,6 +158,13 @@ export default function ChannelView() {
   const jumpToLatestMessages = () => {
     scrollMessagesToBottom(scheduleActiveChannelMarkRead);
   };
+
+  useLayoutEffect(() => {
+    const pendingScroll = pendingScrollToBottomRef.current;
+    if (!pendingScroll) return;
+    pendingScrollToBottomRef.current = null;
+    scrollMessagesToBottom(pendingScroll.afterScroll);
+  }, [scrollToBottomRequestVersion]);
 
   const showNewMessagesBelow = () =>
     hasNewMessagesBelow() ||
@@ -194,7 +209,7 @@ export default function ChannelView() {
     const data = resource();
     primeMentionUsersFromMessages(data ?? []);
     setMessages(preserveIdentity(data ?? [], { key: "id" }));
-    scrollMessagesToBottom(scheduleActiveChannelMarkRead);
+    requestScrollMessagesToBottom(scheduleActiveChannelMarkRead);
   }, [params.id, resource.latest]);
 
   // When the current user's profile changes (display_name, avatar), patch
@@ -255,8 +270,8 @@ export default function ChannelView() {
     const rootId = openThreadRootId();
     if (rootId === null) return;
     if (resource.loading) return;
-    const loadedMessages = resource();
-    const rootInChannel = (loadedMessages ?? messages).some(
+    const loadedMessages = resource() ?? [];
+    const rootInChannel = [...loadedMessages, ...messages].some(
       (m) => m.id === rootId && m.parent_id == null,
     );
     if (!rootInChannel) {
@@ -332,7 +347,7 @@ export default function ChannelView() {
       primeMentionUsers(m.mentions ?? []);
       setMessages((current) => [...current, m]);
       if (shouldAutoFollow) {
-        scrollMessagesToBottom(scheduleActiveChannelMarkRead);
+        requestScrollMessagesToBottom(scheduleActiveChannelMarkRead);
       } else {
         setHasNewMessagesBelow(true);
         scheduleActiveChannelMarkRead();
@@ -418,7 +433,7 @@ export default function ChannelView() {
           ref={(el) => {
             messagesScrollRef.current = el;
           }}
-          className="min-w-0 flex-1 overflow-y-auto"
+          className="min-h-0 min-w-0 flex flex-1 flex-col overflow-y-auto"
           role="region"
           aria-label="Messages"
           onScroll={handleMessagesScroll}

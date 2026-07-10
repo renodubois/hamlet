@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
+import { act, fireEvent, render, screen, waitFor, within } from "../test/testing-library";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { useSignalState } from "../hooks/react-state";
@@ -165,7 +165,7 @@ function renderHarness(initialValue = "") {
 
   const result = render(() => {
     const [value, setValue] = useSignalState(initialValue);
-    setExternalValue = (nextValue: string) => setValue(nextValue);
+    setExternalValue = (nextValue: string) => act(() => setValue(nextValue));
 
     return (
       <MessageInput
@@ -231,9 +231,11 @@ async function selectEmoji(searchQuery: string, emojiName: RegExp) {
 }
 
 function setInputSelection(input: HTMLInputElement, start: number, end = start) {
-  input.focus();
-  input.setSelectionRange(start, end);
-  fireEvent.select(input);
+  act(() => {
+    input.focus();
+    input.setSelectionRange(start, end);
+    fireEvent.select(input);
+  });
 }
 
 function inputFromUser(
@@ -242,9 +244,11 @@ function inputFromUser(
   caretIndex = value.length,
   eventInit?: InputEventInit,
 ) {
-  input.value = value;
-  input.setSelectionRange(caretIndex, caretIndex);
-  fireEvent.input(input, eventInit);
+  act(() => {
+    input.value = value;
+    input.setSelectionRange(caretIndex, caretIndex);
+    fireEvent.input(input, eventInit);
+  });
 }
 
 async function expectEmojiAutocompleteOpen() {
@@ -294,14 +298,14 @@ function renderFormHarness(initialValue = "") {
 
 function keyDown(input: HTMLElement, init: KeyboardEventInit): any {
   const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
-  input.dispatchEvent(event);
+  fireEvent(input, event);
   return event;
 }
 
 function composingEnter(input: HTMLElement): any {
   const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
   Object.defineProperty(event, "isComposing", { value: true });
-  input.dispatchEvent(event);
+  fireEvent(input, event);
   return event;
 }
 
@@ -616,7 +620,7 @@ describe("<MessageInput>", () => {
     inputFromUser(input, "@bo");
     const bob = await screen.findByRole("option", { name: /mention bobby @bob/i });
     const mouseDown = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
-    bob.dispatchEvent(mouseDown);
+    fireEvent(bob, mouseDown);
     expect(mouseDown.defaultPrevented).toBe(true);
     fireEvent.click(bob);
 
@@ -1097,7 +1101,7 @@ describe("<MessageInput>", () => {
     const option = await screen.findByRole("option", { name: /:smile:/i });
 
     const mouseDown = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
-    option.dispatchEvent(mouseDown);
+    fireEvent(option, mouseDown);
     expect(mouseDown.defaultPrevented).toBe(true);
     fireEvent.click(option);
 
@@ -1374,6 +1378,29 @@ describe("<MessageInput>", () => {
       expect(input.value).toBe("one\n\ntwo");
     });
     expect(changes).toContain("one\n\ntwo");
+  });
+
+  test("keeps plain typing order and honors a moved caret", async () => {
+    const user = userEvent.setup();
+    const { changes } = renderHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+
+    await user.click(input);
+    await user.keyboard("abc");
+
+    await waitFor(() => {
+      expect(input.value).toBe("abc");
+      expect(input.selectionStart).toBe("abc".length);
+    });
+
+    setInputSelection(input, "a".length);
+    inputFromUser(input, "aXbc", "aX".length);
+
+    await waitFor(() => {
+      expect(input.value).toBe("aXbc");
+      expect(input.selectionStart).toBe("aX".length);
+    });
+    expect(changes.at(-1)).toBe("aXbc");
   });
 
   test("keeps the composer stable while typing a custom emoji shortcode prefix", async () => {

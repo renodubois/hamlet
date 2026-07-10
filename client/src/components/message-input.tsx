@@ -782,6 +782,12 @@ export default function MessageInput(props: MessageInputProps) {
   const previousMentionAutocompleteTokenKeyRef = useRef<string | null>(null);
   const mentionSearchRequestIdRef = useRef(0);
   const lastMentionSearchKeyRef = useRef<string | null>(null);
+  const compatibilitySelectionVersionRef = useRef(0);
+  const pendingSelectionRestoreRef = useRef<{
+    value: string;
+    selection: SelectionRange;
+    focusInput?: boolean;
+  } | null>(null);
   const stagedEditorValueRef = useRef<string | null>(null);
   const disposedRef = useRef(false);
 
@@ -913,7 +919,7 @@ export default function MessageInput(props: MessageInputProps) {
       if (disposedRef.current || !editor) return;
       if (focusInput) editor.focus();
       placeEditorSelection(editor, normalized);
-      setSelection(normalized);
+      selectionRef.current = normalized;
     });
   };
 
@@ -923,18 +929,16 @@ export default function MessageInput(props: MessageInputProps) {
     options: { focusInput?: boolean; restoreSelection?: boolean } = {},
   ) => {
     const normalized = normalizeSelection(nextSelection, value);
-    setSelection(normalized);
+    selectionRef.current = normalized;
     props.onChange(value);
 
     if (!options.focusInput && !options.restoreSelection) return;
 
-    queueMicrotask(() => {
-      const editor = inputRef.current;
-      if (disposedRef.current || !editor) return;
-      if (options.focusInput) editor.focus();
-      placeEditorSelection(editor, normalized);
-      setSelection(normalized);
-    });
+    pendingSelectionRestoreRef.current = {
+      value,
+      selection: normalized,
+      focusInput: options.focusInput,
+    };
   };
 
   const handleInput: JSX.EventHandler<MessageEditorElement, InputEvent> = (event) => {
@@ -991,7 +995,7 @@ export default function MessageInput(props: MessageInputProps) {
       next.value,
       { start: next.caretIndex, end: selectionEnd },
       {
-        restoreSelection: !usedStagedValue || next.replaced,
+        restoreSelection: true,
       },
     );
   };
@@ -1250,13 +1254,26 @@ export default function MessageInput(props: MessageInputProps) {
           stagedEditorValueRef.current = stagedValue;
           el.textContent = stagedValue;
           const caretIndex = stagedValue.length;
-          selectionRef.current = { start: caretIndex, end: caretIndex };
+          const selection = { start: caretIndex, end: caretIndex };
+          const selectionVersion = ++compatibilitySelectionVersionRef.current;
+          selectionRef.current = selection;
+          queueMicrotask(() => {
+            if (
+              disposedRef.current ||
+              inputRef.current !== el ||
+              compatibilitySelectionVersionRef.current !== selectionVersion
+            ) {
+              return;
+            }
+            placeEditorSelection(el, selection);
+          });
         },
       },
       selectionStart: {
         configurable: true,
         get: () => selectionRef.current.start,
         set: (start: number) => {
+          compatibilitySelectionVersionRef.current += 1;
           selectionRef.current = normalizeSelection(
             { start, end: selectionRef.current.end },
             stagedEditorValueRef.current ?? props.value,
@@ -1267,6 +1284,7 @@ export default function MessageInput(props: MessageInputProps) {
         configurable: true,
         get: () => selectionRef.current.end,
         set: (end: number) => {
+          compatibilitySelectionVersionRef.current += 1;
           selectionRef.current = normalizeSelection(
             { start: selectionRef.current.start, end },
             stagedEditorValueRef.current ?? props.value,
@@ -1280,6 +1298,7 @@ export default function MessageInput(props: MessageInputProps) {
         { start, end },
         stagedEditorValueRef.current ?? props.value,
       );
+      compatibilitySelectionVersionRef.current += 1;
       selectionRef.current = normalized;
       el.focus();
       placeEditorSelection(el, normalized);
@@ -1308,6 +1327,15 @@ export default function MessageInput(props: MessageInputProps) {
       currentSelection.end !== normalizedSelection.end
     ) {
       setSelection(normalizedSelection);
+    }
+
+    const pendingSelectionRestore = pendingSelectionRestoreRef.current;
+    if (pendingSelectionRestore && inputRef.current && value === pendingSelectionRestore.value) {
+      const selection = normalizeSelection(pendingSelectionRestore.selection, value);
+      pendingSelectionRestoreRef.current = null;
+      if (pendingSelectionRestore.focusInput) inputRef.current.focus();
+      placeEditorSelection(inputRef.current, selection);
+      selectionRef.current = selection;
     }
 
     const valueWasReset = previousValueRef.current.length > 0 && value.length === 0;

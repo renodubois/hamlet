@@ -1,3 +1,4 @@
+import { act } from "@testing-library/react";
 import type {
   CameraStream,
   CameraVideoStopped,
@@ -59,19 +60,25 @@ export class FakeEventSource {
 
   open() {
     if (this.closed || !this.onopen) return;
-    this.onopen(new Event("open"));
+    act(() => {
+      this.onopen?.(new Event("open"));
+    });
   }
 
   pushConnected() {
     if (this.closed || !this.onmessage) return;
-    this.onmessage(new MessageEvent("message", { data: "connected" }));
+    act(() => {
+      this.onmessage?.(new MessageEvent("message", { data: "connected" }));
+    });
   }
 
   push(event: SSEEvent) {
     if (this.closed || !this.onmessage) return;
-    this.onmessage(
-      new MessageEvent("message", { data: JSON.stringify(withMessageDefaultsForEvent(event)) }),
-    );
+    act(() => {
+      this.onmessage?.(
+        new MessageEvent("message", { data: JSON.stringify(withMessageDefaultsForEvent(event)) }),
+      );
+    });
   }
 
   pushMessage(msg: Message) {
