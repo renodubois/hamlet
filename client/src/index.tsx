@@ -16,14 +16,14 @@ import { initializeRendererSentry } from "./sentry";
 function ErrorFallback({ error, resetError }: { error: unknown; resetError?: () => void }) {
   return (
     <div className="p-8" role="alert">
-      <h2 className="text-lg font-semibold text-red-700">Something went wrong</h2>
-      <p className="mt-2 text-sm text-gray-700">
+      <h2 className="text-lg font-semibold text-destructive">Something went wrong</h2>
+      <p className="mt-2 text-sm text-muted-foreground">
         {error instanceof Error ? error.message : String(error)}
       </p>
       {resetError ? (
         <button
           type="button"
-          className="mt-4 rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700"
+          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90"
           onClick={resetError}
         >
           Try again

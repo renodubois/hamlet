@@ -8,7 +8,7 @@
   {
     "name": "CSS bundle (gzip)",
     "path": "dist/assets/*.css",
-    "limit": "9 KB",
+    "limit": "12 KB",
     "gzip": true
   }
 ]

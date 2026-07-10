@@ -12,6 +12,7 @@ import {
 import { getServerUrl } from "../api";
 import { CONSERVATIVE_EMOJIS, type EmojiEntry } from "../emoji/emoji-data";
 import { searchEmojis } from "../emoji/emoji-search";
+import { Input } from "./ui/input";
 
 const PICKER_WIDTH = 320;
 const PICKER_MAX_HEIGHT = 360;
@@ -267,13 +268,13 @@ export default function EmojiPicker(props: {
           }}
           role="dialog"
           aria-label="Emoji picker"
-          className="fixed z-50 flex max-h-[360px] flex-col overflow-hidden rounded-lg border border-gray-700 bg-gray-800 text-gray-100 shadow-xl"
+          className="fixed z-50 flex max-h-[360px] flex-col overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-md"
           style={panelStyle()}
           onKeyDown={handlePanelKeyDown}
         >
-          <div className="flex-shrink-0 border-b border-gray-700 p-3">
-            <input
-              ref={(el) => {
+          <div className="flex-shrink-0 border-b border-border p-3">
+            <Input
+              ref={(el: HTMLInputElement | null) => {
                 searchRef.current = el;
               }}
               role="combobox"
@@ -282,7 +283,6 @@ export default function EmojiPicker(props: {
               aria-haspopup="grid"
               aria-controls={EMOJI_RESULTS_GRID_ID}
               aria-activedescendant={activeGridcellId()}
-              className="w-full rounded-md border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-400/40"
               placeholder="Search emojis"
               spellCheck="false"
               value={query()}
@@ -305,7 +305,10 @@ export default function EmojiPicker(props: {
                 when={filtered().length > 0}
                 fallback={
                   <div role="row">
-                    <div role="gridcell" className="px-2 py-6 text-center text-sm text-gray-400">
+                    <div
+                      role="gridcell"
+                      className="px-2 py-6 text-center text-sm text-muted-foreground"
+                    >
                       No emojis found.
                     </div>
                   </div>
@@ -331,10 +334,10 @@ export default function EmojiPicker(props: {
                               <button
                                 type="button"
                                 tabIndex={-1}
-                                className={`relative flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-xl leading-none focus:outline-none ${
+                                className={`relative flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-xl leading-none transition-colors focus:outline-none ${
                                   isActive()
-                                    ? "bg-blue-600 text-white shadow-inner ring-2 ring-blue-300"
-                                    : "text-gray-100 hover:bg-gray-700 focus:bg-gray-700 focus:ring-2 focus:ring-blue-400"
+                                    ? "bg-accent text-accent-foreground shadow-inner ring-2 ring-ring"
+                                    : "hover:bg-accent focus:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
                                 }`}
                                 aria-label={label()}
                                 title={entry.shortcodes.join(" ")}
@@ -378,7 +381,7 @@ export default function EmojiPicker(props: {
           <If when={activeEntry()} keyed>
             {(entry) => (
               <div
-                className="flex-shrink-0 border-t border-gray-700 bg-gray-900 px-3 py-2"
+                className="flex-shrink-0 border-t border-border bg-muted px-3 py-2"
                 role="group"
                 aria-label="Emoji shortcodes"
               >
@@ -400,7 +403,7 @@ export default function EmojiPicker(props: {
                       />
                     )}
                   </If>
-                  <div className="flex flex-1 flex-wrap gap-1 text-xs text-gray-200">
+                  <div className="flex flex-1 flex-wrap gap-1 text-xs text-muted-foreground">
                     <If when={isCustomEmoji(entry) && entry.animated}>
                       <span className="rounded bg-purple-700 px-1.5 py-0.5 text-white">
                         animated
@@ -408,7 +411,7 @@ export default function EmojiPicker(props: {
                     </If>
                     <List each={entry.shortcodes}>
                       {(shortcode) => (
-                        <code className="rounded bg-gray-800 px-1.5 py-0.5 text-blue-100">
+                        <code className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
                           {shortcode}
                         </code>
                       )}

@@ -2,6 +2,7 @@ import { useRef } from "react";
 import Cropper from "cropperjs";
 import { useAfterRenderEffect, useSignalState, registerCleanup, If } from "../hooks/react-state";
 import Modal from "./modal";
+import { Button } from "./ui/button";
 
 export default function CropperDialog(props: {
   open: boolean;
@@ -85,29 +86,19 @@ export default function CropperDialog(props: {
     <Modal open={props.open} onClose={props.onCancel} title="Crop your picture" size="lg">
       <If when={objectUrl()}>
         {(u) => (
-          <div className="max-h-[60vh] overflow-hidden flex justify-center items-center bg-gray-900 rounded">
+          <div className="max-h-[60vh] overflow-hidden flex justify-center items-center bg-muted rounded-md">
             <img ref={setImgRef} src={u()} alt="" className="max-w-full max-h-[50vh]" />
           </div>
         )}
       </If>
-      <If when={error()}>{(msg) => <p className="text-red-400 text-sm mt-3">{msg()}</p>}</If>
+      <If when={error()}>{(msg) => <p className="text-destructive text-sm mt-3">{msg()}</p>}</If>
       <div className="flex gap-2 justify-end mt-4">
-        <button
-          type="button"
-          className="text-gray-300 hover:text-gray-100 text-sm px-3 py-2 disabled:opacity-50"
-          onClick={props.onCancel}
-          disabled={saving()}
-        >
+        <Button type="button" variant="ghost" onClick={props.onCancel} disabled={saving()}>
           Cancel
-        </button>
-        <button
-          type="button"
-          className="bg-blue-600 hover:bg-blue-700 text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 transition-colors"
-          onClick={handleSave}
-          disabled={saving()}
-        >
+        </Button>
+        <Button type="button" onClick={handleSave} disabled={saving()}>
           {saving() ? "Saving..." : "Save"}
-        </button>
+        </Button>
       </div>
     </Modal>
   );

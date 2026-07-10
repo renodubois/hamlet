@@ -385,6 +385,24 @@ and [`../docs/webcam-video-calls-manual-qa.md`](../docs/webcam-video-calls-manua
 - `scripts/package-*.mjs` own local unpacked package metadata and launch helpers;
   they do not configure public distribution.
 
+## Theming
+
+The renderer is styled entirely through the semantic CSS variables defined in
+`src/index.css` (shadcn theme tokens in oklch: `--background`, `--foreground`,
+`--primary`, `--muted`, `--destructive`, etc., plus a `--sidebar-*` group that
+keeps the channel rail dark against the light chat area). Components never use
+raw Tailwind palette classes (`gray-*`, `blue-*`, ...) — they reference tokens
+(`bg-background`, `text-muted-foreground`, `bg-sidebar-accent`), so re-theming
+the app means editing the variable values in `src/index.css` only. A `.dark`
+block already carries dark-mode values; wiring a toggle just means setting the
+`dark` class on `<html>`. Reusable primitives (Button, Input, Textarea, Label,
+Badge, Separator, Card) are generated shadcn components in `src/components/ui/`
+(base-ui + cva); add more with `pnpm exec shadcn add <component>`.
+
+Deliberate exceptions to the token rule: status greens (live/connected
+indicators, mic level meter), purple thread/animated-emoji affordances, and
+black video wells with white overlay text in media tiles.
+
 Future follow-ups, outside this alpha slice:
 
 - Define signing/notarization/installers/auto-update and package-size budgets

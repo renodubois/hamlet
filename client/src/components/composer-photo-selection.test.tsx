@@ -78,7 +78,11 @@ describe("composer photo selection", () => {
 
     try {
       const attach = screen.getByRole("button", { name: /attach photos/i });
-      expect(attach).toHaveClass("focus:outline-none", "focus:ring-2", "focus:ring-blue-400");
+      expect(attach).toHaveClass(
+        "focus:outline-none",
+        "focus-visible:ring-2",
+        "focus-visible:ring-ring",
+      );
       expect(fileInput).toHaveAttribute("type", "file");
       expect(fileInput).toHaveAttribute("accept", "image/jpeg,image/png,image/webp");
       expect(fileInput).toHaveAttribute("multiple");

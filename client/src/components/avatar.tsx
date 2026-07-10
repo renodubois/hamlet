@@ -16,7 +16,7 @@ export default function Avatar(props: {
   const label = () => `${props.username}'s avatar`;
   return (
     <span
-      className={`inline-block overflow-hidden rounded-full bg-gray-700 flex-shrink-0 ${
+      className={`inline-block overflow-hidden rounded-full bg-muted flex-shrink-0 ${
         props.isSpeaking ? "ring-2 ring-green-500" : ""
       }`}
       style={{ width: `${props.size}px`, height: `${props.size}px` }}

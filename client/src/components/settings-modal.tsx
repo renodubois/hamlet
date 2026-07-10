@@ -24,6 +24,11 @@ import Avatar from "./avatar";
 import CropperDialog from "./cropper-dialog";
 import { LogOutIcon } from "./icons";
 import Modal from "./modal";
+import { Badge } from "./ui/badge";
+import { Button, buttonVariants } from "./ui/button";
+import { Input } from "./ui/input";
+import { Label } from "./ui/label";
+import { cn } from "../lib/utils";
 import VoiceSettings from "./voice-settings";
 
 type SectionId = "profile" | "voice" | "emojis";
@@ -142,19 +147,19 @@ function CustomEmojiRow(props: {
       <img
         src={resolveImageUrl(props.emoji.image_url)}
         alt={`:${props.emoji.name}:`}
-        className="h-8 w-8 rounded object-contain bg-gray-900"
+        className="h-8 w-8 rounded-md object-contain bg-muted"
       />
       <div className="min-w-0 flex-1">
-        <p className="font-medium text-gray-100 truncate">:{props.emoji.name}:</p>
-        <p className="text-xs text-gray-500">ID {props.emoji.id}</p>
+        <p className="font-medium text-foreground truncate">:{props.emoji.name}:</p>
+        <p className="text-xs text-muted-foreground">ID {props.emoji.id}</p>
         <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={save}>
           <label htmlFor={`custom-emoji-rename-${props.emoji.id}`} className="sr-only">
             Rename :{props.emoji.name}:
           </label>
-          <input
+          <Input
             id={`custom-emoji-rename-${props.emoji.id}`}
             type="text"
-            className="w-40 rounded-md border border-gray-600 bg-gray-700 px-2 py-1 text-xs text-gray-100 focus:border-blue-500 focus:outline-none"
+            className="h-7 w-40 px-2 text-xs md:text-xs"
             value={draft()}
             onInput={(e) => {
               setError(null);
@@ -164,34 +169,32 @@ function CustomEmojiRow(props: {
             aria-label={`Rename :${props.emoji.name}:`}
             disabled={saving()}
           />
-          <button
-            type="submit"
-            className="rounded bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-            disabled={!canSave()}
-          >
+          <Button type="submit" size="xs" disabled={!canSave()}>
             {saving() ? "Renaming..." : "Save rename"}
-          </button>
+          </Button>
         </form>
         <If when={trimmedDraft().length > 0 && !draftValid()}>
-          <p className="mt-1 text-xs text-red-300">Use 2–32 letters, numbers, or underscores.</p>
+          <p className="mt-1 text-xs text-destructive">
+            Use 2–32 letters, numbers, or underscores.
+          </p>
         </If>
         <If when={error()}>
           {(msg) => (
-            <p role="alert" className="mt-1 text-xs text-red-300">
+            <p role="alert" className="mt-1 text-xs text-destructive">
               {msg()}
             </p>
           )}
         </If>
         <If when={actionError()}>
           {(msg) => (
-            <p role="alert" className="mt-1 text-xs text-red-300">
+            <p role="alert" className="mt-1 text-xs text-destructive">
               {msg()}
             </p>
           )}
         </If>
         <If when={success() ?? props.status}>
           {(msg) => (
-            <p role="status" className="mt-1 text-xs text-green-300">
+            <p role="status" className="mt-1 text-xs text-green-600">
               {msg()}
             </p>
           )}
@@ -199,34 +202,28 @@ function CustomEmojiRow(props: {
       </div>
       <div className="ml-auto flex flex-col items-end gap-2">
         <div className="flex gap-2">
-          <span className="rounded bg-gray-700 px-2 py-0.5 text-xs text-gray-300">
-            {props.emoji.animated ? "animated" : "static"}
-          </span>
+          <Badge variant="secondary">{props.emoji.animated ? "animated" : "static"}</Badge>
           <If when={props.emoji.deleted_at}>
-            <span className="rounded bg-red-950 px-2 py-0.5 text-xs text-red-200">deleted</span>
+            <Badge variant="destructive">deleted</Badge>
           </If>
         </div>
         <If
           when={props.emoji.deleted_at !== null}
           fallback={
-            <button
+            <Button
               type="button"
-              className="rounded bg-red-900 px-2 py-1 text-xs font-medium text-red-100 hover:bg-red-800 disabled:opacity-50"
+              variant="destructive"
+              size="xs"
               onClick={() => void requestDelete()}
               disabled={actionBusy()}
             >
               {actionBusy() ? "Deleting..." : "Delete"}
-            </button>
+            </Button>
           }
         >
-          <button
-            type="button"
-            className="rounded bg-green-700 px-2 py-1 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50"
-            onClick={() => void restore()}
-            disabled={actionBusy()}
-          >
+          <Button type="button" size="xs" onClick={() => void restore()} disabled={actionBusy()}>
             {actionBusy() ? "Restoring..." : "Restore"}
-          </button>
+          </Button>
         </If>
       </div>
     </div>
@@ -328,25 +325,23 @@ function CustomEmojiSettings() {
   return (
     <div className="flex flex-col gap-4" aria-live="polite">
       <div>
-        <h3 className="text-base font-semibold text-gray-100">Custom Emojis</h3>
-        <p className="text-xs text-gray-400">
+        <h3 className="text-base font-semibold text-foreground">Custom Emojis</h3>
+        <p className="text-xs text-muted-foreground">
           Upload PNG, JPEG, static WebP, animated GIF, or animated WebP files. Static uploads are
           normalized to 256×256 WebP; animated uploads keep their original animation.
         </p>
       </div>
 
       <form
-        className="rounded-md border border-gray-700 bg-gray-800/40 p-3 flex flex-col gap-3"
+        className="rounded-md border border-border bg-muted p-3 flex flex-col gap-3"
         onSubmit={submit}
       >
         <div>
-          <label htmlFor="custom-emoji-name" className="text-sm font-medium text-gray-200">
-            Emoji name
-          </label>
-          <input
+          <Label htmlFor="custom-emoji-name">Emoji name</Label>
+          <Input
             id="custom-emoji-name"
             type="text"
-            className="mt-1 w-full bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:border-blue-500 focus:outline-none"
+            className="mt-1"
             value={name()}
             onInput={(e) => {
               setUploadError(null);
@@ -355,44 +350,46 @@ function CustomEmojiSettings() {
             aria-describedby={nameHelpId}
             disabled={uploading()}
           />
-          <p id={nameHelpId} className="mt-1 text-xs text-gray-400">
+          <p id={nameHelpId} className="mt-1 text-xs text-muted-foreground">
             2–32 letters, numbers, or underscores.
           </p>
           <If when={trimmedName().length > 0 && !nameLooksValid()}>
-            <p className="mt-1 text-xs text-red-300">Use 2–32 letters, numbers, or underscores.</p>
+            <p className="mt-1 text-xs text-destructive">
+              Use 2–32 letters, numbers, or underscores.
+            </p>
           </If>
         </div>
 
         <div>
-          <label htmlFor="custom-emoji-file" className="text-sm font-medium text-gray-200">
-            Image file
-          </label>
-          <input
+          <Label htmlFor="custom-emoji-file">Image file</Label>
+          <Input
             id="custom-emoji-file"
             type="file"
             accept="image/png,image/jpeg,image/webp,image/gif"
-            className="mt-1 block w-full text-sm text-gray-200 file:mr-3 file:rounded-md file:border-0 file:bg-blue-600 file:px-3 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-blue-700"
+            className="mt-1"
             aria-describedby={fileHelpId}
             onChange={handleFilePicked}
             disabled={uploading()}
           />
-          <p id={fileHelpId} className="mt-1 text-xs text-gray-400">
+          <p id={fileHelpId} className="mt-1 text-xs text-muted-foreground">
             PNG, JPEG, static WebP, animated GIF, or animated WebP. Maximum upload size is 2 MiB.
           </p>
           <If when={file() && !fileLooksValid()}>
-            <p className="mt-1 text-xs text-red-300">
+            <p className="mt-1 text-xs text-destructive">
               Choose a PNG, JPEG, static WebP, animated GIF, or animated WebP image.
             </p>
           </If>
           <If when={file() && previewUrl()}>
             {(url) => (
-              <div className="mt-2 flex items-center gap-2 rounded border border-gray-700 bg-gray-900/60 p-2">
+              <div className="mt-2 flex items-center gap-2 rounded-md border border-border bg-background p-2">
                 <img
                   src={url()}
                   alt="Selected custom emoji preview"
-                  className="h-10 w-10 rounded object-contain bg-gray-950"
+                  className="h-10 w-10 rounded-md object-contain bg-muted"
                 />
-                <p className="text-xs text-gray-400">Preview uses the original selected file.</p>
+                <p className="text-xs text-muted-foreground">
+                  Preview uses the original selected file.
+                </p>
               </div>
             )}
           </If>
@@ -400,34 +397,30 @@ function CustomEmojiSettings() {
 
         <If when={uploadError()}>
           {(msg) => (
-            <p role="alert" className="text-sm text-red-300">
+            <p role="alert" className="text-sm text-destructive">
               {msg()}
             </p>
           )}
         </If>
 
-        <button
-          type="submit"
-          className="self-start bg-blue-600 hover:bg-blue-700 text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
-          disabled={!canSubmit()}
-        >
+        <Button type="submit" className="self-start" disabled={!canSubmit()}>
           {uploading() ? "Uploading..." : "Upload emoji"}
-        </button>
+        </Button>
       </form>
 
       <If when={registry.allEmojis.loading}>
-        <p className="text-gray-400">Loading custom emojis...</p>
+        <p className="text-muted-foreground">Loading custom emojis...</p>
       </If>
 
       <If when={registry.error()}>
         <div
           role="alert"
-          className="rounded-md border border-red-900 bg-red-950/40 p-3 text-red-200"
+          className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-destructive"
         >
           <p className="font-medium">Could not load custom emojis.</p>
           <button
             type="button"
-            className="mt-2 text-sm text-red-100 underline hover:text-white"
+            className="mt-2 text-sm text-destructive underline hover:text-destructive/80 transition-colors"
             onClick={registry.refresh}
           >
             Try again
@@ -439,24 +432,26 @@ function CustomEmojiSettings() {
         <If
           when={all().length > 0}
           fallback={
-            <div className="rounded-md border border-dashed border-gray-600 bg-gray-800/50 p-4">
-              <p className="font-medium text-gray-100">No custom emojis yet</p>
-              <p className="mt-1 text-gray-400">
+            <div className="rounded-md border border-dashed border-border bg-muted p-4">
+              <p className="font-medium text-foreground">No custom emojis yet</p>
+              <p className="mt-1 text-muted-foreground">
                 Uploaded emojis will be listed here for picker use and message rendering.
               </p>
             </div>
           }
         >
           <div className="flex flex-col gap-4">
-            <section className="rounded-md border border-gray-700 divide-y divide-gray-700">
-              <div className="px-3 py-2 text-xs text-gray-400">
+            <section className="rounded-md border border-border divide-y divide-border">
+              <div className="px-3 py-2 text-xs text-muted-foreground">
                 Active emojis: {active().length} / {all().length} total
                 <If when={deletedCount() > 0}> ({deletedCount()} deleted)</If>
               </div>
               <If
                 when={active().length > 0}
                 fallback={
-                  <p className="px-3 py-3 text-sm text-gray-400">No active custom emojis.</p>
+                  <p className="px-3 py-3 text-sm text-muted-foreground">
+                    No active custom emojis.
+                  </p>
                 }
               >
                 <List each={active()}>
@@ -473,14 +468,16 @@ function CustomEmojiSettings() {
               </If>
             </section>
 
-            <section className="rounded-md border border-gray-700 divide-y divide-gray-700">
-              <div className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-gray-400">
+            <section className="rounded-md border border-border divide-y divide-border">
+              <div className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Deleted emojis
               </div>
               <If
                 when={deleted().length > 0}
                 fallback={
-                  <p className="px-3 py-3 text-sm text-gray-400">No deleted custom emojis.</p>
+                  <p className="px-3 py-3 text-sm text-muted-foreground">
+                    No deleted custom emojis.
+                  </p>
                 }
               >
                 <List each={deleted()}>
@@ -666,7 +663,7 @@ export default function SettingsModal(props: {
     <>
       <Modal open={props.open} onClose={props.onClose} title="Settings" size="lg">
         <div className="flex gap-4 min-h-64">
-          <div className="flex flex-col w-40 border-r border-gray-700 pr-2">
+          <div className="flex flex-col w-40 border-r border-border pr-2">
             <div
               role="tablist"
               aria-orientation="vertical"
@@ -684,10 +681,10 @@ export default function SettingsModal(props: {
                       aria-selected={selected()}
                       aria-controls={s.panelId}
                       tabIndex={selected() ? 0 : -1}
-                      className={`text-left px-3 py-2 rounded text-sm mb-1 ${
+                      className={`text-left px-3 py-2 rounded-md text-sm mb-1 transition-colors ${
                         selected()
-                          ? "bg-gray-700 text-white font-medium"
-                          : "text-gray-300 hover:bg-gray-700 hover:text-gray-100"
+                          ? "bg-primary/10 text-primary font-medium"
+                          : "text-muted-foreground hover:bg-accent hover:text-foreground"
                       }`}
                       onClick={() => setSection(s.id)}
                     >
@@ -697,10 +694,10 @@ export default function SettingsModal(props: {
                 }}
               </List>
             </div>
-            <div className="mt-auto pt-2 border-t border-gray-700">
+            <div className="mt-auto pt-2 border-t border-border">
               <button
                 type="button"
-                className="w-full flex items-center gap-2 text-left px-3 py-2 rounded text-sm text-red-400 hover:bg-gray-700 hover:text-red-300"
+                className="w-full flex items-center gap-2 text-left px-3 py-2 rounded-md text-sm text-destructive hover:bg-destructive/10 transition-colors"
                 onClick={() => setConfirmLogout(true)}
               >
                 <LogOutIcon size={16} aria-hidden="true" />
@@ -712,13 +709,13 @@ export default function SettingsModal(props: {
             role="tabpanel"
             id={active().panelId}
             aria-labelledby={active().tabId}
-            className="flex-1 text-sm text-gray-200"
+            className="flex-1 text-sm text-foreground"
           >
             <Choose>
               <Case when={section() === "profile"}>
                 <If
                   when={props.user}
-                  fallback={<p className="text-gray-400">Loading profile...</p>}
+                  fallback={<p className="text-muted-foreground">Loading profile...</p>}
                 >
                   {(u) => (
                     <div className="flex flex-col items-start gap-4 w-full">
@@ -733,10 +730,10 @@ export default function SettingsModal(props: {
                             {u().display_name ?? u().username}
                           </p>
                           <If when={u().display_name}>
-                            <p className="text-xs text-gray-400">@{u().username}</p>
+                            <p className="text-xs text-muted-foreground">@{u().username}</p>
                           </If>
                           <If when={u().email}>
-                            {(e) => <p className="text-xs text-gray-400">{e()}</p>}
+                            {(e) => <p className="text-xs text-muted-foreground">{e()}</p>}
                           </If>
                         </div>
                       </div>
@@ -751,46 +748,40 @@ export default function SettingsModal(props: {
                       <div className="flex gap-2">
                         <label
                           htmlFor="avatar-file-input"
-                          className="bg-blue-600 hover:bg-blue-700 text-white rounded-md px-4 py-2 text-sm font-medium cursor-pointer"
+                          className={cn(buttonVariants(), "cursor-pointer")}
                         >
                           Upload picture
                         </label>
                         <If when={u().avatar_url}>
-                          <button
+                          <Button
                             type="button"
-                            className="text-red-400 hover:text-red-300 text-sm px-3 py-2 disabled:opacity-50"
+                            variant="destructive"
                             onClick={handleRemoveAvatar}
                             disabled={removing()}
                           >
                             {removing() ? "Removing..." : "Remove picture"}
-                          </button>
+                          </Button>
                         </If>
                       </div>
                       <If when={avatarError()}>
-                        {(msg) => <p className="text-red-400 text-sm">{msg()}</p>}
+                        {(msg) => <p className="text-destructive text-sm">{msg()}</p>}
                       </If>
 
                       <form
-                        className="flex flex-col gap-2 w-full max-w-md pt-4 border-t border-gray-700"
+                        className="flex flex-col gap-2 w-full max-w-md pt-4 border-t border-border"
                         onSubmit={(e) => {
                           e.preventDefault();
                           void saveDisplayName();
                         }}
                       >
-                        <label
-                          htmlFor="display-name-input"
-                          className="text-sm font-medium text-gray-200"
-                        >
-                          Display name
-                        </label>
-                        <p className="text-xs text-gray-400">
+                        <Label htmlFor="display-name-input">Display name</Label>
+                        <p className="text-xs text-muted-foreground">
                           Ifn next to your messages. Leave blank to use your username (@
                           {u().username}).
                         </p>
-                        <input
+                        <Input
                           id="display-name-input"
                           type="text"
-                          className="bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:border-blue-500 focus:outline-none"
                           placeholder={u().username}
                           maxLength={DISPLAY_NAME_MAX_LEN}
                           value={displayNameDraft()}
@@ -798,34 +789,33 @@ export default function SettingsModal(props: {
                           disabled={displayNameSaving()}
                         />
                         <div className="flex gap-2 items-center">
-                          <button
+                          <Button
                             type="submit"
-                            className="bg-blue-600 hover:bg-blue-700 text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
                             disabled={
                               displayNameSaving() ||
                               displayNameDraft().trim() === (u().display_name ?? "")
                             }
                           >
                             {displayNameSaving() ? "Saving..." : "Save"}
-                          </button>
+                          </Button>
                           <If when={u().display_name}>
-                            <button
+                            <Button
                               type="button"
-                              className="text-gray-300 hover:text-gray-100 text-sm px-3 py-2 disabled:opacity-50"
+                              variant="ghost"
                               onClick={() => void clearDisplayName()}
                               disabled={displayNameSaving()}
                             >
                               Reset to username
-                            </button>
+                            </Button>
                           </If>
                         </div>
                         <If when={displayNameError()}>
-                          {(msg) => <p className="text-red-400 text-sm">{msg()}</p>}
+                          {(msg) => <p className="text-destructive text-sm">{msg()}</p>}
                         </If>
                       </form>
 
                       <form
-                        className="flex flex-col gap-3 w-full max-w-md pt-4 border-t border-gray-700"
+                        className="flex flex-col gap-3 w-full max-w-md pt-4 border-t border-border"
                         aria-describedby="password-change-help"
                         onSubmit={(e) => {
                           e.preventDefault();
@@ -833,24 +823,22 @@ export default function SettingsModal(props: {
                         }}
                       >
                         <div>
-                          <h3 className="text-sm font-semibold text-gray-100">Change password</h3>
-                          <p id="password-change-help" className="mt-1 text-xs text-gray-400">
+                          <h3 className="text-sm font-semibold text-foreground">Change password</h3>
+                          <p
+                            id="password-change-help"
+                            className="mt-1 text-xs text-muted-foreground"
+                          >
                             Enter your current password before choosing a new one.
                           </p>
                         </div>
 
                         <div>
-                          <label
-                            htmlFor="current-password-input"
-                            className="text-sm font-medium text-gray-200"
-                          >
-                            Current password
-                          </label>
-                          <input
+                          <Label htmlFor="current-password-input">Current password</Label>
+                          <Input
                             id="current-password-input"
                             type="password"
                             autoComplete="current-password"
-                            className="mt-1 w-full bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:border-blue-500 focus:outline-none"
+                            className="mt-1"
                             value={currentPassword()}
                             onInput={(e) =>
                               handlePasswordInput(setCurrentPassword, e.currentTarget.value)
@@ -860,17 +848,12 @@ export default function SettingsModal(props: {
                         </div>
 
                         <div>
-                          <label
-                            htmlFor="new-password-input"
-                            className="text-sm font-medium text-gray-200"
-                          >
-                            New password
-                          </label>
-                          <input
+                          <Label htmlFor="new-password-input">New password</Label>
+                          <Input
                             id="new-password-input"
                             type="password"
                             autoComplete="new-password"
-                            className="mt-1 w-full bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:border-blue-500 focus:outline-none"
+                            className="mt-1"
                             value={newPassword()}
                             onInput={(e) =>
                               handlePasswordInput(setNewPassword, e.currentTarget.value)
@@ -880,17 +863,12 @@ export default function SettingsModal(props: {
                         </div>
 
                         <div>
-                          <label
-                            htmlFor="confirm-new-password-input"
-                            className="text-sm font-medium text-gray-200"
-                          >
-                            Confirm new password
-                          </label>
-                          <input
+                          <Label htmlFor="confirm-new-password-input">Confirm new password</Label>
+                          <Input
                             id="confirm-new-password-input"
                             type="password"
                             autoComplete="new-password"
-                            className="mt-1 w-full bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:border-blue-500 focus:outline-none"
+                            className="mt-1"
                             value={confirmNewPassword()}
                             onInput={(e) =>
                               handlePasswordInput(setConfirmNewPassword, e.currentTarget.value)
@@ -898,30 +876,30 @@ export default function SettingsModal(props: {
                             disabled={passwordSaving()}
                           />
                           <If when={passwordMismatch()}>
-                            <p role="alert" className="mt-1 text-xs text-red-300">
+                            <p role="alert" className="mt-1 text-xs text-destructive">
                               New passwords do not match.
                             </p>
                           </If>
                         </div>
 
-                        <button
+                        <Button
                           type="submit"
-                          className="self-start bg-blue-600 hover:bg-blue-700 text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
+                          className="self-start"
                           disabled={!canChangePassword()}
                         >
                           {passwordSaving() ? "Changing..." : "Change password"}
-                        </button>
+                        </Button>
 
                         <If when={passwordError()}>
                           {(msg) => (
-                            <p role="alert" className="text-sm text-red-300">
+                            <p role="alert" className="text-sm text-destructive">
                               {msg()}
                             </p>
                           )}
                         </If>
                         <If when={passwordSuccess()}>
                           {(msg) => (
-                            <p role="status" className="text-sm text-green-300">
+                            <p role="status" className="text-sm text-green-600">
                               {msg()}
                             </p>
                           )}
@@ -954,27 +932,27 @@ export default function SettingsModal(props: {
         onClose={() => !loggingOut() && setConfirmLogout(false)}
         title="Log out?"
       >
-        <p className="text-sm text-gray-200 mb-4">Are you sure you want to log out?</p>
+        <p className="text-sm text-foreground mb-4">Are you sure you want to log out?</p>
         <If when={loggingOut()}>
-          <p className="text-sm text-gray-400 mb-2">Logging out...</p>
+          <p className="text-sm text-muted-foreground mb-2">Logging out...</p>
         </If>
         <div className="flex gap-2 justify-end">
-          <button
+          <Button
             type="button"
-            className="text-gray-300 hover:text-gray-100 text-sm px-3 py-2 disabled:opacity-50"
+            variant="ghost"
             onClick={() => setConfirmLogout(false)}
             disabled={loggingOut()}
           >
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
-            className="bg-red-600 hover:bg-red-700 text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 transition-colors"
+            variant="destructive"
             onClick={handleConfirmLogout}
             disabled={loggingOut()}
           >
             Log out
-          </button>
+          </Button>
         </div>
       </Modal>
     </>

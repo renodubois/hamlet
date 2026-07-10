@@ -111,7 +111,7 @@ export default function Modal(props: {
           aria-modal="true"
           aria-labelledby={titleId}
           tabIndex={-1}
-          className={`max-h-[90vh] overflow-y-auto bg-gray-800 text-gray-100 rounded-lg p-6 shadow-xl outline-none ${sizeClass()}`}
+          className={`max-h-[90vh] overflow-y-auto rounded-xl border border-border bg-popover p-6 text-popover-foreground shadow-xl outline-none ${sizeClass()}`}
         >
           <div className="flex items-center justify-between mb-4">
             <h2 id={titleId} className="text-lg font-semibold">
@@ -119,7 +119,7 @@ export default function Modal(props: {
             </h2>
             <button
               type="button"
-              className="text-gray-400 hover:text-gray-100 text-xl leading-none"
+              className="rounded-md text-xl leading-none text-muted-foreground transition-colors hover:text-foreground"
               onClick={props.onClose}
               aria-label="Close"
             >

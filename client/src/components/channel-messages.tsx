@@ -35,6 +35,7 @@ import MessageReferencePreview, { messageReferencePreviewText } from "./message-
 import MessageText from "./message-text";
 import Modal from "./modal";
 import ReactionRow from "./reaction-row";
+import { Button } from "./ui/button";
 
 interface ContextMenuState {
   messageId: number;
@@ -69,15 +70,15 @@ function referencedMessageLabel(message: Message): string {
 
 function messageRowClass(authoredByCurrentUser: boolean, mentionedCurrentUser: boolean): string {
   const borderClass = authoredByCurrentUser
-    ? "border-blue-400"
+    ? "border-primary"
     : mentionedCurrentUser
-      ? "border-yellow-300"
+      ? "border-primary/50"
       : "border-transparent";
   const stateClass = mentionedCurrentUser
-    ? "bg-yellow-50 ring-1 ring-inset ring-yellow-300 hover:bg-yellow-100/80 focus-within:bg-yellow-100/80"
+    ? "bg-primary/10 ring-1 ring-inset ring-primary/20 hover:bg-primary/15 focus-within:bg-primary/15"
     : authoredByCurrentUser
-      ? "bg-blue-50/50 hover:bg-blue-50 focus-within:bg-blue-50"
-      : "hover:bg-gray-50 focus-within:bg-gray-50";
+      ? "bg-primary/5 hover:bg-primary/10 focus-within:bg-primary/10"
+      : "hover:bg-accent focus-within:bg-accent";
 
   return `group relative flex items-start gap-3 px-2 py-1 -mx-2 rounded-md border-l-4 transition-colors ${borderClass} ${stateClass}`;
 }
@@ -305,7 +306,7 @@ const ChannelMessages: Component<{
   };
 
   return (
-    <section className="bg-white text-gray-900 p-8 min-h-full flex flex-1 flex-col">
+    <section className="bg-background text-foreground p-8 min-h-full flex flex-1 flex-col">
       {/* Bottom-anchor short histories without flex-end clipping overflowing histories. */}
       <div className="mt-auto" aria-hidden="true" />
       <If when={props.loading && props.messages.length === 0}>
@@ -333,7 +334,7 @@ const ChannelMessages: Component<{
               <If
                 when={!isDeletedMessage(message)}
                 fallback={
-                  <p className="italic text-gray-500" aria-label="Original message deleted">
+                  <p className="italic text-muted-foreground" aria-label="Original message deleted">
                     Original message deleted
                   </p>
                 }
@@ -387,14 +388,18 @@ const ChannelMessages: Component<{
                         }
                       }}
                       className="flex min-w-0 flex-1 items-center gap-2"
-                      inputClass="bg-gray-100 rounded-md px-2 py-1 w-full"
-                      emojiButtonClass="cursor-pointer rounded-md bg-gray-100 px-2 py-1 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      inputClass="bg-muted rounded-md px-2 py-1 w-full"
+                      emojiButtonClass="cursor-pointer rounded-md bg-muted px-2 py-1 text-muted-foreground hover:bg-accent hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       emojiButtonLabel="Open emoji picker for edit"
                     />
-                    <button type="submit" className="text-sm text-blue-600">
+                    <button type="submit" className="text-sm text-primary">
                       Save
                     </button>
-                    <button type="button" className="text-sm text-gray-500" onClick={cancelEditing}>
+                    <button
+                      type="button"
+                      className="text-sm text-muted-foreground"
+                      onClick={cancelEditing}
+                    >
                       Cancel
                     </button>
                   </form>
@@ -440,7 +445,7 @@ const ChannelMessages: Component<{
                   return (
                     <button
                       type="button"
-                      className="mt-1 text-sm font-medium text-blue-700 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-400 rounded"
+                      className="mt-1 text-sm font-medium text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md"
                       title={`Last reply ${formatThreadTimestampTitle(summary().last_reply_created_at)}`}
                       aria-label={`Open thread with ${countText()}, last reply ${lastReplyText()}`}
                       onClick={() => props.onOpenThread?.(message, { focusComposer: false })}
@@ -455,14 +460,14 @@ const ChannelMessages: Component<{
               <div
                 role="toolbar"
                 aria-label={`Message actions for ${referencedMessageLabel(message)}`}
-                className="absolute -top-3 right-2 flex gap-1 rounded-md border border-gray-200 bg-white shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+                className="absolute -top-3 right-2 flex gap-1 rounded-md border border-border bg-card shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
               >
                 <If when={canReact(message)}>
                   <button
                     type="button"
                     aria-label={`Add reaction to message by ${messageDisplayName(message)}`}
                     title="Add reaction"
-                    className="p-1.5 rounded-md hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    className="p-1.5 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     onClick={(event) => {
                       event.stopPropagation();
                       setReactionPicker({ messageId: message.id, anchor: event.currentTarget });
@@ -476,7 +481,7 @@ const ChannelMessages: Component<{
                     type="button"
                     aria-label={`Reply inline to ${referencedMessageLabel(message)}`}
                     title="Reply inline"
-                    className="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    className="rounded-md bg-primary/10 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/20 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     onClick={() => props.onReplyToMessage?.(message)}
                   >
                     Reply
@@ -487,7 +492,7 @@ const ChannelMessages: Component<{
                     type="button"
                     aria-label={`Reply in thread to ${referencedMessageLabel(message)}`}
                     title="Reply in thread"
-                    className="rounded-md bg-purple-50 px-2 py-1 text-xs font-medium text-purple-700 hover:bg-purple-100 focus:outline-none focus:ring-2 focus:ring-purple-400"
+                    className="rounded-md bg-purple-50 px-2 py-1 text-xs font-medium text-purple-700 hover:bg-purple-100 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     onClick={() => props.onOpenThread?.(message, { focusComposer: true })}
                   >
                     Thread
@@ -498,7 +503,7 @@ const ChannelMessages: Component<{
                     type="button"
                     aria-label="Edit"
                     title="Edit"
-                    className="p-1.5 rounded-md hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    className="p-1.5 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     onClick={() => startEditing(message)}
                   >
                     <EditIcon size={14} />
@@ -507,7 +512,7 @@ const ChannelMessages: Component<{
                     type="button"
                     aria-label="Delete"
                     title="Delete"
-                    className="p-1.5 rounded-md text-red-600 hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-400"
+                    className="p-1.5 rounded-md text-destructive hover:bg-destructive/10 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     onClick={() => requestDelete(message.id)}
                   >
                     <DeleteIcon size={14} />
@@ -535,7 +540,7 @@ const ChannelMessages: Component<{
         {(menu) => (
           <ul
             role="menu"
-            className="fixed z-50 bg-white border border-gray-200 rounded-md shadow-md py-1"
+            className="fixed z-50 bg-popover text-popover-foreground border border-border rounded-md shadow-md py-1"
             style={{ top: `${menu().y}px`, left: `${menu().x}px` }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -543,7 +548,7 @@ const ChannelMessages: Component<{
               <button
                 role="menuitem"
                 type="button"
-                className="w-full text-left px-4 py-1 hover:bg-gray-100"
+                className="w-full text-left px-4 py-1 transition-colors hover:bg-accent hover:text-accent-foreground"
                 onClick={() => {
                   const id = menu().messageId;
                   const msg = props.messages.find((m) => m.id === id);
@@ -557,7 +562,7 @@ const ChannelMessages: Component<{
               <button
                 role="menuitem"
                 type="button"
-                className="w-full text-left px-4 py-1 text-red-600 hover:bg-red-50"
+                className="w-full text-left px-4 py-1 text-destructive transition-colors hover:bg-destructive/10"
                 onClick={() => requestDelete(menu().messageId)}
               >
                 Delete message
@@ -567,24 +572,16 @@ const ChannelMessages: Component<{
         )}
       </If>
       <Modal open={pendingDeleteId() !== null} onClose={cancelDelete} title="Delete message?">
-        <p className="text-sm text-gray-200 mb-4">
+        <p className="text-sm text-muted-foreground mb-4">
           This will permanently delete the message. This cannot be undone.
         </p>
         <div className="flex gap-2 justify-end">
-          <button
-            type="button"
-            className="text-gray-300 hover:text-gray-100 text-sm px-3 py-2"
-            onClick={cancelDelete}
-          >
+          <Button type="button" variant="ghost" onClick={cancelDelete}>
             Cancel
-          </button>
-          <button
-            type="button"
-            className="bg-red-600 hover:bg-red-700 text-white rounded-md px-4 py-2 text-sm font-medium transition-colors"
-            onClick={() => void confirmDelete()}
-          >
+          </Button>
+          <Button type="button" variant="destructive" onClick={() => void confirmDelete()}>
             Delete
-          </button>
+          </Button>
         </div>
       </Modal>
     </section>

@@ -20,6 +20,8 @@ import {
   getNoiseSuppressionEnabled,
   getInputGain,
 } from "../voice/settings";
+import { Button } from "./ui/button";
+import { Label } from "./ui/label";
 
 // "" means "let the browser pick the system default".
 const DEFAULT_DEVICE_ID = "";
@@ -369,12 +371,12 @@ export default function VoiceSettings() {
         <div
           role="status"
           aria-live="polite"
-          className="absolute inset-0 z-10 flex items-center justify-center rounded-md bg-gray-800/60 backdrop-blur-sm"
+          className="absolute inset-0 z-10 flex items-center justify-center rounded-md bg-popover/60 backdrop-blur-sm"
         >
-          <div className="flex items-center gap-3 text-sm text-gray-100">
+          <div className="flex items-center gap-3 text-sm text-foreground">
             <span
               aria-hidden="true"
-              className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-gray-500 border-t-blue-400"
+              className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-border border-t-primary"
             />
             <span>Loading media devices…</span>
           </div>
@@ -382,20 +384,18 @@ export default function VoiceSettings() {
       </If>
 
       <If when={!supported}>
-        <p className="text-red-400" role="alert">
+        <p className="text-destructive" role="alert">
           This platform does not expose media device APIs, so voice and video chat are unavailable
           here.
         </p>
       </If>
 
       <div className="flex flex-col gap-2">
-        <label htmlFor="voice-input-select" className="font-medium text-gray-100">
-          Input device
-        </label>
+        <Label htmlFor="voice-input-select">Input device</Label>
         <select
           id="voice-input-select"
           ref={setInputSelectRef}
-          className="bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+          className="bg-background text-foreground rounded-md px-3 py-2 text-sm border border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           value={inputId()}
           disabled={!supported}
           onChange={(e) => {
@@ -413,16 +413,11 @@ export default function VoiceSettings() {
         </select>
 
         <div className="flex items-center gap-3 mt-1">
-          <button
-            type="button"
-            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-md px-4 py-2 text-sm font-medium"
-            onClick={toggleMicTest}
-            disabled={!supported}
-          >
+          <Button type="button" size="lg" onClick={toggleMicTest} disabled={!supported}>
             {micTesting() ? "Stop test" : "Test microphone"}
-          </button>
+          </Button>
           <div
-            className="flex-1 h-2 bg-gray-700 rounded overflow-hidden"
+            className="flex-1 h-2 bg-muted rounded-md overflow-hidden"
             role="meter"
             aria-label="Microphone input level"
             aria-valuemin={0}
@@ -437,24 +432,24 @@ export default function VoiceSettings() {
         </div>
         <If when={micError()}>
           {(msg) => (
-            <p className="text-red-400 text-sm" role="alert">
+            <p className="text-destructive text-sm" role="alert">
               {msg()}
             </p>
           )}
         </If>
         <If when={micTesting()}>
-          <p className="text-xs text-gray-400">Speak into your mic — the bar should move.</p>
+          <p className="text-xs text-muted-foreground">
+            Speak into your mic — the bar should move.
+          </p>
         </If>
       </div>
 
       <div className="flex flex-col gap-2">
-        <label htmlFor="voice-camera-select" className="font-medium text-gray-100">
-          Camera
-        </label>
+        <Label htmlFor="voice-camera-select">Camera</Label>
         <select
           id="voice-camera-select"
           ref={setCameraSelectRef}
-          className="bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+          className="bg-background text-foreground rounded-md px-3 py-2 text-sm border border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           value={cameraId()}
           disabled={!supported}
           onChange={(e) => {
@@ -470,9 +465,9 @@ export default function VoiceSettings() {
         </select>
 
         <div className="mt-1 flex items-center gap-3">
-          <button
+          <Button
             type="button"
-            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-md px-4 py-2 text-sm font-medium"
+            size="lg"
             onClick={toggleCameraPreview}
             disabled={!supported}
             aria-busy={cameraPreviewStarting()}
@@ -483,9 +478,11 @@ export default function VoiceSettings() {
             >
               Starting preview…
             </If>
-          </button>
+          </Button>
           <If when={cameraPreviewStream()}>
-            <p className="text-xs text-gray-400">Your camera preview stays local to this device.</p>
+            <p className="text-xs text-muted-foreground">
+              Your camera preview stays local to this device.
+            </p>
           </If>
         </div>
         <If when={cameraPreviewStream()}>
@@ -500,7 +497,7 @@ export default function VoiceSettings() {
         </If>
         <If when={cameraError()}>
           {(msg) => (
-            <p className="text-red-400 text-sm" role="alert">
+            <p className="text-destructive text-sm" role="alert">
               {msg()}
             </p>
           )}
@@ -508,13 +505,11 @@ export default function VoiceSettings() {
       </div>
 
       <div className="flex flex-col gap-2">
-        <label htmlFor="voice-output-select" className="font-medium text-gray-100">
-          Output device
-        </label>
+        <Label htmlFor="voice-output-select">Output device</Label>
         <select
           id="voice-output-select"
           ref={setOutputSelectRef}
-          className="bg-gray-700 text-gray-100 rounded-md px-3 py-2 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+          className="bg-background text-foreground rounded-md px-3 py-2 text-sm border border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           value={outputId()}
           disabled={!supported || !canPickOutput}
           onChange={(e) => setOutputId(e.currentTarget.value)}
@@ -525,32 +520,32 @@ export default function VoiceSettings() {
           </List>
         </select>
         <If when={supported && !canPickOutput}>
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-muted-foreground">
             This platform plays audio through the system default device; per-app output selection is
             not supported here.
           </p>
         </If>
 
         <div className="mt-1">
-          <button
+          <Button
             type="button"
-            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-md px-4 py-2 text-sm font-medium"
+            size="lg"
             onClick={() => void playTestSound()}
             disabled={!supported || playingTestSound()}
           >
             {playingTestSound() ? "Playing..." : "Play test sound"}
-          </button>
+          </Button>
         </div>
         <If when={outputError()}>
           {(msg) => (
-            <p className="text-red-400 text-sm" role="alert">
+            <p className="text-destructive text-sm" role="alert">
               {msg()}
             </p>
           )}
         </If>
       </div>
 
-      <div className="flex flex-col gap-3 border-t border-gray-700 pt-4">
+      <div className="flex flex-col gap-3 border-t border-border pt-4">
         <label className="flex items-start gap-3 cursor-pointer">
           <input
             type="checkbox"
@@ -560,8 +555,8 @@ export default function VoiceSettings() {
             onChange={(e) => setNoiseSuppression(e.currentTarget.checked)}
           />
           <span className="flex flex-col gap-0.5">
-            <span className="font-medium text-gray-100">Noise suppression</span>
-            <span className="text-xs text-gray-400">
+            <span className="font-medium text-foreground">Noise suppression</span>
+            <span className="text-xs text-muted-foreground">
               Filters steady background noise (fans, typing). Uses the browser's built-in processor.
             </span>
           </span>
@@ -575,10 +570,10 @@ export default function VoiceSettings() {
             onChange={(e) => setShowSpeakingEverywhere(e.currentTarget.checked)}
           />
           <span className="flex flex-col gap-0.5">
-            <span className="font-medium text-gray-100">
+            <span className="font-medium text-foreground">
               If speaking indicators for voice channels I'm not in
             </span>
-            <span className="text-xs text-gray-400">
+            <span className="text-xs text-muted-foreground">
               Highlights speakers in the sidebar even when you haven't joined the channel.
             </span>
           </span>
@@ -586,8 +581,8 @@ export default function VoiceSettings() {
 
         <div className="flex flex-col gap-1">
           <label htmlFor="voice-input-gain" className="flex items-center justify-between">
-            <span className="font-medium text-gray-100">Input volume</span>
-            <span className="text-xs text-gray-400" aria-hidden="true">
+            <span className="font-medium text-foreground">Input volume</span>
+            <span className="text-xs text-muted-foreground" aria-hidden="true">
               {Math.round(inputGain() * 100)}%
             </span>
           </label>
@@ -602,7 +597,7 @@ export default function VoiceSettings() {
             className="w-full"
             onInput={(e) => setInputGain(Number.parseFloat(e.currentTarget.value))}
           />
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-muted-foreground">
             Adjusts how loud your voice is to other participants.
           </p>
         </div>

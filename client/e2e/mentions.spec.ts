@@ -199,7 +199,7 @@ test("delivers mentioned messages over SSE with current-user emphasis", async ({
     await expect(receiverRow).toBeVisible({ timeout: 10_000 });
     await expect(receiverRow.getByRole("button", { name: "Mention teo (@teo)" })).toBeVisible();
     await expect(receiverRow).toHaveAttribute("data-mentioned-current-user", "true");
-    await expect(receiverRow).toHaveClass(/bg-yellow-50/);
+    await expect(receiverRow).toHaveClass(/bg-primary\/10/);
   } finally {
     await senderContext.close();
     await receiverContext.close();

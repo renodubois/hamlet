@@ -517,9 +517,9 @@ describe("<ChannelMessages> message text rendering", () => {
     const mentionedRow = assertExists(document.getElementById(channelMessageElementId(530)));
     expect(mentionedRow).toHaveAttribute("data-mentioned-current-user", "true");
     expect(mentionedRow).not.toHaveAttribute("data-authored-by-current-user");
-    expect(mentionedRow).toHaveClass("bg-yellow-50", "ring-yellow-300", "border-yellow-300");
+    expect(mentionedRow).toHaveClass("bg-primary/10", "ring-primary/20", "border-primary/50");
     expect(within(mentionedRow).getByRole("button", { name: "Mention Me (@me)" })).toHaveClass(
-      "bg-yellow-100",
+      "bg-primary/20",
       "font-semibold",
     );
 
@@ -527,21 +527,21 @@ describe("<ChannelMessages> message text rendering", () => {
     expect(otherMentionRow).not.toHaveAttribute("data-mentioned-current-user");
     expect(
       within(otherMentionRow).getByRole("button", { name: "Mention them (@them)" }),
-    ).toHaveClass("bg-blue-100", "font-medium");
+    ).toHaveClass("bg-primary/10", "font-medium");
 
     const authoredRow = assertExists(document.getElementById(channelMessageElementId(532)));
     expect(authoredRow).toHaveAttribute("data-authored-by-current-user", "true");
     expect(authoredRow).not.toHaveAttribute("data-mentioned-current-user");
-    expect(authoredRow).toHaveClass("border-blue-400", "bg-blue-50/50");
+    expect(authoredRow).toHaveClass("border-primary", "bg-primary/5");
 
     const bothRow = assertExists(document.getElementById(channelMessageElementId(533)));
     expect(bothRow).toHaveAttribute("data-authored-by-current-user", "true");
     expect(bothRow).toHaveAttribute("data-mentioned-current-user", "true");
-    expect(bothRow).toHaveClass("border-blue-400", "bg-yellow-50", "ring-yellow-300");
+    expect(bothRow).toHaveClass("border-primary", "bg-primary/10", "ring-primary/20");
 
     const deletedRow = assertExists(document.getElementById(channelMessageElementId(534)));
     expect(deletedRow).not.toHaveAttribute("data-mentioned-current-user");
-    expect(deletedRow).not.toHaveClass("bg-yellow-50", "ring-yellow-300");
+    expect(deletedRow).not.toHaveClass("bg-primary/10", "ring-primary/20");
     expect(within(deletedRow).queryByRole("button", { name: /mention me/i })).toBeNull();
   });
 });
@@ -1784,7 +1784,7 @@ describe("<ChannelMessages> hover action toolbar", () => {
 
     const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
     expect(input.value).toBe("hello <@2>");
-    expect(within(input).getByText("@Bobby")).toHaveClass("bg-blue-100", "text-blue-800");
+    expect(within(input).getByText("@Bobby")).toHaveClass("bg-primary/10", "text-primary");
 
     const draft = "hello <@2> and @bo";
     fireEvent.input(input, { target: { value: draft } });

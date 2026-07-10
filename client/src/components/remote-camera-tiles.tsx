@@ -39,7 +39,7 @@ function AttachedRemoteCameraVideo(props: { track: RemoteVideoTrack; label: stri
       ref={(el) => {
         videoRef.current = el;
       }}
-      className="h-full w-full rounded bg-black object-cover"
+      className="h-full w-full rounded-md bg-black object-cover"
       autoPlay
       playsInline
       aria-label={props.label}
@@ -52,14 +52,14 @@ function RemoteCameraTileCard(props: { tile: RemoteCameraTile }) {
 
   return (
     <article
-      className="min-w-0 rounded border border-gray-800 bg-gray-900/80 p-2"
+      className="min-w-0 rounded-md border border-border bg-muted p-2"
       aria-label={`${name()}'s camera`}
     >
-      <div className="flex aspect-video items-center justify-center rounded bg-black">
+      <div className="flex aspect-video items-center justify-center rounded-md bg-black">
         <If
           when={props.tile.track}
           fallback={
-            <p className="p-4 text-center text-sm text-gray-300" role="status">
+            <p className="p-4 text-center text-sm text-white/80" role="status">
               Connecting to {name()}'s camera…
             </p>
           }
@@ -70,8 +70,8 @@ function RemoteCameraTileCard(props: { tile: RemoteCameraTile }) {
         </If>
       </div>
       <div className="mt-2 min-w-0">
-        <p className="truncate text-sm font-medium text-gray-100">{name()}</p>
-        <p className="text-xs text-gray-400">Camera</p>
+        <p className="truncate text-sm font-medium text-foreground">{name()}</p>
+        <p className="text-xs text-muted-foreground">Camera</p>
       </div>
     </article>
   );
@@ -86,14 +86,14 @@ export default function RemoteCameraTiles() {
   return (
     <If when={voice.activeChannelId() != null && tiles().length > 0}>
       <section
-        className="flex-shrink-0 border-b border-gray-200 bg-gray-950 p-4 text-gray-100"
+        className="flex-shrink-0 border-b border-border bg-card p-4 text-card-foreground"
         role="region"
         aria-label="Remote camera tiles"
       >
         <div className="mb-3 flex items-center gap-2">
           <CameraIcon size={16} aria-hidden="true" />
           <div className="min-w-0">
-            <p className="text-xs uppercase tracking-wide text-gray-400">Cameras</p>
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Cameras</p>
             <h2 className="text-lg font-semibold">
               {tiles().length === 1 ? "1 camera live" : `${tiles().length} cameras live`}
             </h2>

@@ -19,16 +19,16 @@ import { mentionDisplayName, parseMentionMarkers } from "../mentions/mentions";
 import Avatar from "./avatar";
 
 const DEFAULT_TEXT_CLASS = "whitespace-pre-wrap break-words [overflow-wrap:anywhere]";
-const DEFAULT_LINK_CLASS = "text-blue-700 hover:underline break-all";
+const DEFAULT_LINK_CLASS = "text-primary hover:underline break-all";
 const DEFAULT_MENTION_CLASS =
-  "inline rounded bg-blue-100 px-1 py-0 font-medium text-blue-800 align-baseline";
+  "inline rounded bg-primary/10 px-1 py-0 font-medium text-primary align-baseline";
 const DEFAULT_CHANNEL_MENTION_CLASS =
-  "inline rounded bg-gray-200 px-1 py-0 font-medium text-gray-800 align-baseline";
-const CHANNEL_LINK_CLASS = `${DEFAULT_CHANNEL_MENTION_CLASS} hover:bg-gray-300 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-400`;
-const INTERACTIVE_MENTION_CLASS = `${DEFAULT_MENTION_CLASS} cursor-pointer border-0 hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-400`;
+  "inline rounded bg-muted px-1 py-0 font-medium text-foreground align-baseline";
+const CHANNEL_LINK_CLASS = `${DEFAULT_CHANNEL_MENTION_CLASS} hover:bg-accent hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring`;
+const INTERACTIVE_MENTION_CLASS = `${DEFAULT_MENTION_CLASS} cursor-pointer border-0 hover:bg-primary/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring`;
 const CURRENT_USER_MENTION_CLASS =
-  "inline rounded bg-yellow-100 px-1 py-0 font-semibold text-yellow-900 align-baseline";
-const INTERACTIVE_CURRENT_USER_MENTION_CLASS = `${CURRENT_USER_MENTION_CLASS} cursor-pointer border-0 hover:bg-yellow-200 focus:outline-none focus:ring-2 focus:ring-yellow-400`;
+  "inline rounded bg-primary/20 px-1 py-0 font-semibold text-primary align-baseline";
+const INTERACTIVE_CURRENT_USER_MENTION_CLASS = `${CURRENT_USER_MENTION_CLASS} cursor-pointer border-0 hover:bg-primary/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring`;
 const PREVIEW_WIDTH = 256;
 const PREVIEW_VERTICAL_GAP = 8;
 
@@ -416,7 +416,7 @@ export default function MessageText(props: {
           }}
           role="dialog"
           aria-label={mentionPreviewLabel(previewUser)}
-          className="fixed z-50 rounded-lg border border-gray-200 bg-white p-3 text-gray-900 shadow-lg"
+          className="fixed z-50 rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-lg"
           style={previewPosition(preview.anchor)}
         >
           <div className="flex items-center gap-3">
@@ -426,10 +426,10 @@ export default function MessageText(props: {
               size={48}
             />
             <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-gray-950">
+              <div className="truncate text-sm font-semibold text-foreground">
                 {mentionDisplayName(previewUser)}
               </div>
-              <div className="truncate text-sm text-gray-600">@{previewUser.username}</div>
+              <div className="truncate text-sm text-muted-foreground">@{previewUser.username}</div>
             </div>
           </div>
         </div>

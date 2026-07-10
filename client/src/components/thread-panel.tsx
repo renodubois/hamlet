@@ -64,15 +64,15 @@ function isDeletedMessage(message: Message): boolean {
 
 function threadMessageClass(authoredByCurrentUser: boolean, mentionedCurrentUser: boolean): string {
   const borderClass = authoredByCurrentUser
-    ? "border-blue-400"
+    ? "border-primary"
     : mentionedCurrentUser
-      ? "border-yellow-300"
+      ? "border-primary/50"
       : "border-transparent";
   const stateClass = mentionedCurrentUser
-    ? "bg-yellow-50 ring-1 ring-inset ring-yellow-300 hover:bg-yellow-100/80 focus-within:bg-yellow-100/80"
+    ? "bg-primary/10 ring-1 ring-inset ring-primary/20 hover:bg-primary/15 focus-within:bg-primary/15"
     : authoredByCurrentUser
-      ? "bg-blue-50/50 hover:bg-blue-50 focus-within:bg-blue-50"
-      : "hover:bg-gray-50 focus-within:bg-gray-50";
+      ? "bg-primary/5 hover:bg-primary/10 focus-within:bg-primary/10"
+      : "hover:bg-accent focus-within:bg-accent";
 
   return `group relative flex items-start gap-3 rounded-md border-l-4 py-2 pl-2 pr-12 transition-colors ${borderClass} ${stateClass}`;
 }
@@ -82,7 +82,7 @@ function MessageBody(props: { message: Message; currentUserId: number | null }) 
     <If
       when={!isDeletedMessage(props.message)}
       fallback={
-        <p className="italic text-gray-500" aria-label="Original message deleted">
+        <p className="italic text-muted-foreground" aria-label="Original message deleted">
           Original message deleted
         </p>
       }
@@ -182,14 +182,18 @@ function ThreadMessage(props: {
                 }
               }}
               className="flex min-w-0 flex-1 items-center gap-2"
-              inputClass="bg-gray-100 rounded-md px-2 py-1 w-full"
-              emojiButtonClass="cursor-pointer rounded-md bg-gray-100 px-2 py-1 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400"
+              inputClass="w-full rounded-md border border-input bg-transparent px-2 py-1 transition-colors focus:outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+              emojiButtonClass="cursor-pointer rounded-md bg-muted px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               emojiButtonLabel="Open emoji picker for reply edit"
             />
-            <button type="submit" className="text-sm text-blue-600">
+            <button type="submit" className="text-sm text-primary">
               Save
             </button>
-            <button type="button" className="text-sm text-gray-500" onClick={props.onCancelEdit}>
+            <button
+              type="button"
+              className="text-sm text-muted-foreground"
+              onClick={props.onCancelEdit}
+            >
               Cancel
             </button>
           </form>
@@ -229,7 +233,7 @@ function ThreadMessage(props: {
         <div
           role="toolbar"
           aria-label="Thread message actions"
-          className="absolute right-1 top-1 flex gap-1 rounded-md border border-gray-200 bg-white shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+          className="absolute right-1 top-1 flex gap-1 rounded-md border border-border bg-card shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
         >
           <If when={canReact()}>
             <button
@@ -240,7 +244,7 @@ function ThreadMessage(props: {
                   : `Add reaction to message by ${actionAuthorName()}`
               }
               title="Add reaction"
-              className="p-1.5 rounded-md hover:bg-gray-100"
+              className="p-1.5 rounded-md transition-colors hover:bg-accent"
               onClick={(event) => {
                 event.stopPropagation();
                 props.onOpenReactionPicker(props.message, event.currentTarget);
@@ -254,7 +258,7 @@ function ThreadMessage(props: {
               type="button"
               aria-label="Edit reply"
               title="Edit reply"
-              className="p-1.5 rounded-md hover:bg-gray-100"
+              className="p-1.5 rounded-md transition-colors hover:bg-accent"
               onClick={() => props.onStartEdit(props.message)}
             >
               <EditIcon size={14} />
@@ -263,7 +267,7 @@ function ThreadMessage(props: {
               type="button"
               aria-label="Delete reply"
               title="Delete reply"
-              className="p-1.5 rounded-md text-red-600 hover:bg-red-50"
+              className="p-1.5 rounded-md text-destructive transition-colors hover:bg-destructive/10"
               onClick={() => props.onRequestDelete(props.message)}
             >
               <DeleteIcon size={14} />
@@ -715,14 +719,14 @@ export default function ThreadPanel(props: {
 
   return (
     <aside
-      className="w-96 max-w-[45vw] min-h-0 flex-shrink-0 border-l border-gray-200 bg-white text-gray-900 flex flex-col"
+      className="w-96 max-w-[45vw] min-h-0 flex-shrink-0 border-l border-border bg-background text-foreground flex flex-col"
       aria-label="Thread panel"
     >
-      <header className="flex items-center justify-between border-b border-gray-200 p-4">
+      <header className="flex items-center justify-between border-b border-border p-4">
         <h2 className="font-bold text-lg">Thread</h2>
         <button
           type="button"
-          className="rounded-md px-2 py-1 text-sm text-gray-600 hover:bg-gray-100"
+          className="rounded-md px-2 py-1 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
           aria-label="Close thread"
           onClick={props.onClose}
         >
@@ -740,7 +744,7 @@ export default function ThreadPanel(props: {
           <p>Loading thread...</p>
         </If>
         <If when={thread.error}>
-          <p role="alert" className="text-red-700">
+          <p role="alert" className="text-destructive">
             Error loading thread: {String(thread.error)}
           </p>
         </If>
@@ -766,12 +770,12 @@ export default function ThreadPanel(props: {
                 }
               />
               <If when={loaded().replies.length > 0}>
-                <div className="border-t border-gray-100 pt-2">
+                <div className="border-t border-border pt-2">
                   <If when={loaded().has_more_replies}>
                     <div className="pb-2 text-center">
                       <button
                         type="button"
-                        className="rounded-md border border-gray-300 px-3 py-1 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                        className="rounded-md border border-border px-3 py-1 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
                         onClick={() => void loadOlderReplies()}
                         disabled={loadingOlder()}
                       >
@@ -781,7 +785,7 @@ export default function ThreadPanel(props: {
                   </If>
                   <If when={olderError()}>
                     {(message) => (
-                      <p role="alert" className="pb-2 text-sm text-red-700">
+                      <p role="alert" className="pb-2 text-sm text-destructive">
                         Error loading older replies: {message()}
                       </p>
                     )}
@@ -819,7 +823,7 @@ export default function ThreadPanel(props: {
       </div>
 
       <form
-        className="flex-shrink-0 border-t border-gray-200 p-4"
+        className="flex-shrink-0 border-t border-border p-4"
         onSubmit={(e) => {
           e.preventDefault();
           void submitReply();
@@ -827,7 +831,7 @@ export default function ThreadPanel(props: {
       >
         <If when={error()}>
           {(message) => (
-            <p role="alert" className="mb-2 text-sm text-red-700">
+            <p role="alert" className="mb-2 text-sm text-destructive">
               {message()}
             </p>
           )}
@@ -860,7 +864,7 @@ export default function ThreadPanel(props: {
             mentionSearchLimit={props.mentionSearchLimit}
           />
           <button
-            className="rounded-md bg-blue-100 p-4 disabled:opacity-50"
+            className="rounded-md bg-primary/10 p-4 text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
             type="submit"
             disabled={submitting() || !hasDraftContent()}
           >
@@ -886,20 +890,20 @@ export default function ThreadPanel(props: {
         onClose={() => setPendingDeleteId(null)}
         title="Delete reply?"
       >
-        <p className="text-sm text-gray-200 mb-4">
+        <p className="text-sm text-muted-foreground mb-4">
           This will permanently delete the reply. This cannot be undone.
         </p>
         <div className="flex gap-2 justify-end">
           <button
             type="button"
-            className="text-gray-300 hover:text-gray-100 text-sm px-3 py-2"
+            className="text-muted-foreground hover:text-foreground text-sm px-3 py-2 transition-colors"
             onClick={() => setPendingDeleteId(null)}
           >
             Cancel
           </button>
           <button
             type="button"
-            className="bg-red-600 hover:bg-red-700 text-white rounded-md px-4 py-2 text-sm font-medium transition-colors"
+            className="bg-destructive hover:bg-destructive/90 text-white rounded-md px-4 py-2 text-sm font-medium transition-colors"
             onClick={() => void confirmDelete()}
           >
             Delete

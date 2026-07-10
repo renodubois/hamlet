@@ -37,14 +37,14 @@ function previewMessageStateClass(
   const authoredByCurrentUser = isAuthoredByCurrentUser(message, currentUserId);
   const mentionedCurrentUser = messageMentionsCurrentUser(message, currentUserId);
   const borderClass = authoredByCurrentUser
-    ? "border-blue-400"
+    ? "border-primary"
     : mentionedCurrentUser
-      ? "border-yellow-300"
+      ? "border-primary/50"
       : defaultBorderClass;
   const stateClass = mentionedCurrentUser
-    ? "bg-yellow-50 ring-1 ring-inset ring-yellow-300"
+    ? "bg-primary/10 ring-1 ring-inset ring-primary/20"
     : authoredByCurrentUser
-      ? "bg-blue-50/50"
+      ? "bg-primary/5"
       : defaultStateClass;
 
   return `${borderClass} ${stateClass}`;
@@ -74,19 +74,21 @@ function ReplyPreview(props: { reply: Message; currentUserId: number | null }) {
         props.reply,
         props.currentUserId,
         "border-transparent",
-        "bg-gray-50",
+        "bg-muted",
       )}`}
     >
       <If
         when={!isDeletedMessage(props.reply)}
-        fallback={<p className="italic text-gray-500">Reply deleted</p>}
+        fallback={<p className="italic text-muted-foreground">Reply deleted</p>}
       >
-        <p className="text-xs font-semibold text-gray-600">{messageDisplayName(props.reply)}</p>
+        <p className="text-xs font-semibold text-muted-foreground">
+          {messageDisplayName(props.reply)}
+        </p>
         <MessageText
           text={props.reply.text}
           mentions={props.reply.mentions ?? []}
           currentUserId={props.currentUserId}
-          className="mt-1 whitespace-pre-wrap break-words text-sm text-gray-800"
+          className="mt-1 whitespace-pre-wrap break-words text-sm text-foreground"
         />
         <PreviewAttachments message={props.reply} />
       </If>
@@ -107,25 +109,27 @@ export default function ThreadsView() {
     thread.recent_replies.some((reply) => messageMentionsCurrentUser(reply, currentUserId()));
 
   return (
-    <section className="flex h-full flex-col bg-white text-gray-900">
-      <header className="flex-shrink-0 border-b border-gray-200 bg-gray-100 p-4 text-gray-700">
+    <section className="flex h-full flex-col bg-background text-foreground">
+      <header className="flex-shrink-0 border-b border-border bg-muted p-4 text-foreground">
         <h1 className="text-2xl font-bold">Threads</h1>
-        <p className="mt-1 text-sm text-gray-600">Conversations you have participated in.</p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Conversations you have participated in.
+        </p>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <If when={threads.loading}>
-          <p className="text-gray-600">Loading threads...</p>
+          <p className="text-muted-foreground">Loading threads...</p>
         </If>
 
         <If when={threads.error}>
-          <p role="alert" className="text-red-700">
+          <p role="alert" className="text-destructive">
             Error loading threads: {String(threads.error)}
           </p>
         </If>
 
         <If when={threads()?.length === 0}>
-          <p className="text-gray-600">No participated threads yet.</p>
+          <p className="text-muted-foreground">No participated threads yet.</p>
         </If>
 
         <div className="space-y-4">
@@ -141,13 +145,13 @@ export default function ThreadsView() {
                   }
                   className={`rounded-lg border p-4 shadow-sm transition-colors ${
                     previewMentionsCurrentUser(thread)
-                      ? "border-yellow-300 bg-yellow-50/40 ring-1 ring-inset ring-yellow-200"
-                      : "border-gray-200 bg-white"
+                      ? "border-primary/50 bg-primary/5 ring-1 ring-inset ring-primary/20"
+                      : "border-border bg-card"
                   }`}
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-sm font-semibold text-blue-700"># {thread.channel.name}</p>
-                    <p className="text-xs text-gray-500">
+                    <p className="text-sm font-semibold text-primary"># {thread.channel.name}</p>
+                    <p className="text-xs text-muted-foreground">
                       {replyCountText()} •{" "}
                       <time dateTime={formatDateTime(thread.last_reply_created_at)}>
                         Last reply {formatTimestamp(thread.last_reply_created_at)}
@@ -166,22 +170,24 @@ export default function ThreadsView() {
                     className={`mt-3 rounded-r-md border-l-4 py-2 pl-3 pr-2 ${previewMessageStateClass(
                       thread.root,
                       currentUserId(),
-                      "border-gray-200",
+                      "border-border",
                       "",
                     )}`}
                   >
                     <If
                       when={!isDeletedMessage(thread.root)}
-                      fallback={<p className="italic text-gray-500">Original message deleted</p>}
+                      fallback={
+                        <p className="italic text-muted-foreground">Original message deleted</p>
+                      }
                     >
-                      <p className="text-sm font-semibold text-gray-700">
+                      <p className="text-sm font-semibold text-muted-foreground">
                         {messageDisplayName(thread.root)}
                       </p>
                       <MessageText
                         text={thread.root.text}
                         mentions={thread.root.mentions ?? []}
                         currentUserId={currentUserId()}
-                        className="mt-1 whitespace-pre-wrap break-words text-gray-900"
+                        className="mt-1 whitespace-pre-wrap break-words text-foreground"
                       />
                       <PreviewAttachments message={thread.root} />
                     </If>
@@ -197,7 +203,7 @@ export default function ThreadsView() {
 
                   <Link
                     to={threadHref()}
-                    className="mt-3 inline-flex text-sm font-medium text-blue-700 hover:text-blue-900"
+                    className="mt-3 inline-flex text-sm font-medium text-primary transition-colors hover:text-primary/80"
                     aria-label={`Open full thread in # ${thread.channel.name}`}
                   >
                     View all replies

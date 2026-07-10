@@ -403,8 +403,16 @@ describe("<MessageInput>", () => {
     const input = screen.getByRole("textbox", { name: /compose message/i });
     const emojiButton = screen.getByRole("button", { name: /open emoji picker/i });
 
-    expect(input).toHaveClass("focus:outline-none", "focus:ring-2", "focus:ring-blue-400");
-    expect(emojiButton).toHaveClass("focus:outline-none", "focus:ring-2", "focus:ring-blue-400");
+    expect(input).toHaveClass(
+      "focus:outline-none",
+      "focus-visible:ring-2",
+      "focus-visible:ring-ring",
+    );
+    expect(emojiButton).toHaveClass(
+      "focus:outline-none",
+      "focus-visible:ring-2",
+      "focus-visible:ring-ring",
+    );
 
     await user.tab();
     expect(document.activeElement).toBe(input);
@@ -573,7 +581,7 @@ describe("<MessageInput>", () => {
     const bobOption = within(listbox).getByRole("option", { name: /mention bobby @bob/i });
     expect(within(bobOption).getByRole("img", { name: /bobby's avatar/i })).toBeInTheDocument();
     expect(within(bobOption).getByText("Bobby")).toHaveClass("font-semibold");
-    expect(within(bobOption).getByText("@bob")).toHaveClass("text-gray-500");
+    expect(within(bobOption).getByText("@bob")).toHaveClass("text-muted-foreground");
     expect(input).toHaveAttribute("aria-autocomplete", "list");
     expect(input).toHaveAttribute("aria-controls", listbox.id);
     expect(input).toHaveAttribute("aria-activedescendant", options[0].id);
@@ -647,7 +655,7 @@ describe("<MessageInput>", () => {
     await waitFor(() => {
       expect(input.value).toBe("hello <@2> world");
       expect(input.selectionStart).toBe("hello <@2> ".length);
-      expect(screen.getByText("@Bobby")).toHaveClass("bg-blue-100", "text-blue-800");
+      expect(screen.getByText("@Bobby")).toHaveClass("bg-primary/10", "text-primary");
     });
     expect(screen.queryByText("<@2>")).toBeNull();
     expect(onSubmit).not.toHaveBeenCalled();
@@ -742,7 +750,7 @@ describe("<MessageInput>", () => {
 
     expect(input.value).toBe("hello <@2> missing <@999>");
     await waitFor(() => {
-      expect(within(input).getByText("@Bobby")).toHaveClass("bg-blue-100", "text-blue-800");
+      expect(within(input).getByText("@Bobby")).toHaveClass("bg-primary/10", "text-primary");
     });
     expect(input.textContent).toContain("<@999>");
     expect(screen.queryByText("<@2>")).toBeNull();
@@ -816,7 +824,7 @@ describe("<MessageInput>", () => {
     await waitFor(() => {
       expect(input.value).toBe("hello <#100> world");
       expect(input.selectionStart).toBe("hello <#100> ".length);
-      expect(within(input).getByText("#general")).toHaveClass("bg-gray-200", "text-gray-800");
+      expect(within(input).getByText("#general")).toHaveClass("bg-muted", "text-foreground");
     });
     expect(screen.queryByText("<#100>")).toBeNull();
     expect(onSubmit).not.toHaveBeenCalled();
@@ -882,7 +890,7 @@ describe("<MessageInput>", () => {
 
     expect(input.value).toBe("hello <#100> missing <#999>");
     await waitFor(() => {
-      expect(within(input).getByText("#general")).toHaveClass("bg-gray-200", "text-gray-800");
+      expect(within(input).getByText("#general")).toHaveClass("bg-muted", "text-foreground");
     });
     expect(input.textContent).toContain("<#999>");
     expect(screen.queryByText("<#100>")).toBeNull();
@@ -949,8 +957,10 @@ describe("<MessageInput>", () => {
       name: /emoji :laughing:, also matches :satisfied:/i,
     });
     expect(within(option).getByText(":laughing:")).toHaveClass("font-semibold");
-    expect(within(option).getByText(/also matches :satisfied:/i)).toHaveClass("text-gray-500");
-    expect(option.querySelector("[aria-hidden='true']")).toHaveClass("h-9", "w-9", "bg-gray-50");
+    expect(within(option).getByText(/also matches :satisfied:/i)).toHaveClass(
+      "text-muted-foreground",
+    );
+    expect(option.querySelector("[aria-hidden='true']")).toHaveClass("h-9", "w-9", "bg-muted");
   });
 
   test("shows active custom emoji autocomplete suggestions with image previews and excludes deleted emojis", async () => {

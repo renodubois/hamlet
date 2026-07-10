@@ -639,13 +639,13 @@ describe("Channel view integration", () => {
     );
     expect(mentionedRow).toHaveAttribute("data-mentioned-current-user", "true");
     expect(mentionedRow).not.toHaveAttribute("data-authored-by-current-user");
-    expect(mentionedRow).toHaveClass("bg-yellow-50", "ring-yellow-300", "border-yellow-300");
+    expect(mentionedRow).toHaveClass("bg-primary/10", "ring-primary/20", "border-primary/50");
 
     const ownText = await findRenderedMessageTextWithin(panel, "own reply no mention");
     const ownRow = assertExists(ownText.closest("article") as HTMLElement | null, "own thread row");
     expect(ownRow).toHaveAttribute("data-authored-by-current-user", "true");
     expect(ownRow).not.toHaveAttribute("data-mentioned-current-user");
-    expect(ownRow).toHaveClass("border-blue-400", "bg-blue-50/50");
+    expect(ownRow).toHaveClass("border-primary", "bg-primary/5");
 
     const bothText = await findRenderedMessageTextWithin(panel, "own reply ping @baipas");
     const bothRow = assertExists(
@@ -654,7 +654,7 @@ describe("Channel view integration", () => {
     );
     expect(bothRow).toHaveAttribute("data-authored-by-current-user", "true");
     expect(bothRow).toHaveAttribute("data-mentioned-current-user", "true");
-    expect(bothRow).toHaveClass("border-blue-400", "bg-yellow-50", "ring-yellow-300");
+    expect(bothRow).toHaveClass("border-primary", "bg-primary/10", "ring-primary/20");
 
     const deletedRow = assertExists(
       within(panel)
@@ -2497,7 +2497,7 @@ describe("Channel view integration", () => {
 
     inputFromUser(input, "<@2>");
     await waitFor(() => {
-      expect(within(input).getByText("@Bobby")).toHaveClass("bg-blue-100", "text-blue-800");
+      expect(within(input).getByText("@Bobby")).toHaveClass("bg-primary/10", "text-primary");
     });
 
     inputFromUser(input, "@bo");

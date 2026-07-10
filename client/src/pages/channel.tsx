@@ -26,6 +26,7 @@ import RemoteCameraTiles from "../components/remote-camera-tiles";
 import ScreenShareViewer from "../components/screen-share-viewer";
 import ThreadPanel from "../components/thread-panel";
 import TypingIndicator from "../components/typing-indicator";
+import { Button } from "../components/ui/button";
 import {
   listMessages,
   messageDisplayName,
@@ -419,9 +420,9 @@ export default function ChannelView() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-white text-gray-900">
-      <section className="bg-gray-100 text-gray-700 p-4 flex-shrink-0">
-        <h1 className="text-2xl font-bold"># {channel()?.name ?? params.id}</h1>
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-background text-foreground">
+      <section className="flex-shrink-0 border-b border-border bg-background px-4 py-3 shadow-sm">
+        <h1 className="text-lg font-semibold tracking-tight"># {channel()?.name ?? params.id}</h1>
       </section>
 
       <ScreenShareViewer />
@@ -457,7 +458,7 @@ export default function ChannelView() {
             <div className="sticky bottom-4 z-10 flex justify-center px-4" aria-live="polite">
               <button
                 type="button"
-                className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                className="rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-lg transition-colors hover:bg-primary/90 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 aria-label="New messages below. Jump to latest messages"
                 onClick={jumpToLatestMessages}
               >
@@ -482,7 +483,7 @@ export default function ChannelView() {
         )}
       </div>
 
-      <section className="flex-shrink-0 p-4 border-t border-gray-200">
+      <section className="flex-shrink-0 p-4 border-t border-border">
         <TypingIndicator
           channelId={Number(params.id)}
           currentUserId={user()?.id ?? null}
@@ -506,9 +507,9 @@ export default function ChannelView() {
               <MessageReferencePreview
                 id={replyBannerId}
                 reference={target()}
-                className="mb-2 flex min-w-0 items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-950"
+                className="mb-2 flex min-w-0 items-center gap-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-sm text-foreground"
                 authorClass="shrink-0 font-semibold"
-                textClass="min-w-0 flex-1 truncate text-blue-900"
+                textClass="min-w-0 flex-1 truncate text-muted-foreground"
                 authorPrefix="Replying to "
                 ariaLabelPrefix="Inline reply target: "
                 role="status"
@@ -516,7 +517,7 @@ export default function ChannelView() {
               >
                 <button
                   type="button"
-                  className="rounded px-2 py-1 text-sm font-medium text-blue-700 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                  className="rounded-md px-2 py-1 text-sm font-medium text-primary transition-colors hover:bg-primary/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={`Dismiss inline reply to message by ${messageDisplayName(
                     target(),
                   )}: ${inlineReplyPreviewText(target())}`}
@@ -546,13 +547,9 @@ export default function ChannelView() {
                 composerRef.current = el;
               }}
             />
-            <button
-              className="bg-blue-100 p-4 rounded-md disabled:opacity-50"
-              type="submit"
-              disabled={submitting() || !hasDraftContent()}
-            >
+            <Button type="submit" size="lg" disabled={submitting() || !hasDraftContent()}>
               Send
-            </button>
+            </Button>
           </div>
         </form>
       </section>

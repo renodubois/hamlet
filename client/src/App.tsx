@@ -1,6 +1,7 @@
 import React, { Suspense, type ReactNode } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import ChannelSidebar from "./components/channel-sidebar";
+import { Button } from "./components/ui/button";
 import { useAuth } from "./contexts/auth";
 import { ChannelsProvider, useChannels } from "./contexts/channels";
 import { CustomEmojisProvider } from "./contexts/custom-emojis";
@@ -14,18 +15,14 @@ function ErrorPanel(props: { error: unknown; reset?: () => void; title?: string 
   const message = props.error instanceof Error ? props.error.message : String(props.error);
   return (
     <div className="max-w-lg p-8" role="alert">
-      <h2 className="text-lg font-semibold text-red-700">
+      <h2 className="text-lg font-semibold text-destructive">
         {props.title ?? "Something went wrong"}
       </h2>
-      <p className="mt-2 text-sm text-gray-700">{message}</p>
+      <p className="mt-2 text-sm text-muted-foreground">{message}</p>
       {props.reset ? (
-        <button
-          type="button"
-          className="mt-4 rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700"
-          onClick={() => props.reset?.()}
-        >
+        <Button type="button" className="mt-4" onClick={() => props.reset?.()}>
           Try again
-        </button>
+        </Button>
       ) : null}
     </div>
   );
@@ -66,7 +63,7 @@ function AppShell(props: { user: User }) {
 
   return (
     <div className="flex h-screen min-h-0 overflow-hidden">
-      <aside className="flex min-h-0 w-60 flex-shrink-0 flex-col bg-gray-800 text-gray-100">
+      <aside className="flex min-h-0 w-60 flex-shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
         <ChannelSidebar user={props.user} onLogout={auth.logout} onAvatarChange={auth.refresh} />
       </aside>
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">

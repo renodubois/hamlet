@@ -2,18 +2,19 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { fn } from "storybook/test";
 
 import Modal from "./modal";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import { Textarea } from "./ui/textarea";
 
 function DefaultBody() {
   return (
-    <div className="space-y-3 text-sm text-gray-200">
+    <div className="space-y-3 text-sm text-foreground">
       <p>Use this layer for confirmations, settings, and other focused tasks.</p>
       <div className="flex justify-end gap-2 pt-2">
-        <button type="button" className="rounded-md bg-gray-700 px-3 py-2 hover:bg-gray-600">
+        <Button type="button" variant="secondary">
           Secondary
-        </button>
-        <button type="button" className="rounded-md bg-blue-600 px-3 py-2 hover:bg-blue-500">
-          Primary action
-        </button>
+        </Button>
+        <Button type="button">Primary action</Button>
       </div>
     </div>
   );
@@ -21,29 +22,20 @@ function DefaultBody() {
 
 function ChannelForm() {
   return (
-    <form className="space-y-4 text-sm text-gray-200">
+    <form className="space-y-4 text-sm text-foreground">
       <label className="block space-y-1">
         <span className="font-medium">Channel name</span>
-        <input
-          autoFocus
-          className="w-full rounded-md border border-gray-600 bg-gray-900 px-3 py-2 text-gray-100"
-          defaultValue="design-review"
-        />
+        <Input autoFocus defaultValue="design-review" />
       </label>
       <label className="block space-y-1">
         <span className="font-medium">Description</span>
-        <textarea
-          className="min-h-24 w-full rounded-md border border-gray-600 bg-gray-900 px-3 py-2 text-gray-100"
-          defaultValue="A focused place to iterate on UI details."
-        />
+        <Textarea className="min-h-24" defaultValue="A focused place to iterate on UI details." />
       </label>
       <div className="flex justify-end gap-2">
-        <button type="button" className="rounded-md bg-gray-700 px-3 py-2 hover:bg-gray-600">
+        <Button type="button" variant="secondary">
           Cancel
-        </button>
-        <button type="submit" className="rounded-md bg-blue-600 px-3 py-2 hover:bg-blue-500">
-          Create
-        </button>
+        </Button>
+        <Button type="submit">Create</Button>
       </div>
     </form>
   );

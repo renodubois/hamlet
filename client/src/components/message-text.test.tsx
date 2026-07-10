@@ -69,8 +69,8 @@ describe("renderRichText", () => {
     expect(onMentionClick).toHaveBeenCalledWith(BOB, expect.any(MouseEvent));
 
     expect(screen.getByRole("button", { name: "Mention Casey (@casey)" })).toHaveClass(
-      "bg-yellow-100",
-      "text-yellow-900",
+      "bg-primary/20",
+      "text-primary",
     );
     expect(screen.getByRole("img", { name: ":party:" })).toHaveAttribute("title", ":party:");
     expect(screen.getByText(":ghost:")).toHaveAttribute(
@@ -121,14 +121,14 @@ describe("renderRichText", () => {
     ));
 
     expect(screen.getByRole("button", { name: "Mention Casey (@casey)" })).toHaveClass(
-      "bg-yellow-100",
+      "bg-primary/20",
       "font-semibold",
-      "text-yellow-900",
+      "text-primary",
     );
     expect(screen.getByRole("button", { name: "Mention Bobby (@bob)" })).toHaveClass(
-      "bg-blue-100",
+      "bg-primary/10",
       "font-medium",
-      "text-blue-800",
+      "text-primary",
     );
   });
 });

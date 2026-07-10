@@ -2,6 +2,8 @@ import { useSignalState, If } from "../hooks/react-state";
 import Modal from "./modal";
 import { createChannel, type ChannelType } from "../api";
 import { CHANNEL_NAME_MAX_LEN } from "../constants";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
 
 export default function AddChannelModal(props: { open: boolean; onClose: () => void }) {
   const [name, setName] = useSignalState("");
@@ -54,8 +56,7 @@ export default function AddChannelModal(props: { open: boolean; onClose: () => v
   return (
     <Modal open={props.open} onClose={close} title="Add Channel">
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-        <input
-          className="bg-gray-700 text-gray-100 rounded-md p-3 placeholder-gray-400"
+        <Input
           type="text"
           placeholder="Channel name"
           autoFocus
@@ -64,8 +65,8 @@ export default function AddChannelModal(props: { open: boolean; onClose: () => v
           onInput={(e) => setName(e.currentTarget.value)}
         />
         <fieldset className="flex gap-2">
-          <legend className="text-gray-300 text-sm mb-1">Channel type</legend>
-          <label className="flex-1 flex items-center gap-2 bg-gray-700 rounded-md px-3 py-2 cursor-pointer text-gray-100 text-sm">
+          <legend className="text-muted-foreground text-sm mb-1">Channel type</legend>
+          <label className="flex-1 flex items-center gap-2 bg-muted hover:bg-accent transition-colors rounded-md px-3 py-2 cursor-pointer text-sm">
             <input
               type="radio"
               name="channel-type"
@@ -75,7 +76,7 @@ export default function AddChannelModal(props: { open: boolean; onClose: () => v
             />
             Text
           </label>
-          <label className="flex-1 flex items-center gap-2 bg-gray-700 rounded-md px-3 py-2 cursor-pointer text-gray-100 text-sm">
+          <label className="flex-1 flex items-center gap-2 bg-muted hover:bg-accent transition-colors rounded-md px-3 py-2 cursor-pointer text-sm">
             <input
               type="radio"
               name="channel-type"
@@ -87,23 +88,15 @@ export default function AddChannelModal(props: { open: boolean; onClose: () => v
           </label>
         </fieldset>
         <If when={error()}>
-          <p className="text-red-400 text-sm">{error()}</p>
+          <p className="text-destructive text-sm">{error()}</p>
         </If>
         <div className="flex gap-2 justify-end">
-          <button
-            type="button"
-            className="text-gray-300 hover:text-gray-100 text-sm px-3 py-2"
-            onClick={close}
-          >
+          <Button type="button" variant="ghost" onClick={close}>
             Cancel
-          </button>
-          <button
-            type="submit"
-            className="bg-blue-600 hover:bg-blue-700 text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 transition-colors"
-            disabled={submitting()}
-          >
+          </Button>
+          <Button type="submit" disabled={submitting()}>
             {submitting() ? "Creating..." : "Create"}
-          </button>
+          </Button>
         </div>
       </form>
     </Modal>

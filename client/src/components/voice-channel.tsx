@@ -334,10 +334,10 @@ export default function VoiceChannel(props: { channel: Channel }) {
     <div className="flex flex-col">
       <button
         type="button"
-        className={`w-full flex items-center gap-2 px-3 py-1.5 rounded text-sm text-left disabled:opacity-50 ${
+        className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-sm text-left transition-colors disabled:opacity-50 ${
           isActive()
-            ? "bg-gray-700 text-white font-medium"
-            : "text-gray-400 hover:bg-gray-700 hover:text-gray-200"
+            ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+            : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground"
         }`}
         onClick={() => void handleToggleJoin()}
         disabled={isBusy()}
@@ -352,7 +352,7 @@ export default function VoiceChannel(props: { channel: Channel }) {
         <VoiceChannelIcon size={14} aria-hidden="true" />
         <span className="flex-1 truncate">{props.channel.name}</span>
         <If when={isBusy() && voice.activeChannelId() !== props.channel.id}>
-          <span className="text-xs text-gray-400" aria-hidden="true">
+          <span className="text-xs text-sidebar-foreground/70" aria-hidden="true">
             …
           </span>
         </If>
@@ -365,7 +365,7 @@ export default function VoiceChannel(props: { channel: Channel }) {
         >
           <List each={participants()}>
             {(p) => (
-              <li className="flex items-center gap-2 px-2 py-1 text-xs text-gray-300">
+              <li className="flex items-center gap-2 px-2 py-1 text-xs text-sidebar-foreground">
                 <Avatar
                   url={p.avatar_url}
                   username={p.username}
@@ -375,7 +375,7 @@ export default function VoiceChannel(props: { channel: Channel }) {
                 <span className="truncate">{p.username}</span>
                 <If when={p.muted}>
                   <span
-                    className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-gray-900/70 text-red-300"
+                    className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-black/30 text-destructive"
                     role="img"
                     aria-label={`${p.username} is muted`}
                     title={`${p.username} is muted`}
@@ -385,7 +385,7 @@ export default function VoiceChannel(props: { channel: Channel }) {
                 </If>
                 <If when={p.deafened}>
                   <span
-                    className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-gray-900/70 text-red-300"
+                    className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-black/30 text-destructive"
                     role="img"
                     aria-label={`${p.username} is deafened`}
                     title={`${p.username} is deafened`}
@@ -405,7 +405,7 @@ export default function VoiceChannel(props: { channel: Channel }) {
                 </If>
                 <If when={cameraUserIds().has(p.user_id)}>
                   <span
-                    className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-blue-900/60 text-blue-300"
+                    className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-sidebar-primary/20 text-sidebar-primary"
                     role="img"
                     aria-label={`${p.username} has camera on`}
                     title={`${p.username} has camera on`}
@@ -421,10 +421,10 @@ export default function VoiceChannel(props: { channel: Channel }) {
 
       <If when={cameraStreams().length > 0 && !isActive()}>
         <section
-          className="ml-6 mt-1 mb-1 rounded border border-blue-900/70 bg-blue-950/20 p-2"
+          className="ml-6 mt-1 mb-1 rounded-md border border-sidebar-primary/40 bg-sidebar-primary/10 p-2"
           aria-label={`Active cameras in ${props.channel.name}`}
         >
-          <div className="flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-blue-300">
+          <div className="flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-sidebar-primary">
             <CameraIcon size={12} aria-hidden="true" />
             <span>
               {cameraStreams().length === 1
@@ -432,13 +432,13 @@ export default function VoiceChannel(props: { channel: Channel }) {
                 : `${cameraStreams().length} cameras live`}
             </span>
           </div>
-          <p className="mt-1 text-[11px] text-gray-400">Join voice to view cameras.</p>
+          <p className="mt-1 text-[11px] text-sidebar-foreground/70">Join voice to view cameras.</p>
         </section>
       </If>
 
       <If when={screenShares().length > 0}>
         <section
-          className="ml-6 mt-1 mb-1 rounded border border-green-900/70 bg-green-950/20 p-2"
+          className="ml-6 mt-1 mb-1 rounded-md border border-green-900/70 bg-green-950/20 p-2"
           aria-label={`Active screen shares in ${props.channel.name}`}
         >
           <div className="mb-1 flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-green-300">
@@ -457,19 +457,21 @@ export default function VoiceChannel(props: { channel: Channel }) {
               {(stream) => {
                 const name = screenShareDisplayName(stream);
                 return (
-                  <li className="flex items-center gap-2 rounded bg-gray-900/60 px-2 py-1 text-xs text-gray-200">
+                  <li className="flex items-center gap-2 rounded-md bg-black/30 px-2 py-1 text-xs text-sidebar-foreground">
                     <Avatar url={stream.avatar_url} username={name} size={16} />
                     <span className="min-w-0 flex-1 truncate">{name}'s screen</span>
                     <If
                       when={isActive()}
                       fallback={
-                        <span className="flex-shrink-0 text-[11px] text-gray-400">Join voice</span>
+                        <span className="flex-shrink-0 text-[11px] text-sidebar-foreground/70">
+                          Join voice
+                        </span>
                       }
                     >
                       <button
                         type="button"
-                        className={`flex-shrink-0 rounded bg-green-700 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-green-600 disabled:opacity-50 ${
-                          isWatchingStream(stream) ? "bg-gray-700 text-green-200" : ""
+                        className={`flex-shrink-0 rounded-md bg-green-700 px-2 py-0.5 text-[11px] font-medium text-white transition-colors hover:bg-green-600 disabled:opacity-50 ${
+                          isWatchingStream(stream) ? "bg-sidebar-accent text-green-200" : ""
                         }`}
                         disabled={isBusy() || isWatchingStream(stream)}
                         aria-label={
@@ -512,8 +514,10 @@ export default function VoiceChannel(props: { channel: Channel }) {
         >
           <button
             type="button"
-            className={`p-1.5 rounded hover:bg-gray-700 ${
-              voice.isCameraEnabled() ? "text-green-300 bg-gray-700" : "text-gray-300"
+            className={`p-1.5 rounded-md transition-colors hover:bg-sidebar-accent ${
+              voice.isCameraEnabled()
+                ? "text-green-300 bg-sidebar-accent"
+                : "text-sidebar-foreground"
             }`}
             aria-pressed={voice.isCameraEnabled()}
             aria-busy={voice.isCameraBusy()}
@@ -539,8 +543,10 @@ export default function VoiceChannel(props: { channel: Channel }) {
           </button>
           <button
             type="button"
-            className={`p-1.5 rounded hover:bg-gray-700 ${
-              voice.isScreenSharing() ? "text-green-300 bg-gray-700" : "text-gray-300"
+            className={`p-1.5 rounded-md transition-colors hover:bg-sidebar-accent ${
+              voice.isScreenSharing()
+                ? "text-green-300 bg-sidebar-accent"
+                : "text-sidebar-foreground"
             }`}
             aria-pressed={voice.isScreenSharing()}
             aria-label={voice.isScreenSharing() ? "Stop sharing screen" : "Share screen"}
@@ -573,7 +579,7 @@ export default function VoiceChannel(props: { channel: Channel }) {
       </If>
 
       <If when={localError() || voice.lastError()}>
-        <p className="ml-6 mb-1 text-xs text-red-400" role="alert">
+        <p className="ml-6 mb-1 text-xs text-destructive" role="alert">
           {localError() ?? voice.lastError()}
         </p>
       </If>

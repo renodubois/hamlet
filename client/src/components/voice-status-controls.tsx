@@ -10,8 +10,10 @@ export default function VoiceStatusControls() {
     <div className="flex items-center gap-1" role="group" aria-label="Voice status controls">
       <button
         type="button"
-        className={`p-1 rounded hover:bg-gray-700 ${
-          voice.isMuted() ? "text-red-400 bg-gray-700" : "text-gray-400 hover:text-gray-100"
+        className={`p-1 rounded-md transition-colors hover:bg-sidebar-accent ${
+          voice.isMuted()
+            ? "text-destructive bg-sidebar-accent"
+            : "text-sidebar-foreground/70 hover:text-sidebar-foreground"
         }`}
         aria-pressed={voice.isMuted()}
         aria-label={voice.isMuted() ? "Unmute microphone" : "Mute microphone"}
@@ -24,8 +26,10 @@ export default function VoiceStatusControls() {
       </button>
       <button
         type="button"
-        className={`p-1 rounded hover:bg-gray-700 ${
-          voice.isDeafened() ? "text-red-400 bg-gray-700" : "text-gray-400 hover:text-gray-100"
+        className={`p-1 rounded-md transition-colors hover:bg-sidebar-accent ${
+          voice.isDeafened()
+            ? "text-destructive bg-sidebar-accent"
+            : "text-sidebar-foreground/70 hover:text-sidebar-foreground"
         }`}
         aria-pressed={voice.isDeafened()}
         aria-label={voice.isDeafened() ? "Undeafen" : "Deafen"}
@@ -39,7 +43,7 @@ export default function VoiceStatusControls() {
       <If when={voice.activeChannelId() != null}>
         <button
           type="button"
-          className="p-1 rounded hover:bg-gray-700 text-red-400 hover:text-red-300"
+          className="p-1 rounded-md transition-colors hover:bg-sidebar-accent text-destructive hover:text-destructive/80"
           aria-label="Disconnect from voice"
           title="Disconnect from voice"
           onClick={() => void voice.leave()}

@@ -126,7 +126,7 @@ export default function AttachmentGrid(props: {
                   <button
                     type="button"
                     aria-label={attachmentOpenLabel(props.authorName, index(), total())}
-                    className="group block max-w-full overflow-hidden rounded-lg border border-gray-200 bg-gray-100 p-0 text-left focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    className="group block max-w-full overflow-hidden rounded-lg border border-border bg-muted p-0 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     style={previewStyle(attachment)}
                     onClick={() => openAttachment(attachment, index(), total())}
                   >
@@ -136,7 +136,7 @@ export default function AttachmentGrid(props: {
                         <div
                           role="img"
                           aria-label={`${alt()} unavailable`}
-                          className="flex h-full min-h-24 w-full items-center justify-center p-4 text-sm font-medium text-gray-500"
+                          className="flex h-full min-h-24 w-full items-center justify-center p-4 text-sm font-medium text-muted-foreground"
                         >
                           <span aria-hidden="true">Photo unavailable</span>
                         </div>
@@ -171,7 +171,7 @@ export default function AttachmentGrid(props: {
                   <div
                     role="img"
                     aria-label={`${selected().alt} unavailable`}
-                    className="flex min-h-64 items-center justify-center rounded-lg bg-gray-900 p-6 text-sm font-medium text-gray-300"
+                    className="flex min-h-64 items-center justify-center rounded-lg bg-muted p-6 text-sm font-medium text-muted-foreground"
                   >
                     Photo unavailable
                   </div>

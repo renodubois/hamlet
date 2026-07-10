@@ -453,11 +453,11 @@ describe("Threads view integration", () => {
       expect(mentionedArticle).toHaveAttribute("data-mentioned-current-user", "true");
       expect(rootPreview).toHaveAttribute("data-mentioned-current-user", "true");
     });
-    expect(mentionedArticle).toHaveClass("border-yellow-300", "bg-yellow-50/40");
-    expect(rootPreview).toHaveClass("bg-yellow-50", "ring-yellow-300");
+    expect(mentionedArticle).toHaveClass("border-primary/50", "bg-primary/5");
+    expect(rootPreview).toHaveClass("bg-primary/10", "ring-primary/20");
     expect(
       within(rootPreview).getByRole("button", { name: "Mention baipas (@baipas)" }),
-    ).toHaveClass("bg-yellow-100", "font-semibold");
+    ).toHaveClass("bg-primary/20", "font-semibold");
 
     const recentText = await screen.findByText(
       (_, element) => element?.textContent === "recent ping @baipas",
@@ -467,7 +467,7 @@ describe("Threads view integration", () => {
       "mentioned recent reply preview",
     );
     expect(recentPreview).toHaveAttribute("data-mentioned-current-user", "true");
-    expect(recentPreview).toHaveClass("bg-yellow-50", "ring-yellow-300");
+    expect(recentPreview).toHaveClass("bg-primary/10", "ring-primary/20");
 
     const quietArticle = assertExists(
       (await screen.findByText("normal reply")).closest("article") as HTMLElement | null,

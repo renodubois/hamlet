@@ -31,7 +31,7 @@ interface ComposerPhotoSelectionController {
 let nextPhotoDraftId = 0;
 
 const DEFAULT_ATTACH_BUTTON_CLASS =
-  "inline-flex cursor-pointer items-center gap-2 rounded-md bg-gray-100 px-3 py-4 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex cursor-pointer items-center gap-2 rounded-md bg-muted px-3 py-4 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
 
 function photoLimitMessage(): string {
   return `You can attach up to ${MESSAGE_PHOTO_MAX_COUNT} photos.`;
@@ -196,7 +196,7 @@ export function SelectedPhotoPreviewList(props: {
               {(photo, index) => (
                 <div
                   role="listitem"
-                  className="relative h-24 w-24 overflow-hidden rounded-lg border border-gray-200 bg-gray-100"
+                  className="relative h-24 w-24 overflow-hidden rounded-lg border border-border bg-muted"
                 >
                   <If
                     when={photo.previewUrl.length > 0}
@@ -204,7 +204,7 @@ export function SelectedPhotoPreviewList(props: {
                       <div
                         role="img"
                         aria-label={`Selected photo ${index() + 1}: ${photo.file.name}`}
-                        className="flex h-full w-full items-center justify-center p-2 text-center text-xs text-gray-600"
+                        className="flex h-full w-full items-center justify-center p-2 text-center text-xs text-muted-foreground"
                       >
                         Photo selected
                       </div>
@@ -218,7 +218,7 @@ export function SelectedPhotoPreviewList(props: {
                   </If>
                   <button
                     type="button"
-                    className="absolute right-1 top-1 rounded bg-white/90 px-2 py-1 text-xs font-medium text-gray-900 shadow focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:opacity-50"
+                    className="absolute right-1 top-1 rounded-md bg-background/90 px-2 py-1 text-xs font-medium text-foreground shadow focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                     aria-label={`Remove selected photo ${index() + 1}: ${photo.file.name}`}
                     disabled={props.disabled}
                     onClick={() => props.onRemove(photo.id)}
@@ -232,7 +232,7 @@ export function SelectedPhotoPreviewList(props: {
         </If>
         <If when={props.error}>
           {(error) => (
-            <p id={props.errorId} role="alert" className="text-sm font-medium text-red-700">
+            <p id={props.errorId} role="alert" className="text-sm font-medium text-destructive">
               {error()}
             </p>
           )}

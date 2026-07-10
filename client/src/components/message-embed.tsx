@@ -44,26 +44,26 @@ const MessageEmbed: Component<{
     props.embed.iframe_url !== null;
 
   return (
-    <div className="relative mt-1 max-w-xl rounded-md border-l-4 border-gray-300 bg-gray-50 p-3">
+    <div className="relative mt-1 max-w-xl rounded-md border-l-4 border-border bg-muted p-3">
       <If when={props.onRemove}>
         <button
           type="button"
           aria-label="Remove embed"
           title="Remove embed"
-          className="absolute top-1 right-1 z-10 p-1 rounded-md bg-white/80 text-gray-500 hover:bg-gray-200 hover:text-gray-800"
+          className="absolute top-1 right-1 z-10 p-1 rounded-md bg-background/80 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           onClick={() => props.onRemove?.()}
         >
           <CloseIcon size={14} />
         </button>
       </If>
 
-      <div className="text-xs text-gray-500">{props.embed.site_name ?? hostname()}</div>
+      <div className="text-xs text-muted-foreground">{props.embed.site_name ?? hostname()}</div>
       <If when={props.embed.title}>
         <a
           href={props.embed.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="block font-semibold text-blue-700 hover:underline"
+          className="block font-semibold text-primary hover:underline"
         >
           {props.embed.title}
         </a>
@@ -105,7 +105,9 @@ const MessageEmbed: Component<{
         {/* link/card branch (default) */}
         <Case when={true}>
           <If when={props.embed.description}>
-            <p className="mt-1 text-sm text-gray-700 line-clamp-3">{props.embed.description}</p>
+            <p className="mt-1 text-sm text-muted-foreground line-clamp-3">
+              {props.embed.description}
+            </p>
           </If>
           <If when={props.embed.image_url}>
             {(imageUrl) => (

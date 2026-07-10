@@ -104,21 +104,21 @@ export default function TypingIndicator(props: Props) {
     <If when={message()} keyed>
       {(text) => (
         <div
-          className="flex items-center gap-2 text-xs text-gray-500 px-1 pb-1 h-5"
+          className="flex items-center gap-2 text-xs text-muted-foreground px-1 pb-1 h-5"
           aria-live="polite"
           data-testid="typing-indicator"
         >
           <span className="inline-flex items-center gap-0.5" aria-hidden="true">
             <span
-              className="inline-block w-1 h-1 rounded-full bg-gray-500 animate-bounce"
+              className="inline-block w-1 h-1 rounded-full bg-muted-foreground animate-bounce"
               style={{ animationDelay: "0ms" }}
             />
             <span
-              className="inline-block w-1 h-1 rounded-full bg-gray-500 animate-bounce"
+              className="inline-block w-1 h-1 rounded-full bg-muted-foreground animate-bounce"
               style={{ animationDelay: "150ms" }}
             />
             <span
-              className="inline-block w-1 h-1 rounded-full bg-gray-500 animate-bounce"
+              className="inline-block w-1 h-1 rounded-full bg-muted-foreground animate-bounce"
               style={{ animationDelay: "300ms" }}
             />
           </span>

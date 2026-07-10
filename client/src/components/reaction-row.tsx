@@ -73,12 +73,12 @@ export default function ReactionRow(props: {
                   aria-describedby={previewId()}
                   title={previewText()}
                   disabled={!canToggle()}
-                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 ${
+                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                     reaction.me_reacted
-                      ? "border-blue-300 bg-blue-50 font-medium text-blue-700 shadow-sm"
+                      ? "border-primary/30 bg-primary/10 font-medium text-primary shadow-sm"
                       : canToggle()
-                        ? "border-gray-200 bg-gray-100 text-gray-700 hover:border-blue-200 hover:bg-gray-200"
-                        : "cursor-not-allowed border-gray-200 bg-gray-50 text-gray-500"
+                        ? "border-border bg-muted text-muted-foreground hover:border-primary/20 hover:bg-accent"
+                        : "cursor-not-allowed border-border bg-muted/50 text-muted-foreground"
                   }`}
                   onClick={() => {
                     if (canToggle()) props.onToggle(reaction);
@@ -130,7 +130,7 @@ export default function ReactionRow(props: {
                 <If when={activePreviewKey() === key()}>
                   <span
                     role="tooltip"
-                    className="absolute bottom-full left-1/2 z-20 mb-1 w-max max-w-xs -translate-x-1/2 rounded-md bg-gray-900 px-2 py-1 text-xs font-medium text-white shadow-lg"
+                    className="absolute bottom-full left-1/2 z-20 mb-1 w-max max-w-xs -translate-x-1/2 rounded-md bg-foreground px-2 py-1 text-xs font-medium text-background shadow-lg"
                   >
                     {previewText()}
                   </span>

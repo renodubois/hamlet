@@ -93,9 +93,9 @@ export interface MessageInputProps {
 const DEFAULT_ROOT_CLASS = "flex min-w-0 flex-1 items-center gap-2";
 const MULTILINE_INPUT_BEHAVIOR_CLASS =
   "relative min-h-[2.75rem] max-h-40 overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]";
-const DEFAULT_INPUT_CLASS = `${MULTILINE_INPUT_BEHAVIOR_CLASS} w-full rounded-md bg-gray-100 p-4 focus:outline-none focus:ring-2 focus:ring-blue-400 empty:before:content-[attr(data-placeholder)] empty:before:text-gray-500`;
+const DEFAULT_INPUT_CLASS = `${MULTILINE_INPUT_BEHAVIOR_CLASS} w-full rounded-md border border-input bg-transparent p-4 transition-colors focus:outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground`;
 const DEFAULT_EMOJI_BUTTON_CLASS =
-  "cursor-pointer rounded-md bg-gray-100 p-4 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400";
+  "cursor-pointer rounded-md bg-muted p-4 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 const EMOJI_AUTOCOMPLETE_SESSION_QUERY_PATTERN = /^[A-Za-z0-9_+-]{0,32}$/;
 const EMOJI_AUTOCOMPLETE_QUERY_PATTERN = /^[A-Za-z0-9_+-]{2,32}$/;
 const MAX_EMOJI_AUTOCOMPLETE_RESULTS = 8;
@@ -635,7 +635,7 @@ function createMentionChipElement(
   chip.setAttribute("aria-label", `Mention ${label}`);
   chip.title = user ? `@${user.username}` : `${marker} (unavailable)`;
   chip.className =
-    "mx-0.5 inline-flex items-center rounded bg-blue-100 px-1 font-medium text-blue-800 align-baseline";
+    "mx-0.5 inline-flex items-center rounded bg-primary/10 px-1 font-medium text-primary align-baseline";
   chip.textContent = label;
   return chip;
 }
@@ -648,7 +648,7 @@ function createChannelChipElement(marker: string, channel: Channel): HTMLSpanEle
   chip.setAttribute("aria-label", `Channel ${label}`);
   chip.title = channel.type === "text" ? label : `${label} (${channel.type})`;
   chip.className =
-    "mx-0.5 inline-flex items-center rounded bg-gray-200 px-1 font-medium text-gray-800 align-baseline";
+    "mx-0.5 inline-flex items-center rounded bg-muted px-1 font-medium text-foreground align-baseline";
   chip.textContent = label;
   return chip;
 }
@@ -725,7 +725,7 @@ function AutocompleteMenu<T>(props: {
       id={props.id}
       role="listbox"
       aria-label={props.label}
-      className="absolute bottom-full left-0 z-40 mb-2 max-h-64 w-full max-w-sm overflow-y-auto rounded-md border border-gray-200 bg-white py-1 text-sm shadow-lg"
+      className="absolute bottom-full left-0 z-40 mb-2 max-h-64 w-full max-w-sm overflow-y-auto rounded-md border border-border bg-popover py-1 text-sm text-popover-foreground shadow-md"
     >
       {props.options.map((option, index) => {
         const selected = index === props.selectedIndex;
@@ -736,8 +736,10 @@ function AutocompleteMenu<T>(props: {
             role="option"
             aria-label={props.optionLabel(option)}
             aria-selected={selected}
-            className={`flex cursor-pointer items-center gap-3 px-3 py-2 ${
-              selected ? "bg-blue-100 text-blue-900" : "text-gray-900 hover:bg-blue-50"
+            className={`flex cursor-pointer items-center gap-3 px-3 py-2 transition-colors ${
+              selected
+                ? "bg-accent text-accent-foreground"
+                : "hover:bg-accent hover:text-accent-foreground"
             }`}
             onMouseDown={(event) => {
               event.preventDefault();
@@ -1713,8 +1715,8 @@ export default function MessageInput(props: MessageInputProps) {
                 <>
                   <Avatar url={user.avatar_url} username={display} size={32} />
                   <span className="min-w-0 flex flex-col">
-                    <span className="truncate font-semibold text-gray-950">{display}</span>
-                    <span className="truncate text-xs text-gray-500">@{user.username}</span>
+                    <span className="truncate font-semibold text-foreground">{display}</span>
+                    <span className="truncate text-xs text-muted-foreground">@{user.username}</span>
                   </span>
                 </>
               );
@@ -1734,13 +1736,13 @@ export default function MessageInput(props: MessageInputProps) {
               <>
                 <span
                   aria-hidden="true"
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-gray-200 bg-gray-50 text-lg font-semibold leading-none shadow-sm"
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-lg font-semibold leading-none shadow-sm"
                 >
                   #
                 </span>
                 <span className="min-w-0 flex flex-col">
-                  <span className="truncate font-semibold text-gray-950">#{channel.name}</span>
-                  <span className="truncate text-xs text-gray-500">Text channel</span>
+                  <span className="truncate font-semibold text-foreground">#{channel.name}</span>
+                  <span className="truncate text-xs text-muted-foreground">Text channel</span>
                 </span>
               </>
             )}
@@ -1759,7 +1761,7 @@ export default function MessageInput(props: MessageInputProps) {
               <>
                 <span
                   aria-hidden="true"
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-gray-200 bg-gray-50 text-xl leading-none shadow-sm"
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-xl leading-none shadow-sm"
                 >
                   {suggestion.emoji.kind === "custom" && suggestion.emoji.imageUrl ? (
                     <img
@@ -1773,11 +1775,11 @@ export default function MessageInput(props: MessageInputProps) {
                   )}
                 </span>
                 <span className="min-w-0 flex flex-col">
-                  <span className="truncate font-semibold text-gray-950">
+                  <span className="truncate font-semibold text-foreground">
                     {suggestion.canonicalShortcode}
                   </span>
                   {suggestion.matchedAlias ? (
-                    <span className="truncate text-xs text-gray-500">
+                    <span className="truncate text-xs text-muted-foreground">
                       Also matches {suggestion.matchedAlias}
                     </span>
                   ) : null}

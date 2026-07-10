@@ -37,7 +37,7 @@ function AttachedLocalCameraVideo(props: { track: LocalVideoTrack; label: string
       ref={(el) => {
         videoRef.current = el;
       }}
-      className="aspect-video h-40 rounded bg-black object-cover"
+      className="aspect-video h-40 rounded-md bg-black object-cover"
       autoPlay
       muted
       playsInline
@@ -54,16 +54,18 @@ export default function LocalCameraTile() {
     <If when={voice.localCameraTrack()}>
       {(track) => (
         <section
-          className="flex-shrink-0 border-b border-gray-200 bg-gray-950 p-4 text-gray-100"
+          className="flex-shrink-0 border-b border-border bg-card p-4 text-card-foreground"
           role="region"
           aria-label="Local camera preview"
         >
           <div className="flex flex-wrap items-center gap-4">
             <AttachedLocalCameraVideo track={track()} label="Your camera video" />
             <div className="min-w-0">
-              <p className="text-xs uppercase tracking-wide text-gray-400">Camera on</p>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">Camera on</p>
               <h2 className="text-lg font-semibold">Your camera</h2>
-              <p className="text-sm text-gray-300">Only your local preview is shown here.</p>
+              <p className="text-sm text-muted-foreground">
+                Only your local preview is shown here.
+              </p>
             </div>
           </div>
         </section>

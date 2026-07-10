@@ -5,8 +5,8 @@ import { parseCustomEmojiMarkers, type CustomEmojiMarkerToken } from "../emoji/c
 
 const MAX_PREVIEW_CHARS = 120;
 const DEFAULT_ROOT_CLASS =
-  "mb-1 flex min-w-0 items-center gap-1 border-l-2 border-blue-300 pl-2 text-sm text-gray-600";
-const DEFAULT_AUTHOR_CLASS = "shrink-0 font-medium text-gray-700";
+  "mb-1 flex min-w-0 items-center gap-1 border-l-2 border-primary/30 pl-2 text-sm text-muted-foreground";
+const DEFAULT_AUTHOR_CLASS = "shrink-0 font-medium text-muted-foreground";
 const DEFAULT_TEXT_CLASS = "min-w-0 truncate";
 
 export interface MessageReferencePreviewSource {
@@ -196,7 +196,7 @@ export default function MessageReferencePreview(props: MessageReferencePreviewPr
   const rootClass = () => {
     const base = props.className ?? props.class ?? DEFAULT_ROOT_CLASS;
     return props.onActivate
-      ? `${base} cursor-pointer rounded-sm text-left hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-400`
+      ? `${base} cursor-pointer rounded-sm text-left transition-colors hover:bg-primary/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring`
       : base;
   };
   const authorClass = () => props.authorClass ?? DEFAULT_AUTHOR_CLASS;
@@ -211,7 +211,7 @@ export default function MessageReferencePreview(props: MessageReferencePreviewPr
       <span className={authorClass()}>{`${props.authorPrefix ?? ""}${referenceAuthorName(
         props.reference,
       )}`}</span>
-      <span aria-hidden="true" className="shrink-0 text-gray-400">
+      <span aria-hidden="true" className="shrink-0 text-muted-foreground/70">
         —
       </span>
       <span className={textClass()}>
