@@ -293,11 +293,15 @@ describe("Channel view integration", () => {
 
     await waitFor(() => expect(screen.getByText("world")).toBeInTheDocument());
 
-    expect(messagesRegion()).toHaveClass("flex", "flex-col");
-    expect(assertExists(messagesRegion().querySelector("section"), "messages section")).toHaveClass(
-      "min-h-full",
-      "flex-1",
-      "justify-end",
+    expect(messagesRegion()).toHaveClass("flex", "flex-col", "overscroll-y-none");
+    const messagesSection = assertExists(
+      messagesRegion().querySelector("section"),
+      "messages section",
+    );
+    expect(messagesSection).toHaveClass("min-h-full", "flex-1", "flex-col");
+    expect(messagesSection).not.toHaveClass("justify-end");
+    expect(assertExists(messagesSection.firstElementChild, "bottom anchor spacer")).toHaveClass(
+      "mt-auto",
     );
     await waitFor(() => expect(scroll.scrollTop).toBe(1000));
   });

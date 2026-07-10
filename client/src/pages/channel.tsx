@@ -433,7 +433,7 @@ export default function ChannelView() {
           ref={(el) => {
             messagesScrollRef.current = el;
           }}
-          className="min-h-0 min-w-0 flex flex-1 flex-col overflow-y-auto"
+          className="min-h-0 min-w-0 flex flex-1 flex-col overflow-y-auto overscroll-y-none"
           role="region"
           aria-label="Messages"
           onScroll={handleMessagesScroll}

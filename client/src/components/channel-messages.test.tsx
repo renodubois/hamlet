@@ -124,6 +124,34 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+describe("<ChannelMessages> scroll layout", () => {
+  test("bottom-anchors short histories without flex-end clipping overflowing histories", () => {
+    const messages = Array.from({ length: 40 }, (_, index) =>
+      makeMessage({
+        id: 1_000 + index,
+        user_id: OTHER_ID,
+        channel_id: 1,
+        text: `history message ${index + 1}`,
+        username: "them",
+      }),
+    );
+
+    mount(messages, SELF_ID);
+
+    const messagesSection = assertExists(
+      screen.getByText("history message 1").closest("section"),
+      "messages section",
+    );
+    expect(messagesSection).toHaveClass("min-h-full", "flex", "flex-col");
+    expect(messagesSection).not.toHaveClass("justify-end");
+
+    const spacer = assertExists(messagesSection.firstElementChild, "bottom anchor spacer");
+    expect(spacer).toHaveClass("mt-auto");
+    expect(spacer).toHaveAttribute("aria-hidden", "true");
+    expect(messagesSection.children[1]).toHaveAttribute("data-message-id", "1000");
+  });
+});
+
 describe("<ChannelMessages> message text rendering", () => {
   test("renders stored literal emoji shortcodes without converting them", () => {
     const legacyShortcode = makeMessage({

@@ -63,6 +63,55 @@ async function loginAndOpenGeneral(page: Page) {
   await expect(page.getByRole("heading", { name: /^#\s*general$/i })).toBeVisible();
 }
 
+type E2eChannel = {
+  id: number;
+  name: string;
+  type: "text" | "voice";
+  position: number;
+};
+
+async function authedApiJson<T>(
+  page: Page,
+  path: string,
+  options: { method?: string; body?: unknown } = {},
+): Promise<T> {
+  return page.evaluate(
+    async ({ serverUrl, path, options }) => {
+      const apiBaseUrl = localStorage.getItem("hamlet.serverUrl") ?? serverUrl;
+      const method = options.method ?? "GET";
+      const unsafe = !["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase());
+      let csrf = document.cookie
+        .split(";")
+        .map((cookie) => cookie.trim())
+        .find((cookie) => cookie.startsWith("hamlet_csrf="))
+        ?.slice("hamlet_csrf=".length);
+
+      if (unsafe && !csrf) {
+        const csrfResponse = await fetch(`${apiBaseUrl}/csrf`, { credentials: "include" });
+        if (!csrfResponse.ok) throw new Error(`CSRF request failed: ${csrfResponse.status}`);
+        csrf = ((await csrfResponse.json()) as { token: string }).token;
+      }
+
+      const headers: Record<string, string> = {};
+      if (options.body !== undefined) headers["Content-Type"] = "application/json";
+      if (unsafe && csrf) headers["X-Hamlet-CSRF"] = csrf;
+
+      const response = await fetch(`${apiBaseUrl}${path}`, {
+        method,
+        credentials: "include",
+        headers,
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        throw new Error(`${method} ${path} failed: ${response.status} ${text}`);
+      }
+      return text.length > 0 ? JSON.parse(text) : null;
+    },
+    { serverUrl, path, options },
+  ) as Promise<T>;
+}
+
 test("sends a message and sees it render in the channel", async ({ page }) => {
   await loginAndOpenGeneral(page);
 
@@ -74,6 +123,47 @@ test("sends a message and sees it render in the channel", async ({ page }) => {
   await expect(
     page.locator(".whitespace-pre-wrap:not([role='textbox'])").filter({ hasText: marker }).last(),
   ).toBeVisible({ timeout: 10_000 });
+});
+
+test("can scroll from the newest message back to the oldest message in a long channel", async ({
+  page,
+}) => {
+  await loginAndOpenGeneral(page);
+
+  const unique = Date.now();
+  const channel = await authedApiJson<E2eChannel>(page, "/channel", {
+    method: "POST",
+    body: { name: `scroll-${unique}`, type: "text" },
+  });
+  const messages = Array.from(
+    { length: 36 },
+    (_, index) => `scroll history ${unique} ${String(index + 1).padStart(2, "0")}`,
+  );
+
+  for (const text of messages) {
+    await authedApiJson(page, `/message/${channel.id}`, { method: "POST", body: { text } });
+  }
+
+  await page.goto(`/channel/${channel.id}`);
+  await expect(
+    page.getByRole("heading", { name: new RegExp(`#\\s*${escapeRegExp(channel.name)}`) }),
+  ).toBeVisible();
+
+  const messageRegion = page.getByRole("region", { name: /messages/i });
+  await expect(messageRegion).toHaveCSS("overscroll-behavior-y", "none");
+  const oldestMessage = messageRegion
+    .locator(".whitespace-pre-wrap:not([role='textbox'])")
+    .filter({ hasText: messages[0] });
+  const newestMessage = messageRegion
+    .locator(".whitespace-pre-wrap:not([role='textbox'])")
+    .filter({ hasText: messages.at(-1) ?? "" });
+
+  await expect(newestMessage).toBeInViewport({ timeout: 10_000 });
+  await messageRegion.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await expect(oldestMessage).toBeInViewport();
 });
 
 test("sends an inline reply and renders its compact preview in the channel", async ({ page }) => {

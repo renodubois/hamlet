@@ -65,7 +65,7 @@ describe("App shell layout", () => {
     expect(routeFrame).toHaveClass("flex", "h-full", "min-h-0", "flex-1", "flex-col");
     expect(channelRoot).toHaveClass("h-full", "min-h-0", "flex-1", "overflow-hidden");
     expect(messagePane).toHaveClass("min-h-0", "flex-1", "overflow-hidden");
-    expect(messagesRegion).toHaveClass("min-h-0", "flex-1", "overflow-y-auto");
+    expect(messagesRegion).toHaveClass("min-h-0", "flex-1", "overflow-y-auto", "overscroll-y-none");
     expect(composer).toHaveClass("flex-shrink-0");
   });
 });

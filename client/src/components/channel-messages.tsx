@@ -305,7 +305,9 @@ const ChannelMessages: Component<{
   };
 
   return (
-    <section className="bg-white text-gray-900 p-8 min-h-full flex flex-1 flex-col justify-end">
+    <section className="bg-white text-gray-900 p-8 min-h-full flex flex-1 flex-col">
+      {/* Bottom-anchor short histories without flex-end clipping overflowing histories. */}
+      <div className="mt-auto" aria-hidden="true" />
       <If when={props.loading && props.messages.length === 0}>
         <p>Loading...</p>
       </If>
