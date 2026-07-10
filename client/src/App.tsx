@@ -42,7 +42,11 @@ class RouteErrorBoundary extends React.Component<
   reset = () => this.setState((state) => ({ error: null, key: state.key + 1 }));
   render() {
     if (this.state.error) return <ErrorPanel error={this.state.error} reset={this.reset} />;
-    return <div key={this.state.key}>{this.props.children}</div>;
+    return (
+      <div key={this.state.key} className="flex h-full min-h-0 flex-1 flex-col">
+        {this.props.children}
+      </div>
+    );
   }
 }
 
@@ -61,11 +65,11 @@ function AppShell(props: { user: User }) {
   });
 
   return (
-    <div className="flex h-screen">
-      <aside className="flex w-60 flex-shrink-0 flex-col bg-gray-800 text-gray-100">
+    <div className="flex h-screen min-h-0 overflow-hidden">
+      <aside className="flex min-h-0 w-60 flex-shrink-0 flex-col bg-gray-800 text-gray-100">
         <ChannelSidebar user={props.user} onLogout={auth.logout} onAvatarChange={auth.refresh} />
       </aside>
-      <main className="flex min-w-0 flex-1 flex-col">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <RouteErrorBoundary>
           <Suspense fallback={null}>
             <Outlet />

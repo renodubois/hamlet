@@ -419,7 +419,7 @@ export default function ChannelView() {
   }
 
   return (
-    <div className="flex flex-col h-full bg-white text-gray-900">
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-white text-gray-900">
       <section className="bg-gray-100 text-gray-700 p-4 flex-shrink-0">
         <h1 className="text-2xl font-bold"># {channel()?.name ?? params.id}</h1>
       </section>
@@ -428,7 +428,7 @@ export default function ChannelView() {
       <LocalCameraTile />
       <RemoteCameraTiles />
 
-      <div className="flex-1 min-h-0 flex">
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         <div
           ref={(el) => {
             messagesScrollRef.current = el;
