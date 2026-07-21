@@ -247,7 +247,7 @@ describe("ReadStatesProvider", () => {
     fireEvent.click(screen.getByRole("button", { name: "refresh" }));
     await waitFor(() => expect(screen.getByText("mentions 6")).toBeInTheDocument());
     staleMark.resolve(summary({ has_unread: false, mention_count: 0, updated_at: 100 }));
-    await waitFor(() => expect(screen.getByText("mark result ok")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("mark result null")).toBeInTheDocument());
     expect(screen.getByText("unread yes")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "mark read" }));

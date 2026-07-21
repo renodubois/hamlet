@@ -1,9 +1,10 @@
-import { describe, expect, test, vi } from "vitest";
-import { render, screen, waitFor } from "../test/testing-library";
+import { useState } from "react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useSignalState } from "../hooks/react-state";
+import { describe, expect, test, vi } from "vitest";
 import type { ScreenShareStream } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
+import { renderNative } from "../test/render";
 
 class FakeRemoteVideoTrack {
   attach = vi.fn((element: HTMLMediaElement) => element);
@@ -12,8 +13,8 @@ class FakeRemoteVideoTrack {
 
 const mockVoiceState = vi.hoisted(() => ({
   value: null as {
-    watchingScreenShare: () => ScreenShareStream | null;
-    watchingScreenShareTrack: () => FakeRemoteVideoTrack | null;
+    watchingScreenShare: ScreenShareStream | null;
+    watchingScreenShareTrack: FakeRemoteVideoTrack | null;
     stopWatchingScreenShare: ReturnType<typeof vi.fn>;
   } | null,
 }));
@@ -40,33 +41,42 @@ function makeScreenShare(overrides: Partial<ScreenShareStream> = {}): ScreenShar
   };
 }
 
-function setupViewer(stream = makeScreenShare(), track = new FakeRemoteVideoTrack()) {
-  const [watchingScreenShare, setWatchingScreenShare] = useSignalState<ScreenShareStream | null>(
-    stream,
-  );
-  const [watchingScreenShareTrack, setWatchingScreenShareTrack] =
-    useSignalState<FakeRemoteVideoTrack | null>(track);
+function renderViewer(
+  initialStream = makeScreenShare(),
+  initialTrack = new FakeRemoteVideoTrack(),
+) {
+  let setStream: (stream: ScreenShareStream | null) => void = () => undefined;
+  let setTrack: (track: FakeRemoteVideoTrack | null) => void = () => undefined;
   const stopWatchingScreenShare = vi.fn(async () => {
-    setWatchingScreenShare(null);
-    setWatchingScreenShareTrack(null);
+    setStream(null);
+    setTrack(null);
   });
-  mockVoiceState.value = {
-    watchingScreenShare,
-    watchingScreenShareTrack,
-    stopWatchingScreenShare,
-  };
+
+  function Harness() {
+    const [stream, setStreamState] = useState<ScreenShareStream | null>(initialStream);
+    const [track, setTrackState] = useState<FakeRemoteVideoTrack | null>(initialTrack);
+    setStream = setStreamState;
+    setTrack = setTrackState;
+    mockVoiceState.value = {
+      watchingScreenShare: stream,
+      watchingScreenShareTrack: track,
+      stopWatchingScreenShare,
+    };
+    return <ScreenShareViewer />;
+  }
+
   return {
-    setWatchingScreenShare,
-    setWatchingScreenShareTrack,
+    ...renderNative(<Harness />),
+    setStream,
+    setTrack,
     stopWatchingScreenShare,
-    track,
+    track: initialTrack,
   };
 }
 
 describe("<ScreenShareViewer>", () => {
   test("renders a named viewer region, attaches video, and has no accessibility violations", async () => {
-    const { track } = setupViewer();
-    const { container } = render(() => <ScreenShareViewer />);
+    const { container, track } = renderViewer();
 
     const region = await screen.findByRole("region", { name: /screen share viewer for Bobby/i });
     expect(region).toHaveTextContent("Bobby's screen");
@@ -78,8 +88,7 @@ describe("<ScreenShareViewer>", () => {
 
   test("Stop watching is keyboard reachable and detaches the video without leaving voice", async () => {
     const user = userEvent.setup();
-    const { stopWatchingScreenShare, track } = setupViewer();
-    render(() => <ScreenShareViewer />);
+    const { stopWatchingScreenShare, track } = renderViewer();
 
     const stop = await screen.findByRole("button", {
       name: /stop watching Bobby's screen share/i,
@@ -98,47 +107,73 @@ describe("<ScreenShareViewer>", () => {
   test("detaches the previous video track when the subscribed track changes", async () => {
     const firstTrack = new FakeRemoteVideoTrack();
     const secondTrack = new FakeRemoteVideoTrack();
-    const { setWatchingScreenShareTrack } = setupViewer(makeScreenShare(), firstTrack);
-    render(() => <ScreenShareViewer />);
+    const { setTrack } = renderViewer(makeScreenShare(), firstTrack);
 
     const video = (await screen.findByLabelText("Bobby's screen share video")) as HTMLVideoElement;
     expect(firstTrack.attach).toHaveBeenCalledWith(video);
 
-    setWatchingScreenShareTrack(secondTrack);
+    act(() => setTrack(secondTrack));
 
     await waitFor(() => expect(secondTrack.attach).toHaveBeenCalledWith(video));
     expect(firstTrack.detach).toHaveBeenCalledWith(video);
   });
 
+  test("uses a new video element when switching watched screen shares", async () => {
+    const firstTrack = new FakeRemoteVideoTrack();
+    const secondTrack = new FakeRemoteVideoTrack();
+    const { setStream, setTrack } = renderViewer(makeScreenShare(), firstTrack);
+    const firstVideo = (await screen.findByLabelText(
+      "Bobby's screen share video",
+    )) as HTMLVideoElement;
+
+    act(() => {
+      setStream(
+        makeScreenShare({
+          sharer_user_id: 3,
+          username: "carol",
+          display_name: null,
+          participant_identity: "3",
+          track_sid: "TR_carol_screen",
+        }),
+      );
+      setTrack(secondTrack);
+    });
+
+    const secondVideo = (await screen.findByLabelText(
+      "carol's screen share video",
+    )) as HTMLVideoElement;
+    expect(secondVideo).not.toBe(firstVideo);
+    expect(firstTrack.detach).toHaveBeenLastCalledWith(firstVideo);
+    expect(secondTrack.attach).toHaveBeenCalledWith(secondVideo);
+  });
+
   test("detaches a hidden previous video before rendering a switched stream", async () => {
     const firstTrack = new FakeRemoteVideoTrack();
     const secondTrack = new FakeRemoteVideoTrack();
-    const { setWatchingScreenShare, setWatchingScreenShareTrack } = setupViewer(
-      makeScreenShare(),
-      firstTrack,
-    );
-    render(() => <ScreenShareViewer />);
+    const { setStream, setTrack } = renderViewer(makeScreenShare(), firstTrack);
 
     const firstVideo = (await screen.findByLabelText(
       "Bobby's screen share video",
     )) as HTMLVideoElement;
-    setWatchingScreenShareTrack(null);
+    act(() => setTrack(null));
 
     await waitFor(() => {
       expect(screen.queryByLabelText("Bobby's screen share video")).toBeNull();
     });
     expect(firstTrack.detach).toHaveBeenCalledWith(firstVideo);
 
-    setWatchingScreenShare(
-      makeScreenShare({
-        sharer_user_id: 3,
-        username: "carol",
-        display_name: null,
-        participant_identity: "3",
-        track_sid: "TR_carol_screen",
-      }),
-    );
-    setWatchingScreenShareTrack(secondTrack);
+    act(() => {
+      setStream(
+        makeScreenShare({
+          sharer_user_id: 3,
+          username: "carol",
+          display_name: null,
+          participant_identity: "3",
+          track_sid: "TR_carol_screen",
+        }),
+      );
+      setTrack(secondTrack);
+    });
 
     const secondVideo = (await screen.findByLabelText(
       "carol's screen share video",

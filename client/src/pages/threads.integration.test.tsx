@@ -1,15 +1,15 @@
 import { useState } from "react";
 import { describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import * as ReactRouter from "react-router-dom";
 import { http, HttpResponse } from "msw";
 
 const makeRouter = ReactRouter.createMemoryRouter;
-import { AuthProvider } from "../contexts/auth";
+import { AuthProvider, useAuth } from "../contexts/auth";
 import { ChannelsProvider } from "../contexts/channels";
 import { EventsProvider } from "../contexts/events";
 import { ReadStatesProvider } from "../contexts/read-states";
-import { FakeEventSource } from "../test/msw/sse";
+import { FakeEventSource, latestFakeEventSource } from "../test/msw/sse";
 import { resetMswState, server } from "../test/msw/server";
 import { makeAttachment } from "../test/fixtures";
 import { DEV_USER } from "../test/msw/handlers";
@@ -28,6 +28,25 @@ vi.mock("../api", async () => {
   };
 });
 
+function AuthRefreshControl() {
+  const auth = useAuth();
+  return (
+    <button type="button" onClick={() => void auth.refresh()}>
+      Refresh auth
+    </button>
+  );
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function mountAt(path = "/threads") {
   const router = makeRouter(
     [
@@ -43,17 +62,18 @@ function mountAt(path = "/threads") {
     forward: () => void router.navigate(1),
   };
 
-  const result = render(() => (
+  const result = render(
     <AuthProvider>
       <EventsProvider>
         <ReadStatesProvider>
           <ChannelsProvider>
+            <AuthRefreshControl />
             <ReactRouter.RouterProvider router={router} />
           </ChannelsProvider>
         </ReadStatesProvider>
       </EventsProvider>
-    </AuthProvider>
-  ));
+    </AuthProvider>,
+  );
 
   return { ...result, history };
 }
@@ -67,6 +87,7 @@ function ThreadPanelRequestFailureHarness() {
         Open failing thread
       </button>
       <ThreadPanel
+        key={`${rootMessageId === 20 ? 200 : 100}:${rootMessageId}`}
         rootMessageId={rootMessageId}
         channelId={rootMessageId === 20 ? 200 : 100}
         currentUserId={DEV_USER.id}
@@ -285,16 +306,17 @@ describe("Threads view integration", () => {
     server.use(http.get(`${TEST_SERVER}/thread/30`, () => new HttpResponse(null, { status: 500 })));
     render(<ThreadPanelRequestFailureHarness />);
 
-    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    let panel = await screen.findByRole("complementary", { name: /thread panel/i });
     await waitFor(() => expect(within(panel).getByText("root alice joined")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: "Open failing thread" }));
 
-    await waitFor(() =>
+    await waitFor(() => {
+      panel = screen.getByRole("complementary", { name: /thread panel/i });
       expect(within(panel).getByRole("alert")).toHaveTextContent(
         "Error loading thread: Error: Thread load failed (500)",
-      ),
-    );
+      );
+    });
     expect(within(panel).queryByText("root alice joined")).toBeNull();
     expect(within(panel).queryByText("bob-only root")).toBeNull();
   });
@@ -316,6 +338,128 @@ describe("Threads view integration", () => {
     expect(screen.queryByText("root alice joined")).toBeNull();
     expect(screen.queryByText("No participated threads yet.")).toBeNull();
     expect(screen.queryByText("Loading threads...")).toBeNull();
+  });
+
+  test("a reconnect error renders alongside retained participated-thread previews", async () => {
+    seedParticipatedThreads();
+    mountAt();
+
+    expect(await screen.findByText("root alice joined")).toBeInTheDocument();
+    server.use(
+      http.get(
+        `${TEST_SERVER}/threads/participated`,
+        () => new HttpResponse(null, { status: 500 }),
+      ),
+    );
+    assertExists(latestFakeEventSource(), "participated threads EventSource").pushConnected();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Error refreshing threads: Error: Participated threads load failed (500)",
+    );
+    expect(screen.getByText("root alice joined")).toBeInTheDocument();
+    expect(screen.getAllByRole("article").length).toBeGreaterThan(0);
+  });
+
+  test("a reconnect aborts a pending preconnection snapshot and commits the recovery snapshot", async () => {
+    seedParticipatedThreads();
+    const beforeConnection = deferred();
+    const afterConnection = deferred();
+    const gates = [beforeConnection, afterConnection];
+    const signals: AbortSignal[] = [];
+    let requests = 0;
+    server.use(
+      http.get(`${TEST_SERVER}/threads/participated`, async ({ request }) => {
+        const requestIndex = requests++;
+        signals.push(request.signal);
+        await gates[requestIndex]?.promise;
+        return HttpResponse.json([]);
+      }),
+    );
+    mountAt();
+
+    await waitFor(() => expect(requests).toBe(1));
+    const eventSource = assertExists(latestFakeEventSource(), "participated threads EventSource");
+    eventSource.pushConnected();
+
+    await waitFor(() => expect(requests).toBe(2));
+    expect(signals[0]?.aborted).toBe(true);
+    beforeConnection.resolve();
+    afterConnection.resolve();
+    expect(await screen.findByText("No participated threads yet.")).toBeInTheDocument();
+  });
+
+  test("auth changes clear retained previews, abort old work, and ignore its stale completion", async () => {
+    const state = seedParticipatedThreads();
+    const oldAccount = deferred();
+    const newAccount = deferred();
+    const signals: AbortSignal[] = [];
+    let requests = 0;
+    const oldPreview = {
+      root: state.messages["200"][0],
+      channel: state.channels[1],
+      reply_count: 5,
+      last_reply_created_at: 1_700_000_025_000_000,
+      recent_replies: state.threadReplies["20"].slice(-3),
+    };
+    server.use(
+      http.get(`${TEST_SERVER}/threads/participated`, async ({ request }) => {
+        const requestIndex = requests++;
+        signals.push(request.signal);
+        await (requestIndex === 0 ? oldAccount.promise : newAccount.promise);
+        return HttpResponse.json(requestIndex === 0 ? [oldPreview] : []);
+      }),
+    );
+    mountAt();
+    await waitFor(() => expect(requests).toBe(1));
+
+    state.me = { ...DEV_USER, id: 2, username: "bob" };
+    fireEvent.click(screen.getByRole("button", { name: "Refresh auth" }));
+    await waitFor(() => expect(requests).toBe(2));
+    expect(signals[0]?.aborted).toBe(true);
+    expect(screen.getByText("Loading threads...")).toBeInTheDocument();
+    expect(screen.queryByText("root alice joined")).toBeNull();
+
+    newAccount.resolve();
+    expect(await screen.findByText("No participated threads yet.")).toBeInTheDocument();
+    oldAccount.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText("root alice joined")).toBeNull();
+  });
+
+  test("coalesces thread lifecycle refreshes and retains previews during the refresh", async () => {
+    seedParticipatedThreads();
+    mountAt();
+    expect(await screen.findByText("root alice joined")).toBeInTheDocument();
+
+    const refresh = deferred();
+    let refreshRequests = 0;
+    server.use(
+      http.get(`${TEST_SERVER}/threads/participated`, async () => {
+        refreshRequests += 1;
+        await refresh.promise;
+        return HttpResponse.json([]);
+      }),
+    );
+    const eventSource = assertExists(latestFakeEventSource(), "participated threads EventSource");
+    eventSource.pushThreadReplyDeleted({
+      channel_id: 200,
+      root_message_id: 20,
+      reply_id: 25,
+      thread_summary: { reply_count: 4, last_reply_created_at: 1_700_000_024_000_000 },
+    });
+    eventSource.pushThreadReplyDeleted({
+      channel_id: 200,
+      root_message_id: 20,
+      reply_id: 24,
+      thread_summary: { reply_count: 3, last_reply_created_at: 1_700_000_023_000_000 },
+    });
+
+    await waitFor(() => expect(refreshRequests).toBe(1));
+    expect(screen.getByText("root alice joined")).toBeInTheDocument();
+    expect(screen.queryByText("Loading threads...")).toBeNull();
+
+    refresh.resolve();
+    expect(await screen.findByText("No participated threads yet.")).toBeInTheDocument();
   });
 
   test("renders hydrated mention labels in participated thread previews", async () => {

@@ -87,7 +87,7 @@ async function openThreadFromRow(row: Locator) {
 async function sendThreadReply(panel: Locator, text: string) {
   const input = panel.getByRole("textbox", { name: /thread reply/i });
   await input.fill(text);
-  await panel.getByRole("button", { name: /^send$/i }).click();
+  await panel.getByRole("button", { name: "Send response to thread" }).click();
   const reply = panel.locator("article", { hasText: text }).last();
   await expect(reply).toBeVisible({ timeout: 10_000 });
   return reply;

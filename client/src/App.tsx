@@ -9,6 +9,7 @@ import { EventsProvider } from "./contexts/events";
 import { ReadStatesProvider } from "./contexts/read-states";
 import { type User } from "./api";
 import { VoiceChatProvider } from "./contexts/voice-chat";
+import { VoicePreferencesProvider } from "./contexts/voice-preferences";
 
 function ErrorPanel(props: { error: unknown; reset?: () => void; title?: string }) {
   const message = props.error instanceof Error ? props.error.message : String(props.error);
@@ -98,9 +99,11 @@ export default function App() {
       <CustomEmojisProvider>
         <ChannelsProvider>
           <ReadStatesProvider>
-            <VoiceChatProvider>
-              <AppShell user={currentUser} />
-            </VoiceChatProvider>
+            <VoicePreferencesProvider>
+              <VoiceChatProvider>
+                <AppShell user={currentUser} />
+              </VoiceChatProvider>
+            </VoicePreferencesProvider>
           </ReadStatesProvider>
         </ChannelsProvider>
       </CustomEmojisProvider>

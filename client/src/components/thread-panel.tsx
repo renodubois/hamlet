@@ -1,19 +1,18 @@
-import { useEffect, useId, useRef } from "react";
 import {
-  useAfterRenderEffect,
-  useCallableResource,
-  useSignalState,
-  registerCleanup,
-  useMountEffect,
-} from "../hooks/react-state";
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import {
   addMessageReaction,
   deleteMessage,
   editMessage,
   getThread,
   messageDisplayName,
-  messageReferenceFromMessage,
-  messageReferencesTarget,
   removeMessageReaction,
   sendThreadReply,
   setMessageEmbedsSuppressed,
@@ -29,10 +28,12 @@ import { customEmojisToEntries, parseCustomEmojiMarkers } from "../emoji/custom-
 import { CONSERVATIVE_EMOJIS } from "../emoji/emoji-data";
 import { messageMentionsCurrentUser } from "../mentions/mentions";
 import {
-  applyOptimisticReaction,
-  mergeReactionUpdateForViewer,
-  reactionSummariesEqual,
-} from "../reactions/reaction-summaries";
+  createThreadState,
+  isValidThreadPayload,
+  threadReducer,
+  type ThreadLiveAction,
+} from "../messages/thread-reducer";
+import { applyOptimisticReaction, reactionSummariesEqual } from "../reactions/reaction-summaries";
 import AttachmentGrid from "./attachment-grid";
 import Avatar from "./avatar";
 import {
@@ -52,6 +53,11 @@ interface ReactionPickerState {
   messageId: number;
   anchor: HTMLElement;
 }
+type ThreadLivePayload = ThreadLiveAction extends infer Action
+  ? Action extends { channelId: number; rootMessageId: number; generation: number }
+    ? Omit<Action, "channelId" | "rootMessageId" | "generation">
+    : never
+  : never;
 function isDeletedMessage(message: Message): boolean {
   return message.deleted_at != null;
 }
@@ -291,173 +297,287 @@ export default function ThreadPanel(props: {
 }) {
   const customEmojis = useOptionalCustomEmojis();
   const activeCustomEmojis = customEmojis?.activeEmojis ?? [];
-  const reactionEmojiEntries = () => [
-    ...CONSERVATIVE_EMOJIS,
-    ...customEmojisToEntries(activeCustomEmojis),
-  ];
-  const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
-  const [thread, { mutate }] = useCallableResource(
-    () => props.rootMessageId,
-    (rootMessageId) => getThread(rootMessageId),
+  const events = useEvents();
+  const [thread, dispatch] = useReducer(threadReducer, undefined, () =>
+    createThreadState(props.channelId, props.rootMessageId),
   );
-  const [draft, setDraft] = useSignalState("");
-  const [submitting, setSubmitting] = useSignalState(false);
+  const [draft, setDraft] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
+  const [reactionPicker, setReactionPicker] = useState<ReactionPickerState | null>(null);
   const photoSelection = useComposerPhotoSelection();
   const photoSelectionErrorId = useId();
-  const [loadingOlder, setLoadingOlder] = useSignalState(false);
-  const [error, setError] = useSignalState<string | null>(null);
-  const [olderError, setOlderError] = useSignalState<string | null>(null);
-  const [editingId, setEditingId] = useSignalState<number | null>(null);
-  const [editDraft, setEditDraft] = useSignalState("");
-  const [pendingDeleteId, setPendingDeleteId] = useSignalState<number | null>(null);
-  const [reactionPicker, setReactionPicker] = useSignalState<ReactionPickerState | null>(null);
-  const events = useEvents();
-  const inputRef = useRef<
-    | (HTMLElement & {
-        value?: string;
-      })
-    | null
-  >(null);
+  const inputRef = useRef<(HTMLElement & { value?: string }) | null>(null);
   const repliesScrollRef = useRef<HTMLDivElement | null>(null);
+  const threadRef = useRef(thread);
+  threadRef.current = thread;
   const propsRef = useRef(props);
   propsRef.current = props;
   const mountedRef = useRef(false);
+  const generationRef = useRef(0);
   const draftVersionRef = useRef(0);
-  const selectedPhotoIdsRef = useRef(photoSelection.photos.map((photo) => photo.id));
-  selectedPhotoIdsRef.current = photoSelection.photos.map((photo) => photo.id);
+  const initialControllerRef = useRef<AbortController | null>(null);
+  const pageControllerRef = useRef<AbortController | null>(null);
+  const operationControllersRef = useRef(new Set<AbortController>());
+  const reactionOperationRef = useRef(new Map<number, number>());
+  const pendingSendRef = useRef<{
+    controller: AbortController;
+    text: string;
+    draftVersion: number;
+  } | null>(null);
+  const pendingScrollRef = useRef<{ generation: number; previousHeight: number } | null>(null);
+  const pendingInitialScrollRef = useRef<number | null>(null);
+  const didInitialScrollRef = useRef(false);
+  const rootHardDeletedRef = useRef(false);
+
+  const identityFor = useCallback(
+    (generation: number) => ({
+      channelId: props.channelId,
+      rootMessageId: props.rootMessageId,
+      generation,
+    }),
+    [props.channelId, props.rootMessageId],
+  );
+  const ownsOperation = useCallback((generation: number, controller: AbortController) => {
+    const current = threadRef.current;
+    return (
+      mountedRef.current &&
+      !controller.signal.aborted &&
+      generationRef.current === generation &&
+      current.generation === generation &&
+      current.channelId === propsRef.current.channelId &&
+      current.rootMessageId === propsRef.current.rootMessageId
+    );
+  }, []);
+  const beginOperation = useCallback(() => {
+    const controller = new AbortController();
+    operationControllersRef.current.add(controller);
+    return controller;
+  }, []);
+  const finishOperation = useCallback((controller: AbortController) => {
+    operationControllersRef.current.delete(controller);
+  }, []);
+  const dispatchLive = useCallback((action: ThreadLivePayload) => {
+    const current = threadRef.current;
+    dispatch({
+      ...action,
+      channelId: current.channelId,
+      rootMessageId: current.rootMessageId,
+      generation: generationRef.current,
+    } as ThreadLiveAction);
+  }, []);
+
+  const startInitialLoad = useCallback(() => {
+    initialControllerRef.current?.abort();
+    pageControllerRef.current?.abort();
+    const pendingSend = pendingSendRef.current;
+    if (pendingSend && draftVersionRef.current === pendingSend.draftVersion) {
+      setDraft(pendingSend.text);
+    }
+    pendingSendRef.current = null;
+    for (const operationController of operationControllersRef.current) {
+      operationController.abort();
+    }
+    operationControllersRef.current.clear();
+    reactionOperationRef.current.clear();
+    setSubmitting(false);
+    pageControllerRef.current = null;
+    pendingScrollRef.current = null;
+    const controller = new AbortController();
+    initialControllerRef.current = controller;
+    const generation = ++generationRef.current;
+    const identity = identityFor(generation);
+    const ownsInitialLoad = () =>
+      mountedRef.current &&
+      !controller.signal.aborted &&
+      generationRef.current === generation &&
+      propsRef.current.channelId === identity.channelId &&
+      propsRef.current.rootMessageId === identity.rootMessageId;
+    dispatch({ type: "initial-load-started", ...identity });
+    void getThread(props.rootMessageId, {}, controller.signal).then(
+      (loaded) => {
+        if (!ownsInitialLoad()) return;
+        if (!isValidThreadPayload(loaded, props.channelId, props.rootMessageId)) {
+          dispatch({
+            type: "initial-load-failed",
+            ...identity,
+            error: new Error("Invalid thread response"),
+          });
+          return;
+        }
+        if (!didInitialScrollRef.current) pendingInitialScrollRef.current = generation;
+        dispatch({ type: "initial-load-succeeded", ...identity, thread: loaded });
+      },
+      (error: unknown) => {
+        if (!ownsInitialLoad()) return;
+        dispatch({ type: "initial-load-failed", ...identity, error });
+      },
+    );
+  }, [identityFor, props.channelId, props.rootMessageId]);
+
+  const abortOwnedOperations = useCallback(() => {
+    initialControllerRef.current?.abort();
+    pageControllerRef.current?.abort();
+    for (const controller of operationControllersRef.current) controller.abort();
+    operationControllersRef.current.clear();
+  }, []);
+
   useEffect(() => {
     mountedRef.current = true;
+    startInitialLoad();
     return () => {
       mountedRef.current = false;
+      abortOwnedOperations();
     };
-  }, []);
-  const appendReply = (reply: Message) => {
-    props.onMentionUsers?.(reply.mentions ?? []);
-    mutate((current) => {
-      if (!current) return current;
-      if (current.replies.some((existing) => existing.id === reply.id)) return current;
-      return {
-        ...current,
-        replies: [...current.replies, reply],
-      };
+  }, [abortOwnedOperations, startInitialLoad]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setReactionPicker(null);
+    };
+    document.addEventListener("keydown", onKey);
+    const unsubscribers = [
+      events.onThreadReplyCreated((event) => dispatchLive({ type: "reply-created", event })),
+      events.onThreadReplyDeleted((event) => dispatchLive({ type: "reply-deleted", event })),
+      events.onMessageUpdated((message) => dispatchLive({ type: "message-updated", message })),
+      events.onMessageDeleted((event) => {
+        const current = threadRef.current;
+        if (event.channel_id !== current.channelId) return;
+        if (event.id === current.rootMessageId) {
+          if (rootHardDeletedRef.current) return;
+          rootHardDeletedRef.current = true;
+          dispatchLive({ type: "message-deleted", messageId: event.id });
+          propsRef.current.onClose();
+          return;
+        }
+        if (!rootHardDeletedRef.current) {
+          dispatchLive({ type: "message-deleted", messageId: event.id });
+        }
+      }),
+      events.onMessageEmbedsUpdated((event) => dispatchLive({ type: "embeds-updated", event })),
+      events.onMessageReactionsUpdated((event) => {
+        const current = threadRef.current;
+        dispatch({
+          type: "reactions-updated",
+          event,
+          currentUserId: propsRef.current.currentUserId,
+          channelId: current.channelId,
+          rootMessageId: current.rootMessageId,
+          generation: generationRef.current,
+        });
+      }),
+      events.onConnected(() => startInitialLoad()),
+    ];
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      for (const unsubscribe of unsubscribers) unsubscribe();
+    };
+  }, [dispatchLive, events, startInitialLoad]);
+
+  useEffect(() => {
+    if (!props.focusComposer || props.rootMessageId <= 0) return;
+    queueMicrotask(() => {
+      inputRef.current?.focus();
+      propsRef.current.onComposerFocusConsumed?.();
     });
-  };
-  const updateMessageInThread = (message: Message) => {
-    props.onMentionUsers?.(message.mentions ?? []);
-    mutate((current) => {
-      if (!current) return current;
-      const reference = messageReferenceFromMessage(message);
-      const patchReference = (candidate: Message) =>
-        messageReferencesTarget(candidate, message.id)
-          ? {
-              ...candidate,
-              reply_to_message_id: message.id,
-              reply_to: reference,
-            }
-          : candidate;
-      const root = current.root.id === message.id ? message : patchReference(current.root);
-      return {
-        ...current,
-        root,
-        replies: current.replies.map((reply) =>
-          reply.id === message.id ? message : patchReference(reply),
-        ),
-      };
-    });
-  };
-  const markReferencedMessageUnavailable = (messageId: number) => {
-    mutate((current) => {
-      if (!current) return current;
-      const patchReference = (candidate: Message) =>
-        messageReferencesTarget(candidate, messageId)
-          ? {
-              ...candidate,
-              reply_to_message_id: messageId,
-              reply_to: null,
-            }
-          : candidate;
-      return {
-        ...current,
-        root: patchReference(current.root),
-        replies: current.replies.map((reply) => patchReference(reply)),
-      };
-    });
-  };
-  const removeReply = (replyId: number) => {
-    mutate((current) => {
-      if (!current) return current;
-      return {
-        ...current,
-        replies: current.replies.filter((reply) => reply.id !== replyId),
-      };
-    });
-  };
-  const updateMessageReactions = (messageId: number, reactions: ReactionSummary[]) => {
-    mutate((current) => {
-      if (!current) return current;
-      if (current.root.id === messageId) {
-        return {
-          ...current,
-          root: {
-            ...current.root,
-            reactions,
-          },
-        };
-      }
-      return {
-        ...current,
-        replies: current.replies.map((reply) =>
-          reply.id === messageId
-            ? {
-                ...reply,
-                reactions,
-              }
-            : reply,
-        ),
-      };
-    });
-  };
+  }, [props.focusComposer, props.rootMessageId]);
+
+  useEffect(() => {
+    if (!thread.root) return;
+    propsRef.current.onMentionUsers?.([
+      ...(thread.root.mentions ?? []),
+      ...thread.replies.flatMap((reply) => reply.mentions ?? []),
+    ]);
+  }, [thread.root, thread.replies]);
+
+  useLayoutEffect(() => {
+    const element = repliesScrollRef.current;
+    if (!element) return;
+    const pending = pendingScrollRef.current;
+    if (pending && pending.generation === thread.generation) {
+      pendingScrollRef.current = null;
+      element.scrollTop += element.scrollHeight - pending.previousHeight;
+      return;
+    }
+    if (
+      pendingInitialScrollRef.current === thread.generation &&
+      thread.status === "ready" &&
+      thread.root
+    ) {
+      pendingInitialScrollRef.current = null;
+      didInitialScrollRef.current = true;
+      element.scrollTop = element.scrollHeight;
+    }
+  }, [thread.generation, thread.olderStatus, thread.replies, thread.root, thread.status]);
+
   const findThreadMessage = (messageId: number): Message | null => {
-    const current = thread();
-    if (!current) return null;
-    if (current.root.id === messageId) return current.root;
-    return current.replies.find((reply) => reply.id === messageId) ?? null;
+    if (thread.root?.id === messageId) return thread.root;
+    return thread.replies.find((reply) => reply.id === messageId) ?? null;
   };
+  const updateMessage = (message: Message) => dispatchLive({ type: "message-updated", message });
+  const updateReactions = (message: Message, reactions: ReactionSummary[]) =>
+    updateMessage({ ...message, reactions });
+
   const mutateReaction = async (
     message: Message,
     reaction: ReactionRequest,
     mutation: "add" | "remove",
   ) => {
+    const generation = thread.generation;
+    const controller = beginOperation();
+    const operation = (reactionOperationRef.current.get(message.id) ?? 0) + 1;
+    reactionOperationRef.current.set(message.id, operation);
     const previous = message.reactions ?? [];
     const optimistic = applyOptimisticReaction(previous, reaction, mutation);
-    const currentReactions = () => findThreadMessage(message.id)?.reactions ?? [];
-    const canApplyHttpResult = () => {
-      const current = currentReactions();
+    updateReactions(message, optimistic);
+    const canApply = () => {
+      if (
+        !ownsOperation(generation, controller) ||
+        reactionOperationRef.current.get(message.id) !== operation
+      )
+        return false;
+      const current =
+        threadRef.current.root?.id === message.id
+          ? (threadRef.current.root.reactions ?? [])
+          : (threadRef.current.replies.find((reply) => reply.id === message.id)?.reactions ?? []);
       return (
         reactionSummariesEqual(current, optimistic) || reactionSummariesEqual(current, previous)
       );
     };
-    updateMessageReactions(message.id, optimistic);
     try {
       const canonical =
         mutation === "add"
-          ? await addMessageReaction(message.id, reaction)
-          : await removeMessageReaction(message.id, reaction);
-      if (canApplyHttpResult()) {
-        updateMessageReactions(message.id, canonical);
+          ? await addMessageReaction(message.id, reaction, controller.signal)
+          : await removeMessageReaction(message.id, reaction, controller.signal);
+      if (canApply()) {
+        const latest =
+          threadRef.current.root?.id === message.id
+            ? threadRef.current.root
+            : threadRef.current.replies.find((reply) => reply.id === message.id);
+        if (latest) updateReactions(latest, canonical);
       }
-    } catch (e) {
-      if (canApplyHttpResult()) {
-        updateMessageReactions(message.id, previous);
+    } catch (error) {
+      if (canApply()) {
+        const latest =
+          threadRef.current.root?.id === message.id
+            ? threadRef.current.root
+            : threadRef.current.replies.find((reply) => reply.id === message.id);
+        if (latest) updateReactions(latest, previous);
       }
-      console.error("failed to update reaction", e);
+      if (!controller.signal.aborted) console.error("failed to update reaction", error);
+    } finally {
+      finishOperation(controller);
     }
   };
+
   const addReactionFromPicker = (message: Message, emoji: string) => {
     setReactionPicker(null);
     const customToken = parseCustomEmojiMarkers(emoji)[0];
     if (customToken?.type === "custom-emoji" && customToken.marker === emoji) {
-      const customEmoji = customEmojiById(customToken.id);
+      const customEmoji = customEmojis?.byId(customToken.id) ?? null;
       if (!customEmoji || customEmoji.deleted_at !== null) return;
       void mutateReaction(
         message,
@@ -472,22 +592,12 @@ export default function ThreadPanel(props: {
       );
       return;
     }
-    void mutateReaction(
-      message,
-      {
-        kind: "native",
-        emoji,
-      },
-      "add",
-    );
+    void mutateReaction(message, { kind: "native", emoji }, "add");
   };
   const toggleReaction = (message: Message, reaction: ReactionSummary) => {
     const request: ReactionRequest =
       reaction.kind === "native"
-        ? {
-            kind: "native",
-            emoji: reaction.emoji,
-          }
+        ? { kind: "native", emoji: reaction.emoji }
         : {
             kind: "custom",
             emoji_id: reaction.emoji_id,
@@ -497,219 +607,107 @@ export default function ThreadPanel(props: {
           };
     void mutateReaction(message, request, reaction.me_reacted ? "remove" : "add");
   };
-  useMountEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setReactionPicker(null);
-    };
-    document.addEventListener("keydown", onKey);
-    const unsubscribeCreated = events.onThreadReplyCreated((event) => {
-      if (
-        event.channel_id !== propsRef.current.channelId ||
-        event.root_message_id !== propsRef.current.rootMessageId
-      ) {
-        return;
-      }
-      appendReply(event.reply);
-    });
-    const unsubscribeDeleted = events.onThreadReplyDeleted((event) => {
-      if (
-        event.channel_id !== propsRef.current.channelId ||
-        event.root_message_id !== propsRef.current.rootMessageId
-      ) {
-        return;
-      }
-      removeReply(event.reply_id);
-    });
-    const unsubscribeUpdated = events.onMessageUpdated((message) => {
-      if (message.channel_id !== propsRef.current.channelId) return;
-      updateMessageInThread(message);
-    });
-    const unsubscribeMessageDeleted = events.onMessageDeleted((event) => {
-      if (event.channel_id !== propsRef.current.channelId) return;
-      markReferencedMessageUnavailable(event.id);
-    });
-    const unsubscribeEmbeds = events.onMessageEmbedsUpdated((event) => {
-      if (event.channel_id !== propsRef.current.channelId) return;
-      mutate((current) => {
-        if (!current) return current;
-        if (current.root.id === event.id) {
-          return {
-            ...current,
-            root: {
-              ...current.root,
-              suppress_embeds: event.suppress_embeds,
-              embeds: event.embeds,
-            },
-          };
-        }
-        return {
-          ...current,
-          replies: current.replies.map((reply) =>
-            reply.id === event.id
-              ? {
-                  ...reply,
-                  suppress_embeds: event.suppress_embeds,
-                  embeds: event.embeds,
-                }
-              : reply,
-          ),
-        };
-      });
-    });
-    const unsubscribeReactions = events.onMessageReactionsUpdated((event) => {
-      if (event.channel_id !== propsRef.current.channelId) return;
-      mutate((current) => {
-        if (!current) return current;
-        const eventRootId = event.root_message_id ?? event.parent_id ?? event.id;
-        if (eventRootId !== propsRef.current.rootMessageId && event.id !== current.root.id) {
-          return current;
-        }
-        if (current.root.id === event.id) {
-          return {
-            ...current,
-            root: {
-              ...current.root,
-              reactions: mergeReactionUpdateForViewer(
-                current.root.reactions ?? [],
-                event.reactions,
-                event.user_id,
-                propsRef.current.currentUserId,
-              ),
-            },
-          };
-        }
-        return {
-          ...current,
-          replies: current.replies.map((reply) =>
-            reply.id === event.id
-              ? {
-                  ...reply,
-                  reactions: mergeReactionUpdateForViewer(
-                    reply.reactions ?? [],
-                    event.reactions,
-                    event.user_id,
-                    propsRef.current.currentUserId,
-                  ),
-                }
-              : reply,
-          ),
-        };
-      });
-    });
-    registerCleanup(() => {
-      document.removeEventListener("keydown", onKey);
-      unsubscribeCreated();
-      unsubscribeDeleted();
-      unsubscribeUpdated();
-      unsubscribeMessageDeleted();
-      unsubscribeEmbeds();
-      unsubscribeReactions();
-    });
-  });
-  useAfterRenderEffect(() => {
-    const rootMessageId = props.rootMessageId;
-    if (props.focusComposer && rootMessageId > 0) {
-      queueMicrotask(() => {
-        inputRef.current?.focus();
-        props.onComposerFocusConsumed?.();
-      });
-    }
-  });
-  useAfterRenderEffect(() => {
-    const loaded = thread();
-    if (!loaded) return;
-    props.onMentionUsers?.([
-      ...(loaded.root.mentions ?? []),
-      ...loaded.replies.flatMap((reply) => reply.mentions ?? []),
-    ]);
-  });
+
   const loadOlderReplies = async () => {
-    const current = thread();
-    const oldestReply = current?.replies[0];
+    const oldest = thread.replies[0];
     if (
-      !current?.has_more_replies ||
-      !oldestReply ||
-      oldestReply.created_at === undefined ||
-      loadingOlder()
-    ) {
+      !thread.hasMoreReplies ||
+      !oldest ||
+      oldest.created_at === undefined ||
+      thread.olderStatus === "loading"
+    )
       return;
-    }
-    setLoadingOlder(true);
-    setOlderError(null);
-    const previousScrollHeight = repliesScrollRef.current?.scrollHeight ?? 0;
+    pageControllerRef.current?.abort();
+    const controller = new AbortController();
+    pageControllerRef.current = controller;
+    const generation = thread.generation;
+    const identity = identityFor(generation);
+    dispatch({ type: "older-page-started", ...identity });
+    const previousHeight = repliesScrollRef.current?.scrollHeight ?? 0;
     try {
-      const olderPage = await getThread(props.rootMessageId, {
-        beforeCreatedAt: oldestReply.created_at,
-        beforeId: oldestReply.id,
-      });
-      mutate((latest) => {
-        if (!latest) return latest;
-        const existingIds = new Set(latest.replies.map((reply) => reply.id));
-        const olderReplies = olderPage.replies.filter((reply) => !existingIds.has(reply.id));
-        return {
-          ...latest,
-          replies: [...olderReplies, ...latest.replies],
-          has_more_replies: olderPage.has_more_replies,
-        };
-      });
-      queueMicrotask(() => {
-        if (!repliesScrollRef.current) return;
-        repliesScrollRef.current.scrollTop +=
-          repliesScrollRef.current.scrollHeight - previousScrollHeight;
-      });
-    } catch (e) {
-      setOlderError(e instanceof Error ? e.message : String(e));
+      const page = await getThread(
+        props.rootMessageId,
+        { beforeCreatedAt: oldest.created_at, beforeId: oldest.id },
+        controller.signal,
+      );
+      if (!ownsOperation(generation, controller)) return;
+      if (!isValidThreadPayload(page, props.channelId, props.rootMessageId)) {
+        dispatch({
+          type: "older-page-failed",
+          ...identity,
+          error: new Error("Invalid thread response"),
+        });
+        return;
+      }
+      pendingScrollRef.current = { generation, previousHeight };
+      dispatch({ type: "older-page-succeeded", ...identity, thread: page });
+    } catch (error) {
+      if (ownsOperation(generation, controller))
+        dispatch({ type: "older-page-failed", ...identity, error });
     } finally {
-      setLoadingOlder(false);
+      if (pageControllerRef.current === controller) pageControllerRef.current = null;
     }
   };
-  const draftText = () => draft() || inputRef.current?.value || inputRef.current?.textContent || "";
-  const hasDraftContent = () => draftText().trim().length > 0 || photoSelection.photos.length > 0;
+
+  const draftText = draft || inputRef.current?.value || inputRef.current?.textContent || "";
   const handleDraftChange = (value: string) => {
     draftVersionRef.current += 1;
     setDraft(value);
   };
   const submitReply = async () => {
-    const submittedChannelId = props.channelId;
-    const submittedRootMessageId = props.rootMessageId;
-    const text = draftText();
+    const text = draftText;
+    const photos = photoSelection.photos;
+    if ((text.trim().length === 0 && photos.length === 0) || submitting) return;
+    const generation = thread.generation;
     const submittedDraftVersion = draftVersionRef.current;
-    const submittedPhotos = photoSelection.photos;
-    const submittedPhotoIds = submittedPhotos.map((photo) => photo.id);
-    const photos = submittedPhotos.map((photo) => photo.file);
-    if ((text.trim().length === 0 && photos.length === 0) || submitting()) return;
+    const controller = beginOperation();
+    pendingSendRef.current = { controller, text, draftVersion: submittedDraftVersion };
     setSubmitting(true);
-    setError(null);
+    setSendError(null);
     setDraft("");
-    const ownsSubmissionContext = () =>
-      mountedRef.current &&
-      propsRef.current.channelId === submittedChannelId &&
-      propsRef.current.rootMessageId === submittedRootMessageId;
     try {
-      const reply = await sendThreadReply(submittedRootMessageId, text, photos);
-      if (!ownsSubmissionContext()) return;
-      appendReply(reply);
-      for (const photo of submittedPhotos) {
-        photoSelection.removePhoto(photo.id);
-      }
-      queueMicrotask(() => inputRef.current?.focus());
-    } catch (e) {
-      const stillOwnsSubmittedPhotos =
-        selectedPhotoIdsRef.current.length === submittedPhotoIds.length &&
-        selectedPhotoIdsRef.current.every((id, index) => id === submittedPhotoIds[index]);
-      if (
-        !ownsSubmissionContext() ||
-        draftVersionRef.current !== submittedDraftVersion ||
-        !stillOwnsSubmittedPhotos
-      ) {
+      const reply = await sendThreadReply(
+        props.rootMessageId,
+        text,
+        photos.map((photo) => photo.file),
+        controller.signal,
+      );
+      if (!ownsOperation(generation, controller)) return;
+      if (reply.channel_id !== props.channelId || reply.parent_id !== props.rootMessageId) {
+        if (draftVersionRef.current === submittedDraftVersion) setDraft(text);
+        setSendError("Invalid thread reply response");
         return;
       }
-      setDraft(text);
-      setError(e instanceof Error ? e.message : String(e));
+      dispatchLive({
+        type: "reply-created",
+        event: {
+          channel_id: props.channelId,
+          root_message_id: props.rootMessageId,
+          reply,
+          thread_summary: {
+            reply_count: threadRef.current.replies.length + 1,
+            last_reply_created_at: reply.created_at ?? reply.id,
+          },
+        },
+      });
+      if (draftVersionRef.current === submittedDraftVersion) setDraft("");
+      for (const photo of photos) photoSelection.removePhoto(photo.id);
+      queueMicrotask(() => inputRef.current?.focus());
+    } catch (error) {
+      if (
+        ownsOperation(generation, controller) &&
+        draftVersionRef.current === submittedDraftVersion
+      ) {
+        setDraft(text);
+        setSendError(error instanceof Error ? error.message : String(error));
+      }
     } finally {
-      if (ownsSubmissionContext()) setSubmitting(false);
+      if (pendingSendRef.current?.controller === controller) pendingSendRef.current = null;
+      if (ownsOperation(generation, controller)) setSubmitting(false);
+      finishOperation(controller);
     }
   };
+
   const startEditing = (message: Message) => {
     props.onMentionUsers?.(message.mentions ?? []);
     setEditDraft(message.text);
@@ -720,7 +718,7 @@ export default function ThreadPanel(props: {
     setEditDraft("");
   };
   const saveEdit = async (message: Message) => {
-    const next = editDraft();
+    const next = editDraft;
     if (next.length === 0 && message.attachments.length === 0) {
       setPendingDeleteId(message.id);
       return;
@@ -729,51 +727,59 @@ export default function ThreadPanel(props: {
       cancelEditing();
       return;
     }
+    const generation = thread.generation;
+    const controller = beginOperation();
     try {
-      const updated = await editMessage(message.id, next);
-      updateMessageInThread(updated);
-    } catch (e) {
-      console.error("failed to edit thread reply", e);
+      const updated = await editMessage(message.id, next, controller.signal);
+      if (ownsOperation(generation, controller)) updateMessage(updated);
+    } catch (error) {
+      if (!controller.signal.aborted) console.error("failed to edit thread reply", error);
+    } finally {
+      if (ownsOperation(generation, controller)) cancelEditing();
+      finishOperation(controller);
     }
-    cancelEditing();
   };
   const confirmDelete = async () => {
-    const id = pendingDeleteId();
+    const id = pendingDeleteId;
     if (id === null) return;
+    const generation = thread.generation;
+    const controller = beginOperation();
     try {
-      await deleteMessage(id);
-      removeReply(id);
-    } catch (e) {
-      console.error("failed to delete thread reply", e);
+      await deleteMessage(id, controller.signal);
+      if (ownsOperation(generation, controller)) {
+        dispatchLive({
+          type: "reply-deleted",
+          event: {
+            channel_id: props.channelId,
+            root_message_id: props.rootMessageId,
+            reply_id: id,
+          },
+        });
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) console.error("failed to delete thread reply", error);
+    } finally {
+      if (ownsOperation(generation, controller)) {
+        setPendingDeleteId(null);
+        if (editingId === id) cancelEditing();
+      }
+      finishOperation(controller);
     }
-    setPendingDeleteId(null);
-    if (editingId() === id) cancelEditing();
   };
   const suppressEmbeds = async (message: Message) => {
+    const generation = thread.generation;
+    const controller = beginOperation();
     try {
-      const updated = await setMessageEmbedsSuppressed(message.id, true);
-      mutate((current) => {
-        if (!current) return current;
-        return {
-          ...current,
-          replies: current.replies.map((reply) =>
-            reply.id === message.id
-              ? {
-                  ...reply,
-                  suppress_embeds: updated.suppress_embeds,
-                  embeds: updated.embeds,
-                }
-              : reply,
-          ),
-        };
-      });
-    } catch (e) {
-      console.error("failed to suppress thread reply embeds", e);
+      const updated = await setMessageEmbedsSuppressed(message.id, true, controller.signal);
+      if (ownsOperation(generation, controller))
+        dispatchLive({ type: "embeds-updated", event: updated });
+    } catch (error) {
+      if (!controller.signal.aborted)
+        console.error("failed to suppress thread reply embeds", error);
+    } finally {
+      finishOperation(controller);
     }
   };
-  const loadedThread = thread();
-  const currentOlderError = olderError();
-  const currentError = error();
 
   return (
     <aside
@@ -791,26 +797,25 @@ export default function ThreadPanel(props: {
           Close
         </button>
       </header>
-
-      <div
-        className="min-h-0 flex-1 overflow-y-auto p-4"
-        ref={(el) => {
-          repliesScrollRef.current = el;
-        }}
-      >
-        {thread.error ? (
+      <div className="min-h-0 flex-1 overflow-y-auto p-4" ref={repliesScrollRef}>
+        {thread.status === "error" && !thread.root ? (
           <p role="alert" className="text-destructive">
             Error loading thread: {String(thread.error)}
           </p>
-        ) : thread.loading ? (
+        ) : thread.status === "idle" || (thread.status === "loading" && !thread.root) ? (
           <p>Loading thread...</p>
-        ) : loadedThread ? (
+        ) : thread.root ? (
           <div className="flex flex-col gap-2">
+            {thread.status === "error" ? (
+              <p role="alert" className="text-sm text-destructive">
+                Error refreshing thread: {String(thread.error)}
+              </p>
+            ) : null}
             <ThreadMessage
-              message={loadedThread.root}
+              message={thread.root}
               currentUserId={props.currentUserId}
               currentUserName={props.currentUserName}
-              isRoot={true}
+              isRoot
               editing={false}
               draft=""
               onDraftChange={() => undefined}
@@ -824,33 +829,35 @@ export default function ThreadPanel(props: {
                 setReactionPicker({ messageId: message.id, anchor })
               }
             />
-            {loadedThread.replies.length > 0 ? (
+            {thread.replies.length > 0 ? (
               <div className="border-t border-border pt-2">
-                {loadedThread.has_more_replies ? (
+                {thread.hasMoreReplies ? (
                   <div className="pb-2 text-center">
                     <button
                       type="button"
                       className="rounded-md border border-border px-3 py-1 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
                       onClick={() => void loadOlderReplies()}
-                      disabled={loadingOlder()}
+                      disabled={thread.olderStatus === "loading"}
                     >
-                      {loadingOlder() ? "Loading older replies..." : "Load older replies"}
+                      {thread.olderStatus === "loading"
+                        ? "Loading older replies..."
+                        : "Load older replies"}
                     </button>
                   </div>
                 ) : null}
-                {currentOlderError ? (
+                {thread.olderStatus === "error" ? (
                   <p role="alert" className="pb-2 text-sm text-destructive">
-                    Error loading older replies: {currentOlderError}
+                    Error loading older replies: {String(thread.olderError)}
                   </p>
                 ) : null}
-                {loadedThread.replies.map((reply) => (
+                {thread.replies.map((reply) => (
                   <ThreadMessage
                     key={reply.id}
                     message={reply}
                     currentUserId={props.currentUserId}
                     currentUserName={props.currentUserName}
-                    editing={editingId() === reply.id}
-                    draft={editDraft()}
+                    editing={editingId === reply.id}
+                    draft={editDraft}
                     onDraftChange={setEditDraft}
                     onStartEdit={startEditing}
                     onCancelEdit={cancelEditing}
@@ -872,40 +879,39 @@ export default function ThreadPanel(props: {
           </div>
         ) : null}
       </div>
-
       <form
         className="flex-shrink-0 border-t border-border p-4"
-        onSubmit={(e) => {
-          e.preventDefault();
+        onSubmit={(event) => {
+          event.preventDefault();
           void submitReply();
         }}
       >
-        {currentError ? (
+        {sendError ? (
           <p role="alert" className="mb-2 text-sm text-destructive">
-            {currentError}
+            {sendError}
           </p>
         ) : null}
         <SelectedPhotoPreviewList
           photos={photoSelection.photos}
           error={photoSelection.error}
           errorId={photoSelectionErrorId}
-          disabled={submitting()}
+          disabled={submitting}
           onRemove={photoSelection.removePhoto}
         />
         <div className="flex items-end gap-2">
           <PhotoAttachControl
             onFilesSelected={photoSelection.addFiles}
-            disabled={submitting()}
+            disabled={submitting}
             describedBy={photoSelection.error ? photoSelectionErrorId : undefined}
           />
           <MessageInput
-            value={draft()}
+            value={draft}
             onChange={handleDraftChange}
             ariaLabel="Thread reply"
             placeholder="Reply in thread..."
             className="flex min-w-0 flex-1 items-end gap-2"
-            inputRef={(el) => {
-              inputRef.current = el;
+            inputRef={(element) => {
+              inputRef.current = element;
             }}
             mentionUsers={props.mentionUsers}
             onMentionUsers={props.onMentionUsers}
@@ -915,27 +921,27 @@ export default function ThreadPanel(props: {
           <button
             className="rounded-md bg-primary/10 p-4 text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
             type="submit"
-            disabled={submitting() || !hasDraftContent()}
+            aria-label="Send response to thread"
+            disabled={
+              submitting || (draftText.trim().length === 0 && photoSelection.photos.length === 0)
+            }
           >
             Send
           </button>
         </div>
       </form>
-
       <EmojiPicker
-        open={reactionPicker() !== null}
-        anchor={() => reactionPicker()?.anchor}
-        emojis={reactionEmojiEntries()}
+        open={reactionPicker !== null}
+        anchor={() => reactionPicker?.anchor}
+        emojis={[...CONSERVATIVE_EMOJIS, ...customEmojisToEntries(activeCustomEmojis)]}
         onSelect={(emoji) => {
-          const state = reactionPicker();
-          const message = state ? findThreadMessage(state.messageId) : null;
+          const message = reactionPicker ? findThreadMessage(reactionPicker.messageId) : null;
           if (message) addReactionFromPicker(message, emoji);
         }}
         onClose={() => setReactionPicker(null)}
       />
-
       <Modal
-        open={pendingDeleteId() !== null}
+        open={pendingDeleteId !== null}
         onClose={() => setPendingDeleteId(null)}
         title="Delete reply?"
       >

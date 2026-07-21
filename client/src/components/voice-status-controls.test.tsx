@@ -1,63 +1,46 @@
+import { useState } from "react";
 import { describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen } from "../test/testing-library";
-import { useSignalState } from "../hooks/react-state";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { renderNative } from "../test/render";
 import VoiceStatusControls from "./voice-status-controls";
 
-interface MockVoiceChatApi {
-  activeChannelId: () => number | null;
-  setActiveChannelId: (id: number | null) => void;
-  isMuted: () => boolean;
-  setIsMuted: (v: boolean) => void;
-  isDeafened: () => boolean;
-  setIsDeafened: (v: boolean) => void;
+let mockVoice: {
+  activeChannelId: number | null;
+  isMuted: boolean;
+  isDeafened: boolean;
   toggleMuted: ReturnType<typeof vi.fn>;
   toggleDeafened: ReturnType<typeof vi.fn>;
   leave: ReturnType<typeof vi.fn>;
-}
+};
 
-let mockVoice: MockVoiceChatApi;
+vi.mock("../contexts/voice-chat", () => ({ useVoiceChat: () => mockVoice }));
 
-vi.mock("../contexts/voice-chat", () => ({
-  useVoiceChat: () => mockVoice,
-}));
-
-function setup() {
-  const [activeChannelId, setActiveChannelId] = useSignalState<number | null>(null);
-  const [isMuted, setIsMuted] = useSignalState(false);
-  const [isDeafened, setIsDeafened] = useSignalState(false);
-  mockVoice = {
-    activeChannelId,
-    setActiveChannelId,
-    isMuted,
-    setIsMuted,
-    isDeafened,
-    setIsDeafened,
-    toggleMuted: vi.fn<() => Promise<void>>().mockImplementation(async () => {
-      setIsMuted(!isMuted());
-    }),
-    toggleDeafened: vi.fn<() => Promise<void>>().mockImplementation(async () => {
-      setIsDeafened(!isDeafened());
-    }),
-    leave: vi.fn<() => Promise<void>>().mockResolvedValue(),
-  };
+function renderControls(initialChannelId: number | null = null) {
+  function Harness() {
+    const [activeChannelId, setActiveChannelId] = useState(initialChannelId);
+    const [isMuted, setIsMuted] = useState(false);
+    const [isDeafened, setIsDeafened] = useState(false);
+    mockVoice = {
+      activeChannelId,
+      isMuted,
+      isDeafened,
+      toggleMuted: vi.fn(async () => setIsMuted((value) => !value)),
+      toggleDeafened: vi.fn(async () => setIsDeafened((value) => !value)),
+      leave: vi.fn(async () => setActiveChannelId(null)),
+    };
+    return <VoiceStatusControls />;
+  }
+  return renderNative(<Harness />);
 }
 
 describe("<VoiceStatusControls>", () => {
-  test("shows mute and deafen controls even without an active call", () => {
-    setup();
-    render(() => <VoiceStatusControls />);
-
+  test("shows direct-value mute and deafen controls even without an active call", () => {
+    renderControls();
     const mute = screen.getByRole("button", { name: "Mute microphone" });
     const deafen = screen.getByRole("button", { name: "Deafen" });
     expect(screen.queryByRole("button", { name: "Disconnect from voice" })).toBeNull();
-    expect(mute).toHaveAttribute("aria-pressed", "false");
-    expect(deafen).toHaveAttribute("aria-pressed", "false");
-
     fireEvent.click(mute);
     fireEvent.click(deafen);
-
-    expect(mockVoice.toggleMuted).toHaveBeenCalled();
-    expect(mockVoice.toggleDeafened).toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Unmute microphone" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -68,16 +51,30 @@ describe("<VoiceStatusControls>", () => {
     );
   });
 
-  test("shows disconnect only while connected to voice", async () => {
-    setup();
-    render(() => <VoiceStatusControls />);
+  test.each([
+    ["Mute microphone", "toggleMuted", "mute microphone"],
+    ["Deafen", "toggleDeafened", "deafen"],
+  ] as const)(
+    "surfaces a rejected %s command in an accessible alert",
+    async (label, command, action) => {
+      renderControls();
+      mockVoice[command].mockRejectedValueOnce(new Error("device unavailable"));
 
-    expect(screen.queryByRole("button", { name: "Disconnect from voice" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: label }));
 
-    mockVoice.setActiveChannelId(42);
-    const disconnect = await screen.findByRole("button", { name: "Disconnect from voice" });
+      await waitFor(() =>
+        expect(screen.getByRole("alert")).toHaveTextContent(
+          `Could not ${action}: device unavailable`,
+        ),
+      );
+    },
+  );
+
+  test("shows disconnect only while connected to voice", () => {
+    renderControls(42);
+    const disconnect = screen.getByRole("button", { name: "Disconnect from voice" });
+    const leave = mockVoice.leave;
     fireEvent.click(disconnect);
-
-    expect(mockVoice.leave).toHaveBeenCalled();
+    expect(leave).toHaveBeenCalled();
   });
 });

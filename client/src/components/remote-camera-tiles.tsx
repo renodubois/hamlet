@@ -1,51 +1,7 @@
-import { useRef } from "react";
-
-import { useAfterRenderEffect, registerCleanup } from "../hooks/react-state";
-import type { RemoteVideoTrack } from "livekit-client";
 import { useOptionalVoiceChat, type RemoteCameraTile } from "../contexts/voice-chat";
 import { cameraDisplayName, cameraKey } from "../voice/camera";
+import AttachedVideoTrack from "./attached-video-track";
 import { CameraIcon } from "./icons";
-
-function AttachedRemoteCameraVideo(props: { track: RemoteVideoTrack; label: string }) {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const attachedElementRef = useRef<HTMLVideoElement | null>(null);
-  const attachedTrackRef = useRef<RemoteVideoTrack | null>(null);
-
-  useAfterRenderEffect(() => {
-    const video = videoRef.current;
-    const track = props.track;
-    const attachedTrack = attachedTrackRef.current;
-    if (!video || attachedTrack === track) return;
-    if (attachedTrack && attachedElementRef.current) {
-      attachedTrack.detach(attachedElementRef.current);
-    }
-    track.attach(video);
-    attachedElementRef.current = video;
-    attachedTrackRef.current = track;
-  });
-
-  registerCleanup(() => {
-    const video = attachedElementRef.current ?? videoRef.current;
-    const attachedTrack = attachedTrackRef.current;
-    if (attachedTrack && video) {
-      attachedTrack.detach(video);
-    }
-    attachedElementRef.current = null;
-    attachedTrackRef.current = null;
-  });
-
-  return (
-    <video
-      ref={(el) => {
-        videoRef.current = el;
-      }}
-      className="h-full w-full rounded-md bg-black object-cover"
-      autoPlay
-      playsInline
-      aria-label={props.label}
-    />
-  );
-}
 
 function RemoteCameraTileCard(props: { tile: RemoteCameraTile }) {
   const name = cameraDisplayName(props.tile.stream);
@@ -57,7 +13,14 @@ function RemoteCameraTileCard(props: { tile: RemoteCameraTile }) {
     >
       <div className="flex aspect-video items-center justify-center rounded-md bg-black">
         {props.tile.track ? (
-          <AttachedRemoteCameraVideo track={props.tile.track} label={`${name}'s camera video`} />
+          <AttachedVideoTrack
+            key={cameraKey(props.tile.stream)}
+            track={props.tile.track}
+            className="h-full w-full rounded-md bg-black object-cover"
+            autoPlay
+            playsInline
+            aria-label={`${name}'s camera video`}
+          />
         ) : (
           <p className="p-4 text-center text-sm text-white/80" role="status">
             Connecting to {name}'s camera…
@@ -76,8 +39,8 @@ export default function RemoteCameraTiles() {
   const voice = useOptionalVoiceChat();
   if (!voice) return null;
 
-  const tiles = voice.remoteCameraTiles();
-  if (voice.activeChannelId() == null || tiles.length === 0) return null;
+  const tiles = voice.remoteCameraTiles;
+  if (voice.activeChannelId == null || tiles.length === 0) return null;
 
   return (
     <section

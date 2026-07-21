@@ -357,6 +357,61 @@ describe("Channel view integration", () => {
     warnSpy.mockRestore();
   });
 
+  test("an older A generation cannot clear newer A mark-read ownership after A-B-A navigation", async () => {
+    const focusSpy = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const state = seedAuthed();
+    state.messages["200"] = [
+      {
+        ...state.messages["100"][0],
+        id: 20,
+        channel_id: 200,
+        text: "channel B",
+      },
+    ];
+    const first = deferred();
+    const second = deferred();
+    const gates = [first, second];
+    let attempts = 0;
+    server.use(
+      http.put(`${TEST_SERVER}/channels/100/read-state`, async ({ request }) => {
+        const attempt = attempts++;
+        const body = (await request.json()) as { last_visible_message_id: number };
+        await gates[attempt]?.promise;
+        return HttpResponse.json({
+          channel_id: 100,
+          has_unread: false,
+          mention_count: 0,
+          last_read_created_at: body.last_visible_message_id,
+          last_read_message_id: body.last_visible_message_id,
+          updated_at: Date.now(),
+        });
+      }),
+    );
+    const { history } = mountAt("/channel/100");
+
+    await screen.findByText("world");
+    setScrollMetrics(messagesRegion(), { scrollHeight: 1000, clientHeight: 100, scrollTop: 920 });
+    fireEvent.scroll(messagesRegion());
+    await waitFor(() => expect(attempts).toBe(1));
+
+    history.set({ value: "/channel/200" });
+    await screen.findByText("channel B");
+    history.set({ value: "/channel/100" });
+    await screen.findByText("world");
+    setScrollMetrics(messagesRegion(), { scrollHeight: 1000, clientHeight: 100, scrollTop: 920 });
+    fireEvent.scroll(messagesRegion());
+    await waitFor(() => expect(attempts).toBe(2));
+
+    first.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    window.dispatchEvent(new Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    expect(attempts).toBe(2);
+
+    second.resolve();
+    focusSpy.mockRestore();
+  });
+
   test("incoming messages while scrolled up show a jump affordance without forcing scroll", async () => {
     const focusSpy = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const state = seedAuthed();
@@ -502,7 +557,7 @@ describe("Channel view integration", () => {
     const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
     await waitFor(() => expect(document.activeElement).toBe(input));
     fireEvent.input(input, { target: { value: "reply from panel" } });
-    fireEvent.click(within(panel).getByRole("button", { name: /^send$/i }));
+    fireEvent.click(within(panel).getByRole("button", { name: "Send response to thread" }));
 
     await waitFor(() => {
       expect(within(panel).getByText("reply from panel")).toBeInTheDocument();
@@ -544,7 +599,7 @@ describe("Channel view integration", () => {
 
     const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
     fireEvent.input(input, { target: { value: "sent reply <@2>" } });
-    fireEvent.click(within(panel).getByRole("button", { name: /^send$/i }));
+    fireEvent.click(within(panel).getByRole("button", { name: "Send response to thread" }));
 
     await findRenderedMessageTextWithin(panel, "sent reply @Bobby <Tables>");
     expect(state.sentThreadReplies).toContainEqual({ rootId: 1, text: "sent reply <@2>" });
@@ -1131,7 +1186,7 @@ describe("Channel view integration", () => {
     const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
     const text = "restore first line\nrestore second line";
     fireEvent.input(input, { target: { value: text } });
-    fireEvent.click(within(panel).getByRole("button", { name: /^send$/i }));
+    fireEvent.click(within(panel).getByRole("button", { name: "Send response to thread" }));
 
     await waitFor(() => {
       expect(state.sentThreadReplies).toContainEqual({ rootId: 1, text });
@@ -1610,12 +1665,10 @@ describe("Channel view integration", () => {
       expect(within(panel).getByText("reply 55")).toBeInTheDocument();
     });
     expect(within(panel).queryByText("reply 5")).toBeNull();
-    expect(state.threadRequests[0]).toEqual({
-      rootId: 1,
-      limit: 50,
-      beforeCreatedAt: null,
-      beforeId: null,
-    });
+    expect(state.threadRequests.slice(0, 2)).toEqual([
+      { rootId: 1, limit: 50, beforeCreatedAt: null, beforeId: null },
+      { rootId: 1, limit: 50, beforeCreatedAt: null, beforeId: null },
+    ]);
 
     fireEvent.click(within(panel).getByRole("button", { name: /load older replies/i }));
 
@@ -1624,7 +1677,7 @@ describe("Channel view integration", () => {
       expect(within(panel).getByText("reply 5")).toBeInTheDocument();
       expect(within(panel).queryByRole("button", { name: /load older replies/i })).toBeNull();
     });
-    expect(state.threadRequests[1]).toEqual({
+    expect(state.threadRequests[2]).toEqual({
       rootId: 1,
       limit: 50,
       beforeCreatedAt: 1_700_000_000_000_006,
@@ -2096,7 +2149,7 @@ describe("Channel view integration", () => {
 
     const panel = await screen.findByRole("complementary", { name: /thread panel/i });
     await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
-    await waitFor(() => expect(state.threadFetches).toEqual([1]));
+    await waitFor(() => expect(state.threadFetches).toEqual([1, 1]));
     await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
 
     const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
@@ -2169,7 +2222,7 @@ describe("Channel view integration", () => {
     await waitFor(() => {
       expect(within(panel).getByText("live thread reply")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /open thread with 1 reply/i })).toBeInTheDocument();
-      expect(state.threadFetches).toEqual([1]);
+      expect(state.threadFetches).toEqual([1, 1]);
     });
   });
 
@@ -2723,6 +2776,40 @@ describe("Channel view integration", () => {
     }
   });
 
+  test("a malformed or wrong-channel send response preserves the draft and photos and alerts", async () => {
+    const urls = mockObjectUrls();
+    seedAuthed();
+    server.use(
+      http.post(`${TEST_SERVER}/message/:id`, () =>
+        HttpResponse.json({ id: 999, channel_id: 200, parent_id: null }),
+      ),
+    );
+    const alert = vi.fn();
+    vi.stubGlobal("alert", alert);
+    const { unmount } = mountAt("/channel/100");
+
+    try {
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+      fireEvent.input(input, { target: { value: "preserve malformed response" } });
+      fireEvent.change(fileInput(), {
+        target: { files: [photoFile("preserve.png", "image/png")] },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+
+      await waitFor(() => expect(alert).toHaveBeenCalledTimes(1));
+      expect(input.value).toBe("preserve malformed response");
+      expect(screen.getByRole("img", { name: /selected photo 1: preserve\.png/i })).toHaveAttribute(
+        "src",
+        "blob:preserve.png-0",
+      );
+      expect(urls.revokeObjectURL).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      unmount();
+      urls.restore();
+    }
+  });
+
   test("failed photo sends keep selected photos and object URLs for retry", async () => {
     const urls = mockObjectUrls();
     seedAuthed();
@@ -3121,7 +3208,7 @@ describe("Channel view integration", () => {
       const panel = await screen.findByRole("complementary", { name: /thread panel/i });
       await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
       const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
-      const sendButton = within(panel).getByRole("button", { name: /^send$/i });
+      const sendButton = within(panel).getByRole("button", { name: "Send response to thread" });
       expect(sendButton).toBeDisabled();
 
       fireEvent.change(fileInputWithin(panel), { target: { files: [photoFile("remove-me.png")] } });
@@ -3167,6 +3254,35 @@ describe("Channel view integration", () => {
     }
   });
 
+  test("same-channel reconnect refresh preserves the thread panel draft and photos", async () => {
+    const urls = mockObjectUrls();
+    seedAuthed();
+    const { unmount } = mountAt("/channel/100?thread=1");
+
+    try {
+      const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+      await within(panel).findByText("hello");
+      const input = within(panel).getByLabelText(/thread reply/i) as HTMLInputElement;
+      fireEvent.input(input, { target: { value: "survive reconnect" } });
+      fireEvent.change(fileInputWithin(panel), {
+        target: { files: [photoFile("reconnect.png")] },
+      });
+
+      assertExists(latestFakeEventSource(), "channel EventSource").pushConnected();
+
+      await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
+      expect(screen.getByRole("complementary", { name: /thread panel/i })).toBe(panel);
+      expect(input.value).toBe("survive reconnect");
+      expect(
+        within(panel).getByRole("img", { name: /selected photo 1: reconnect\.png/i }),
+      ).toHaveAttribute("src", "blob:reconnect.png-0");
+      expect(urls.revokeObjectURL).not.toHaveBeenCalled();
+    } finally {
+      unmount();
+      urls.restore();
+    }
+  });
+
   test("switching thread roots resets photos once and ignores the old delayed failure", async () => {
     const urls = mockObjectUrls();
     seedAuthed();
@@ -3191,7 +3307,7 @@ describe("Channel view integration", () => {
       fireEvent.change(fileInputWithin(panel), {
         target: { files: [photoFile("thread-a.png")] },
       });
-      fireEvent.click(within(panel).getByRole("button", { name: /^send$/i }));
+      fireEvent.click(within(panel).getByRole("button", { name: "Send response to thread" }));
       await requestStarted.promise;
 
       history.set({ value: "/channel/100?thread=2" });
@@ -3212,7 +3328,9 @@ describe("Channel view integration", () => {
       releaseResponse.resolve();
 
       await waitFor(() =>
-        expect(within(panel).getByRole("button", { name: /^send$/i })).toBeEnabled(),
+        expect(
+          within(panel).getByRole("button", { name: "Send response to thread" }),
+        ).toBeEnabled(),
       );
       expect(threadBInput.value).toBe("thread B draft");
       expect(
@@ -3254,7 +3372,7 @@ describe("Channel view integration", () => {
         target: { files: [photoFile("retry-thread.webp", "image/webp")] },
       });
 
-      fireEvent.click(within(panel).getByRole("button", { name: /^send$/i }));
+      fireEvent.click(within(panel).getByRole("button", { name: "Send response to thread" }));
 
       await waitFor(() => {
         expect(state.sentThreadReplyPhotos).toContainEqual({
@@ -3273,7 +3391,9 @@ describe("Channel view integration", () => {
         ).toHaveAttribute("src", "blob:retry-thread.webp-0");
         expect(input.value).toBe("retry thread caption");
         expect(within(panel).getByRole("alert")).toHaveTextContent("Thread reply failed (500)");
-        expect(within(panel).getByRole("button", { name: /^send$/i })).not.toBeDisabled();
+        expect(
+          within(panel).getByRole("button", { name: "Send response to thread" }),
+        ).not.toBeDisabled();
       });
       expect(urls.revokeObjectURL).not.toHaveBeenCalled();
     } finally {
@@ -3363,7 +3483,7 @@ describe("Channel view integration", () => {
     await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
     const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
     es.pushMessage({
-      id: 777,
+      id: assertExists(state.messages["100"].at(-1), "HTTP-created inline reply").id,
       user_id: DEV_USER.id,
       channel_id: 100,
       parent_id: null,
@@ -3929,7 +4049,7 @@ describe("Channel view integration", () => {
     await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
     const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
     es.pushMessage({
-      id: 99,
+      id: assertExists(mswState().messages["100"].at(-1), "HTTP-created custom emoji message").id,
       user_id: DEV_USER.id,
       channel_id: 100,
       text: "hello <:party:123>",

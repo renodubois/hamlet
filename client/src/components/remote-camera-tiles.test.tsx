@@ -13,8 +13,8 @@ class FakeRemoteVideoTrack {
 
 const mockVoiceState = vi.hoisted(() => ({
   value: null as {
-    activeChannelId: () => number | null;
-    remoteCameraTiles: () => readonly RemoteCameraTile[];
+    activeChannelId: number | null;
+    remoteCameraTiles: readonly RemoteCameraTile[];
   } | null,
 }));
 
@@ -57,8 +57,8 @@ function renderTiles(
     setTiles = setTileState;
     setActive = setActiveState;
     mockVoiceState.value = {
-      activeChannelId: () => active,
-      remoteCameraTiles: () => tiles,
+      activeChannelId: active,
+      remoteCameraTiles: tiles,
     };
     return <RemoteCameraTiles />;
   }

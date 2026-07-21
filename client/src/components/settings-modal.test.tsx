@@ -5,6 +5,7 @@ import { describe, expect, test, vi } from "vitest";
 import { type User } from "../api";
 import { AuthProvider } from "../contexts/auth";
 import { CustomEmojisProvider } from "../contexts/custom-emojis";
+import { VoicePreferencesProvider } from "../contexts/voice-preferences";
 import { expectNoA11yViolations } from "../test/a11y";
 import { renderNative } from "../test/render";
 import { DEV_USER } from "../test/msw/handlers";
@@ -86,13 +87,15 @@ function mount(
 ) {
   const props = modalProps(opts);
   const result = renderNative(
-    <SettingsModal
-      open={open}
-      onClose={props.onClose}
-      onLogout={props.onLogout}
-      user={props.user}
-      onAvatarChange={props.onAvatarChange}
-    />,
+    <VoicePreferencesProvider>
+      <SettingsModal
+        open={open}
+        onClose={props.onClose}
+        onLogout={props.onLogout}
+        user={props.user}
+        onAvatarChange={props.onAvatarChange}
+      />
+    </VoicePreferencesProvider>,
   );
   return { ...result, onClose: props.onClose, onAvatarChange: props.onAvatarChange };
 }
@@ -102,13 +105,15 @@ function mountWithCustomEmojiProvider(open = true) {
   const result = renderNative(
     <AuthProvider>
       <CustomEmojisProvider>
-        <SettingsModal
-          open={open}
-          onClose={props.onClose}
-          onLogout={props.onLogout}
-          user={props.user}
-          onAvatarChange={props.onAvatarChange}
-        />
+        <VoicePreferencesProvider>
+          <SettingsModal
+            open={open}
+            onClose={props.onClose}
+            onLogout={props.onLogout}
+            user={props.user}
+            onAvatarChange={props.onAvatarChange}
+          />
+        </VoicePreferencesProvider>
       </CustomEmojisProvider>
     </AuthProvider>,
   );

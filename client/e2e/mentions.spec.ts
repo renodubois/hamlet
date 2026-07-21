@@ -168,7 +168,7 @@ test("sends a thread reply mention through autocomplete and updates the thread s
   const threadInput = panel.getByRole("textbox", { name: /thread reply/i });
   await threadInput.fill(`${replyMarker} @teo`);
   await commitMentionWithActiveOption(page, threadInput, "teo");
-  await panel.getByRole("button", { name: /^Send$/ }).click();
+  await panel.getByRole("button", { name: "Send response to thread" }).click();
 
   const replyRow = threadMessageRow(panel, replyMarker);
   await expect(replyRow).toBeVisible({ timeout: 10_000 });

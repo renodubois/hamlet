@@ -1,10 +1,4 @@
-import type { MouseEvent as ReactMouseEvent } from "react";
-import {
-  useComputedValue,
-  useSignalState,
-  registerCleanup,
-  useMountEffect,
-} from "../hooks/react-state";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import {
   addMessageReaction,
   deleteMessage,
@@ -76,6 +70,8 @@ export function channelMessageElementId(messageId: number): string {
   return `channel-message-${messageId}`;
 }
 interface ChannelMessagesProps {
+  channelId?: number;
+  generation?: number;
   messages: readonly Message[];
   loading: boolean;
   error: unknown;
@@ -96,37 +92,58 @@ interface ChannelMessagesProps {
 }
 function ChannelMessages(props: ChannelMessagesProps) {
   const customEmojis = useOptionalCustomEmojis();
+  const scopeKey = `${props.channelId ?? props.messages[0]?.channel_id ?? 0}:${props.generation ?? 0}`;
+  const activeScopeRef = useRef(scopeKey);
+  activeScopeRef.current = scopeKey;
+  const mountedRef = useRef(true);
   const activeCustomEmojis = customEmojis?.activeEmojis ?? [];
-  const reactionEmojiEntries = () => [
+  const reactionEmojiEntries = [
     ...CONSERVATIVE_EMOJIS,
     ...customEmojisToEntries(activeCustomEmojis),
   ];
-  const visibleMessageIds = useComputedValue(
-    () => new Set(props.messages.map((message) => message.id)),
-  );
+  const visibleMessageIds = new Set(props.messages.map((message) => message.id));
   const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
-  const [contextMenu, setContextMenu] = useSignalState<ContextMenuState | null>(null);
-  const [editingId, setEditingId] = useSignalState<number | null>(null);
-  const [draft, setDraft] = useSignalState("");
-  const [pendingDeleteId, setPendingDeleteId] = useSignalState<number | null>(null);
-  const [reactionPicker, setReactionPicker] = useSignalState<ReactionPickerState | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [draft, setDraft] = useState("");
+  const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
+  const [reactionPicker, setReactionPicker] = useState<ReactionPickerState | null>(null);
+  const reactionOperationTokensRef = useRef(new Map<number, number>());
+  const latestMessagesRef = useRef(props.messages);
+  latestMessagesRef.current = props.messages;
   const closeMenu = () => setContextMenu(null);
   const closeReactionPicker = () => setReactionPicker(null);
-  useMountEffect(() => {
-    const onDocClick = () => closeMenu();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        closeMenu();
-        closeReactionPicker();
+  const scopeIsCurrent = (capturedScope: string) =>
+    mountedRef.current && activeScopeRef.current === capturedScope;
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    setContextMenu(null);
+    setEditingId(null);
+    setDraft("");
+    setPendingDeleteId(null);
+    setReactionPicker(null);
+    reactionOperationTokensRef.current.clear();
+  }, [scopeKey]);
+  useEffect(() => {
+    const onDocClick = () => setContextMenu(null);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setContextMenu(null);
+        setReactionPicker(null);
       }
     };
     document.addEventListener("click", onDocClick);
     document.addEventListener("keydown", onKey);
-    registerCleanup(() => {
+    return () => {
       document.removeEventListener("click", onDocClick);
       document.removeEventListener("keydown", onKey);
-    });
-  });
+    };
+  }, []);
   const startEditing = (msg: Message) => {
     props.onMentionUsers?.(msg.mentions ?? []);
     setDraft(msg.text);
@@ -145,15 +162,17 @@ function ChannelMessages(props: ChannelMessagesProps) {
     setPendingDeleteId(null);
   };
   const confirmDelete = async () => {
-    const id = pendingDeleteId();
+    const id = pendingDeleteId;
     if (id === null) return;
+    const capturedScope = scopeKey;
     try {
       await deleteMessage(id);
     } catch (e) {
       console.error("failed to delete message", e);
     }
+    if (!scopeIsCurrent(capturedScope)) return;
     setPendingDeleteId(null);
-    if (editingId() === id) cancelEditing();
+    if (editingId === id) cancelEditing();
   };
   const suppressEmbeds = async (msg: Message) => {
     try {
@@ -163,7 +182,8 @@ function ChannelMessages(props: ChannelMessagesProps) {
     }
   };
   const saveEdit = async (msg: Message) => {
-    const next = draft();
+    const capturedScope = scopeKey;
+    const next = draft;
     if (next.length === 0 && msg.attachments.length === 0) {
       requestDelete(msg.id);
       return;
@@ -174,24 +194,30 @@ function ChannelMessages(props: ChannelMessagesProps) {
     }
     try {
       const updated = await editMessage(msg.id, next);
+      if (!scopeIsCurrent(capturedScope)) return;
       props.onMentionUsers?.(updated?.mentions ?? []);
       props.onMessageUpdated?.(updated);
     } catch (e) {
       console.error("failed to edit message", e);
     }
-    cancelEditing();
+    if (scopeIsCurrent(capturedScope)) cancelEditing();
   };
   const mutateReaction = async (
     msg: Message,
     reaction: ReactionRequest,
     mutation: "add" | "remove",
   ) => {
+    const capturedScope = scopeKey;
     const previous = msg.reactions ?? [];
     const optimistic = applyOptimisticReaction(previous, reaction, mutation);
-    const currentReactions = () =>
-      props.messages.find((message) => message.id === msg.id)?.reactions ?? [];
+    const operationToken = (reactionOperationTokensRef.current.get(msg.id) ?? 0) + 1;
+    reactionOperationTokensRef.current.set(msg.id, operationToken);
     const canApplyHttpResult = () => {
-      const current = currentReactions();
+      if (!scopeIsCurrent(capturedScope)) return false;
+      if (reactionOperationTokensRef.current.get(msg.id) !== operationToken) return false;
+      const currentMessage = latestMessagesRef.current.find((message) => message.id === msg.id);
+      if (!currentMessage) return false;
+      const current = currentMessage.reactions ?? [];
       return (
         reactionSummariesEqual(current, optimistic) || reactionSummariesEqual(current, previous)
       );
@@ -270,7 +296,7 @@ function ChannelMessages(props: ChannelMessagesProps) {
     canReact(msg) || isOwnMessage(msg) || canOpenThread(msg) || canInlineReply(msg);
   const referencedTargetId = (msg: Message) => msg.reply_to_message_id ?? msg.reply_to?.id ?? null;
   const canJumpToReferencedMessage = (targetId: number | null | undefined) =>
-    targetId != null && visibleMessageIds().has(targetId);
+    targetId != null && visibleMessageIds.has(targetId);
   const jumpToReferencedMessage = (targetId: number | null | undefined) => {
     if (targetId == null) return;
     document.getElementById(channelMessageElementId(targetId))?.scrollIntoView({
@@ -287,246 +313,255 @@ function ChannelMessages(props: ChannelMessagesProps) {
       y: e.clientY,
     });
   };
-  const currentContextMenu = contextMenu();
+  const currentContextMenu = contextMenu;
 
   return (
     <section className="bg-background text-foreground p-8 min-h-full flex flex-1 flex-col">
       {/* Bottom-anchor short histories without flex-end clipping overflowing histories. */}
       <div className="mt-auto" aria-hidden="true" />
-      {props.error ? (
-        <span>Error getting messages: {String(props.error as string)}</span>
+      {props.error && props.messages.length === 0 ? (
+        <span role="alert">Error getting messages: {String(props.error as string)}</span>
       ) : props.loading && props.messages.length === 0 ? (
         <p>Loading...</p>
       ) : (
-        props.messages.map((message) => (
-          <div
-            key={message.id}
-            id={channelMessageElementId(message.id)}
-            data-message-id={String(message.id)}
-            data-authored-by-current-user={isOwnMessage(message) ? "true" : undefined}
-            data-mentioned-current-user={isMentionedCurrentUser(message) ? "true" : undefined}
-            className={messageRowClass(isOwnMessage(message), isMentionedCurrentUser(message))}
-            onContextMenu={(e) => handleContextMenu(e, message)}
-          >
-            <Avatar
-              url={isDeletedMessage(message) ? null : message.avatar_url}
-              username={isDeletedMessage(message) ? "Deleted message" : messageDisplayName(message)}
-              size={32}
-            />
+        <>
+          {props.error ? (
+            <p role="alert" className="mb-2 text-sm text-destructive">
+              Error refreshing messages: {String(props.error as string)}
+            </p>
+          ) : null}
+          {props.messages.map((message) => (
+            <div
+              key={message.id}
+              id={channelMessageElementId(message.id)}
+              data-message-id={String(message.id)}
+              data-authored-by-current-user={isOwnMessage(message) ? "true" : undefined}
+              data-mentioned-current-user={isMentionedCurrentUser(message) ? "true" : undefined}
+              className={messageRowClass(isOwnMessage(message), isMentionedCurrentUser(message))}
+              onContextMenu={(e) => handleContextMenu(e, message)}
+            >
+              <Avatar
+                url={isDeletedMessage(message) ? null : message.avatar_url}
+                username={
+                  isDeletedMessage(message) ? "Deleted message" : messageDisplayName(message)
+                }
+                size={32}
+              />
 
-            <div className="min-w-0 flex-1">
-              {!isDeletedMessage(message) ? (
-                <>
-                  <div className="font-bold">{messageDisplayName(message)}</div>
-                  {(message.reply_to ?? message.reply_to_message_id ?? null) ? (
-                    <>
-                      <MessageReferencePreview
-                        reference={message.reply_to ?? null}
-                        targetId={referencedTargetId(message)}
-                        onActivate={
-                          canJumpToReferencedMessage(referencedTargetId(message))
-                            ? () => jumpToReferencedMessage(referencedTargetId(message))
-                            : undefined
-                        }
+              <div className="min-w-0 flex-1">
+                {!isDeletedMessage(message) ? (
+                  <>
+                    <div className="font-bold">{messageDisplayName(message)}</div>
+                    {(message.reply_to ?? message.reply_to_message_id ?? null) ? (
+                      <>
+                        <MessageReferencePreview
+                          reference={message.reply_to ?? null}
+                          targetId={referencedTargetId(message)}
+                          onActivate={
+                            canJumpToReferencedMessage(referencedTargetId(message))
+                              ? () => jumpToReferencedMessage(referencedTargetId(message))
+                              : undefined
+                          }
+                        />
+                      </>
+                    ) : null}
+                    {editingId === message.id ? (
+                      <>
+                        <form
+                          className="flex gap-2 items-center"
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            void saveEdit(message);
+                          }}
+                        >
+                          <MessageInput
+                            value={draft}
+                            onChange={setDraft}
+                            ariaLabel="Edit message"
+                            mentionUsers={props.mentionUsers}
+                            onMentionUsers={props.onMentionUsers}
+                            searchMentionUsers={props.searchMentionUsers}
+                            mentionSearchLimit={props.mentionSearchLimit}
+                            inputRef={(el) =>
+                              queueMicrotask(() => {
+                                if (el.isConnected) el.focus();
+                              })
+                            }
+                            onKeyDown={(e) => {
+                              if (e.key === "Escape") {
+                                e.preventDefault();
+                                cancelEditing();
+                              }
+                            }}
+                            className="flex min-w-0 flex-1 items-center gap-2"
+                            inputClass="bg-muted rounded-md px-2 py-1 w-full"
+                            emojiButtonClass="cursor-pointer rounded-md bg-muted px-2 py-1 text-muted-foreground hover:bg-accent hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            emojiButtonLabel="Open emoji picker for edit"
+                          />
+
+                          <button type="submit" className="text-sm text-primary">
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            className="text-sm text-muted-foreground"
+                            onClick={cancelEditing}
+                          >
+                            Cancel
+                          </button>
+                        </form>
+                      </>
+                    ) : (
+                      <MessageText
+                        text={message.text}
+                        mentions={message.mentions ?? []}
+                        currentUserId={props.currentUserId}
                       />
-                    </>
-                  ) : null}
-                  {editingId() === message.id ? (
-                    <>
-                      <form
-                        className="flex gap-2 items-center"
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          void saveEdit(message);
-                        }}
-                      >
-                        <MessageInput
-                          value={draft()}
-                          onChange={setDraft}
-                          ariaLabel="Edit message"
-                          mentionUsers={props.mentionUsers}
-                          onMentionUsers={props.onMentionUsers}
-                          searchMentionUsers={props.searchMentionUsers}
-                          mentionSearchLimit={props.mentionSearchLimit}
-                          inputRef={(el) =>
-                            queueMicrotask(() => {
-                              if (el.isConnected) el.focus();
+                    )}
+                  </>
+                ) : (
+                  <p className="italic text-muted-foreground" aria-label="Original message deleted">
+                    Original message deleted
+                  </p>
+                )}
+                {!isDeletedMessage(message) && message.attachments.length > 0 ? (
+                  <>
+                    <AttachmentGrid
+                      attachments={message.attachments}
+                      authorName={messageDisplayName(message)}
+                    />
+                  </>
+                ) : null}
+                {!isDeletedMessage(message) &&
+                !message.suppress_embeds &&
+                message.embeds.length > 0 ? (
+                  <>
+                    <div className="flex flex-col gap-1">
+                      {message.embeds.map((embed) => (
+                        <MessageEmbed
+                          key={embed.id}
+                          embed={embed}
+                          onRemove={
+                            isOwnMessage(message) ? () => void suppressEmbeds(message) : undefined
+                          }
+                        />
+                      ))}
+                    </div>
+                  </>
+                ) : null}
+                {!isDeletedMessage(message) ? (
+                  <>
+                    <ReactionRow
+                      reactions={message.reactions ?? []}
+                      onToggle={(reaction) => toggleReaction(message, reaction)}
+                    />
+                  </>
+                ) : null}
+                {message.thread_summary?.reply_count ? (
+                  <button
+                    type="button"
+                    className="mt-1 text-sm font-medium text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md"
+                    title={`Last reply ${formatThreadTimestampTitle(message.thread_summary.last_reply_created_at)}`}
+                    aria-label={`Open thread with ${replyCountLabel(message.thread_summary.reply_count)}, last reply ${formatThreadTimestamp(message.thread_summary.last_reply_created_at)}`}
+                    onClick={() => props.onOpenThread?.(message, { focusComposer: false })}
+                  >
+                    {replyCountLabel(message.thread_summary.reply_count)} · Last reply{" "}
+                    {formatThreadTimestamp(message.thread_summary.last_reply_created_at)}
+                  </button>
+                ) : null}
+              </div>
+              {hasAnyAction(message) && editingId !== message.id ? (
+                <>
+                  <div
+                    role="toolbar"
+                    aria-label={`Message actions for ${referencedMessageLabel(message)}`}
+                    className="absolute -top-3 right-2 flex gap-1 rounded-md border border-border bg-card shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+                  >
+                    {canReact(message) ? (
+                      <>
+                        <button
+                          type="button"
+                          aria-label={`Add reaction to message by ${messageDisplayName(message)}`}
+                          title="Add reaction"
+                          className="p-1.5 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setReactionPicker({
+                              messageId: message.id,
+                              anchor: event.currentTarget,
+                            });
+                          }}
+                        >
+                          <EmojiIcon size={14} />
+                        </button>
+                      </>
+                    ) : null}
+                    {canInlineReply(message) ? (
+                      <>
+                        <button
+                          type="button"
+                          aria-label={`Reply inline to ${referencedMessageLabel(message)}`}
+                          title="Reply inline"
+                          className="rounded-md bg-primary/10 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/20 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          onClick={() => props.onReplyToMessage?.(message)}
+                        >
+                          Reply
+                        </button>
+                      </>
+                    ) : null}
+                    {canOpenThread(message) ? (
+                      <>
+                        <button
+                          type="button"
+                          aria-label={`Reply in thread to ${referencedMessageLabel(message)}`}
+                          title="Reply in thread"
+                          className="rounded-md bg-purple-50 px-2 py-1 text-xs font-medium text-purple-700 hover:bg-purple-100 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          onClick={() =>
+                            props.onOpenThread?.(message, {
+                              focusComposer: true,
                             })
                           }
-                          onKeyDown={(e) => {
-                            if (e.key === "Escape") {
-                              e.preventDefault();
-                              cancelEditing();
-                            }
-                          }}
-                          className="flex min-w-0 flex-1 items-center gap-2"
-                          inputClass="bg-muted rounded-md px-2 py-1 w-full"
-                          emojiButtonClass="cursor-pointer rounded-md bg-muted px-2 py-1 text-muted-foreground hover:bg-accent hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          emojiButtonLabel="Open emoji picker for edit"
-                        />
-
-                        <button type="submit" className="text-sm text-primary">
-                          Save
+                        >
+                          Thread
+                        </button>
+                      </>
+                    ) : null}
+                    {isOwnMessage(message) ? (
+                      <>
+                        <button
+                          type="button"
+                          aria-label="Edit"
+                          title="Edit"
+                          className="p-1.5 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          onClick={() => startEditing(message)}
+                        >
+                          <EditIcon size={14} />
                         </button>
                         <button
                           type="button"
-                          className="text-sm text-muted-foreground"
-                          onClick={cancelEditing}
+                          aria-label="Delete"
+                          title="Delete"
+                          className="p-1.5 rounded-md text-destructive hover:bg-destructive/10 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          onClick={() => requestDelete(message.id)}
                         >
-                          Cancel
+                          <DeleteIcon size={14} />
                         </button>
-                      </form>
-                    </>
-                  ) : (
-                    <MessageText
-                      text={message.text}
-                      mentions={message.mentions ?? []}
-                      currentUserId={props.currentUserId}
-                    />
-                  )}
-                </>
-              ) : (
-                <p className="italic text-muted-foreground" aria-label="Original message deleted">
-                  Original message deleted
-                </p>
-              )}
-              {!isDeletedMessage(message) && message.attachments.length > 0 ? (
-                <>
-                  <AttachmentGrid
-                    attachments={message.attachments}
-                    authorName={messageDisplayName(message)}
-                  />
-                </>
-              ) : null}
-              {!isDeletedMessage(message) &&
-              !message.suppress_embeds &&
-              message.embeds.length > 0 ? (
-                <>
-                  <div className="flex flex-col gap-1">
-                    {message.embeds.map((embed) => (
-                      <MessageEmbed
-                        key={embed.id}
-                        embed={embed}
-                        onRemove={
-                          isOwnMessage(message) ? () => void suppressEmbeds(message) : undefined
-                        }
-                      />
-                    ))}
+                      </>
+                    ) : null}
                   </div>
                 </>
               ) : null}
-              {!isDeletedMessage(message) ? (
-                <>
-                  <ReactionRow
-                    reactions={message.reactions ?? []}
-                    onToggle={(reaction) => toggleReaction(message, reaction)}
-                  />
-                </>
-              ) : null}
-              {message.thread_summary?.reply_count ? (
-                <button
-                  type="button"
-                  className="mt-1 text-sm font-medium text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md"
-                  title={`Last reply ${formatThreadTimestampTitle(message.thread_summary.last_reply_created_at)}`}
-                  aria-label={`Open thread with ${replyCountLabel(message.thread_summary.reply_count)}, last reply ${formatThreadTimestamp(message.thread_summary.last_reply_created_at)}`}
-                  onClick={() => props.onOpenThread?.(message, { focusComposer: false })}
-                >
-                  {replyCountLabel(message.thread_summary.reply_count)} · Last reply{" "}
-                  {formatThreadTimestamp(message.thread_summary.last_reply_created_at)}
-                </button>
-              ) : null}
             </div>
-            {hasAnyAction(message) && editingId() !== message.id ? (
-              <>
-                <div
-                  role="toolbar"
-                  aria-label={`Message actions for ${referencedMessageLabel(message)}`}
-                  className="absolute -top-3 right-2 flex gap-1 rounded-md border border-border bg-card shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
-                >
-                  {canReact(message) ? (
-                    <>
-                      <button
-                        type="button"
-                        aria-label={`Add reaction to message by ${messageDisplayName(message)}`}
-                        title="Add reaction"
-                        className="p-1.5 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setReactionPicker({
-                            messageId: message.id,
-                            anchor: event.currentTarget,
-                          });
-                        }}
-                      >
-                        <EmojiIcon size={14} />
-                      </button>
-                    </>
-                  ) : null}
-                  {canInlineReply(message) ? (
-                    <>
-                      <button
-                        type="button"
-                        aria-label={`Reply inline to ${referencedMessageLabel(message)}`}
-                        title="Reply inline"
-                        className="rounded-md bg-primary/10 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/20 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        onClick={() => props.onReplyToMessage?.(message)}
-                      >
-                        Reply
-                      </button>
-                    </>
-                  ) : null}
-                  {canOpenThread(message) ? (
-                    <>
-                      <button
-                        type="button"
-                        aria-label={`Reply in thread to ${referencedMessageLabel(message)}`}
-                        title="Reply in thread"
-                        className="rounded-md bg-purple-50 px-2 py-1 text-xs font-medium text-purple-700 hover:bg-purple-100 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        onClick={() =>
-                          props.onOpenThread?.(message, {
-                            focusComposer: true,
-                          })
-                        }
-                      >
-                        Thread
-                      </button>
-                    </>
-                  ) : null}
-                  {isOwnMessage(message) ? (
-                    <>
-                      <button
-                        type="button"
-                        aria-label="Edit"
-                        title="Edit"
-                        className="p-1.5 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        onClick={() => startEditing(message)}
-                      >
-                        <EditIcon size={14} />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Delete"
-                        title="Delete"
-                        className="p-1.5 rounded-md text-destructive hover:bg-destructive/10 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        onClick={() => requestDelete(message.id)}
-                      >
-                        <DeleteIcon size={14} />
-                      </button>
-                    </>
-                  ) : null}
-                </div>
-              </>
-            ) : null}
-          </div>
-        ))
+          ))}
+        </>
       )}
 
       <EmojiPicker
-        open={reactionPicker() !== null}
-        anchor={() => reactionPicker()?.anchor}
-        emojis={reactionEmojiEntries()}
+        open={reactionPicker !== null}
+        anchor={() => reactionPicker?.anchor}
+        emojis={reactionEmojiEntries}
         onSelect={(emoji) => {
-          const state = reactionPicker();
+          const state = reactionPicker;
           const msg = state
             ? props.messages.find((message) => message.id === state.messageId)
             : null;
@@ -568,7 +603,7 @@ function ChannelMessages(props: ChannelMessagesProps) {
         </ul>
       ) : null}
 
-      <Modal open={pendingDeleteId() !== null} onClose={cancelDelete} title="Delete message?">
+      <Modal open={pendingDeleteId !== null} onClose={cancelDelete} title="Delete message?">
         <p className="text-sm text-muted-foreground mb-4">
           This will permanently delete the message. This cannot be undone.
         </p>

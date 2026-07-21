@@ -1,4 +1,6 @@
-import { act, fireEvent, render, screen, waitFor } from "../test/testing-library";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { renderNative } from "../test/render";
+import { VoicePreferencesProvider } from "../contexts/voice-preferences";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { expectNoA11yViolations } from "../test/a11y";
 import VoiceSettings from "./voice-settings";
@@ -49,6 +51,9 @@ function fakeStream(trackCount = 1): FakeStream {
 
 type AudioContextSpies = {
   createMediaStreamDestination: ReturnType<typeof vi.fn>;
+  destinationStream: FakeStream;
+  oscillatorStart: ReturnType<typeof vi.fn>;
+  close: ReturnType<typeof vi.fn>;
 };
 
 let audioSpies: AudioContextSpies;
@@ -60,8 +65,12 @@ function installFakeAudioContext() {
       buf.fill(128);
     }
   }
+  const destinationStream = fakeStream(2);
   audioSpies = {
-    createMediaStreamDestination: vi.fn().mockReturnValue({ stream: {} as MediaStream }),
+    createMediaStreamDestination: vi.fn().mockReturnValue({ stream: destinationStream }),
+    destinationStream,
+    oscillatorStart: vi.fn(),
+    close: vi.fn().mockResolvedValue(undefined),
   };
   class FakeAudioContext {
     currentTime = 0;
@@ -80,7 +89,7 @@ function installFakeAudioContext() {
         type: "sine",
         frequency: { value: 0 },
         connect: () => ({ connect: () => ({}) }),
-        start: () => {},
+        start: audioSpies.oscillatorStart,
         stop: () => {},
       };
     }
@@ -94,7 +103,7 @@ function installFakeAudioContext() {
       };
     }
     close() {
-      return Promise.resolve();
+      return (audioSpies.close as () => Promise<void>)();
     }
   }
   (globalThis as unknown as { AudioContext: typeof FakeAudioContext }).AudioContext =
@@ -132,12 +141,23 @@ function removeMediaDevices() {
   });
 }
 
+function renderVoiceSettings() {
+  return renderNative(
+    <VoicePreferencesProvider>
+      <VoiceSettings />
+    </VoicePreferencesProvider>,
+  );
+}
+
 beforeEach(() => {
   installMediaDevices();
   installFakeAudioContext();
   // Prevent the rAF loop from running forever in tests.
-  vi.stubGlobal("requestAnimationFrame", () => 0);
-  vi.stubGlobal("cancelAnimationFrame", () => {});
+  vi.stubGlobal(
+    "requestAnimationFrame",
+    vi.fn(() => 17),
+  );
+  vi.stubGlobal("cancelAnimationFrame", vi.fn());
 });
 
 afterEach(() => {
@@ -146,7 +166,7 @@ afterEach(() => {
 
 describe("<VoiceSettings>", () => {
   test("shows a loading overlay until the on-mount priming finishes", async () => {
-    render(() => <VoiceSettings />);
+    renderVoiceSettings();
     // Overlay is present synchronously on mount.
     expect(screen.getByRole("status")).toHaveTextContent(/loading media devices/i);
     // It disappears once priming resolves.
@@ -157,13 +177,13 @@ describe("<VoiceSettings>", () => {
 
   test("no loading overlay on unsupported platforms — fallback banner shows instead", async () => {
     removeMediaDevices();
-    render(() => <VoiceSettings />);
+    renderVoiceSettings();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent(/does not expose media device apis/i);
   });
 
   test("renders input, output, and camera selectors with System default entry", async () => {
-    render(() => <VoiceSettings />);
+    renderVoiceSettings();
     const input = screen.getByLabelText("Input device") as HTMLSelectElement;
     const output = screen.getByLabelText("Output device") as HTMLSelectElement;
     const camera = screen.getByLabelText("Camera") as HTMLSelectElement;
@@ -186,7 +206,7 @@ describe("<VoiceSettings>", () => {
     const secondCamera = fakeDevice("videoinput", "", "");
     fakeMediaDevices.enumerateDevices.mockResolvedValue([firstCamera, secondCamera]);
 
-    render(() => <VoiceSettings />);
+    renderVoiceSettings();
     const camera = screen.getByLabelText("Camera") as HTMLSelectElement;
     await waitFor(() => expect(camera.options).toHaveLength(3));
 
@@ -217,7 +237,7 @@ describe("<VoiceSettings>", () => {
   });
 
   test("persists selected input and camera devices to localStorage", async () => {
-    render(() => <VoiceSettings />);
+    renderVoiceSettings();
     await waitFor(() =>
       expect(screen.getByRole("option", { name: "USB Headset" })).toBeInTheDocument(),
     );
@@ -240,7 +260,7 @@ describe("<VoiceSettings>", () => {
   });
 
   test("starts microphone test and shows a meter", async () => {
-    render(() => <VoiceSettings />);
+    renderVoiceSettings();
     // Wait for the on-mount priming call so we can assert the test-click in isolation.
     await waitFor(() => expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledTimes(1));
     fakeMediaDevices.getUserMedia.mockClear();
@@ -256,10 +276,52 @@ describe("<VoiceSettings>", () => {
     expect(screen.getByRole("meter", { name: /microphone input level/i })).toBeInTheDocument();
   });
 
+  test("disposes active microphone resources after a preference rerender and stop", async () => {
+    const microphoneStream = fakeStream(2);
+    renderVoiceSettings();
+    await waitFor(() =>
+      expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true }),
+    );
+    fakeMediaDevices.getUserMedia.mockClear();
+    fakeMediaDevices.getUserMedia.mockResolvedValueOnce(microphoneStream);
+
+    fireEvent.click(screen.getByRole("button", { name: /test microphone/i }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /stop test/i })).toBeInTheDocument(),
+    );
+    // The imperative media handles must remain reachable after a provider rerender.
+    fireEvent.click(screen.getByRole("checkbox", { name: /noise suppression/i }));
+    fireEvent.click(screen.getByRole("button", { name: /stop test/i }));
+
+    expect(microphoneStream.tracks.every((track) => track.stop.mock.calls.length === 1)).toBe(true);
+    expect(cancelAnimationFrame).toHaveBeenCalledWith(17);
+    expect(audioSpies.close).toHaveBeenCalledTimes(1);
+  });
+
+  test("disposes active microphone resources on unmount", async () => {
+    const microphoneStream = fakeStream();
+    const { unmount } = renderVoiceSettings();
+    await waitFor(() =>
+      expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true }),
+    );
+    fakeMediaDevices.getUserMedia.mockClear();
+    fakeMediaDevices.getUserMedia.mockResolvedValueOnce(microphoneStream);
+
+    fireEvent.click(screen.getByRole("button", { name: /test microphone/i }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /stop test/i })).toBeInTheDocument(),
+    );
+    unmount();
+
+    expect(microphoneStream.tracks[0].stop).toHaveBeenCalledTimes(1);
+    expect(cancelAnimationFrame).toHaveBeenCalledWith(17);
+    expect(audioSpies.close).toHaveBeenCalledTimes(1);
+  });
+
   test("primes device labels on mount by briefly opening a mic stream", async () => {
     // Without this, WebKitGTK (and other browsers) hide real labels and only
     // expose a single default device until permission has been granted.
-    render(() => <VoiceSettings />);
+    renderVoiceSettings();
     await waitFor(() => {
       expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true });
     });
@@ -272,7 +334,7 @@ describe("<VoiceSettings>", () => {
   });
 
   test("passes selected input deviceId as constraint to getUserMedia", async () => {
-    render(() => <VoiceSettings />);
+    renderVoiceSettings();
     await waitFor(() =>
       expect(screen.getByRole("option", { name: "USB Headset" })).toBeInTheDocument(),
     );
@@ -291,7 +353,7 @@ describe("<VoiceSettings>", () => {
 
   test("does not request camera access on mount and starts preview only from the button", async () => {
     const cameraStream = fakeStream(2);
-    render(() => <VoiceSettings />);
+    renderVoiceSettings();
     await waitFor(() => {
       expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true });
     });
@@ -318,7 +380,7 @@ describe("<VoiceSettings>", () => {
   });
 
   test("passes selected camera deviceId as constraint to preview getUserMedia", async () => {
-    render(() => <VoiceSettings />);
+    renderVoiceSettings();
     await waitFor(() =>
       expect(screen.getByRole("option", { name: "Camera 2" })).toBeInTheDocument(),
     );
@@ -338,7 +400,7 @@ describe("<VoiceSettings>", () => {
 
   test("stops active camera preview tracks on cleanup", async () => {
     const cameraStream = fakeStream(2);
-    const { unmount } = render(() => <VoiceSettings />);
+    const { unmount } = renderVoiceSettings();
     await waitFor(() => {
       expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true });
     });
@@ -352,10 +414,62 @@ describe("<VoiceSettings>", () => {
     expect(cameraStream.tracks.every((track) => track.stop.mock.calls.length === 1)).toBe(true);
   });
 
+  test("stops a stale camera stream that resolves after explicit stop", async () => {
+    const cameraStream = fakeStream(2);
+    let resolveCamera!: (stream: MediaStream) => void;
+    renderVoiceSettings();
+    await waitFor(() =>
+      expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true }),
+    );
+    fakeMediaDevices.getUserMedia.mockClear();
+    fakeMediaDevices.getUserMedia.mockReturnValueOnce(
+      new Promise<MediaStream>((resolve) => {
+        resolveCamera = resolve;
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /preview camera/i }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /starting preview/i })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /starting preview/i }));
+    resolveCamera(cameraStream);
+
+    await waitFor(() =>
+      expect(cameraStream.tracks.every((track) => track.stop.mock.calls.length === 1)).toBe(true),
+    );
+    expect(screen.queryByLabelText("Camera preview")).not.toBeInTheDocument();
+  });
+
+  test("can preview again after settings unmount and reopen", async () => {
+    const firstStream = fakeStream();
+    const firstRender = renderVoiceSettings();
+    await waitFor(() =>
+      expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true }),
+    );
+    fakeMediaDevices.getUserMedia.mockClear();
+    fakeMediaDevices.getUserMedia.mockResolvedValueOnce(firstStream);
+    fireEvent.click(screen.getByRole("button", { name: /preview camera/i }));
+    await waitFor(() => expect(screen.getByLabelText("Camera preview")).toBeInTheDocument());
+    firstRender.unmount();
+    expect(firstStream.tracks[0].stop).toHaveBeenCalledTimes(1);
+
+    const secondStream = fakeStream();
+    renderVoiceSettings();
+    await waitFor(() =>
+      expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true }),
+    );
+    fakeMediaDevices.getUserMedia.mockClear();
+    fakeMediaDevices.getUserMedia.mockResolvedValueOnce(secondStream);
+    fireEvent.click(screen.getByRole("button", { name: /preview camera/i }));
+    await waitFor(() => expect(screen.getByLabelText("Camera preview")).toBeInTheDocument());
+    expect(secondStream.tracks[0].stop).not.toHaveBeenCalled();
+  });
+
   test("stops a pending camera preview stream that resolves after cleanup", async () => {
     const cameraStream = fakeStream(2);
     let resolveCamera!: (stream: MediaStream) => void;
-    const { unmount } = render(() => <VoiceSettings />);
+    const { unmount } = renderVoiceSettings();
     await waitFor(() => {
       expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true });
     });
@@ -380,8 +494,8 @@ describe("<VoiceSettings>", () => {
   });
 
   test("requests microphone access on mount to surface the OS permission prompt early", async () => {
-    render(() => <VoiceSettings />);
-    // The warm-up fires in useMountEffect; wait for it to land.
+    renderVoiceSettings();
+    // Wait for the mount-time warm-up to land.
     await waitFor(() => {
       expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true });
     });
@@ -391,7 +505,7 @@ describe("<VoiceSettings>", () => {
 
   test("warm-up denial stays silent (no alert before the user interacts)", async () => {
     fakeMediaDevices.getUserMedia.mockRejectedValue(new Error("Permission denied"));
-    render(() => <VoiceSettings />);
+    renderVoiceSettings();
     await waitFor(() => {
       expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true });
     });
@@ -402,7 +516,7 @@ describe("<VoiceSettings>", () => {
     // Reject every call: the silent on-mount warm-up AND the explicit click.
     // Only the click's rejection should surface a user-visible error.
     fakeMediaDevices.getUserMedia.mockRejectedValue(new Error("Permission denied"));
-    render(() => <VoiceSettings />);
+    renderVoiceSettings();
     // Wait for the silent on-mount prime to resolve, then arrange the denial
     // for the explicit Test microphone click.
     await waitFor(() => expect(fakeMediaDevices.getUserMedia).toHaveBeenCalled());
@@ -415,7 +529,7 @@ describe("<VoiceSettings>", () => {
   });
 
   test("shows an accessible error when camera preview is denied", async () => {
-    render(() => <VoiceSettings />);
+    renderVoiceSettings();
     await waitFor(() =>
       expect(fakeMediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true }),
     );
@@ -432,7 +546,7 @@ describe("<VoiceSettings>", () => {
 
   test("restores the last selected input from localStorage", async () => {
     localStorage.setItem(VOICE_INPUT_STORAGE_KEY, "mic-b");
-    render(() => <VoiceSettings />);
+    renderVoiceSettings();
     await waitFor(() =>
       expect(screen.getByRole("option", { name: "USB Headset" })).toBeInTheDocument(),
     );
@@ -442,7 +556,7 @@ describe("<VoiceSettings>", () => {
 
   test("restores the last selected camera from localStorage", async () => {
     localStorage.setItem(VOICE_CAMERA_STORAGE_KEY, "cam-b");
-    render(() => <VoiceSettings />);
+    renderVoiceSettings();
     await waitFor(() =>
       expect(screen.getByRole("option", { name: "Camera 2" })).toBeInTheDocument(),
     );
@@ -452,7 +566,7 @@ describe("<VoiceSettings>", () => {
 
   test("shows fallback message when mediaDevices is unsupported", async () => {
     removeMediaDevices();
-    render(() => <VoiceSettings />);
+    renderVoiceSettings();
     expect(screen.getByRole("alert")).toHaveTextContent(/does not expose media device apis/i);
     expect(screen.getByLabelText("Input device")).toBeDisabled();
     expect(screen.getByLabelText("Camera")).toBeDisabled();
@@ -468,7 +582,7 @@ describe("<VoiceSettings>", () => {
     );
     delete (HTMLAudioElement.prototype as unknown as { setSinkId?: unknown }).setSinkId;
     try {
-      render(() => <VoiceSettings />);
+      renderVoiceSettings();
       fireEvent.click(screen.getByRole("button", { name: /play test sound/i }));
       await waitFor(() =>
         expect(screen.getByRole("button", { name: /play test sound/i })).not.toBeDisabled(),
@@ -484,6 +598,101 @@ describe("<VoiceSettings>", () => {
     }
   });
 
+  test("stops owned output resources while setSinkId is pending", async () => {
+    localStorage.setItem(VOICE_OUTPUT_STORAGE_KEY, "spk-a");
+    let resolveSink!: () => void;
+    const setSinkId = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSink = resolve;
+        }),
+    );
+    Object.defineProperty(HTMLAudioElement.prototype, "setSinkId", {
+      configurable: true,
+      value: setSinkId,
+    });
+    const pause = vi.fn();
+    const play = vi.fn().mockResolvedValue(undefined);
+    const audio = { srcObject: null as MediaProvider | null, pause, play, setSinkId };
+    vi.stubGlobal("Audio", function Audio() {
+      return audio;
+    });
+
+    try {
+      renderVoiceSettings();
+      await waitFor(() =>
+        expect(screen.getByRole("option", { name: "HDMI Output" })).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: /play test sound/i }));
+      await waitFor(() => expect(setSinkId).toHaveBeenCalledWith("spk-a"));
+
+      fireEvent.change(screen.getByLabelText("Output device"), {
+        target: { value: "spk-b" },
+      });
+
+      expect(pause).toHaveBeenCalledTimes(1);
+      expect(audio.srcObject).toBeNull();
+      expect(
+        audioSpies.destinationStream.tracks.every((track) => track.stop.mock.calls.length === 1),
+      ).toBe(true);
+      expect(audioSpies.close).toHaveBeenCalledTimes(1);
+
+      await act(async () => resolveSink());
+      expect(audioSpies.oscillatorStart).not.toHaveBeenCalled();
+      expect(play).not.toHaveBeenCalled();
+      expect(pause).toHaveBeenCalledTimes(1);
+      expect(audioSpies.close).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (HTMLAudioElement.prototype as unknown as { setSinkId?: unknown }).setSinkId;
+    }
+  });
+
+  test("unmount disposes output resources and ignores a stale setSinkId completion", async () => {
+    localStorage.setItem(VOICE_OUTPUT_STORAGE_KEY, "spk-a");
+    let resolveSink!: () => void;
+    const setSinkId = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSink = resolve;
+        }),
+    );
+    Object.defineProperty(HTMLAudioElement.prototype, "setSinkId", {
+      configurable: true,
+      value: setSinkId,
+    });
+    const pause = vi.fn();
+    const play = vi.fn().mockResolvedValue(undefined);
+    const audio = { srcObject: null as MediaProvider | null, pause, play, setSinkId };
+    vi.stubGlobal("Audio", function Audio() {
+      return audio;
+    });
+
+    try {
+      const { unmount } = renderVoiceSettings();
+      await waitFor(() =>
+        expect(screen.getByRole("option", { name: "HDMI Output" })).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: /play test sound/i }));
+      await waitFor(() => expect(setSinkId).toHaveBeenCalledWith("spk-a"));
+
+      unmount();
+      expect(pause).toHaveBeenCalledTimes(1);
+      expect(audio.srcObject).toBeNull();
+      expect(
+        audioSpies.destinationStream.tracks.every((track) => track.stop.mock.calls.length === 1),
+      ).toBe(true);
+      expect(audioSpies.close).toHaveBeenCalledTimes(1);
+
+      await act(async () => resolveSink());
+      expect(audioSpies.oscillatorStart).not.toHaveBeenCalled();
+      expect(play).not.toHaveBeenCalled();
+      expect(pause).toHaveBeenCalledTimes(1);
+      expect(audioSpies.close).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (HTMLAudioElement.prototype as unknown as { setSinkId?: unknown }).setSinkId;
+    }
+  });
+
   test("persists output device selection to localStorage", async () => {
     // setSinkId isn't present in happy-dom; force the output select enabled for this test
     // by defining setSinkId on the prototype, then verify we save the value on change.
@@ -492,7 +701,7 @@ describe("<VoiceSettings>", () => {
       value: () => Promise.resolve(),
     });
     try {
-      render(() => <VoiceSettings />);
+      renderVoiceSettings();
       await waitFor(() =>
         expect(screen.getByRole("option", { name: "HDMI Output" })).toBeInTheDocument(),
       );
@@ -505,7 +714,7 @@ describe("<VoiceSettings>", () => {
   });
 
   test("has no axe violations", async () => {
-    const { container } = render(() => <VoiceSettings />);
+    const { container } = renderVoiceSettings();
     await waitFor(() =>
       expect(screen.getByRole("option", { name: "USB Headset" })).toBeInTheDocument(),
     );

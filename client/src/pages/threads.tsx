@@ -1,9 +1,11 @@
+import { useEffect } from "react";
 import { Link } from "react-router-dom";
-import { useCallableResource } from "../hooks/react-state";
 import { listParticipatedThreads, messageDisplayName, type Message } from "../api";
+import { useResource } from "../hooks/use-resource";
 import AttachmentGrid from "../components/attachment-grid";
 import MessageText from "../components/message-text";
 import { useAuth } from "../contexts/auth";
+import { useEvents } from "../contexts/events";
 import { messageMentionsCurrentUser } from "../mentions/mentions";
 
 function formatTimestamp(timestampMicros: number): string {
@@ -18,6 +20,15 @@ function formatTimestamp(timestampMicros: number): string {
 
 function formatDateTime(timestampMicros: number): string {
   return new Date(Math.floor(timestampMicros / 1000)).toISOString();
+}
+
+function resourceErrorText(error: unknown): string {
+  if (error instanceof Error) return `${error.name}: ${error.message}`;
+  if (typeof error === "string") return error;
+  if (typeof error === "number" || typeof error === "boolean" || typeof error === "bigint") {
+    return `${error}`;
+  }
+  return "Unknown error";
 }
 
 function isDeletedMessage(message: Message): boolean {
@@ -60,14 +71,14 @@ function PreviewAttachments(props: { message: Message }) {
 }
 
 function ReplyPreview(props: { reply: Message; currentUserId: number | null }) {
-  const authoredByCurrentUser = () => isAuthoredByCurrentUser(props.reply, props.currentUserId);
-  const mentionedCurrentUser = () => messageMentionsCurrentUser(props.reply, props.currentUserId);
+  const authoredByCurrentUser = isAuthoredByCurrentUser(props.reply, props.currentUserId);
+  const mentionedCurrentUser = messageMentionsCurrentUser(props.reply, props.currentUserId);
 
   return (
     <li
       data-message-id={String(props.reply.id)}
-      data-authored-by-current-user={authoredByCurrentUser() ? "true" : undefined}
-      data-mentioned-current-user={mentionedCurrentUser() ? "true" : undefined}
+      data-authored-by-current-user={authoredByCurrentUser ? "true" : undefined}
+      data-mentioned-current-user={mentionedCurrentUser ? "true" : undefined}
       className={`rounded-md border-l-4 px-3 py-2 ${previewMessageStateClass(
         props.reply,
         props.currentUserId,
@@ -97,15 +108,54 @@ function ReplyPreview(props: { reply: Message; currentUserId: number | null }) {
 
 export default function ThreadsView() {
   const { user } = useAuth();
-  const currentUserId = () => user?.id ?? null;
-  const [threads] = useCallableResource(listParticipatedThreads);
+  const events = useEvents();
+  const currentUserId = user?.id ?? null;
+  const [threads, threadControls] = useResource({
+    key: user?.id ?? null,
+    load: (_userId, signal) => listParticipatedThreads(signal),
+    keepDataOnRefetch: true,
+  });
+
+  useEffect(() => {
+    let active = true;
+    let lifecycleRefreshQueued = false;
+
+    const queueLifecycleRefresh = () => {
+      if (lifecycleRefreshQueued) return;
+      lifecycleRefreshQueued = true;
+      queueMicrotask(() => {
+        if (!active || !lifecycleRefreshQueued) return;
+        lifecycleRefreshQueued = false;
+        void threadControls.refetch();
+      });
+    };
+    const refreshAfterConnection = () => {
+      // A preconnection snapshot cannot include events missed while disconnected.
+      // `refetch` aborts/invalidates it before starting the recovery snapshot.
+      lifecycleRefreshQueued = false;
+      void threadControls.refetch();
+    };
+
+    const unsubscribers = [
+      events.onConnected(refreshAfterConnection),
+      events.onThreadReplyCreated(queueLifecycleRefresh),
+      events.onThreadReplyDeleted(queueLifecycleRefresh),
+      events.onMessageUpdated(queueLifecycleRefresh),
+      events.onMessageDeleted(queueLifecycleRefresh),
+    ];
+    return () => {
+      active = false;
+      lifecycleRefreshQueued = false;
+      for (const unsubscribe of unsubscribers) unsubscribe();
+    };
+  }, [events, threadControls]);
 
   const previewMentionsCurrentUser = (thread: {
     root: Message;
     recent_replies: readonly Message[];
   }) =>
-    messageMentionsCurrentUser(thread.root, currentUserId()) ||
-    thread.recent_replies.some((reply) => messageMentionsCurrentUser(reply, currentUserId()));
+    messageMentionsCurrentUser(thread.root, currentUserId) ||
+    thread.recent_replies.some((reply) => messageMentionsCurrentUser(reply, currentUserId));
 
   return (
     <section className="flex h-full flex-col bg-background text-foreground">
@@ -117,98 +167,112 @@ export default function ThreadsView() {
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        {threads.error ? (
+        {threads.error && threads.data === undefined ? (
           <p role="alert" className="text-destructive">
-            Error loading threads: {String(threads.error)}
+            Error loading threads: {resourceErrorText(threads.error)}
           </p>
-        ) : threads.loading ? (
+        ) : threads.loading && threads.data === undefined ? (
           <p className="text-muted-foreground">Loading threads...</p>
-        ) : threads()?.length === 0 ? (
-          <p className="text-muted-foreground">No participated threads yet.</p>
         ) : (
-          <div className="space-y-4">
-            {(threads() ?? []).map((thread) => {
-              const replyCountText = () =>
-                `${thread.reply_count} ${thread.reply_count === 1 ? "reply" : "replies"}`;
-              const threadHref = () => `/channel/${thread.channel.id}?thread=${thread.root.id}`;
-              return (
-                <article
-                  key={thread.root.id}
-                  data-mentioned-current-user={
-                    previewMentionsCurrentUser(thread) ? "true" : undefined
-                  }
-                  className={`rounded-lg border p-4 shadow-sm transition-colors ${
-                    previewMentionsCurrentUser(thread)
-                      ? "border-primary/50 bg-primary/5 ring-1 ring-inset ring-primary/20"
-                      : "border-border bg-card"
-                  }`}
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-sm font-semibold text-primary"># {thread.channel.name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {replyCountText()} •{" "}
-                      <time dateTime={formatDateTime(thread.last_reply_created_at)}>
-                        Last reply {formatTimestamp(thread.last_reply_created_at)}
-                      </time>
-                    </p>
-                  </div>
-
-                  <div
-                    data-message-id={String(thread.root.id)}
-                    data-authored-by-current-user={
-                      isAuthoredByCurrentUser(thread.root, currentUserId()) ? "true" : undefined
-                    }
-                    data-mentioned-current-user={
-                      messageMentionsCurrentUser(thread.root, currentUserId()) ? "true" : undefined
-                    }
-                    className={`mt-3 rounded-r-md border-l-4 py-2 pl-3 pr-2 ${previewMessageStateClass(
-                      thread.root,
-                      currentUserId(),
-                      "border-border",
-                      "",
-                    )}`}
-                  >
-                    {!isDeletedMessage(thread.root) ? (
-                      <>
-                        <p className="text-sm font-semibold text-muted-foreground">
-                          {messageDisplayName(thread.root)}
+          <>
+            {threads.error ? (
+              <p role="alert" className="mb-4 text-sm text-destructive">
+                Error refreshing threads: {resourceErrorText(threads.error)}
+              </p>
+            ) : null}
+            {threads.data?.length === 0 ? (
+              <p className="text-muted-foreground">No participated threads yet.</p>
+            ) : (
+              <div className="space-y-4">
+                {(threads.data ?? []).map((thread) => {
+                  const replyCountText = `${thread.reply_count} ${
+                    thread.reply_count === 1 ? "reply" : "replies"
+                  }`;
+                  const threadHref = `/channel/${thread.channel.id}?thread=${thread.root.id}`;
+                  return (
+                    <article
+                      key={thread.root.id}
+                      data-mentioned-current-user={
+                        previewMentionsCurrentUser(thread) ? "true" : undefined
+                      }
+                      className={`rounded-lg border p-4 shadow-sm transition-colors ${
+                        previewMentionsCurrentUser(thread)
+                          ? "border-primary/50 bg-primary/5 ring-1 ring-inset ring-primary/20"
+                          : "border-border bg-card"
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-primary">
+                          # {thread.channel.name}
                         </p>
-                        <MessageText
-                          text={thread.root.text}
-                          mentions={thread.root.mentions ?? []}
-                          currentUserId={currentUserId()}
-                          className="mt-1 whitespace-pre-wrap break-words text-foreground"
-                        />
-                        <PreviewAttachments message={thread.root} />
-                      </>
-                    ) : (
-                      <p className="italic text-muted-foreground">Original message deleted</p>
-                    )}
-                  </div>
+                        <p className="text-xs text-muted-foreground">
+                          {replyCountText} •{" "}
+                          <time dateTime={formatDateTime(thread.last_reply_created_at)}>
+                            Last reply {formatTimestamp(thread.last_reply_created_at)}
+                          </time>
+                        </p>
+                      </div>
 
-                  {thread.recent_replies.length > 0 ? (
-                    <ol className="mt-3 space-y-2" aria-label="Recent replies">
-                      {thread.recent_replies.map((reply) => (
-                        <ReplyPreview
-                          key={reply.id}
-                          reply={reply}
-                          currentUserId={currentUserId()}
-                        />
-                      ))}
-                    </ol>
-                  ) : null}
+                      <div
+                        data-message-id={String(thread.root.id)}
+                        data-authored-by-current-user={
+                          isAuthoredByCurrentUser(thread.root, currentUserId) ? "true" : undefined
+                        }
+                        data-mentioned-current-user={
+                          messageMentionsCurrentUser(thread.root, currentUserId)
+                            ? "true"
+                            : undefined
+                        }
+                        className={`mt-3 rounded-r-md border-l-4 py-2 pl-3 pr-2 ${previewMessageStateClass(
+                          thread.root,
+                          currentUserId,
+                          "border-border",
+                          "",
+                        )}`}
+                      >
+                        {!isDeletedMessage(thread.root) ? (
+                          <>
+                            <p className="text-sm font-semibold text-muted-foreground">
+                              {messageDisplayName(thread.root)}
+                            </p>
+                            <MessageText
+                              text={thread.root.text}
+                              mentions={thread.root.mentions ?? []}
+                              currentUserId={currentUserId}
+                              className="mt-1 whitespace-pre-wrap break-words text-foreground"
+                            />
+                            <PreviewAttachments message={thread.root} />
+                          </>
+                        ) : (
+                          <p className="italic text-muted-foreground">Original message deleted</p>
+                        )}
+                      </div>
 
-                  <Link
-                    to={threadHref()}
-                    className="mt-3 inline-flex text-sm font-medium text-primary transition-colors hover:text-primary/80"
-                    aria-label={`Open full thread in # ${thread.channel.name}`}
-                  >
-                    View all replies
-                  </Link>
-                </article>
-              );
-            })}
-          </div>
+                      {thread.recent_replies.length > 0 ? (
+                        <ol className="mt-3 space-y-2" aria-label="Recent replies">
+                          {thread.recent_replies.map((reply) => (
+                            <ReplyPreview
+                              key={reply.id}
+                              reply={reply}
+                              currentUserId={currentUserId}
+                            />
+                          ))}
+                        </ol>
+                      ) : null}
+
+                      <Link
+                        to={threadHref}
+                        className="mt-3 inline-flex text-sm font-medium text-primary transition-colors hover:text-primary/80"
+                        aria-label={`Open full thread in # ${thread.channel.name}`}
+                      >
+                        View all replies
+                      </Link>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </>
         )}
       </div>
     </section>

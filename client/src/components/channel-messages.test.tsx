@@ -1,10 +1,11 @@
+import { useState } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
+import { fireEvent, screen, waitFor, within } from "../test/testing-library";
 import userEvent from "@testing-library/user-event";
 import type { Message, PublicUser, SearchUsersOptions } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
 import { makeAttachment, makeMessage } from "../test/fixtures";
-import { assertExists } from "../test/render";
+import { assertExists, renderNative } from "../test/render";
 
 const customEmojiContext = vi.hoisted(() => ({
   current: undefined as
@@ -52,6 +53,14 @@ import {
 const SELF_ID = 1;
 const OTHER_ID = 2;
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 const ownMessage: Message = makeMessage({
   id: 100,
   user_id: SELF_ID,
@@ -79,7 +88,7 @@ function mount(
   onReactionsChange?: (messageId: number, reactions: import("../api").ReactionSummary[]) => void,
   onReplyToMessage?: (message: Message) => void,
 ) {
-  return render(() => (
+  return renderNative(
     <ChannelMessages
       messages={messages}
       loading={false}
@@ -88,8 +97,8 @@ function mount(
       onOpenThread={onOpenThread}
       onReactionsChange={onReactionsChange}
       onReplyToMessage={onReplyToMessage}
-    />
-  ));
+    />,
+  );
 }
 
 function mountWithMentions(
@@ -100,7 +109,7 @@ function mountWithMentions(
     searchMentionUsers?: (options: SearchUsersOptions) => Promise<PublicUser[]>;
   },
 ) {
-  return render(() => (
+  return renderNative(
     <ChannelMessages
       messages={messages}
       loading={false}
@@ -109,8 +118,8 @@ function mountWithMentions(
       mentionUsers={options.mentionUsers}
       onMentionUsers={options.onMentionUsers}
       searchMentionUsers={options.searchMentionUsers}
-    />
-  ));
+    />,
+  );
 }
 
 function setInputSelection(input: HTMLInputElement, start: number, end = start) {
@@ -125,21 +134,120 @@ beforeEach(() => {
 });
 
 describe("<ChannelMessages> state precedence", () => {
-  test("an error suppresses retained channel message rows", () => {
-    render(() => (
+  test("a refresh error renders alongside retained channel message rows", () => {
+    renderNative(
       <ChannelMessages
         messages={[otherMessage]}
         loading={false}
         error={new Error("history unavailable")}
         currentUserId={SELF_ID}
-      />
-    ));
+      />,
+    );
 
-    expect(
-      screen.getByText("Error getting messages: Error: history unavailable"),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("hello from them")).toBeNull();
-    expect(document.getElementById(channelMessageElementId(otherMessage.id))).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Error refreshing messages: Error: history unavailable",
+    );
+    expect(screen.getByText("hello from them")).toBeInTheDocument();
+    expect(document.getElementById(channelMessageElementId(otherMessage.id))).not.toBeNull();
+  });
+});
+
+describe("<ChannelMessages> native state and lifecycle", () => {
+  test("keeps edit UI attached to the stable message id when rows reorder", () => {
+    const secondOwnMessage = makeMessage({ ...ownMessage, id: 101, text: "second message" });
+
+    function Harness() {
+      const [messages, setMessages] = useState([ownMessage, secondOwnMessage]);
+      return (
+        <>
+          <button type="button" onClick={() => setMessages((current) => [...current].reverse())}>
+            Reverse messages
+          </button>
+          <ChannelMessages
+            messages={messages}
+            loading={false}
+            error={null}
+            currentUserId={SELF_ID}
+          />
+        </>
+      );
+    }
+
+    renderNative(<Harness />);
+    const editedRow = assertExists(document.getElementById(channelMessageElementId(ownMessage.id)));
+    fireEvent.click(within(editedRow).getByRole("button", { name: /^edit$/i }));
+    expect(within(editedRow).getByLabelText(/edit message/i)).toHaveValue(ownMessage.text);
+
+    fireEvent.click(screen.getByRole("button", { name: /reverse messages/i }));
+
+    const reorderedEditedRow = assertExists(
+      document.getElementById(channelMessageElementId(ownMessage.id)),
+    );
+    expect(within(reorderedEditedRow).getByLabelText(/edit message/i)).toHaveValue(ownMessage.text);
+    expect(document.querySelectorAll("[data-message-id]")[0]).toHaveAttribute(
+      "data-message-id",
+      String(secondOwnMessage.id),
+    );
+  });
+
+  test("ignores an edit response after the channel generation changes", async () => {
+    const pending = deferred<Message>();
+    vi.mocked(editMessage).mockReturnValueOnce(pending.promise);
+    const onMessageUpdated = vi.fn();
+    const view = renderNative(
+      <ChannelMessages
+        channelId={1}
+        generation={1}
+        messages={[ownMessage]}
+        loading={false}
+        error={null}
+        currentUserId={SELF_ID}
+        onMessageUpdated={onMessageUpdated}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    fireEvent.input(screen.getByLabelText(/edit message/i), { target: { value: "edited" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    view.rerender(
+      <ChannelMessages
+        channelId={2}
+        generation={2}
+        messages={[{ ...otherMessage, channel_id: 2 }]}
+        loading={false}
+        error={null}
+        currentUserId={SELF_ID}
+        onMessageUpdated={onMessageUpdated}
+      />,
+    );
+    pending.resolve({ ...ownMessage, text: "edited" });
+
+    await waitFor(() => expect(screen.getByText("hello from them")).toBeInTheDocument());
+    expect(onMessageUpdated).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText(/edit message/i)).toBeNull();
+  });
+
+  test("balances document listeners through Strict Mode replay and unmount", () => {
+    const addListener = vi.spyOn(document, "addEventListener");
+    const removeListener = vi.spyOn(document, "removeEventListener");
+    const view = mount([otherMessage], SELF_ID);
+
+    const ownedRegistrations = addListener.mock.calls.filter(
+      ([type]) => type === "click" || type === "keydown",
+    );
+    expect(ownedRegistrations.filter(([type]) => type === "click")).toHaveLength(2);
+    expect(ownedRegistrations.filter(([type]) => type === "keydown").length).toBeGreaterThanOrEqual(
+      2,
+    );
+
+    view.unmount();
+
+    for (const [type, listener] of ownedRegistrations) {
+      expect(removeListener).toHaveBeenCalledWith(type, listener);
+    }
+    addListener.mockRestore();
+    removeListener.mockRestore();
   });
 });
 

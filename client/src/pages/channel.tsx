@@ -1,14 +1,5 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import {
-  useAfterRenderEffect,
-  useComputedValue,
-  useCallableResource,
-  useSignalState,
-  registerCleanup,
-  useMountEffect,
-} from "../hooks/react-state";
-import { useStoreState, preserveIdentity } from "../hooks/react-state";
 import ChannelMessages from "../components/channel-messages";
 import {
   PhotoAttachControl,
@@ -26,10 +17,9 @@ import ThreadPanel from "../components/thread-panel";
 import TypingIndicator from "../components/typing-indicator";
 import { Button } from "../components/ui/button";
 import {
+  getThread,
   listMessages,
   messageDisplayName,
-  messageReferenceFromMessage,
-  messageReferencesTarget,
   searchUsers,
   sendMessage,
   sendTyping,
@@ -41,7 +31,10 @@ import { useEvents } from "../contexts/events";
 import { useAuth } from "../contexts/auth";
 import { useReadStates } from "../contexts/read-states";
 import { TYPING_PING_INTERVAL_MS } from "../constants";
-import { mergeReactionUpdateForViewer } from "../reactions/reaction-summaries";
+import {
+  channelMessageReducer,
+  createChannelMessageState,
+} from "../messages/channel-message-reducer";
 import { getViewportReadMarkerState, isNearScrollBottom } from "../messages/viewport-read-marker";
 
 function inlineReplyPreviewText(target: Message): string {
@@ -50,7 +43,7 @@ function inlineReplyPreviewText(target: Message): string {
 
 function parseThreadId(value: string | string[] | undefined): number | null {
   const raw = Array.isArray(value) ? value[0] : value;
-  if (!raw) return null;
+  if (!raw || !/^[1-9]\d*$/.test(raw)) return null;
   const parsed = Number(raw);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
@@ -64,46 +57,72 @@ export default function ChannelView() {
   const { user } = useAuth();
   const readStates = useReadStates();
   const channel = channels.find((candidate) => String(candidate.id) === params.id);
-  const [message, setMessage] = useSignalState("");
-  const [submitting, setSubmitting] = useSignalState(false);
-  const [replyTarget, setReplyTarget] = useSignalState<Message | null>(null);
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [replyTargetId, setReplyTargetId] = useState<number | null>(null);
   const photoSelection = useComposerPhotoSelection();
   const photoSelectionErrorId = useId();
   const replyBannerId = useId();
-  const [focusComposerRootId, setFocusComposerRootId] = useSignalState<number | null>(null);
-  const [hasNewMessagesBelow, setHasNewMessagesBelow] = useSignalState(false);
+  const [focusComposerRootId, setFocusComposerRootId] = useState<number | null>(null);
+  const [hasNewMessagesBelow, setHasNewMessagesBelow] = useState(false);
   const [scrollToBottomRequestVersion, setScrollToBottomRequestVersion] = useState(0);
-  const openThreadRootId = useComputedValue(() =>
-    parseThreadId(searchParams.get("thread") ?? undefined),
+  const rawThreadQuery = searchParams.get("thread");
+  const requestedThreadRootId = parseThreadId(rawThreadQuery ?? undefined);
+  const openThreadRootId = requestedThreadRootId;
+  const routeChannelId = Number(params.id);
+  const validChannelId =
+    Number.isSafeInteger(routeChannelId) && routeChannelId > 0 ? routeChannelId : null;
+  const [timeline, dispatch] = useReducer(
+    channelMessageReducer,
+    validChannelId ?? 0,
+    createChannelMessageState,
   );
-  // The Resource owns loading/error state for the initial fetch; the Store
-  // owns the reactive list that SSE events mutate granularly. useStoreState
-  // means an embed update on one row only re-renders that row.
-  const [resource] = useCallableResource(() => params.id ?? "", listMessages);
-  const [messages, setMessages] = useStoreState<Message[]>([]);
-  const [mentionUserCache, setMentionUserCache] = useSignalState<Map<number, PublicUser>>(
-    new Map(),
+  const [mentionUserCache, setMentionUserCache] = useState<Map<number, PublicUser>>(
+    () => new Map(),
   );
   const lastTypingSentAtRef = useRef(0);
   const composerRef = useRef<HTMLElement | null>(null);
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
   const markReadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastMarkReadKeyRef = useRef<string | null>(null);
+  const pendingMarkReadRef = useRef<{
+    key: string;
+    channelId: number;
+    generation: number;
+    token: number;
+  } | null>(null);
+  const markReadTokenRef = useRef(0);
   const paramsIdRef = useRef(params.id);
   paramsIdRef.current = params.id;
-  const replyTargetRef = useRef(replyTarget());
-  replyTargetRef.current = replyTarget();
+  const timelineRef = useRef(timeline);
+  timelineRef.current = timeline;
+  const generationSequenceRef = useRef(0);
+  const activeHistoryRef = useRef<{
+    channelId: number;
+    generation: number;
+    controller: AbortController;
+  } | null>(null);
+  const scrollAfterLoadGenerationRef = useRef<number | null>(null);
+  const replyTargetIdRef = useRef(replyTargetId);
+  replyTargetIdRef.current = replyTargetId;
   const draftVersionRef = useRef(0);
+  const submissionVersionRef = useRef(0);
   const replyTargetVersionRef = useRef(0);
   const userIdRef = useRef(user?.id ?? null);
   userIdRef.current = user?.id ?? null;
   const hasSeenInitialUserProfileRef = useRef(false);
-  const pendingScrollToBottomRef = useRef<{ afterScroll?: () => void } | null>(null);
+  const pendingScrollToBottomRef = useRef<{
+    channelId: number;
+    generation: number;
+    afterScroll?: () => void;
+  } | null>(null);
+  const [validatedThreadKey, setValidatedThreadKey] = useState<string | null>(null);
 
   const scheduleActiveChannelMarkRead = () => {
     if (!messagesScrollRef.current) return;
-    const channelId = Number(params.id);
-    if (!Number.isSafeInteger(channelId) || channelId <= 0) return;
+    const active = activeHistoryRef.current;
+    if (!active || active.channelId !== validChannelId) return;
+    const { channelId, generation } = active;
 
     const marker = getViewportReadMarkerState(messagesScrollRef.current);
     if (
@@ -115,30 +134,55 @@ export default function ChannelView() {
     }
 
     const markReadKey = `${channelId}:${marker.lastVisibleTopLevelMessageId}`;
-    if (lastMarkReadKeyRef.current === markReadKey) return;
+    const pendingMarkRead = pendingMarkReadRef.current;
+    if (
+      lastMarkReadKeyRef.current === markReadKey ||
+      (pendingMarkRead?.key === markReadKey && pendingMarkRead.generation === generation)
+    )
+      return;
     if (markReadTimerRef.current) clearTimeout(markReadTimerRef.current);
+    const messageId = marker.lastVisibleTopLevelMessageId;
     markReadTimerRef.current = setTimeout(() => {
       markReadTimerRef.current = null;
-      if (!messagesScrollRef.current || paramsIdRef.current !== String(channelId)) return;
+      const currentScope = activeHistoryRef.current;
+      if (
+        !messagesScrollRef.current ||
+        currentScope?.channelId !== channelId ||
+        currentScope.generation !== generation
+      ) {
+        return;
+      }
       const current = getViewportReadMarkerState(messagesScrollRef.current);
       if (
         !current.rendererEligible ||
         !current.nearBottom ||
-        current.lastVisibleTopLevelMessageId === null
+        current.lastVisibleTopLevelMessageId !== messageId
       ) {
         return;
       }
-      const messageId = current.lastVisibleTopLevelMessageId;
-      const currentKey = `${channelId}:${messageId}`;
-      void readStates.markRead(channelId, messageId).then((accepted) => {
-        if (
-          accepted &&
-          paramsIdRef.current === String(channelId) &&
-          accepted.channel_id === channelId
-        ) {
-          lastMarkReadKeyRef.current = currentKey;
-        }
-      });
+      const ownership = {
+        key: markReadKey,
+        channelId,
+        generation,
+        token: ++markReadTokenRef.current,
+      };
+      pendingMarkReadRef.current = ownership;
+      void readStates
+        .markRead(channelId, messageId)
+        .then((accepted) => {
+          const acceptedScope = activeHistoryRef.current;
+          if (
+            accepted &&
+            acceptedScope?.channelId === channelId &&
+            acceptedScope.generation === generation &&
+            accepted.channel_id === channelId
+          ) {
+            lastMarkReadKeyRef.current = markReadKey;
+          }
+        })
+        .finally(() => {
+          if (pendingMarkReadRef.current === ownership) pendingMarkReadRef.current = null;
+        });
     }, 120);
   };
 
@@ -150,7 +194,13 @@ export default function ChannelView() {
   };
 
   const requestScrollMessagesToBottom = (afterScroll?: () => void) => {
-    pendingScrollToBottomRef.current = { afterScroll };
+    const active = activeHistoryRef.current;
+    if (!active) return;
+    pendingScrollToBottomRef.current = {
+      channelId: active.channelId,
+      generation: active.generation,
+      afterScroll,
+    };
     setScrollToBottomRequestVersion((version) => version + 1);
   };
 
@@ -171,16 +221,21 @@ export default function ChannelView() {
 
   useLayoutEffect(() => {
     const pendingScroll = pendingScrollToBottomRef.current;
+    const active = activeHistoryRef.current;
     if (!pendingScroll) return;
     pendingScrollToBottomRef.current = null;
+    if (
+      active?.channelId !== pendingScroll.channelId ||
+      active.generation !== pendingScroll.generation ||
+      timelineRef.current.channelId !== pendingScroll.channelId ||
+      timelineRef.current.generation !== pendingScroll.generation
+    ) {
+      return;
+    }
     scrollMessagesToBottom(pendingScroll.afterScroll);
   }, [scrollToBottomRequestVersion]);
 
-  const showNewMessagesBelow = () =>
-    hasNewMessagesBelow() ||
-    (messages.length > (resource()?.length ?? 0) &&
-      !!messagesScrollRef.current &&
-      !isNearScrollBottom(messagesScrollRef.current));
+  const showNewMessagesBelow = hasNewMessagesBelow;
 
   const primeMentionUsers = (users: readonly PublicUser[]) => {
     if (users.length === 0) return;
@@ -208,44 +263,95 @@ export default function ChannelView() {
     primeMentionUsers(nextMessages.flatMap((nextMessage) => nextMessage.mentions ?? []));
   };
 
-  const mentionUsers = () => Array.from(mentionUserCache().values());
-  const displayedMessages = () => (messages.length > 0 ? messages : (resource() ?? []));
+  const mentionUsers = Array.from(mentionUserCache.values());
 
-  // Reconcile the fetched array into the store on initial load and on every
-  // channel switch. The "id" key tells preserveIdentity to diff items rather than
-  // replace the whole array, so already-rendered rows survive when the same
-  // message appears in both the old and new fetches.
-  useEffect(() => {
-    const data = resource();
-    primeMentionUsersFromMessages(data ?? []);
-    setMessages(preserveIdentity(data ?? [], { key: "id" }));
-    requestScrollMessagesToBottom(scheduleActiveChannelMarkRead);
-  }, [params.id, resource.latest]);
+  const startHistoryLoad = (channelId: number, scrollAfterLoad: boolean) => {
+    activeHistoryRef.current?.controller.abort();
+    const generation = ++generationSequenceRef.current;
+    const controller = new AbortController();
+    activeHistoryRef.current = { channelId, generation, controller };
+    const carriesInitialScroll =
+      scrollAfterLoadGenerationRef.current !== null && timelineRef.current.status !== "ready";
+    if (scrollAfterLoad || carriesInitialScroll) {
+      scrollAfterLoadGenerationRef.current = generation;
+    }
+    dispatch({ type: "loadStarted", channelId, generation });
+    void listMessages(String(channelId), controller.signal).then(
+      (loadedMessages) => {
+        if (activeHistoryRef.current?.generation !== generation) return;
+        primeMentionUsersFromMessages(loadedMessages);
+        dispatch({
+          type: "loadSucceeded",
+          channelId,
+          generation,
+          messages: loadedMessages,
+        });
+      },
+      (error: unknown) => {
+        if (controller.signal.aborted || activeHistoryRef.current?.generation !== generation)
+          return;
+        dispatch({ type: "loadFailed", channelId, generation, error });
+      },
+    );
+  };
 
-  // When the current user's profile changes (display_name, avatar), patch
-  // every message of theirs in place so the rendered list reflects the new
-  // values without a refetch.
   useEffect(() => {
-    const u = user;
-    if (!u) return;
+    if (validChannelId === null) return;
+    startHistoryLoad(validChannelId, true);
+    return () => {
+      activeHistoryRef.current?.controller.abort();
+    };
+  }, [validChannelId]);
+
+  useLayoutEffect(() => {
+    if (
+      timeline.status !== "ready" ||
+      scrollAfterLoadGenerationRef.current !== timeline.generation
+    ) {
+      return;
+    }
+
+    scrollAfterLoadGenerationRef.current = null;
+    const channelId = timeline.channelId;
+    const generation = timeline.generation;
+    const ownsScroll = () => {
+      const active = activeHistoryRef.current;
+      return active?.channelId === channelId && active.generation === generation;
+    };
+    if (ownsScroll()) scrollMessagesToBottom(scheduleActiveChannelMarkRead);
+    const expectedScrollTop = messagesScrollRef.current?.scrollTop;
+
+    // Browser layout can grow the flex scroller after layout effects run. A
+    // single owned post-paint correction keeps long initial histories pinned
+    // to the newest row without leaking into a later channel generation or
+    // overriding a user scroll that occurred before the frame.
+    const frame = window.requestAnimationFrame(() => {
+      if (ownsScroll() && messagesScrollRef.current?.scrollTop === expectedScrollTop) {
+        scrollMessagesToBottom(scheduleActiveChannelMarkRead);
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [timeline.channelId, timeline.generation, timeline.status]);
+
+  // When the current user's profile changes, patch authored rows and references
+  // through the same canonical reducer as history and live events.
+  useEffect(() => {
+    if (!user || timeline.channelId !== validChannelId) return;
     if (!hasSeenInitialUserProfileRef.current) {
       hasSeenInitialUserProfileRef.current = true;
       return;
     }
-    setMessages(
-      (m) => m.user_id === u.id,
-      (m) => ({
-        ...m,
-        username: u.username,
-        display_name: u.display_name,
-        avatar_url: u.avatar_url,
-      }),
-    );
+    dispatch({
+      type: "currentUserProfileUpdated",
+      channelId: timeline.channelId,
+      generation: timeline.generation,
+      user,
+    });
   }, [user?.avatar_url, user?.display_name, user?.id, user?.username]);
 
-  const channelPath = () => `/channel/${params.id}`;
+  const channelPath = `/channel/${params.id}`;
 
-  const threadPath = (rootMessageId: number) => `${channelPath()}?thread=${rootMessageId}`;
+  const threadPath = (rootMessageId: number) => `${channelPath}?thread=${rootMessageId}`;
 
   const openThread = (root: Message, options?: { focusComposer?: boolean }) => {
     void navigate(threadPath(root.id));
@@ -254,48 +360,110 @@ export default function ChannelView() {
 
   const closeThread = () => {
     setFocusComposerRootId(null);
-    void navigate(channelPath());
+    void navigate(channelPath);
   };
 
   const selectInlineReplyTarget = (target: Message) => {
     if (target.deleted_at != null || target.parent_id != null) return;
     replyTargetVersionRef.current += 1;
-    setReplyTarget(target);
+    setReplyTargetId(target.id);
     queueMicrotask(() => composerRef.current?.focus());
   };
 
   const dismissInlineReplyTarget = () => {
     replyTargetVersionRef.current += 1;
-    setReplyTarget(null);
+    setReplyTargetId(null);
     queueMicrotask(() => composerRef.current?.focus());
   };
 
   useEffect(() => {
     if (params.id) {
       replyTargetVersionRef.current += 1;
-      setReplyTarget(null);
+      setReplyTargetId(null);
       setHasNewMessagesBelow(false);
+      submissionVersionRef.current += 1;
+      setSubmitting(false);
+      lastTypingSentAtRef.current = 0;
+      pendingScrollToBottomRef.current = null;
       if (markReadTimerRef.current) {
         clearTimeout(markReadTimerRef.current);
         markReadTimerRef.current = null;
       }
       lastMarkReadKeyRef.current = null;
+      pendingMarkReadRef.current = null;
     }
   }, [params.id]);
 
-  useAfterRenderEffect(() => {
-    const rootId = openThreadRootId();
-    if (rootId === null) return;
-    if (resource.loading) return;
-    const loadedMessages = resource() ?? [];
-    const rootInChannel = [...loadedMessages, ...messages].some(
-      (m) => m.id === rootId && m.parent_id == null,
-    );
-    if (!rootInChannel) {
+  const requestedThreadKey =
+    validChannelId !== null && requestedThreadRootId !== null
+      ? `${validChannelId}:${requestedThreadRootId}`
+      : null;
+  const requestedTimelineRoot =
+    requestedThreadRootId === null
+      ? null
+      : (timeline.messages.find((message) => message.id === requestedThreadRootId) ?? null);
+
+  useEffect(() => {
+    setValidatedThreadKey((current) => (current === requestedThreadKey ? current : null));
+  }, [requestedThreadKey]);
+
+  useEffect(() => {
+    if (rawThreadQuery !== null && requestedThreadRootId === null) {
       setFocusComposerRootId(null);
-      void navigate(channelPath(), { replace: true });
+      void navigate(channelPath, { replace: true });
+      return;
     }
-  });
+    if (
+      requestedThreadRootId === null ||
+      validChannelId === null ||
+      timeline.channelId !== validChannelId ||
+      timeline.status !== "ready"
+    ) {
+      return;
+    }
+    if (
+      !requestedTimelineRoot ||
+      requestedTimelineRoot.channel_id !== validChannelId ||
+      requestedTimelineRoot.parent_id != null
+    ) {
+      setFocusComposerRootId(null);
+      void navigate(channelPath, { replace: true });
+      return;
+    }
+
+    const threadKey = `${validChannelId}:${requestedThreadRootId}`;
+    if (validatedThreadKey === threadKey) return;
+
+    const controller = new AbortController();
+    void getThread(requestedThreadRootId, {}, controller.signal).then(
+      (payload) => {
+        if (controller.signal.aborted) return;
+        if (
+          payload.root.id !== requestedThreadRootId ||
+          payload.root.channel_id !== validChannelId ||
+          payload.root.parent_id != null
+        ) {
+          setFocusComposerRootId(null);
+          void navigate(channelPath, { replace: true });
+          return;
+        }
+        setValidatedThreadKey(threadKey);
+      },
+      () => {
+        // Keep a plausible URL on transport/history errors, but never publish an
+        // unvalidated panel.
+      },
+    );
+    return () => controller.abort();
+  }, [
+    rawThreadQuery,
+    requestedThreadRootId,
+    timeline.channelId,
+    timeline.status,
+    requestedTimelineRoot,
+    validChannelId,
+    validatedThreadKey,
+  ]);
 
   const handleMessageChange = (value: string) => {
     draftVersionRef.current += 1;
@@ -307,34 +475,40 @@ export default function ChannelView() {
     void sendTyping(params.id ?? "");
   };
 
-  const hasDraftContent = () => message().trim().length > 0 || photoSelection.photos.length > 0;
+  const hasDraftContent = message.trim().length > 0 || photoSelection.photos.length > 0;
 
-  const patchVisibleReplyReferences = (targetId: number, target: Message | null) => {
-    setMessages((existing) => messageReferencesTarget(existing, targetId), {
-      reply_to_message_id: targetId,
-      reply_to: target ? messageReferenceFromMessage(target) : null,
+  const applyMessageUpdate = (updatedMessage: Message) => {
+    const active = activeHistoryRef.current;
+    if (!active || updatedMessage.channel_id !== active.channelId) return;
+    primeMentionUsers(updatedMessage.mentions ?? []);
+    dispatch({
+      type: "messageUpdated",
+      channelId: active.channelId,
+      generation: active.generation,
+      message: updatedMessage,
     });
-  };
-
-  const applyMessageUpdate = (m: Message) => {
-    if (String(m.channel_id) !== paramsIdRef.current) return;
-    primeMentionUsers(m.mentions ?? []);
-    setMessages((existing) => existing.id === m.id, m);
-    patchVisibleReplyReferences(m.id, m);
-    if (replyTargetRef.current?.id === m.id) {
-      setReplyTarget(m.deleted_at == null ? m : null);
+    if (replyTargetIdRef.current === updatedMessage.id && updatedMessage.deleted_at != null) {
+      replyTargetVersionRef.current += 1;
+      setReplyTargetId(null);
     }
   };
 
   const submitMessage = async () => {
-    if (submitting() || !hasDraftContent()) return;
+    if (submitting || !hasDraftContent) return;
 
+    const submissionVersion = ++submissionVersionRef.current;
     const submittedChannelId = params.id ?? "";
-    const text = message();
+    const submittedGeneration = activeHistoryRef.current?.generation ?? -1;
+    const text = message;
     const submittedDraftVersion = draftVersionRef.current;
     const submittedPhotos = photoSelection.photos;
     const photos = submittedPhotos.map((photo) => photo.file);
-    const target = replyTarget();
+    const target =
+      replyTargetId === null
+        ? null
+        : (timeline.messages.find(
+            (candidate) => candidate.id === replyTargetId && candidate.deleted_at == null,
+          ) ?? null);
     const submittedReplyTargetVersion = replyTargetVersionRef.current;
     setSubmitting(true);
     try {
@@ -346,13 +520,39 @@ export default function ChannelView() {
         .clone()
         .json()
         .catch(() => null)) as Message | null;
-      primeMentionUsers(createdMessage?.mentions ?? []);
-      if (paramsIdRef.current !== submittedChannelId) return;
+      const numericSubmittedChannelId = Number(submittedChannelId);
+      if (
+        !createdMessage ||
+        !Number.isSafeInteger(createdMessage.id) ||
+        createdMessage.channel_id !== numericSubmittedChannelId ||
+        createdMessage.parent_id != null
+      ) {
+        window.alert(
+          "The server returned an invalid message. Your draft and photos were preserved.",
+        );
+        return;
+      }
+      primeMentionUsers(createdMessage.mentions ?? []);
+      const active = activeHistoryRef.current;
+      if (
+        paramsIdRef.current !== submittedChannelId ||
+        active?.generation !== submittedGeneration
+      ) {
+        return;
+      }
+      if (createdMessage.channel_id === active.channelId) {
+        dispatch({
+          type: "messageCreated",
+          channelId: active.channelId,
+          generation: active.generation,
+          message: createdMessage,
+        });
+      }
       if (draftVersionRef.current === submittedDraftVersion) {
         setMessage("");
       }
       if (replyTargetVersionRef.current === submittedReplyTargetVersion) {
-        setReplyTarget(null);
+        setReplyTargetId(null);
       }
       for (const photo of submittedPhotos) {
         photoSelection.removePhoto(photo.id);
@@ -362,73 +562,95 @@ export default function ChannelView() {
     } catch (e) {
       console.error("failed to send message", e);
     } finally {
-      setSubmitting(false);
+      if (submissionVersionRef.current === submissionVersion) setSubmitting(false);
     }
   };
 
-  useMountEffect(() => {
-    const unsubCreated = events.onMessage((m) => {
-      if (String(m.channel_id) !== paramsIdRef.current) return;
+  useEffect(() => {
+    const unsubCreated = events.onMessage((created) => {
+      const active = activeHistoryRef.current;
+      if (!active || created.channel_id !== active.channelId || created.parent_id != null) return;
+      const isNew = !timelineRef.current.messages.some((message) => message.id === created.id);
       const shouldAutoFollow = messagesScrollRef.current
-        ? messagesScrollRef.current.scrollHeight > messagesScrollRef.current.clientHeight &&
+        ? messagesScrollRef.current.scrollHeight <= messagesScrollRef.current.clientHeight ||
           isNearScrollBottom(messagesScrollRef.current)
         : true;
-      primeMentionUsers(m.mentions ?? []);
-      setMessages((current) => [...current, m]);
-      if (shouldAutoFollow) {
-        requestScrollMessagesToBottom(scheduleActiveChannelMarkRead);
-      } else {
+      primeMentionUsers(created.mentions ?? []);
+      dispatch({
+        type: "messageCreated",
+        channelId: active.channelId,
+        generation: active.generation,
+        message: created,
+      });
+      if (!isNew) return;
+      if (shouldAutoFollow) requestScrollMessagesToBottom(scheduleActiveChannelMarkRead);
+      else {
         setHasNewMessagesBelow(true);
         scheduleActiveChannelMarkRead();
       }
     });
-    const unsubUpdated = events.onMessageUpdated((m) => {
-      applyMessageUpdate(m);
+    const unsubUpdated = events.onMessageUpdated(applyMessageUpdate);
+    const unsubDeleted = events.onMessageDeleted((deletion) => {
+      const active = activeHistoryRef.current;
+      if (!active || deletion.channel_id !== active.channelId) return;
+      dispatch({
+        type: "messageHardDeleted",
+        channelId: active.channelId,
+        generation: active.generation,
+        deletion,
+      });
+      if (replyTargetIdRef.current === deletion.id) setReplyTargetId(null);
     });
-    const unsubDeleted = events.onMessageDeleted((d) => {
-      if (String(d.channel_id) !== paramsIdRef.current) return;
-      setMessages((arr) => arr.filter((existing) => existing.id !== d.id));
-      patchVisibleReplyReferences(d.id, null);
-      if (replyTargetRef.current?.id === d.id) setReplyTarget(null);
-    });
-    const unsubEmbeds = events.onMessageEmbedsUpdated((e) => {
-      if (String(e.channel_id) !== paramsIdRef.current) return;
-      setMessages((existing) => existing.id === e.id, {
-        suppress_embeds: e.suppress_embeds,
-        embeds: e.embeds,
+    const unsubEmbeds = events.onMessageEmbedsUpdated((update) => {
+      const active = activeHistoryRef.current;
+      if (!active || update.channel_id !== active.channelId) return;
+      dispatch({
+        type: "messageEmbedsUpdated",
+        channelId: active.channelId,
+        generation: active.generation,
+        update,
       });
     });
-    const unsubReactions = events.onMessageReactionsUpdated((e) => {
-      if (String(e.channel_id) !== paramsIdRef.current) return;
-      setMessages(
-        (existing) => existing.id === e.id,
-        (existing) => ({
-          reactions: mergeReactionUpdateForViewer(
-            existing.reactions ?? [],
-            e.reactions,
-            e.user_id,
-            userIdRef.current,
-          ),
-        }),
-      );
-    });
-    const unsubThreadReply = events.onThreadReplyCreated((e) => {
-      if (String(e.channel_id) !== paramsIdRef.current) return;
-      primeMentionUsers(e.reply.mentions ?? []);
-      setMessages((existing) => existing.id === e.root_message_id && existing.parent_id == null, {
-        thread_summary: e.thread_summary,
+    const unsubReactions = events.onMessageReactionsUpdated((update) => {
+      const active = activeHistoryRef.current;
+      if (!active || update.channel_id !== active.channelId) return;
+      dispatch({
+        type: "messageReactionsUpdated",
+        channelId: active.channelId,
+        generation: active.generation,
+        update,
+        currentUserId: userIdRef.current,
       });
     });
-    const unsubThreadReplyDeleted = events.onThreadReplyDeleted((e) => {
-      if (String(e.channel_id) !== paramsIdRef.current) return;
-      setMessages((existing) => existing.id === e.root_message_id && existing.parent_id == null, {
-        thread_summary: e.thread_summary ?? undefined,
+    const unsubThreadReply = events.onThreadReplyCreated((update) => {
+      const active = activeHistoryRef.current;
+      if (!active || update.channel_id !== active.channelId) return;
+      primeMentionUsers(update.reply.mentions ?? []);
+      dispatch({
+        type: "threadSummaryCreated",
+        channelId: active.channelId,
+        generation: active.generation,
+        update,
       });
+    });
+    const unsubThreadReplyDeleted = events.onThreadReplyDeleted((update) => {
+      const active = activeHistoryRef.current;
+      if (!active || update.channel_id !== active.channelId) return;
+      dispatch({
+        type: "threadSummaryDeleted",
+        channelId: active.channelId,
+        generation: active.generation,
+        update,
+      });
+    });
+    const unsubConnected = events.onConnected(() => {
+      const active = activeHistoryRef.current;
+      if (active) startHistoryLoad(active.channelId, false);
     });
     const onFocusOrVisibility = () => scheduleActiveChannelMarkRead();
     window.addEventListener("focus", onFocusOrVisibility);
     document.addEventListener("visibilitychange", onFocusOrVisibility);
-    registerCleanup(() => {
+    return () => {
       unsubCreated();
       unsubUpdated();
       unsubDeleted();
@@ -436,18 +658,24 @@ export default function ChannelView() {
       unsubReactions();
       unsubThreadReply();
       unsubThreadReplyDeleted();
+      unsubConnected();
       window.removeEventListener("focus", onFocusOrVisibility);
       document.removeEventListener("visibilitychange", onFocusOrVisibility);
       if (markReadTimerRef.current) clearTimeout(markReadTimerRef.current);
-    });
-  });
+    };
+  }, [events]);
 
   // TODO(reno): Can the router ensure this parameter exists?
   if (!params.id) {
     return <div>Error: channel required</div>;
   }
 
-  const currentReplyTarget = replyTarget();
+  const currentReplyTarget =
+    replyTargetId === null
+      ? null
+      : (timeline.messages.find(
+          (candidate) => candidate.id === replyTargetId && candidate.deleted_at == null,
+        ) ?? null);
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-background text-foreground">
@@ -470,21 +698,25 @@ export default function ChannelView() {
           onScroll={handleMessagesScroll}
         >
           <ChannelMessages
-            messages={displayedMessages()}
-            loading={resource.loading}
-            error={resource.error}
+            key={`${timeline.channelId}:${timeline.generation}`}
+            channelId={timeline.channelId}
+            generation={timeline.generation}
+            messages={timeline.channelId === validChannelId ? timeline.messages : []}
+            loading={timeline.channelId !== validChannelId || timeline.status === "loading"}
+            error={timeline.channelId === validChannelId ? timeline.error : null}
             currentUserId={user?.id ?? null}
             onOpenThread={openThread}
             onReplyToMessage={selectInlineReplyTarget}
             onMessageUpdated={applyMessageUpdate}
             onReactionsChange={(messageId, reactions) => {
-              setMessages((existing) => existing.id === messageId, { reactions });
+              const existing = timeline.messages.find((message) => message.id === messageId);
+              if (existing) applyMessageUpdate({ ...existing, reactions });
             }}
-            mentionUsers={mentionUsers()}
+            mentionUsers={mentionUsers}
             onMentionUsers={primeMentionUsers}
             searchMentionUsers={searchUsers}
           />
-          {showNewMessagesBelow() ? (
+          {showNewMessagesBelow ? (
             <div className="sticky bottom-4 z-10 flex justify-center px-4" aria-live="polite">
               <button
                 type="button"
@@ -497,21 +729,22 @@ export default function ChannelView() {
             </div>
           ) : null}
         </div>
-        {openThreadRootId() !== null && (
-          <ThreadPanel
-            key={`${params.id}:${openThreadRootId() as number}`}
-            rootMessageId={openThreadRootId() as number}
-            channelId={Number(params.id)}
-            currentUserId={user?.id ?? null}
-            currentUserName={user?.username ?? null}
-            focusComposer={focusComposerRootId() === openThreadRootId()}
-            onComposerFocusConsumed={() => setFocusComposerRootId(null)}
-            onClose={closeThread}
-            mentionUsers={mentionUsers()}
-            onMentionUsers={primeMentionUsers}
-            searchMentionUsers={searchUsers}
-          />
-        )}
+        {openThreadRootId !== null &&
+          validatedThreadKey === `${validChannelId}:${openThreadRootId}` && (
+            <ThreadPanel
+              key={validatedThreadKey}
+              rootMessageId={openThreadRootId}
+              channelId={Number(params.id)}
+              currentUserId={user?.id ?? null}
+              currentUserName={user?.username ?? null}
+              focusComposer={focusComposerRootId === openThreadRootId}
+              onComposerFocusConsumed={() => setFocusComposerRootId(null)}
+              onClose={closeThread}
+              mentionUsers={mentionUsers}
+              onMentionUsers={primeMentionUsers}
+              searchMentionUsers={searchUsers}
+            />
+          )}
       </div>
 
       <section className="flex-shrink-0 p-4 border-t border-border">
@@ -530,7 +763,7 @@ export default function ChannelView() {
             photos={photoSelection.photos}
             error={photoSelection.error}
             errorId={photoSelectionErrorId}
-            disabled={submitting()}
+            disabled={submitting}
             onRemove={photoSelection.removePhoto}
           />
           {currentReplyTarget ? (
@@ -560,23 +793,23 @@ export default function ChannelView() {
           <div className="flex items-center gap-2">
             <PhotoAttachControl
               onFilesSelected={photoSelection.addFiles}
-              disabled={submitting()}
+              disabled={submitting}
               describedBy={photoSelection.error ? photoSelectionErrorId : undefined}
             />
             <MessageInput
-              value={message()}
+              value={message}
               onChange={handleMessageChange}
               ariaLabel="New message"
               placeholder="Send a new message..."
-              describedBy={replyTarget() ? replyBannerId : undefined}
-              mentionUsers={mentionUsers()}
+              describedBy={currentReplyTarget ? replyBannerId : undefined}
+              mentionUsers={mentionUsers}
               onMentionUsers={primeMentionUsers}
               searchMentionUsers={searchUsers}
               inputRef={(el) => {
                 composerRef.current = el;
               }}
             />
-            <Button type="submit" size="lg" disabled={submitting() || !hasDraftContent()}>
+            <Button type="submit" size="lg" disabled={submitting || !hasDraftContent}>
               Send
             </Button>
           </div>

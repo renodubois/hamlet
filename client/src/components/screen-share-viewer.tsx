@@ -1,61 +1,17 @@
-import { useRef } from "react";
-
-import { useAfterRenderEffect, registerCleanup } from "../hooks/react-state";
-import type { RemoteVideoTrack } from "livekit-client";
 import { useOptionalVoiceChat } from "../contexts/voice-chat";
-import { screenShareDisplayName } from "../voice/screen-share";
+import { screenShareDisplayName, screenShareKey } from "../voice/screen-share";
+import AttachedVideoTrack from "./attached-video-track";
 import { Button } from "./ui/button";
-
-function AttachedScreenShareVideo(props: { track: RemoteVideoTrack; label: string }) {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const attachedElementRef = useRef<HTMLVideoElement | null>(null);
-  const attachedTrackRef = useRef<RemoteVideoTrack | null>(null);
-
-  useAfterRenderEffect(() => {
-    const video = videoRef.current;
-    const track = props.track;
-    const attachedTrack = attachedTrackRef.current;
-    if (!video || attachedTrack === track) return;
-    if (attachedTrack && attachedElementRef.current) {
-      attachedTrack.detach(attachedElementRef.current);
-    }
-    track.attach(video);
-    attachedElementRef.current = video;
-    attachedTrackRef.current = track;
-  });
-
-  registerCleanup(() => {
-    const video = attachedElementRef.current ?? videoRef.current;
-    const attachedTrack = attachedTrackRef.current;
-    if (attachedTrack && video) {
-      attachedTrack.detach(video);
-    }
-    attachedElementRef.current = null;
-    attachedTrackRef.current = null;
-  });
-
-  return (
-    <video
-      ref={(el) => {
-        videoRef.current = el;
-      }}
-      className="h-full max-h-80 w-full rounded-md bg-black object-contain"
-      autoPlay
-      playsInline
-      aria-label={props.label}
-    />
-  );
-}
 
 export default function ScreenShareViewer() {
   const voice = useOptionalVoiceChat();
   if (!voice) return null;
 
-  const stream = voice.watchingScreenShare();
+  const stream = voice.watchingScreenShare;
   if (!stream) return null;
 
   const sharerName = screenShareDisplayName(stream);
-  const track = voice.watchingScreenShareTrack();
+  const track = voice.watchingScreenShareTrack;
 
   return (
     <section
@@ -82,7 +38,14 @@ export default function ScreenShareViewer() {
       </div>
       <div className="flex min-h-48 items-center justify-center rounded-md bg-black">
         {track ? (
-          <AttachedScreenShareVideo track={track} label={`${sharerName}'s screen share video`} />
+          <AttachedVideoTrack
+            key={screenShareKey(stream)}
+            track={track}
+            className="h-full max-h-80 w-full rounded-md bg-black object-contain"
+            autoPlay
+            playsInline
+            aria-label={`${sharerName}'s screen share video`}
+          />
         ) : (
           <p className="p-6 text-sm text-white/80" role="status">
             Connecting to {sharerName}'s screen…

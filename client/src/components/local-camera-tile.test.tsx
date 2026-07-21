@@ -1,7 +1,8 @@
+import { useState } from "react";
+import { act, screen, waitFor } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
-import { render, screen, waitFor } from "../test/testing-library";
-import { useSignalState } from "../hooks/react-state";
 import { expectNoA11yViolations } from "../test/a11y";
+import { renderNative } from "../test/render";
 
 class FakeLocalVideoTrack {
   attach = vi.fn((element: HTMLMediaElement) => element);
@@ -10,7 +11,7 @@ class FakeLocalVideoTrack {
 
 const mockVoiceState = vi.hoisted(() => ({
   value: null as {
-    localCameraTrack: () => FakeLocalVideoTrack | null;
+    localCameraTrack: FakeLocalVideoTrack | null;
   } | null,
 }));
 
@@ -20,18 +21,24 @@ vi.mock("../contexts/voice-chat", () => ({
 
 import LocalCameraTile from "./local-camera-tile";
 
-function setupTile(track = new FakeLocalVideoTrack()) {
-  const [localCameraTrack, setLocalCameraTrack] = useSignalState<FakeLocalVideoTrack | null>(track);
-  mockVoiceState.value = {
-    localCameraTrack,
-  };
-  return { setLocalCameraTrack, track };
+function renderTile(initialTrack = new FakeLocalVideoTrack()) {
+  let setTrack: (track: FakeLocalVideoTrack | null) => void = () => undefined;
+
+  function Harness() {
+    const [track, setTrackState] = useState<FakeLocalVideoTrack | null>(initialTrack);
+    setTrack = setTrackState;
+    mockVoiceState.value = {
+      localCameraTrack: track,
+    };
+    return <LocalCameraTile />;
+  }
+
+  return { ...renderNative(<Harness />), setTrack, track: initialTrack };
 }
 
 describe("<LocalCameraTile>", () => {
   test("renders an accessible local camera tile and attaches video", async () => {
-    const { track } = setupTile();
-    const { container } = render(() => <LocalCameraTile />);
+    const { container, track } = renderTile();
 
     const region = await screen.findByRole("region", { name: /local camera preview/i });
     expect(region).toHaveTextContent("Your camera");
@@ -43,11 +50,10 @@ describe("<LocalCameraTile>", () => {
   });
 
   test("detaches and hides the local video when camera stops", async () => {
-    const { setLocalCameraTrack, track } = setupTile();
-    render(() => <LocalCameraTile />);
+    const { setTrack, track } = renderTile();
 
     const video = (await screen.findByLabelText("Your camera video")) as HTMLVideoElement;
-    setLocalCameraTrack(null);
+    act(() => setTrack(null));
 
     await waitFor(() => expect(screen.queryByRole("region")).toBeNull());
     expect(track.detach).toHaveBeenCalledWith(video);
@@ -56,15 +62,24 @@ describe("<LocalCameraTile>", () => {
   test("detaches the previous local camera track when it changes", async () => {
     const firstTrack = new FakeLocalVideoTrack();
     const secondTrack = new FakeLocalVideoTrack();
-    const { setLocalCameraTrack } = setupTile(firstTrack);
-    render(() => <LocalCameraTile />);
+    const { setTrack } = renderTile(firstTrack);
 
     const video = (await screen.findByLabelText("Your camera video")) as HTMLVideoElement;
     expect(firstTrack.attach).toHaveBeenCalledWith(video);
 
-    setLocalCameraTrack(secondTrack);
+    act(() => setTrack(secondTrack));
 
     await waitFor(() => expect(secondTrack.attach).toHaveBeenCalledWith(video));
     expect(firstTrack.detach).toHaveBeenCalledWith(video);
+  });
+
+  test("detaches the local video on unmount", async () => {
+    const { track, unmount } = renderTile();
+    const video = (await screen.findByLabelText("Your camera video")) as HTMLVideoElement;
+
+    unmount();
+
+    expect(track.detach).toHaveBeenLastCalledWith(video);
+    expect(track.detach).toHaveBeenCalledTimes(track.attach.mock.calls.length);
   });
 });

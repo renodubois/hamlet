@@ -8,4 +8,7 @@ export { EventsProvider, useEvents } from "./events";
 export type { EventsContextValue } from "./events";
 export { ReadStatesProvider, useReadStates } from "./read-states";
 export type { ReadStatesContextValue } from "./read-states";
-export { VoiceChatProvider, useVoiceChat } from "./voice-chat";
+export { VoiceChatProvider, useOptionalVoiceChat, useVoiceChat } from "./voice-chat";
+export type { VoiceChatContextValue } from "./voice-chat";
+export { VoicePreferencesProvider, useVoicePreferences } from "./voice-preferences";
+export type { VoicePreferencesContextValue } from "./voice-preferences";

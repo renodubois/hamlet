@@ -121,7 +121,9 @@ export function ReadStatesProvider(props: { children: ReactNode }) {
           return null;
         }
         const current = statesRef.current[summary.channel_id];
-        if (!isReadStateSummaryCurrent(current, summary)) return current ?? null;
+        // Only an accepted response proves that this request marked the
+        // requested point read. Callers must keep stale responses retryable.
+        if (!isReadStateSummaryCurrent(current, summary)) return null;
         setStates((accepted) => applyReadStateUpdate(accepted, summary));
         return summary;
       } catch (caught) {

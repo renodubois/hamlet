@@ -265,6 +265,7 @@ export async function sendThreadReply(
   rootMessageId: number,
   text: string,
   photos: readonly File[] = [],
+  signal?: AbortSignal,
 ): Promise<Message> {
   let res: Response;
   if (photos.length === 0) {
@@ -272,6 +273,7 @@ export async function sendThreadReply(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
+      signal,
     });
   } else {
     await assertValidMessagePhotos(photos);
@@ -283,35 +285,43 @@ export async function sendThreadReply(
     res = await apiFetch(`/thread/${rootMessageId}/reply`, {
       method: "POST",
       body,
+      signal,
     });
   }
   if (!res.ok) throw new Error(`Thread reply failed (${res.status})`);
   return res.json() as Promise<Message>;
 }
 
-export async function editMessage(messageId: number, text: string): Promise<Message> {
+export async function editMessage(
+  messageId: number,
+  text: string,
+  signal?: AbortSignal,
+): Promise<Message> {
   const res = await apiFetch(`/message/${messageId}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
+    signal,
   });
   if (!res.ok) throw new Error(`Message edit failed (${res.status})`);
   return res.json() as Promise<Message>;
 }
 
-export async function deleteMessage(messageId: number): Promise<void> {
-  const res = await apiFetch(`/message/${messageId}`, { method: "DELETE" });
+export async function deleteMessage(messageId: number, signal?: AbortSignal): Promise<void> {
+  const res = await apiFetch(`/message/${messageId}`, { method: "DELETE", signal });
   if (!res.ok) throw new Error(`Message delete failed (${res.status})`);
 }
 
 export async function setMessageEmbedsSuppressed(
   messageId: number,
   suppress: boolean,
+  signal?: AbortSignal,
 ): Promise<MessageEmbedsUpdated> {
   const res = await apiFetch(`/message/${messageId}/suppress_embeds`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ suppress }),
+    signal,
   });
   if (!res.ok) throw new Error(`Suppress embeds failed (${res.status})`);
   return res.json() as Promise<MessageEmbedsUpdated>;
@@ -320,11 +330,13 @@ export async function setMessageEmbedsSuppressed(
 export async function addMessageReaction(
   messageId: number,
   reaction: ReactionRequest,
+  signal?: AbortSignal,
 ): Promise<ReactionSummary[]> {
   const res = await apiFetch(`/message/${messageId}/reactions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(reactionRequestBody(reaction)),
+    signal,
   });
   if (!res.ok) throw new Error(`Add reaction failed (${res.status})`);
   return res.json() as Promise<ReactionSummary[]>;
@@ -333,11 +345,13 @@ export async function addMessageReaction(
 export async function removeMessageReaction(
   messageId: number,
   reaction: ReactionRequest,
+  signal?: AbortSignal,
 ): Promise<ReactionSummary[]> {
   const res = await apiFetch(`/message/${messageId}/reactions`, {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(reactionRequestBody(reaction)),
+    signal,
   });
   if (!res.ok) throw new Error(`Remove reaction failed (${res.status})`);
   return res.json() as Promise<ReactionSummary[]>;

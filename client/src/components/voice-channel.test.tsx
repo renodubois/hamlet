@@ -1,7 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { renderNative } from "../test/render";
+import { cloneElement, useReducer, type ReactElement } from "react";
+import { flushSync } from "react-dom";
 import userEvent from "@testing-library/user-event";
-import { useSignalState } from "../hooks/react-state";
+import { HttpResponse, http } from "msw";
 import type {
   CameraStream,
   CameraVideoStopped,
@@ -13,7 +16,7 @@ import type {
   VoiceParticipantSpeaking,
   VoiceParticipantStatus,
 } from "../api";
-import { mswState, resetMswState } from "../test/msw/server";
+import { mswState, resetMswState, server } from "../test/msw/server";
 import VoiceChannel from "./voice-channel";
 
 type JoinedListener = (p: VoiceParticipant) => void;
@@ -24,30 +27,33 @@ type ScreenShareStartedListener = (p: ScreenShareStream) => void;
 type ScreenShareStoppedListener = (p: ScreenShareStopped) => void;
 type CameraStartedListener = (p: CameraStream) => void;
 type CameraStoppedListener = (p: CameraVideoStopped) => void;
+type ConnectedListener = () => void;
 
 interface MockVoiceChatApi {
-  activeChannelId: () => number | null;
+  activeChannelId: number | null;
   setActiveChannelId: (id: number | null) => void;
-  isConnecting: () => boolean;
-  isMuted: () => boolean;
-  setIsMuted: (v: boolean) => void;
-  isDeafened: () => boolean;
-  setIsDeafened: (v: boolean) => void;
-  isScreenSharing: () => boolean;
-  setIsScreenSharing: (v: boolean) => void;
-  isScreenShareStarting: () => boolean;
-  setIsScreenShareStarting: (v: boolean) => void;
-  isCameraEnabled: () => boolean;
-  setIsCameraEnabled: (v: boolean) => void;
-  isCameraBusy: () => boolean;
-  setIsCameraBusy: (v: boolean) => void;
-  localCameraTrack: () => null;
-  remoteCameraTiles: () => readonly [];
-  watchingScreenShare: () => ScreenShareStream | null;
+  isConnecting: boolean;
+  isMuted: boolean;
+  setIsMuted: (value: boolean) => void;
+  isDeafened: boolean;
+  setIsDeafened: (value: boolean) => void;
+  isScreenSharing: boolean;
+  setIsScreenSharing: (value: boolean) => void;
+  screenShareStatus: "off" | "starting" | "on" | "stopping";
+  isScreenShareBusy: boolean;
+  setScreenShareStatus: (value: "off" | "starting" | "on" | "stopping") => void;
+  isCameraEnabled: boolean;
+  setIsCameraEnabled: (value: boolean) => void;
+  cameraStatus: "off" | "starting" | "on" | "stopping";
+  isCameraBusy: boolean;
+  setCameraStatus: (value: "off" | "starting" | "on" | "stopping") => void;
+  localCameraTrack: null;
+  remoteCameraTiles: readonly [];
+  watchingScreenShare: ScreenShareStream | null;
   setWatchingScreenShare: (stream: ScreenShareStream | null) => void;
-  watchingScreenShareTrack: () => null;
-  lastError: () => string | null;
-  speakingUserIds: () => ReadonlySet<number>;
+  watchingScreenShareTrack: null;
+  lastError: string | null;
+  speakingUserIds: ReadonlySet<number>;
   setSpeakingUserIds: (ids: ReadonlySet<number>) => void;
   join: ReturnType<typeof vi.fn>;
   leave: ReturnType<typeof vi.fn>;
@@ -63,6 +69,8 @@ interface MockVoiceChatApi {
 }
 
 let mockVoice: MockVoiceChatApi;
+const preferenceMock = vi.hoisted(() => ({ showSpeakingEverywhere: false }));
+let notify: () => void = () => undefined;
 const joinedListeners = new Set<JoinedListener>();
 const leftListeners = new Set<LeftListener>();
 const speakingListeners = new Set<SpeakingListener>();
@@ -71,94 +79,98 @@ const screenShareStartedListeners = new Set<ScreenShareStartedListener>();
 const screenShareStoppedListeners = new Set<ScreenShareStoppedListener>();
 const cameraStartedListeners = new Set<CameraStartedListener>();
 const cameraStoppedListeners = new Set<CameraStoppedListener>();
-const [showEverywhere, setShowEverywhere] = useSignalState(false);
+const connectedListeners = new Set<ConnectedListener>();
 
-vi.mock("../contexts/voice-chat", () => ({
-  useVoiceChat: () => mockVoice,
+vi.mock("../contexts/voice-chat", () => ({ useVoiceChat: () => mockVoice }));
+vi.mock("../contexts/voice-preferences", () => ({
+  useVoicePreferences: () => preferenceMock,
 }));
 
-vi.mock("../contexts/events", () => ({
-  useEvents: () => ({
-    onMessage: () => () => {},
-    onMessageUpdated: () => () => {},
-    onMessageDeleted: () => () => {},
-    onChannelCreated: () => () => {},
-    onChannelsReordered: () => () => {},
-    onVoiceParticipantJoined: (cb: JoinedListener) => {
-      joinedListeners.add(cb);
-      return () => joinedListeners.delete(cb);
-    },
-    onVoiceParticipantLeft: (cb: LeftListener) => {
-      leftListeners.add(cb);
-      return () => leftListeners.delete(cb);
-    },
-    onVoiceParticipantSpeakingChanged: (cb: SpeakingListener) => {
-      speakingListeners.add(cb);
-      return () => speakingListeners.delete(cb);
-    },
-    onVoiceParticipantStatusChanged: (cb: StatusListener) => {
-      statusListeners.add(cb);
-      return () => statusListeners.delete(cb);
-    },
-    onScreenShareStarted: (cb: ScreenShareStartedListener) => {
-      screenShareStartedListeners.add(cb);
-      return () => screenShareStartedListeners.delete(cb);
-    },
-    onScreenShareStopped: (cb: ScreenShareStoppedListener) => {
-      screenShareStoppedListeners.add(cb);
-      return () => screenShareStoppedListeners.delete(cb);
-    },
-    onCameraVideoStarted: (cb: CameraStartedListener) => {
-      cameraStartedListeners.add(cb);
-      return () => cameraStartedListeners.delete(cb);
-    },
-    onCameraVideoStopped: (cb: CameraStoppedListener) => {
-      cameraStoppedListeners.add(cb);
-      return () => cameraStoppedListeners.delete(cb);
-    },
-  }),
-}));
+vi.mock("../contexts/events", () => {
+  let events: object | undefined;
+  return {
+    useEvents: () =>
+      (events ??= {
+        onVoiceParticipantJoined: (cb: JoinedListener) => {
+          joinedListeners.add(cb);
+          return () => joinedListeners.delete(cb);
+        },
+        onVoiceParticipantLeft: (cb: LeftListener) => {
+          leftListeners.add(cb);
+          return () => leftListeners.delete(cb);
+        },
+        onVoiceParticipantSpeakingChanged: (cb: SpeakingListener) => {
+          speakingListeners.add(cb);
+          return () => speakingListeners.delete(cb);
+        },
+        onVoiceParticipantStatusChanged: (cb: StatusListener) => {
+          statusListeners.add(cb);
+          return () => statusListeners.delete(cb);
+        },
+        onScreenShareStarted: (cb: ScreenShareStartedListener) => {
+          screenShareStartedListeners.add(cb);
+          return () => screenShareStartedListeners.delete(cb);
+        },
+        onScreenShareStopped: (cb: ScreenShareStoppedListener) => {
+          screenShareStoppedListeners.add(cb);
+          return () => screenShareStoppedListeners.delete(cb);
+        },
+        onCameraVideoStarted: (cb: CameraStartedListener) => {
+          cameraStartedListeners.add(cb);
+          return () => cameraStartedListeners.delete(cb);
+        },
+        onCameraVideoStopped: (cb: CameraStoppedListener) => {
+          cameraStoppedListeners.add(cb);
+          return () => cameraStoppedListeners.delete(cb);
+        },
+        onConnected: (cb: ConnectedListener) => {
+          connectedListeners.add(cb);
+          return () => connectedListeners.delete(cb);
+        },
+      }),
+  };
+});
 
-vi.mock("../voice/settings", () => ({
-  showSpeakingIndicatorsEverywhere: () => showEverywhere(),
-}));
+function updateMock<K extends keyof MockVoiceChatApi>(key: K, value: MockVoiceChatApi[K]) {
+  mockVoice[key] = value;
+  notify();
+}
 
 function makeVoiceMock(overrides?: Partial<MockVoiceChatApi>): MockVoiceChatApi {
-  const [activeChannelId, setActiveChannelId] = useSignalState<number | null>(null);
-  const [isMuted, setIsMuted] = useSignalState(false);
-  const [isDeafened, setIsDeafened] = useSignalState(false);
-  const [isScreenSharing, setIsScreenSharing] = useSignalState(false);
-  const [isScreenShareStarting, setIsScreenShareStarting] = useSignalState(false);
-  const [isCameraEnabled, setIsCameraEnabled] = useSignalState(false);
-  const [isCameraBusy, setIsCameraBusy] = useSignalState(false);
-  const [watchingScreenShare, setWatchingScreenShare] = useSignalState<ScreenShareStream | null>(
-    null,
-  );
-  const [speakingUserIds, setSpeakingUserIds] = useSignalState<ReadonlySet<number>>(new Set());
-  return {
-    activeChannelId,
-    setActiveChannelId,
-    isConnecting: () => false,
-    isMuted,
-    setIsMuted,
-    isDeafened,
-    setIsDeafened,
-    isScreenSharing,
-    setIsScreenSharing,
-    isScreenShareStarting,
-    setIsScreenShareStarting,
-    isCameraEnabled,
-    setIsCameraEnabled,
-    isCameraBusy,
-    setIsCameraBusy,
-    localCameraTrack: () => null,
-    remoteCameraTiles: () => [],
-    watchingScreenShare,
-    setWatchingScreenShare,
-    watchingScreenShareTrack: () => null,
-    lastError: () => null,
-    speakingUserIds,
-    setSpeakingUserIds,
+  const voice: MockVoiceChatApi = {
+    activeChannelId: null,
+    setActiveChannelId: (value) => updateMock("activeChannelId", value),
+    isConnecting: false,
+    isMuted: false,
+    setIsMuted: (value) => updateMock("isMuted", value),
+    isDeafened: false,
+    setIsDeafened: (value) => updateMock("isDeafened", value),
+    isScreenSharing: false,
+    setIsScreenSharing: (value) => updateMock("isScreenSharing", value),
+    screenShareStatus: "off",
+    isScreenShareBusy: false,
+    setScreenShareStatus: (value) => {
+      mockVoice.screenShareStatus = value;
+      mockVoice.isScreenShareBusy = value === "starting" || value === "stopping";
+      notify();
+    },
+    isCameraEnabled: false,
+    setIsCameraEnabled: (value) => updateMock("isCameraEnabled", value),
+    cameraStatus: "off",
+    isCameraBusy: false,
+    setCameraStatus: (value) => {
+      mockVoice.cameraStatus = value;
+      mockVoice.isCameraBusy = value === "starting" || value === "stopping";
+      notify();
+    },
+    localCameraTrack: null,
+    remoteCameraTiles: [],
+    watchingScreenShare: null,
+    setWatchingScreenShare: (value) => updateMock("watchingScreenShare", value),
+    watchingScreenShareTrack: null,
+    lastError: null,
+    speakingUserIds: new Set(),
+    setSpeakingUserIds: (value) => updateMock("speakingUserIds", value),
     join: vi.fn<(id: number) => Promise<void>>().mockResolvedValue(),
     leave: vi.fn<() => Promise<void>>().mockResolvedValue(),
     toggleMuted: vi.fn<() => Promise<void>>().mockResolvedValue(),
@@ -167,13 +179,26 @@ function makeVoiceMock(overrides?: Partial<MockVoiceChatApi>): MockVoiceChatApi 
     stopScreenShare: vi.fn<() => Promise<void>>().mockResolvedValue(),
     startCamera: vi.fn<() => Promise<void>>().mockResolvedValue(),
     stopCamera: vi.fn<() => Promise<void>>().mockResolvedValue(),
-    syncRemoteCameraStreams: vi
-      .fn<(channelId: number, streams: readonly CameraStream[]) => void>()
-      .mockReturnValue(undefined),
+    syncRemoteCameraStreams: vi.fn<(channelId: number, streams: readonly CameraStream[]) => void>(),
     watchScreenShare: vi.fn<(stream: ScreenShareStream) => Promise<void>>().mockResolvedValue(),
     stopWatchingScreenShare: vi.fn<() => Promise<void>>().mockResolvedValue(),
     ...overrides,
   };
+  return voice;
+}
+
+function setShowEverywhere(value: boolean) {
+  preferenceMock.showSpeakingEverywhere = value;
+  notify();
+}
+
+function renderVoice(element: ReactElement) {
+  function Harness() {
+    const [, rerender] = useReducer((value: number) => value + 1, 0);
+    notify = () => flushSync(() => rerender());
+    return cloneElement(element);
+  }
+  return renderNative(<Harness />);
 }
 
 const CHANNEL: Channel = { id: 42, name: "lobby", position: 0, type: "voice" };
@@ -265,7 +290,9 @@ function setup(
   screenShareStoppedListeners.clear();
   cameraStartedListeners.clear();
   cameraStoppedListeners.clear();
-  setShowEverywhere(false);
+  connectedListeners.clear();
+  notify = () => undefined;
+  preferenceMock.showSpeakingEverywhere = false;
   mockVoice = makeVoiceMock();
   return state;
 }
@@ -274,7 +301,7 @@ describe("<VoiceChannel>", () => {
   test("fetches and renders the initial participant list", async () => {
     setup([makeParticipant(), makeParticipant({ user_id: 3, username: "carol" })]);
 
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     await waitFor(() => {
       expect(screen.getByText("bob")).toBeInTheDocument();
@@ -284,7 +311,7 @@ describe("<VoiceChannel>", () => {
 
   test("adds a participant when a join SSE event arrives", async () => {
     setup();
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     // Wait for the initial empty-list fetch to complete before pushing events,
     // so the SSE-driven append isn't clobbered by the resource resolving.
@@ -297,7 +324,7 @@ describe("<VoiceChannel>", () => {
 
   test("renders participant mute/deafen status from fetch and SSE", async () => {
     setup([makeParticipant({ muted: true })]);
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     await waitFor(() => expect(screen.getByRole("img", { name: /bob is muted/i })).toBeVisible());
     expect(screen.queryByRole("img", { name: /bob is deafened/i })).toBeNull();
@@ -312,21 +339,21 @@ describe("<VoiceChannel>", () => {
 
   test("ignores SSE events for other channels", async () => {
     setup();
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
     await waitFor(() => expect(mswState().voiceParticipants["42"]).toBeDefined());
 
     joinedListeners.forEach((cb) =>
       cb(makeParticipant({ user_id: 9, channel_id: 999, username: "ghost" })),
     );
 
-    // Give the signal an event loop turn to propagate if it were going to.
+    // Give the React update an event loop turn to propagate if it were going to.
     await Promise.resolve();
     expect(screen.queryByText("ghost")).toBeNull();
   });
 
   test("removes a participant on a left SSE event", async () => {
     setup([makeParticipant()]);
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
 
@@ -336,7 +363,7 @@ describe("<VoiceChannel>", () => {
 
   test("clicking the row when disconnected calls join(channelId)", async () => {
     setup();
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     fireEvent.click(screen.getByRole("button", { name: /Join voice channel lobby/ }));
 
@@ -346,7 +373,7 @@ describe("<VoiceChannel>", () => {
 
   test("clicking the row when active calls leave()", async () => {
     setup();
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
     mockVoice.setActiveChannelId(42);
 
     fireEvent.click(screen.getByRole("button", { name: /Leave voice channel lobby/ }));
@@ -357,7 +384,7 @@ describe("<VoiceChannel>", () => {
 
   test("shows camera and screen-share controls only when connected to this channel", () => {
     setup();
-    const { unmount } = render(() => <VoiceChannel channel={CHANNEL} />);
+    const { unmount } = renderVoice(<VoiceChannel channel={CHANNEL} />);
     expect(screen.queryByRole("button", { name: /Turn on camera/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Share screen/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Disconnect from voice/ })).toBeNull();
@@ -365,7 +392,7 @@ describe("<VoiceChannel>", () => {
     unmount();
     mockVoice = makeVoiceMock();
     mockVoice.setActiveChannelId(42);
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     expect(screen.getByRole("button", { name: /Turn on camera/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Share screen/ })).toBeInTheDocument();
@@ -375,7 +402,7 @@ describe("<VoiceChannel>", () => {
   test("renders a speaking ring on the avatar for in-channel speakers", async () => {
     setup([makeParticipant()]);
     mockVoice.setActiveChannelId(42);
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
 
@@ -389,7 +416,7 @@ describe("<VoiceChannel>", () => {
   test("does not show ring from SSE speaking events when not connected and setting off", async () => {
     setup([makeParticipant()]);
     // Not active — we're not connected to this channel.
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
     await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
 
     speakingListeners.forEach((cb) => cb({ channel_id: 42, user_id: 2, speaking: true }));
@@ -402,7 +429,7 @@ describe("<VoiceChannel>", () => {
   test("shows ring from SSE speaking events when setting is on and not connected", async () => {
     setup([makeParticipant()]);
     setShowEverywhere(true);
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
     await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
 
     speakingListeners.forEach((cb) => cb({ channel_id: 42, user_id: 2, speaking: true }));
@@ -429,7 +456,7 @@ describe("<VoiceChannel>", () => {
       ],
     );
 
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     const shelf = await screen.findByRole("region", { name: /active screen shares in lobby/i });
     await screen.findByText("bob");
@@ -459,7 +486,7 @@ describe("<VoiceChannel>", () => {
       ],
     );
 
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     const cameraShelf = await screen.findByRole("region", { name: /active cameras in lobby/i });
     await screen.findByText("bob");
@@ -467,7 +494,7 @@ describe("<VoiceChannel>", () => {
     expect(within(cameraShelf).getByText("Join voice to view cameras.")).toBeInTheDocument();
     expect(screen.getByRole("img", { name: /bob has camera on/i })).toBeInTheDocument();
     expect(screen.queryByRole("img", { name: /carol has camera on/i })).toBeNull();
-    expect(mockVoice.syncRemoteCameraStreams).not.toHaveBeenCalled();
+    expect(mockVoice.syncRemoteCameraStreams).not.toHaveBeenCalledWith(42, [camera]);
 
     mockVoice.setActiveChannelId(42);
 
@@ -481,7 +508,7 @@ describe("<VoiceChannel>", () => {
     const camera = makeCamera({ display_name: "Bobby" });
     setup([makeParticipant()]);
     mockVoice.setActiveChannelId(42);
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     await screen.findByText("bob");
     await waitFor(() => expect(cameraStartedListeners.size).toBe(1));
@@ -513,7 +540,7 @@ describe("<VoiceChannel>", () => {
     const camera = makeCamera({ display_name: "Bobby" });
     setup([makeParticipant()], [], [camera]);
     mockVoice.setActiveChannelId(42);
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     await screen.findByRole("img", { name: /bob has camera on/i });
     await waitFor(() =>
@@ -541,7 +568,7 @@ describe("<VoiceChannel>", () => {
       ],
     );
 
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     const shelf = await screen.findByRole("region", { name: /active screen shares in lobby/i });
     expect(within(shelf).getByText("2 streams live")).toBeInTheDocument();
@@ -564,7 +591,7 @@ describe("<VoiceChannel>", () => {
     mockVoice.setActiveChannelId(42);
     mockVoice.setWatchingScreenShare(carol);
 
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     const shelf = await screen.findByRole("region", { name: /active screen shares in lobby/i });
     const bobButton = within(shelf).getByRole("button", { name: /watch Bobby's screen share/i });
@@ -582,7 +609,7 @@ describe("<VoiceChannel>", () => {
   test("applies screen-share SSE start and stop updates with polite announcements", async () => {
     const stream = makeScreenShare({ display_name: "Bobby" });
     setup([makeParticipant()]);
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     await screen.findByText("bob");
     await waitFor(() => expect(screenShareStartedListeners.size).toBe(1));
@@ -609,7 +636,7 @@ describe("<VoiceChannel>", () => {
   test("stale start events after a stop do not resurrect dead screen shares", async () => {
     const stream = makeScreenShare({ display_name: "Bobby" });
     setup([makeParticipant()]);
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     await waitFor(() => expect(screenShareStartedListeners.size).toBe(1));
 
@@ -626,7 +653,7 @@ describe("<VoiceChannel>", () => {
     setup();
     mockVoice.setActiveChannelId(42);
     mockVoice.setWatchingScreenShare(stream);
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     await waitFor(() => expect(screenShareStoppedListeners.size).toBe(1));
     screenShareStoppedListeners.forEach((cb) => cb(stoppedFrom(stream)));
@@ -641,7 +668,7 @@ describe("<VoiceChannel>", () => {
     setup([makeParticipant()]);
     mockVoice.setActiveChannelId(42);
     mockVoice.setWatchingScreenShare(stream);
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     await screen.findByText("bob");
     leftListeners.forEach((cb) => cb({ channel_id: 42, user_id: 2 }));
@@ -653,12 +680,12 @@ describe("<VoiceChannel>", () => {
   test("screen-share SSE updates fan out to multiple mounted channel views", async () => {
     const stream = makeScreenShare({ display_name: "Bobby" });
     setup([makeParticipant()]);
-    render(() => (
+    renderVoice(
       <>
         <VoiceChannel channel={CHANNEL} />
         <VoiceChannel channel={CHANNEL} />
-      </>
-    ));
+      </>,
+    );
 
     await waitFor(() => expect(screenShareStartedListeners.size).toBe(2));
     screenShareStartedListeners.forEach((cb) => cb(stream));
@@ -673,7 +700,7 @@ describe("<VoiceChannel>", () => {
     const user = userEvent.setup();
     const stream = makeScreenShare({ display_name: "Bobby" });
     setup([], [stream]);
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     const channelButton = screen.getByRole("button", { name: /^join voice channel lobby$/i });
     await screen.findByText("Bobby's screen");
@@ -700,7 +727,7 @@ describe("<VoiceChannel>", () => {
     const user = userEvent.setup();
     setup();
     mockVoice.setActiveChannelId(42);
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     const channelButton = screen.getByRole("button", { name: /^leave voice channel lobby$/i });
     const start = screen.getByRole("button", { name: /Turn on camera/ });
@@ -715,12 +742,12 @@ describe("<VoiceChannel>", () => {
     fireEvent.click(start);
     expect(mockVoice.startCamera).toHaveBeenCalled();
 
-    mockVoice.setIsCameraBusy(true);
+    mockVoice.setCameraStatus("starting");
     const busy = screen.getByRole("button", { name: /Starting camera/ });
     expect(busy).toBeDisabled();
     expect(busy).toHaveAttribute("aria-busy", "true");
 
-    mockVoice.setIsCameraBusy(false);
+    mockVoice.setCameraStatus("on");
     mockVoice.setIsCameraEnabled(true);
     const stop = screen.getByRole("button", { name: /Turn off camera/ });
     expect(stop).toHaveAttribute("aria-pressed", "true");
@@ -730,17 +757,153 @@ describe("<VoiceChannel>", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Camera on");
   });
 
+  test("a reconnect aborts a pending bootstrap and guarantees a fresh snapshot", async () => {
+    setup();
+    const requests: Array<{
+      signal: AbortSignal;
+      resolve: (response: Response) => void;
+    }> = [];
+    server.use(
+      http.get(
+        "*/voice/participants/42",
+        ({ request }) =>
+          new Promise<Response>((resolve) => {
+            requests.push({ signal: request.signal, resolve });
+          }),
+      ),
+    );
+
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
+    await waitFor(() => expect(requests.some(({ signal }) => !signal.aborted)).toBe(true));
+    const beforeReconnect = [...requests].reverse().find(({ signal }) => !signal.aborted);
+    expect(beforeReconnect).toBeDefined();
+
+    act(() => connectedListeners.forEach((listener) => listener()));
+    await waitFor(() => {
+      expect(beforeReconnect?.signal.aborted).toBe(true);
+      expect(requests.filter(({ signal }) => !signal.aborted)).toHaveLength(1);
+    });
+
+    const fresh = [...requests].reverse().find(({ signal }) => !signal.aborted);
+    fresh?.resolve(HttpResponse.json([makeParticipant({ user_id: 3, username: "carol" })]));
+
+    expect(await screen.findByText("carol")).toBeInTheDocument();
+    expect(screen.queryByText("bob")).toBeNull();
+  });
+
+  test("retains proven presence when every reconnect endpoint fails", async () => {
+    const share = makeScreenShare({ display_name: "Bobby" });
+    const camera = makeCamera({ display_name: "Bobby" });
+    setup([makeParticipant()], [share], [camera]);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
+
+    await screen.findByText("Bobby's screen");
+    await screen.findByRole("img", { name: /bob has camera on/i });
+    let failedRequests = 0;
+    const fail = () => {
+      failedRequests += 1;
+      return HttpResponse.json({ error: "offline" }, { status: 503 });
+    };
+    server.use(
+      http.get("*/voice/participants/42", fail),
+      http.get("*/voice/screen-shares", fail),
+      http.get("*/voice/cameras", fail),
+    );
+
+    act(() => connectedListeners.forEach((listener) => listener()));
+    await waitFor(() => expect(failedRequests).toBe(3));
+
+    expect(screen.getByText("bob")).toBeInTheDocument();
+    expect(screen.getByText("Bobby's screen")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /bob has camera on/i })).toBeInTheDocument();
+  });
+
+  test("applies successful reconnect endpoints without clearing a failed endpoint", async () => {
+    const oldShare = makeScreenShare({ display_name: "Bobby" });
+    const oldCamera = makeCamera({ display_name: "Bobby" });
+    setup([makeParticipant()], [oldShare], [oldCamera]);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
+
+    await screen.findByText("Bobby's screen");
+    await screen.findByRole("img", { name: /bob has camera on/i });
+    let completedRequests = 0;
+    server.use(
+      http.get("*/voice/participants/42", () => {
+        completedRequests += 1;
+        return HttpResponse.json({ error: "participants unavailable" }, { status: 503 });
+      }),
+      http.get("*/voice/screen-shares", () => {
+        completedRequests += 1;
+        return HttpResponse.json([]);
+      }),
+      http.get("*/voice/cameras", () => {
+        completedRequests += 1;
+        return HttpResponse.json([]);
+      }),
+    );
+
+    act(() => connectedListeners.forEach((listener) => listener()));
+    await waitFor(() => expect(completedRequests).toBe(3));
+    await waitFor(() => expect(screen.queryByText("Bobby's screen")).toBeNull());
+
+    expect(screen.getByText("bob")).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: /bob has camera on/i })).toBeNull();
+  });
+
+  test("removes every presence listener and clears camera metadata on unmount", async () => {
+    setup();
+    const { unmount } = renderVoice(<VoiceChannel channel={CHANNEL} />);
+    await waitFor(() => expect(joinedListeners.size).toBe(1));
+
+    unmount();
+
+    expect(joinedListeners.size).toBe(0);
+    expect(leftListeners.size).toBe(0);
+    expect(speakingListeners.size).toBe(0);
+    expect(statusListeners.size).toBe(0);
+    expect(screenShareStartedListeners.size).toBe(0);
+    expect(screenShareStoppedListeners.size).toBe(0);
+    expect(cameraStartedListeners.size).toBe(0);
+    expect(cameraStoppedListeners.size).toBe(0);
+    expect(connectedListeners.size).toBe(0);
+    expect(mockVoice.syncRemoteCameraStreams).toHaveBeenLastCalledWith(42, []);
+  });
+
   test("share buttons call the voice context", () => {
     setup();
     mockVoice.setActiveChannelId(42);
-    render(() => <VoiceChannel channel={CHANNEL} />);
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
 
     fireEvent.click(screen.getByRole("button", { name: /Share screen/ }));
     expect(mockVoice.startScreenShare).toHaveBeenCalled();
 
+    mockVoice.setScreenShareStatus("starting");
+    const starting = screen.getByRole("button", { name: /Starting screen share/ });
+    expect(starting).toBeDisabled();
+    expect(starting).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("Starting screen share…");
+
+    mockVoice.setScreenShareStatus("on");
     mockVoice.setIsScreenSharing(true);
     fireEvent.click(screen.getByRole("button", { name: /Stop sharing screen/ }));
     expect(mockVoice.stopScreenShare).toHaveBeenCalled();
     expect(screen.getByRole("status")).toHaveTextContent("Sharing screen");
+
+    mockVoice.setScreenShareStatus("stopping");
+    const stopping = screen.getByRole("button", { name: "Stopping screen share" });
+    expect(stopping).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Stopping screen share…");
+  });
+
+  test("announces camera stopping from explicit media status", () => {
+    setup();
+    mockVoice.setActiveChannelId(42);
+    mockVoice.setCameraStatus("stopping");
+    renderVoice(<VoiceChannel channel={CHANNEL} />);
+
+    const stopping = screen.getByRole("button", { name: "Stopping camera" });
+    expect(stopping).toBeDisabled();
+    expect(stopping).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("Stopping camera…");
   });
 });

@@ -5,31 +5,104 @@ export const VOICE_NOISE_SUPPRESSION_STORAGE_KEY = "hamlet:voice:noise_suppressi
 export const VOICE_INPUT_GAIN_STORAGE_KEY = "hamlet:voice:input_gain";
 export const VOICE_SHOW_SPEAKING_EVERYWHERE_KEY = "hamlet:voice:show_speaking_everywhere";
 
-let showSpeakingEverywhere =
-  typeof localStorage !== "undefined" &&
-  localStorage.getItem(VOICE_SHOW_SPEAKING_EVERYWHERE_KEY) === "on";
-
-export function showSpeakingIndicatorsEverywhere(): boolean {
-  return showSpeakingEverywhere;
+export interface VoicePreferencesSnapshot {
+  readonly inputDeviceId: string;
+  readonly outputDeviceId: string;
+  readonly cameraDeviceId: string;
+  readonly noiseSuppression: boolean;
+  readonly inputGain: number;
+  readonly showSpeakingEverywhere: boolean;
 }
 
-export function setShowSpeakingEverywhereSignal(value: boolean | ((current: boolean) => boolean)) {
-  showSpeakingEverywhere = typeof value === "function" ? value(showSpeakingEverywhere) : value;
+export interface SerializedVoicePreferences {
+  readonly inputDeviceId: string | null;
+  readonly outputDeviceId: string | null;
+  readonly cameraDeviceId: string | null;
+  readonly noiseSuppression: string | null;
+  readonly inputGain: string | null;
+  readonly showSpeakingEverywhere: string | null;
 }
 
-export function getNoiseSuppressionEnabled(): boolean {
-  // Default on — matches getUserMedia default and is what most users expect.
-  return localStorage.getItem(VOICE_NOISE_SUPPRESSION_STORAGE_KEY) !== "off";
+export type VoicePreferencesStorage = Pick<Storage, "getItem" | "setItem">;
+
+export const DEFAULT_VOICE_PREFERENCES: VoicePreferencesSnapshot = Object.freeze({
+  inputDeviceId: "",
+  outputDeviceId: "",
+  cameraDeviceId: "",
+  // Default on, matching getUserMedia and what most users expect.
+  noiseSuppression: true,
+  inputGain: 1,
+  showSpeakingEverywhere: false,
+});
+
+export function parseInputGain(raw: string | null): number {
+  const value = raw == null ? DEFAULT_VOICE_PREFERENCES.inputGain : Number.parseFloat(raw);
+  if (!Number.isFinite(value)) return DEFAULT_VOICE_PREFERENCES.inputGain;
+  return Math.min(2, Math.max(0, value));
 }
 
-/**
- * Returns the saved input gain in the range [0, 2]. 1.0 = unity. Applied by
- * the voice chat layer via a Web Audio GainNode inserted between the mic and
- * the published track.
- */
-export function getInputGain(): number {
-  const raw = localStorage.getItem(VOICE_INPUT_GAIN_STORAGE_KEY);
-  const n = raw == null ? 1 : Number.parseFloat(raw);
-  if (!Number.isFinite(n)) return 1;
-  return Math.min(2, Math.max(0, n));
+export function parseVoicePreferences(
+  serialized: SerializedVoicePreferences,
+): VoicePreferencesSnapshot {
+  return {
+    inputDeviceId: serialized.inputDeviceId ?? DEFAULT_VOICE_PREFERENCES.inputDeviceId,
+    outputDeviceId: serialized.outputDeviceId ?? DEFAULT_VOICE_PREFERENCES.outputDeviceId,
+    cameraDeviceId: serialized.cameraDeviceId ?? DEFAULT_VOICE_PREFERENCES.cameraDeviceId,
+    noiseSuppression: serialized.noiseSuppression !== "off",
+    inputGain: parseInputGain(serialized.inputGain),
+    showSpeakingEverywhere: serialized.showSpeakingEverywhere === "on",
+  };
+}
+
+function browserStorage(): VoicePreferencesStorage | undefined {
+  try {
+    return typeof localStorage === "undefined" ? undefined : localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
+function read(storage: VoicePreferencesStorage, key: string): string | null {
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+export function loadVoicePreferences(
+  storage: VoicePreferencesStorage | undefined = browserStorage(),
+): VoicePreferencesSnapshot {
+  if (!storage) return { ...DEFAULT_VOICE_PREFERENCES };
+  return parseVoicePreferences({
+    inputDeviceId: read(storage, VOICE_INPUT_STORAGE_KEY),
+    outputDeviceId: read(storage, VOICE_OUTPUT_STORAGE_KEY),
+    cameraDeviceId: read(storage, VOICE_CAMERA_STORAGE_KEY),
+    noiseSuppression: read(storage, VOICE_NOISE_SUPPRESSION_STORAGE_KEY),
+    inputGain: read(storage, VOICE_INPUT_GAIN_STORAGE_KEY),
+    showSpeakingEverywhere: read(storage, VOICE_SHOW_SPEAKING_EVERYWHERE_KEY),
+  });
+}
+
+export function saveVoicePreferences(
+  preferences: VoicePreferencesSnapshot,
+  storage: VoicePreferencesStorage | undefined = browserStorage(),
+): void {
+  if (!storage) return;
+  const values: ReadonlyArray<readonly [string, string]> = [
+    [VOICE_INPUT_STORAGE_KEY, preferences.inputDeviceId],
+    [VOICE_OUTPUT_STORAGE_KEY, preferences.outputDeviceId],
+    [VOICE_CAMERA_STORAGE_KEY, preferences.cameraDeviceId],
+    [VOICE_NOISE_SUPPRESSION_STORAGE_KEY, preferences.noiseSuppression ? "on" : "off"],
+    [VOICE_INPUT_GAIN_STORAGE_KEY, String(preferences.inputGain)],
+    [VOICE_SHOW_SPEAKING_EVERYWHERE_KEY, preferences.showSpeakingEverywhere ? "on" : "off"],
+  ];
+  for (const [key, value] of values) {
+    try {
+      storage.setItem(key, value);
+    } catch {
+      // Preferences remain usable for this session when storage is unavailable
+      // or full; a later action will attempt persistence again.
+    }
+  }
 }

@@ -115,7 +115,7 @@ test("uploads a thread reply photo and renders it in the open panel", async ({ p
   const replyMarker = `thread photo reply ${Date.now()}`;
   await attachTinyPhoto(panel);
   await panel.getByRole("textbox", { name: /thread reply/i }).fill(replyMarker);
-  await panel.getByRole("button", { name: /^send$/i }).click();
+  await panel.getByRole("button", { name: "Send response to thread" }).click();
 
   await expectPhotoMessage(panel, replyMarker, "baipas");
 });
