@@ -307,6 +307,10 @@ function serializedNode(node: Node): string {
     const marker =
       node.dataset.emojiMarker ?? node.dataset.mentionMarker ?? node.dataset.channelMarker;
     if (marker) return marker;
+    if (node.dataset.editorCaretBoundary === "true") {
+      return `\n${Array.from(node.childNodes, serializedNode).join("")}`;
+    }
+    if (node.dataset.editorCaretPlaceholder === "true") return "";
     if (node instanceof HTMLBRElement) return "\n";
   }
   if (node.nodeType === Node.TEXT_NODE) {
@@ -353,6 +357,7 @@ function serializedOffset(root: Node, container: Node | null, offset: number): n
     current.nodeType === Node.TEXT_NODE
       ? (current.textContent ?? "").slice(0, offset).split(CARET_SENTINEL).join("").length
       : Array.from(current.childNodes).slice(0, offset).map(serializedNode).join("").length;
+  if (current instanceof HTMLElement && current.dataset.editorCaretBoundary === "true") result += 1;
   while (current !== root && current.parentNode) {
     const parent = current.parentNode;
     const childOffset = Array.prototype.indexOf.call(parent.childNodes, current) as number;
@@ -360,6 +365,7 @@ function serializedOffset(root: Node, container: Node | null, offset: number): n
       .slice(0, childOffset)
       .map(serializedNode)
       .join("").length;
+    if (parent instanceof HTMLElement && parent.dataset.editorCaretBoundary === "true") result += 1;
     current = parent;
   }
   return result;
@@ -656,12 +662,13 @@ describe("<MessageInput>", () => {
     fireEvent.compositionEnd(input, { data: "あ" });
 
     expect(editorValue(input)).toBe("あ");
-    expect(input.firstChild).not.toBe(activeCompositionNode);
+    expect(input.firstChild).toBe(activeCompositionNode);
     expect(removeAllRanges).not.toHaveBeenCalled();
     expect(addRange).not.toHaveBeenCalled();
     await waitFor(() => {
-      expect(removeAllRanges).toHaveBeenCalledTimes(1);
-      expect(addRange).toHaveBeenCalledTimes(1);
+      expect(removeAllRanges).toHaveBeenCalled();
+      expect(addRange).toHaveBeenCalled();
+      expect(removeAllRanges).toHaveBeenCalledTimes(addRange.mock.calls.length);
       expect(editorSelection(input)).toEqual({ start: 1, end: 1 });
     });
   });
@@ -1935,6 +1942,83 @@ describe("<MessageInput>", () => {
       expect(editorSelection(input).start).toBe("aX".length);
     });
     expect(changes.at(-1)).toBe("aXbc");
+  });
+
+  test("preserves browser-owned contenteditable DOM and caret after a native input event", async () => {
+    const { changes } = renderHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
+
+    act(() => {
+      input.textContent = "browser draft";
+      setDomSelection(input.firstChild ?? input, "browser draft".length);
+      fireEvent.input(input, { inputType: "insertText", data: "t" });
+    });
+    const browserTextNode = input.firstChild;
+
+    await waitFor(() => {
+      expect(editorValue(input)).toBe("browser draft");
+      expect(editorSelection(input)).toEqual({
+        start: "browser draft".length,
+        end: "browser draft".length,
+      });
+    });
+    expect(input.firstChild).toBe(browserTextNode);
+    expect(changes.at(-1)).toBe("browser draft");
+  });
+
+  test("uses the live native caret for a picker selection after browser typing", async () => {
+    renderHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
+
+    inputFromUser(input, "hello world", "hello ".length, {
+      inputType: "insertText",
+      data: "d",
+    });
+    await selectEmoji(":smile:", /emoji :smile:/i);
+
+    await waitFor(() => {
+      expect(editorValue(input)).toBe("hello 😄world");
+      expect(editorSelection(input).start).toBe("hello 😄".length);
+    });
+  });
+
+  test("keeps a text-node caret at offset zero after deleting at the start", async () => {
+    const { changes } = renderHarness("abc");
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
+
+    inputFromUser(input, "bc", 0, { inputType: "deleteContentForward" });
+
+    await waitFor(() => {
+      expect(editorValue(input)).toBe("bc");
+      expect(editorSelection(input)).toEqual({ start: 0, end: 0 });
+    });
+    await selectEmoji(":smile:", /emoji :smile:/i);
+
+    await waitFor(() => {
+      expect(editorValue(input)).toBe("😄bc");
+      expect(editorSelection(input).start).toBe("😄".length);
+    });
+    expect(changes).toContain("bc");
+    expect(changes.at(-1)).toBe("😄bc");
+  });
+
+  test("treats only an editor-root offset-zero selection after scripted fill as caret-at-end", async () => {
+    renderHarness();
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
+
+    act(() => {
+      input.textContent = "filled";
+      setDomSelection(input, 0);
+      fireEvent.input(input, { inputType: "insertText", data: "filled" });
+    });
+
+    await waitFor(() => {
+      expect(editorValue(input)).toBe("filled");
+      expect(editorSelection(input)).toEqual({ start: "filled".length, end: "filled".length });
+    });
+
+    await selectEmoji(":smile:", /emoji :smile:/i);
+    await waitFor(() => expect(editorValue(input)).toBe("filled😄"));
   });
 
   test("keeps the composer stable while typing a custom emoji shortcode prefix", async () => {

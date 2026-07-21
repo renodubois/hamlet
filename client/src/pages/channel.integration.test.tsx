@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
@@ -27,6 +27,14 @@ vi.mock("../api", async () => {
     ...actual,
     messagesEventSource: () => new FakeEventSource("/mock/messages") as unknown as EventSource,
   };
+});
+
+afterEach(async () => {
+  // Channel visibility can queue a mark-read response after the test's final
+  // assertion. Let that owned provider update finish inside React's test scope.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
 });
 
 function mountAt(path: string) {
@@ -107,6 +115,10 @@ function serializedNode(node: Node): string {
     const marker =
       node.dataset.emojiMarker ?? node.dataset.mentionMarker ?? node.dataset.channelMarker;
     if (marker) return marker;
+    if (node.dataset.editorCaretBoundary === "true") {
+      return `\n${Array.from(node.childNodes, serializedNode).join("")}`;
+    }
+    if (node.dataset.editorCaretPlaceholder === "true") return "";
     if (node instanceof HTMLBRElement) return "\n";
   }
   if (node.nodeType === Node.TEXT_NODE) {
@@ -1673,6 +1685,10 @@ describe("Channel view integration", () => {
     expect(document.activeElement).not.toBe(input);
     expect(history.get()).toBe("/channel/100?thread=1");
     await expectNoA11yViolations(container, "deep-linked thread panel");
+    await waitFor(() => expect(state.markReadRequests.length).toBeGreaterThan(0));
+    await act(async () => {
+      await Promise.resolve();
+    });
   });
 
   test("channel and thread composers expose accessible multiline textbox semantics", async () => {

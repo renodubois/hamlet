@@ -39,11 +39,21 @@ function threadMessageRow(panel: Locator, text: string): Locator {
 async function expectEditorValue(input: Locator, expected: RegExp) {
   await expect
     .poll(() =>
-      input.evaluate((element) =>
-        "value" in element && typeof element.value === "string"
-          ? element.value
-          : (element.textContent ?? ""),
-      ),
+      input.evaluate((element) => {
+        if ("value" in element && typeof element.value === "string") return element.value;
+        const serialize = (node: Node): string => {
+          if (node instanceof HTMLElement) {
+            const marker =
+              node.dataset.emojiMarker ?? node.dataset.mentionMarker ?? node.dataset.channelMarker;
+            if (marker) return marker;
+            if (node instanceof HTMLBRElement) return "\n";
+          }
+          if (node.nodeType === Node.TEXT_NODE)
+            return (node.textContent ?? "").replaceAll("\u200B", "");
+          return Array.from(node.childNodes, serialize).join("");
+        };
+        return serialize(element);
+      }),
     )
     .toMatch(expected);
 }
@@ -54,9 +64,18 @@ async function moveEditorCaretToEnd(input: Locator) {
       value?: string;
       setSelectionRange?: (start: number, end?: number) => void;
     };
-    const value = typeof editor.value === "string" ? editor.value : (editor.textContent ?? "");
     editor.focus();
-    editor.setSelectionRange?.(value.length, value.length);
+    if (typeof editor.value === "string" && editor.setSelectionRange) {
+      editor.setSelectionRange(editor.value.length, editor.value.length);
+      return;
+    }
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    editor.dispatchEvent(new Event("select", { bubbles: true }));
   });
 }
 

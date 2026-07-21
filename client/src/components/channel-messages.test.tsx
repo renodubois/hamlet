@@ -134,6 +134,10 @@ function serializedNode(node: Node): string {
     const marker =
       node.dataset.emojiMarker ?? node.dataset.mentionMarker ?? node.dataset.channelMarker;
     if (marker) return marker;
+    if (node.dataset.editorCaretBoundary === "true") {
+      return `\n${Array.from(node.childNodes, serializedNode).join("")}`;
+    }
+    if (node.dataset.editorCaretPlaceholder === "true") return "";
     if (node instanceof HTMLBRElement) return "\n";
   }
   if (node.nodeType === Node.TEXT_NODE) {

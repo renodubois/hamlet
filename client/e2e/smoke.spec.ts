@@ -27,11 +27,22 @@ test("logs in as the dev user and lands in a channel", async ({ page }) => {
 async function expectEditorValue(input: Locator, expected: string) {
   await expect
     .poll(() =>
-      input.evaluate((element) =>
-        "value" in element && typeof element.value === "string"
-          ? element.value
-          : element.textContent,
-      ),
+      input.evaluate((element) => {
+        if ("value" in element && typeof element.value === "string") return element.value;
+        const serialize = (node: Node): string => {
+          if (node instanceof HTMLElement) {
+            if (node.dataset.editorCaretBoundary === "true") {
+              return `\n${Array.from(node.childNodes, serialize).join("")}`;
+            }
+            if (node.dataset.editorCaretPlaceholder === "true") return "";
+            if (node instanceof HTMLBRElement) return "\n";
+          }
+          if (node.nodeType === Node.TEXT_NODE)
+            return (node.textContent ?? "").replaceAll("\u200B", "");
+          return Array.from(node.childNodes, serialize).join("");
+        };
+        return serialize(element);
+      }),
     )
     .toBe(expected);
 }
@@ -232,6 +243,30 @@ test("sends a multiline message with Shift+Enter and renders both lines", async 
   await expect
     .poll(() => renderedMessage.evaluate((element) => element.textContent))
     .toBe(expected);
+});
+
+test("keeps the caret at the start after forward deletion", async ({ page }) => {
+  await loginAndOpenGeneral(page);
+
+  const input = page.getByPlaceholder(/send a new message/i);
+  await input.fill("abc");
+  await expectEditorValue(input, "abc");
+
+  await input.evaluate((element) => {
+    const text = element.firstChild;
+    if (!text || text.nodeType !== Node.TEXT_NODE) throw new Error("composer text node is missing");
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  await input.press("Delete");
+  await expectEditorValue(input, "bc");
+
+  await input.pressSequentially("X");
+  await expectEditorValue(input, "Xbc");
 });
 
 test("commits native emoji autocomplete and sends the emoji", async ({ page }) => {

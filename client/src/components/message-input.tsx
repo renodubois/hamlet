@@ -261,6 +261,7 @@ function serializeEditor(root: HTMLElement): string {
 function serializeNode(node: Node): string {
   const marker = markerForElement(node);
   if (marker) return marker;
+  if (node instanceof HTMLElement && node.dataset.editorCaretPlaceholder === "true") return "";
   if (isLineBreakElement(node)) return "\n";
   if (node.nodeType === Node.TEXT_NODE) {
     return stripEditorCaretSentinels(node.textContent ?? "");
@@ -315,6 +316,18 @@ function serializedOffset(root: HTMLElement, container: Node, offset: number): n
   return position;
 }
 
+function hasEditorRootOffsetZeroSelection(root: HTMLElement): boolean {
+  const selection = window.getSelection();
+  return Boolean(
+    selection &&
+    selection.rangeCount > 0 &&
+    selection.anchorNode === root &&
+    selection.focusNode === root &&
+    selection.anchorOffset === 0 &&
+    selection.focusOffset === 0,
+  );
+}
+
 function readEditorSelection(root: HTMLElement, value: string): SelectionRange {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0) {
@@ -352,6 +365,13 @@ function findPositionInChildren(parent: Node, index: number): DomPosition | null
     const offset = childOffset(parent, child);
 
     if (shouldInsertBlockSeparator(previous, child, serializedPrefix)) {
+      if (
+        remaining <= 1 &&
+        child instanceof HTMLElement &&
+        child.dataset.editorCaretBoundary === "true"
+      ) {
+        return { node: child, offset: 0 };
+      }
       if (remaining === 0) return { node: parent, offset };
       if (remaining === 1) return { node: parent, offset };
       remaining -= 1;
@@ -384,9 +404,15 @@ function findPositionInChildren(parent: Node, index: number): DomPosition | null
     }
 
     if (remaining === length) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        return { node: child, offset: child.textContent?.length ?? 0 };
+      }
       const next = parent.childNodes[offset + 1];
       if (next?.nodeType === Node.TEXT_NODE && next.textContent === EDITOR_CARET_SENTINEL) {
         return { node: next, offset: next.textContent.length };
+      }
+      if (next instanceof HTMLElement && next.dataset.editorCaretBoundary === "true") {
+        return { node: next, offset: 0 };
       }
       return { node: parent, offset: offset + 1 };
     }
@@ -609,15 +635,40 @@ function createChannelChipElement(marker: string, channel: Channel): HTMLSpanEle
   return chip;
 }
 
-function appendTextWithLineBreaks(fragment: DocumentFragment, value: string) {
+function appendTextWithLineBreaks(
+  fragment: DocumentFragment,
+  value: string,
+  caretBoundaryAtEnd = false,
+) {
   const lines = value.split("\n");
   lines.forEach((line, index) => {
     if (line.length > 0) fragment.append(document.createTextNode(line));
     if (index < lines.length - 1) {
-      fragment.append(document.createElement("br"));
-      fragment.append(createEditorCaretSentinel());
+      if (caretBoundaryAtEnd && index === lines.length - 2 && lines[index + 1] === "") {
+        const caretBoundary = document.createElement("div");
+        caretBoundary.dataset.editorCaretBoundary = "true";
+        const placeholderBreak = document.createElement("br");
+        placeholderBreak.dataset.editorCaretPlaceholder = "true";
+        caretBoundary.append(placeholderBreak);
+        fragment.append(caretBoundary);
+      } else {
+        fragment.append(document.createElement("br"));
+      }
     }
   });
+}
+
+function editorMarkerValues(root: HTMLElement): string[] {
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(
+      "[data-emoji-marker], [data-mention-marker], [data-channel-marker]",
+    ),
+    (element) => markerForElement(element) ?? "",
+  );
+}
+
+function expectedEditorMarkerValues(value: string, includeMentions: boolean): string[] {
+  return editorMarkerRanges(value, includeMentions).map((range) => range.marker);
 }
 
 function renderEditorValue(
@@ -633,7 +684,7 @@ function renderEditorValue(
 
   tokens.forEach((token, index) => {
     if (token.type === "text") {
-      appendTextWithLineBreaks(fragment, token.value);
+      appendTextWithLineBreaks(fragment, token.value, index === tokens.length - 1);
       return;
     }
 
@@ -774,7 +825,7 @@ export default function MessageInput(props: MessageInputProps) {
   const inputRef = useRef<MessageEditorElement | null>(null);
   const emojiButtonRef = useRef<HTMLButtonElement | null>(null);
   const previousValueRef = useRef(props.value);
-  const previousRenderedKeyRef = useRef<string | null>(null);
+  const previousRenderMetadataRef = useRef<string | null>(null);
   const authoritativeValueRef = useRef(props.value);
   authoritativeValueRef.current = props.value;
   const isComposingRef = useRef(false);
@@ -793,11 +844,13 @@ export default function MessageInput(props: MessageInputProps) {
   const setSelection = (
     nextValue: SelectionRange | ((current: SelectionRange) => SelectionRange),
   ) => {
+    const current = selectionRef.current;
     const next =
       typeof nextValue === "function"
-        ? (nextValue as (current: SelectionRange) => SelectionRange)(selectionRef.current)
+        ? (nextValue as (current: SelectionRange) => SelectionRange)(current)
         : nextValue;
     selectionRef.current = next;
+    if (current.start === next.start && current.end === next.end) return;
     setSelectionState(next);
   };
 
@@ -1049,12 +1102,19 @@ export default function MessageInput(props: MessageInputProps) {
     (editor: MessageEditorElement, value: string): boolean => {
       if (isComposingRef.current) return false;
 
-      const renderKey = `${value}\u0000${customEmojiRenderVersion}\u0000${mentionUsersRenderVersion}\u0000${channelRenderVersion}\u0000${mentionChipsEnabled}`;
-      if (previousRenderedKeyRef.current === renderKey && serializeEditor(editor) === value) {
+      const renderMetadata = `${customEmojiRenderVersion}\u0000${mentionUsersRenderVersion}\u0000${channelRenderVersion}\u0000${mentionChipsEnabled}`;
+      const valueMatches = serializeEditor(editor) === value;
+      const markersMatch =
+        editorMarkerValues(editor).join("\u0000") ===
+        expectedEditorMarkerValues(value, mentionChipsEnabled).join("\u0000");
+      if (previousRenderMetadataRef.current === renderMetadata && valueMatches && markersMatch) {
+        // The browser has already applied a normal contenteditable input. Do
+        // not replace its DOM: doing so discards Chromium's live caret before
+        // the next key or picker interaction.
         return false;
       }
 
-      previousRenderedKeyRef.current = renderKey;
+      previousRenderMetadataRef.current = renderMetadata;
       renderEditorValue(
         editor,
         value,
@@ -1080,7 +1140,11 @@ export default function MessageInput(props: MessageInputProps) {
     const editor = event.currentTarget;
     const rawValue = serializeEditor(editor);
     let currentSelection = readEditorSelection(editor, rawValue);
-    if (rawValue.length > 0 && currentSelection.start === 0 && currentSelection.end === 0) {
+    if (rawValue.length > 0 && hasEditorRootOffsetZeroSelection(editor)) {
+      // Chromium's scripted fill can report the collapsed selection as the
+      // editor root at child offset zero even though its caret is visually at
+      // the end. Do not infer this from serialized {0, 0}: a real caret at the
+      // start of the first text node has the same serialized offsets.
       currentSelection = { start: rawValue.length, end: rawValue.length };
     }
     let next = replaceCompletedEmojiShortcodeBeforeCaret(
@@ -1125,12 +1189,16 @@ export default function MessageInput(props: MessageInputProps) {
     queueMicrotask(() => {
       if (!editor.isConnected || isComposingRef.current) return;
       const authoritativeValue = authoritativeValueRef.current;
-      if (serializeEditor(editor) === authoritativeValue) return;
       if (pendingSelectionRestoreRef.current?.value !== authoritativeValue) {
         pendingSelectionRestoreRef.current = null;
       }
       const selection = normalizeSelection(selectionRef.current, authoritativeValue);
-      reconcileEditorValue(editor, authoritativeValue);
+      if (serializeEditor(editor) !== authoritativeValue) {
+        reconcileEditorValue(editor, authoritativeValue);
+      }
+      // Chromium may finalize a scripted/native contenteditable mutation after
+      // React's layout effects (Playwright fill exposes this as a root offset
+      // of zero). Restore after the input event has completely unwound.
       placeEditorSelection(editor, selection);
       selectionRef.current = selection;
     });
@@ -1472,7 +1540,18 @@ export default function MessageInput(props: MessageInputProps) {
 
   useLayoutEffect(() => {
     const value = props.value;
-    if (inputRef.current) reconcileEditorValue(inputRef.current, value);
+    const editor = inputRef.current;
+    const domSelection = window.getSelection();
+    const selectionWasInEditor = Boolean(
+      editor &&
+      domSelection?.anchorNode &&
+      domSelection.focusNode &&
+      editor.contains(domSelection.anchorNode) &&
+      editor.contains(domSelection.focusNode),
+    );
+    const selectionBeforeReconcile =
+      editor && selectionWasInEditor ? readEditorSelection(editor, serializeEditor(editor)) : null;
+    const reconstructed = editor ? reconcileEditorValue(editor, value) : false;
 
     const current = selectionRef.current;
     const normalizedSelection = normalizeSelection(current, value);
@@ -1486,13 +1565,17 @@ export default function MessageInput(props: MessageInputProps) {
     if (
       !isComposingRef.current &&
       pendingSelectionRestore &&
-      inputRef.current &&
+      editor &&
       value === pendingSelectionRestore.value
     ) {
       const selection = normalizeSelection(pendingSelectionRestore.selection, value);
       pendingSelectionRestoreRef.current = null;
-      if (pendingSelectionRestore.focusInput) inputRef.current.focus();
-      placeEditorSelection(inputRef.current, selection);
+      if (pendingSelectionRestore.focusInput) editor.focus();
+      placeEditorSelection(editor, selection);
+      selectionRef.current = selection;
+    } else if (!isComposingRef.current && reconstructed && editor && selectionBeforeReconcile) {
+      const selection = normalizeSelection(selectionBeforeReconcile, value);
+      placeEditorSelection(editor, selection);
       selectionRef.current = selection;
     }
 
@@ -1538,7 +1621,7 @@ export default function MessageInput(props: MessageInputProps) {
     (editor: HTMLDivElement | null) => {
       inputRef.current = editor;
       if (!editor) {
-        previousRenderedKeyRef.current = null;
+        previousRenderMetadataRef.current = null;
         externalInputRef?.(null);
         return;
       }

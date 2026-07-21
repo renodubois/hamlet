@@ -59,9 +59,21 @@ async function uploadEmoji(
 
 async function expectEditorValue(input: Locator, expected: string | RegExp) {
   const value = () =>
-    input.evaluate((element) =>
-      "value" in element && typeof element.value === "string" ? element.value : element.textContent,
-    );
+    input.evaluate((element) => {
+      if ("value" in element && typeof element.value === "string") return element.value;
+      const serialize = (node: Node): string => {
+        if (node instanceof HTMLElement) {
+          const marker =
+            node.dataset.emojiMarker ?? node.dataset.mentionMarker ?? node.dataset.channelMarker;
+          if (marker) return marker;
+          if (node instanceof HTMLBRElement) return "\n";
+        }
+        if (node.nodeType === Node.TEXT_NODE)
+          return (node.textContent ?? "").replaceAll("\u200B", "");
+        return Array.from(node.childNodes, serialize).join("");
+      };
+      return serialize(element);
+    });
 
   if (typeof expected === "string") {
     await expect.poll(value).toBe(expected);
