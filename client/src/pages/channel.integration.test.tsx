@@ -30,10 +30,11 @@ vi.mock("../api", async () => {
 });
 
 afterEach(async () => {
-  // Channel visibility can queue a mark-read response after the test's final
-  // assertion. Let that owned provider update finish inside React's test scope.
+  if (!screen.queryByRole("region", { name: /messages/i })) return;
+  // Channel views debounce viewport read markers. Let that owned timer and its
+  // request settle inside React act before the global harness unmounts providers.
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 150));
   });
 });
 
@@ -1687,7 +1688,7 @@ describe("Channel view integration", () => {
     await expectNoA11yViolations(container, "deep-linked thread panel");
     await waitFor(() => expect(state.markReadRequests.length).toBeGreaterThan(0));
     await act(async () => {
-      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
     });
   });
 

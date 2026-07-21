@@ -56,6 +56,7 @@ export function ReadStatesProvider(props: { children: ReactNode }) {
   const authGenerationRef = useRef(0);
   const requestIdRef = useRef(0);
   const requestControllerRef = useRef<AbortController | null>(null);
+  const markReadControllersRef = useRef(new Set<AbortController>());
   const eventVersionRef = useRef(0);
   const journalRef = useRef<Array<{ version: number; entry: ReadStateJournalEntry }>>([]);
 
@@ -111,10 +112,13 @@ export function ReadStatesProvider(props: { children: ReactNode }) {
       const currentUser = currentUserRef.current;
       if (!currentUser) return null;
       const authGeneration = authGenerationRef.current;
+      const controller = new AbortController();
+      markReadControllersRef.current.add(controller);
 
       try {
-        const summary = await markChannelRead(channelId, lastVisibleMessageId);
+        const summary = await markChannelRead(channelId, lastVisibleMessageId, controller.signal);
         if (
+          controller.signal.aborted ||
           authGeneration !== authGenerationRef.current ||
           currentUser.id !== currentUserRef.current?.id
         ) {
@@ -127,8 +131,12 @@ export function ReadStatesProvider(props: { children: ReactNode }) {
         setStates((accepted) => applyReadStateUpdate(accepted, summary));
         return summary;
       } catch (caught) {
-        console.warn("failed to mark channel read", caught);
+        if (!controller.signal.aborted && !isAbortError(caught)) {
+          console.warn("failed to mark channel read", caught);
+        }
         return null;
+      } finally {
+        markReadControllersRef.current.delete(controller);
       }
     },
     [],
@@ -139,6 +147,8 @@ export function ReadStatesProvider(props: { children: ReactNode }) {
     requestIdRef.current += 1;
     requestControllerRef.current?.abort();
     requestControllerRef.current = null;
+    for (const controller of markReadControllersRef.current) controller.abort();
+    markReadControllersRef.current.clear();
     eventVersionRef.current = 0;
     journalRef.current = [];
     setStates({});
@@ -196,6 +206,8 @@ export function ReadStatesProvider(props: { children: ReactNode }) {
     () => () => {
       requestIdRef.current += 1;
       requestControllerRef.current?.abort();
+      for (const controller of markReadControllersRef.current) controller.abort();
+      markReadControllersRef.current.clear();
     },
     [],
   );

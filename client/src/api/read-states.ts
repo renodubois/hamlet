@@ -18,11 +18,13 @@ export async function listReadStates(signal?: AbortSignal): Promise<ReadStateSum
 export async function markChannelRead(
   channelId: number,
   lastVisibleMessageId: number,
+  signal?: AbortSignal,
 ): Promise<ReadStateSummary> {
   const res = await apiFetch(`/channels/${channelId}/read-state`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ last_visible_message_id: lastVisibleMessageId }),
+    signal,
   });
   if (!res.ok) throw new Error(`Mark read failed (${res.status})`);
   return res.json() as Promise<ReadStateSummary>;
