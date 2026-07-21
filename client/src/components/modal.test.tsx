@@ -1,14 +1,15 @@
+import { StrictMode, useState } from "react";
+import { act, fireEvent, screen } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen } from "../test/testing-library";
-import { useSignalState } from "../hooks/react-state";
+import { renderNative } from "../test/render";
 import Modal from "./modal";
 
 function mount(open: boolean, onClose = vi.fn()) {
-  const result = render(() => (
+  const result = renderNative(
     <Modal open={open} onClose={onClose} title="Hello">
       <p>body-content</p>
-    </Modal>
-  ));
+    </Modal>,
+  );
   return { ...result, onClose };
 }
 
@@ -43,10 +44,21 @@ describe("<Modal>", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  test("calls onClose when Escape is pressed while open", () => {
-    const { onClose } = mount(true);
+  test("calls the latest onClose when Escape is pressed while open", () => {
+    const firstClose = vi.fn();
+    const latestClose = vi.fn();
+    const view = mount(true, firstClose);
+    view.rerender(
+      <StrictMode>
+        <Modal open onClose={latestClose} title="Hello">
+          <p>body-content</p>
+        </Modal>
+      </StrictMode>,
+    );
+
     fireEvent.keyDown(window, { key: "Escape" });
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(latestClose).toHaveBeenCalledTimes(1);
+    expect(firstClose).not.toHaveBeenCalled();
   });
 
   test("does not react to Escape when closed", () => {
@@ -69,7 +81,6 @@ describe("<Modal>", () => {
     opener.textContent = "opener";
     document.body.appendChild(opener);
     opener.focus();
-    expect(document.activeElement).toBe(opener);
 
     mount(true);
     const dialog = screen.getByRole("dialog");
@@ -79,42 +90,41 @@ describe("<Modal>", () => {
   });
 
   test("respects [autoFocus] children when opened", () => {
-    render(() => (
+    renderNative(
       <Modal open onClose={() => {}} title="Hello">
         <input placeholder="first" />
         <input placeholder="autoFocused" autoFocus />
-      </Modal>
-    ));
+      </Modal>,
+    );
     expect(document.activeElement).toBe(screen.getByPlaceholderText("autoFocused"));
   });
 
   test("Tab from the last focusable wraps to the first", () => {
-    render(() => (
+    renderNative(
       <Modal open onClose={() => {}} title="Hello">
         <button type="button">a</button>
         <button type="button">b</button>
-      </Modal>
-    ));
-    const closeBtn = screen.getByLabelText("Close");
-    const b = screen.getByText("b");
-    b.focus();
-    expect(document.activeElement).toBe(b);
+      </Modal>,
+    );
+    const closeButton = screen.getByLabelText("Close");
+    const lastButton = screen.getByText("b");
+    lastButton.focus();
     fireEvent.keyDown(window, { key: "Tab" });
-    expect(document.activeElement).toBe(closeBtn);
+    expect(document.activeElement).toBe(closeButton);
   });
 
   test("Shift+Tab from the first focusable wraps to the last", () => {
-    render(() => (
+    renderNative(
       <Modal open onClose={() => {}} title="Hello">
         <button type="button">a</button>
         <button type="button">b</button>
-      </Modal>
-    ));
-    const closeBtn = screen.getByLabelText("Close");
-    const b = screen.getByText("b");
-    closeBtn.focus();
+      </Modal>,
+    );
+    const closeButton = screen.getByLabelText("Close");
+    const lastButton = screen.getByText("b");
+    closeButton.focus();
     fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
-    expect(document.activeElement).toBe(b);
+    expect(document.activeElement).toBe(lastButton);
   });
 
   test("Tab from outside the dialog is redirected back inside", () => {
@@ -122,42 +132,108 @@ describe("<Modal>", () => {
     outside.textContent = "outside";
     document.body.appendChild(outside);
 
-    render(() => (
+    renderNative(
       <Modal open onClose={() => {}} title="Hello">
         <button type="button">inside</button>
-      </Modal>
-    ));
+      </Modal>,
+    );
     outside.focus();
-    expect(document.activeElement).toBe(outside);
     fireEvent.keyDown(window, { key: "Tab" });
-    const dialog = screen.getByRole("dialog");
-    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
 
     outside.remove();
   });
 
   test("restores focus to the previously focused element on close", () => {
-    const [open, setOpen] = useSignalState(false);
-    render(() => (
-      <div>
-        <button type="button">opener</button>
-        <Modal open={open()} onClose={() => setOpen(false)} title="Hello">
-          <button type="button">inside</button>
-        </Modal>
-      </div>
-    ));
+    let setOpen: ((open: boolean) => void) | undefined;
+    function Harness() {
+      const [open, updateOpen] = useState(false);
+      setOpen = updateOpen;
+      return (
+        <div>
+          <button type="button">opener</button>
+          <Modal open={open} onClose={() => updateOpen(false)} title="Hello">
+            <button type="button">inside</button>
+          </Modal>
+        </div>
+      );
+    }
+
+    renderNative(<Harness />);
     const opener = screen.getByText("opener");
     opener.focus();
-    setOpen(true);
+    act(() => setOpen?.(true));
     expect(document.activeElement).not.toBe(opener);
-    setOpen(false);
+    act(() => setOpen?.(false));
     expect(document.activeElement).toBe(opener);
+  });
+
+  test("rerendering controlled content preserves field focus and value", () => {
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    outside.focus();
+
+    function Harness() {
+      const [value, setValue] = useState("");
+      const [, setRenderCount] = useState(0);
+      return (
+        <Modal open onClose={() => {}} title="Hello">
+          <input
+            aria-label="Name"
+            value={value}
+            onChange={(event) => setValue(event.currentTarget.value)}
+          />
+          <button type="button" onClick={() => setRenderCount((count) => count + 1)}>
+            Rerender
+          </button>
+        </Modal>
+      );
+    }
+
+    renderNative(<Harness />);
+    const input = screen.getByLabelText("Name");
+    fireEvent.change(input, { target: { value: "alice" } });
+    input.focus();
+    fireEvent.click(screen.getByText("Rerender"));
+
+    expect(input).toHaveValue("alice");
+    expect(document.activeElement).toBe(input);
+    expect(document.activeElement).not.toBe(outside);
+    outside.remove();
+  });
+
+  test("removing an underlying modal does not steal focus from the surviving top modal", () => {
+    let closeOuter: (() => void) | undefined;
+
+    function Harness() {
+      const [outerOpen, setOuterOpen] = useState(true);
+      closeOuter = () => setOuterOpen(false);
+      return (
+        <>
+          <Modal open={outerOpen} onClose={() => setOuterOpen(false)} title="Outer">
+            <button type="button">outer-btn</button>
+          </Modal>
+          <Modal open onClose={() => {}} title="Inner">
+            <input aria-label="inner-field" />
+          </Modal>
+        </>
+      );
+    }
+
+    renderNative(<Harness />);
+    const innerField = screen.getByLabelText("inner-field");
+    innerField.focus();
+
+    act(() => closeOuter?.());
+
+    expect(screen.queryByRole("dialog", { name: "Outer" })).toBeNull();
+    expect(document.activeElement).toBe(innerField);
   });
 
   test("only the topmost nested modal handles Tab and Escape", () => {
     const outerClose = vi.fn();
     const innerClose = vi.fn();
-    render(() => (
+    renderNative(
       <>
         <Modal open onClose={outerClose} title="Outer">
           <button type="button">outer-btn</button>
@@ -165,20 +241,16 @@ describe("<Modal>", () => {
         <Modal open onClose={innerClose} title="Inner">
           <button type="button">inner-btn</button>
         </Modal>
-      </>
-    ));
+      </>,
+    );
 
-    // Escape only closes the inner (topmost) modal.
     fireEvent.keyDown(window, { key: "Escape" });
     expect(innerClose).toHaveBeenCalledTimes(1);
     expect(outerClose).not.toHaveBeenCalled();
 
-    // Tab trap is scoped to the inner dialog — Tabbing from the inner button
-    // wraps within the inner dialog, never reaching outer-btn.
-    const innerBtn = screen.getByText("inner-btn");
-    innerBtn.focus();
+    const innerButton = screen.getByText("inner-btn");
+    innerButton.focus();
     fireEvent.keyDown(window, { key: "Tab" });
-    const outerBtn = screen.getByText("outer-btn");
-    expect(document.activeElement).not.toBe(outerBtn);
+    expect(document.activeElement).not.toBe(screen.getByText("outer-btn"));
   });
 });

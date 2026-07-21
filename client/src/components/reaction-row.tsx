@@ -1,5 +1,4 @@
-import { useId } from "react";
-import { useSignalState } from "../hooks/react-state";
+import { useId, useState } from "react";
 import { getServerUrl, type ReactionSummary } from "../api";
 
 function resolveImageUrl(url: string): string {
@@ -52,7 +51,7 @@ export default function ReactionRow(props: {
   onToggle: (reaction: ReactionSummary) => void;
 }) {
   const rowId = useId();
-  const [activePreviewKey, setActivePreviewKey] = useSignalState<string | null>(null);
+  const [activePreviewKey, setActivePreviewKey] = useState<string | null>(null);
   const visibleReactions = props.reactions.filter((reaction) => reaction.count > 0);
 
   return visibleReactions.length > 0 ? (
@@ -125,7 +124,7 @@ export default function ReactionRow(props: {
             <span id={previewId} className="sr-only">
               {previewText}
             </span>
-            {activePreviewKey() === key ? (
+            {activePreviewKey === key ? (
               <span
                 role="tooltip"
                 className="absolute bottom-full left-1/2 z-20 mb-1 w-max max-w-xs -translate-x-1/2 rounded-md bg-foreground px-2 py-1 text-xs font-medium text-background shadow-lg"

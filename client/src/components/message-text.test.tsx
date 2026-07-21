@@ -1,10 +1,9 @@
-import type { Dispatch, SetStateAction } from "react";
-import { useSignalState } from "../hooks/react-state";
-import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
+import { useState, type MouseEvent as ReactMouseEvent } from "react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 import type { Channel, CustomEmoji, MentionUser } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
-import { assertExists } from "../test/render";
+import { assertExists, renderNative } from "../test/render";
 import MessageText, { renderRichText } from "./message-text";
 
 const SELF: MentionUser = {
@@ -51,7 +50,7 @@ function customEmojiById(id: number): CustomEmoji | null {
 describe("renderRichText", () => {
   test("renders mixed links, mentions, custom emoji, repeated markers, and malformed text safely", () => {
     const onMentionClick = vi.fn();
-    render(() => (
+    renderNative(
       <div data-testid="rich-text">
         {renderRichText({
           text: "hi <@2> and <@1> <:party:123> see <#100> voice <#200> missing <@999> <#999> <:ghost:999> malformed <@abc> javascript:alert(1) https://example.test/path again <@2>",
@@ -61,8 +60,8 @@ describe("renderRichText", () => {
           currentUserId: SELF.id,
           onMentionClick,
         })}
-      </div>
-    ));
+      </div>,
+    );
 
     const bobMentions = screen.getAllByRole("button", { name: "Mention Bobby (@bob)" });
     expect(bobMentions).toHaveLength(2);
@@ -97,14 +96,14 @@ describe("renderRichText", () => {
   });
 
   test("renders channel mentions as static labels through MessageText props", () => {
-    render(() => <MessageText text="join <#100> then <#999>" channels={CHANNELS} />);
+    renderNative(<MessageText text="join <#100> then <#999>" channels={CHANNELS} />);
 
     expect(screen.getByRole("link", { name: "#general" })).toHaveAttribute("href", "/channel/100");
     expect(screen.getByText(/then <#999>/)).toBeInTheDocument();
   });
 
   test("renders mentions as static labels when no click handler is provided", () => {
-    render(() => (
+    renderNative(
       <div>
         {renderRichText({
           text: "hello <@2>",
@@ -112,17 +111,17 @@ describe("renderRichText", () => {
           customEmojiById,
           currentUserId: null,
         })}
-      </div>
-    ));
+      </div>,
+    );
 
     expect(screen.queryByRole("button", { name: "Mention Bobby (@bob)" })).toBeNull();
     expect(screen.getByText("@Bobby")).toHaveAttribute("title", "@bob");
   });
 
   test("styles current-user mentions more strongly than other mentions with accessible names", () => {
-    render(() => (
-      <MessageText text="hello <@1> and <@2>" mentions={[SELF, BOB]} currentUserId={1} />
-    ));
+    renderNative(
+      <MessageText text="hello <@1> and <@2>" mentions={[SELF, BOB]} currentUserId={1} />,
+    );
 
     expect(screen.getByRole("button", { name: "Mention Casey (@casey)" })).toHaveClass(
       "bg-primary/20",
@@ -140,9 +139,9 @@ describe("renderRichText", () => {
 describe("<MessageText> mention previews", () => {
   test("opens an accessible public profile preview from a mention control", async () => {
     localStorage.setItem("hamlet.serverUrl", "http://hamlet.test:4040");
-    const { container } = render(() => (
-      <MessageText text="hello <@2>" mentions={[BOB]} currentUserId={SELF.id} />
-    ));
+    const { container } = renderNative(
+      <MessageText text="hello <@2>" mentions={[BOB]} currentUserId={SELF.id} />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Mention Bobby (@bob)" }));
 
@@ -157,8 +156,29 @@ describe("<MessageText> mention previews", () => {
     await expectNoA11yViolations(container, "mention preview");
   });
 
+  test("passes the synthetic event with the clicked button as currentTarget", () => {
+    let clickedAnchor: HTMLButtonElement | null = null;
+    const onMentionClick = vi.fn(
+      (_user: MentionUser, event: ReactMouseEvent<HTMLButtonElement>) => {
+        clickedAnchor = event.currentTarget;
+      },
+    );
+    renderNative(
+      <MessageText text="hello <@2>" mentions={[BOB]} onMentionClick={onMentionClick} />,
+    );
+
+    const mention = screen.getByRole("button", { name: "Mention Bobby (@bob)" });
+    fireEvent.click(mention);
+
+    expect(onMentionClick).toHaveBeenCalledOnce();
+    expect(clickedAnchor).toBe(mention);
+    expect(screen.getByRole("dialog")).toHaveStyle({
+      left: `${Math.max(8, Math.min(mention.getBoundingClientRect().left, window.innerWidth - 264))}px`,
+    });
+  });
+
   test("falls back to username when a mentioned user has no display name", () => {
-    render(() => <MessageText text="hello <@3>" mentions={[CAROL]} currentUserId={SELF.id} />);
+    renderNative(<MessageText text="hello <@3>" mentions={[CAROL]} currentUserId={SELF.id} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Mention carol (@carol)" }));
 
@@ -168,9 +188,9 @@ describe("<MessageText> mention previews", () => {
   });
 
   test("switches previews and closes on Escape, outside click, and scroll", () => {
-    render(() => (
-      <MessageText text="hello <@2> then <@3>" mentions={[BOB, CAROL]} currentUserId={SELF.id} />
-    ));
+    renderNative(
+      <MessageText text="hello <@2> then <@3>" mentions={[BOB, CAROL]} currentUserId={SELF.id} />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Mention Bobby (@bob)" }));
     expect(
@@ -195,10 +215,25 @@ describe("<MessageText> mention previews", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  test("closes when the mention or its anchor disappears on rerender", async () => {
+    const { rerender } = renderNative(
+      <MessageText text="hello <@2>" mentions={[BOB]} currentUserId={SELF.id} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Mention Bobby (@bob)" }));
+
+    rerender(<MessageText text="hello" mentions={[BOB]} currentUserId={SELF.id} />);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    rerender(<MessageText text="hello <@2>" mentions={[BOB]} currentUserId={SELF.id} />);
+    fireEvent.click(screen.getByRole("button", { name: "Mention Bobby (@bob)" }));
+    rerender(<MessageText text="hello <@2>" mentions={[]} currentUserId={SELF.id} />);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
   test("closes on unmount", () => {
-    const { unmount } = render(() => (
-      <MessageText text="hello <@2>" mentions={[BOB]} currentUserId={SELF.id} />
-    ));
+    const { unmount } = renderNative(
+      <MessageText text="hello <@2>" mentions={[BOB]} currentUserId={SELF.id} />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Mention Bobby (@bob)" }));
     expect(
@@ -212,21 +247,34 @@ describe("<MessageText> mention previews", () => {
 
   test("uses current hydrated public profile data for mention labels and open previews", async () => {
     localStorage.setItem("hamlet.serverUrl", "http://hamlet.test:4040");
-    let setMentions: Dispatch<SetStateAction<MentionUser[]>> | undefined;
-    render(() => {
-      const [mentions, updateMentions] = useSignalState<MentionUser[]>([
+    function Harness() {
+      const [mentions, setMentions] = useState<MentionUser[]>([
         { ...BOB, display_name: "Robert", avatar_url: "/avatars/bob-old.webp" },
       ]);
-      setMentions = updateMentions;
-      return <MessageText text="hello <@2>" mentions={mentions()} currentUserId={SELF.id} />;
-    });
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() =>
+              setMentions([
+                { ...BOB, display_name: "Bobby Tables", avatar_url: "/avatars/bob-new.webp" },
+              ])
+            }
+          >
+            hydrate profile
+          </button>
+          <MessageText text="hello <@2>" mentions={mentions} currentUserId={SELF.id} />
+        </>
+      );
+    }
+    renderNative(<Harness />);
 
     fireEvent.click(screen.getByRole("button", { name: "Mention Robert (@bob)" }));
     expect(
       screen.getByRole("dialog", { name: "Profile preview for Robert (@bob)" }),
     ).toBeInTheDocument();
 
-    setMentions?.([{ ...BOB, display_name: "Bobby Tables", avatar_url: "/avatars/bob-new.webp" }]);
+    fireEvent.click(screen.getByRole("button", { name: "hydrate profile" }));
 
     await waitFor(() => {
       const dialog = screen.getByRole("dialog", {

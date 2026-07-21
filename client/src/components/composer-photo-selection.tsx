@@ -1,6 +1,5 @@
-import type { ChangeEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 
-import { useSignalState, registerCleanup } from "../hooks/react-state";
 import {
   MESSAGE_PHOTO_ACCEPT,
   MESSAGE_PHOTO_MAX_BYTES,
@@ -15,9 +14,9 @@ export interface SelectedComposerPhoto {
   previewUrl: string;
 }
 
-interface ComposerPhotoSelectionController {
-  photos: () => SelectedComposerPhoto[];
-  error: () => string | null;
+export interface ComposerPhotoSelection {
+  photos: readonly SelectedComposerPhoto[];
+  error: string | null;
   addFiles: (files: FileList | readonly File[] | null | undefined) => void;
   removePhoto: (id: string) => void;
   clearPhotos: () => void;
@@ -75,46 +74,58 @@ function validatePhotoBatch(currentCount: number, files: readonly File[]): strin
   return null;
 }
 
-export function createComposerPhotoSelection(): ComposerPhotoSelectionController {
-  const [photos, setPhotos] = useSignalState<SelectedComposerPhoto[]>([]);
-  const [error, setError] = useSignalState<string | null>(null);
+function revokePhotos(selectedPhotos: readonly SelectedComposerPhoto[]) {
+  for (const photo of selectedPhotos) revokePreviewUrl(photo.previewUrl);
+}
 
-  const revokePhotos = (selectedPhotos: readonly SelectedComposerPhoto[]) => {
-    for (const photo of selectedPhotos) revokePreviewUrl(photo.previewUrl);
-  };
+export function useComposerPhotoSelection(): ComposerPhotoSelection {
+  const [photos, setPhotos] = useState<SelectedComposerPhoto[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const ownedPhotosRef = useRef<SelectedComposerPhoto[]>([]);
 
-  const addFiles = (fileSource: FileList | readonly File[] | null | undefined) => {
+  const addFiles = useCallback((fileSource: FileList | readonly File[] | null | undefined) => {
     const files = Array.from(fileSource ?? []);
     if (files.length === 0) return;
 
-    const validationError = validatePhotoBatch(photos().length, files);
+    const validationError = validatePhotoBatch(ownedPhotosRef.current.length, files);
     if (validationError) {
       setError(validationError);
       return;
     }
 
-    setPhotos((current) => [...current, ...files.map(selectedPhotoFromFile)]);
+    const next = [...ownedPhotosRef.current, ...files.map(selectedPhotoFromFile)];
+    ownedPhotosRef.current = next;
+    setPhotos(next);
     setError(null);
-  };
+  }, []);
 
-  const removePhoto = (id: string) => {
-    setPhotos((current) => {
-      const removed = current.find((photo) => photo.id === id);
-      if (removed) revokePreviewUrl(removed.previewUrl);
-      return current.filter((photo) => photo.id !== id);
-    });
+  const removePhoto = useCallback((id: string) => {
+    const removed = ownedPhotosRef.current.find((photo) => photo.id === id);
+    if (!removed) return;
+
+    const next = ownedPhotosRef.current.filter((photo) => photo.id !== id);
+    ownedPhotosRef.current = next;
+    setPhotos(next);
+    revokePreviewUrl(removed.previewUrl);
     setError(null);
-  };
+  }, []);
 
-  const clearPhotos = () => {
-    setPhotos((current) => {
-      revokePhotos(current);
-      return [];
-    });
+  const clearPhotos = useCallback(() => {
+    const owned = ownedPhotosRef.current;
+    ownedPhotosRef.current = [];
+    setPhotos([]);
     setError(null);
-  };
+    revokePhotos(owned);
+  }, []);
 
-  registerCleanup(() => revokePhotos(photos()));
+  useEffect(
+    () => () => {
+      const owned = ownedPhotosRef.current;
+      ownedPhotosRef.current = [];
+      revokePhotos(owned);
+    },
+    [],
+  );
 
   return { photos, error, addFiles, removePhoto, clearPhotos };
 }
@@ -125,10 +136,10 @@ export function PhotoAttachControl(props: {
   describedBy?: string;
   className?: string;
 }) {
-  let inputRef: HTMLInputElement | null | undefined;
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const openFilePicker = () => {
-    if (!props.disabled) inputRef?.click();
+    if (!props.disabled) inputRef.current?.click();
   };
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -152,9 +163,7 @@ export function PhotoAttachControl(props: {
         <span className="text-sm font-medium">Photo</span>
       </button>
       <input
-        ref={(el) => {
-          inputRef = el;
-        }}
+        ref={inputRef}
         className="sr-only"
         type="file"
         accept={MESSAGE_PHOTO_ACCEPT}

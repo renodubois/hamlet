@@ -21,20 +21,6 @@
       // Phase 7 removes the compatibility implementation and this override.
     },
     {
-      "files": ["src/components/composer-photo-selection.tsx"],
-      "rules": {
-        "react/rules-of-hooks": "off"
-      }
-      // Phase 3 renames and migrates this hook, then removes this override.
-    },
-    {
-      "files": ["src/components/modal.test.tsx"],
-      "rules": {
-        "react/rules-of-hooks": "off"
-      }
-      // Phase 3 migrates this compatibility-hook test and removes this override.
-    },
-    {
       "files": [
         "src/components/local-camera-tile.test.tsx",
         "src/components/remote-camera-tiles.test.tsx",
@@ -46,17 +32,6 @@
         "react/rules-of-hooks": "off"
       }
       // Phase 6 migrates these compatibility-hook tests and removes this override.
-    },
-    {
-      "files": [
-        "src/components/emoji-picker.tsx",
-        "src/components/message-text.tsx",
-        "src/components/modal.tsx"
-      ],
-      "rules": {
-        "react/exhaustive-deps": "off"
-      }
-      // Phase 3 gives these effects complete dependencies and removes this override.
     },
     {
       "files": ["src/contexts/read-states.tsx"],

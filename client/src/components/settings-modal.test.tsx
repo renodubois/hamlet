@@ -1,10 +1,12 @@
-import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
+import { StrictMode } from "react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { delay, http, HttpResponse } from "msw";
 import { describe, expect, test, vi } from "vitest";
 import { type User } from "../api";
 import { AuthProvider } from "../contexts/auth";
 import { CustomEmojisProvider } from "../contexts/custom-emojis";
 import { expectNoA11yViolations } from "../test/a11y";
+import { renderNative } from "../test/render";
 import { DEV_USER } from "../test/msw/handlers";
 import { mswState, resetMswState, server } from "../test/msw/server";
 import SettingsModal from "./settings-modal";
@@ -19,6 +21,14 @@ const USER: User = {
   email_verified: false,
   avatar_url: null,
 };
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 // cropperjs is a web-components library that doesn't render meaningfully under
 // happy-dom. Replace it with a stub whose selection returns a tiny canvas so
@@ -75,21 +85,21 @@ function mount(
   } = {},
 ) {
   const props = modalProps(opts);
-  const result = render(() => (
+  const result = renderNative(
     <SettingsModal
       open={open}
       onClose={props.onClose}
       onLogout={props.onLogout}
       user={props.user}
       onAvatarChange={props.onAvatarChange}
-    />
-  ));
+    />,
+  );
   return { ...result, onClose: props.onClose, onAvatarChange: props.onAvatarChange };
 }
 
 function mountWithCustomEmojiProvider(open = true) {
   const props = modalProps();
-  const result = render(() => (
+  const result = renderNative(
     <AuthProvider>
       <CustomEmojisProvider>
         <SettingsModal
@@ -100,8 +110,8 @@ function mountWithCustomEmojiProvider(open = true) {
           onAvatarChange={props.onAvatarChange}
         />
       </CustomEmojisProvider>
-    </AuthProvider>
-  ));
+    </AuthProvider>,
+  );
   return { ...result, onClose: props.onClose, onAvatarChange: props.onAvatarChange };
 }
 
@@ -201,6 +211,66 @@ describe("<SettingsModal>", () => {
       expect(mswState().deletedAvatar).toBe(true);
       expect(onAvatarChange).toHaveBeenCalled();
     });
+  });
+
+  test("display-name drafts reset only when the user identity changes", async () => {
+    const props = modalProps({ user: { ...USER, display_name: "Alice" } });
+    const { rerender } = renderNative(<SettingsModal open={true} {...props} />);
+    const input = screen.getByLabelText(/display name/i);
+    fireEvent.input(input, { target: { value: "Unsaved draft" } });
+
+    rerender(
+      <StrictMode>
+        <SettingsModal open={true} {...props} user={{ ...USER, display_name: "Server value" }} />
+      </StrictMode>,
+    );
+    expect(input).toHaveValue("Unsaved draft");
+
+    rerender(
+      <StrictMode>
+        <SettingsModal
+          open={true}
+          {...props}
+          user={{ ...USER, id: 2, username: "bob", display_name: "Bob" }}
+        />
+      </StrictMode>,
+    );
+    await waitFor(() => expect(input).toHaveValue("Bob"));
+  });
+
+  test("a display-name completion from an old user does not update the new user", async () => {
+    let resolveSave: (() => void) | undefined;
+    const pendingSave = new Promise<void>((resolve) => {
+      resolveSave = resolve;
+    });
+    server.use(
+      http.put(`${TEST_SERVER}/me`, async () => {
+        await pendingSave;
+        return HttpResponse.json({ ...DEV_USER, display_name: "Old save" });
+      }),
+    );
+    const onAvatarChange = vi.fn();
+    const props = modalProps({ onAvatarChange });
+    const { rerender } = renderNative(<SettingsModal open={true} {...props} />);
+    fireEvent.input(screen.getByLabelText(/display name/i), { target: { value: "Old save" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    rerender(
+      <StrictMode>
+        <SettingsModal
+          open={true}
+          {...props}
+          user={{ ...USER, id: 2, username: "bob", display_name: "Bob" }}
+        />
+      </StrictMode>,
+    );
+    await waitFor(() => expect(screen.getByLabelText(/display name/i)).toHaveValue("Bob"));
+    await act(async () => {
+      resolveSave?.();
+      await pendingSave;
+    });
+    expect(onAvatarChange).not.toHaveBeenCalled();
+    expect(screen.getByLabelText(/display name/i)).toHaveValue("Bob");
   });
 
   test("Save button sends PUT /me with the new display name", async () => {
@@ -413,6 +483,51 @@ describe("<SettingsModal>", () => {
     }
   });
 
+  test("Custom Emojis preview URLs are owned by the exact selected file", async () => {
+    resetMswState({ me: DEV_USER, customEmojis: [] });
+    const originalCreateObjectURL = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
+    const originalRevokeObjectURL = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
+    const createObjectURL = vi
+      .fn<(file: File) => string>()
+      .mockImplementation((file) => `blob:${file.name}`);
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectURL });
+
+    const { unmount } = mountWithCustomEmojiProvider();
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Emojis" }));
+    await screen.findByText(/no custom emojis yet/i);
+    const input = screen.getByLabelText(/image file/i);
+    const first = new File([new Uint8Array([1])], "first.png", { type: "image/png" });
+    const second = new File([new Uint8Array([2])], "second.png", { type: "image/png" });
+
+    fireEvent.change(input, { target: { files: [first] } });
+    expect(
+      await screen.findByRole("img", { name: /selected custom emoji preview/i }),
+    ).toHaveAttribute("src", "blob:first.png");
+    fireEvent.change(input, { target: { files: [second] } });
+    await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:first.png"));
+    expect(screen.getByRole("img", { name: /selected custom emoji preview/i })).toHaveAttribute(
+      "src",
+      "blob:second.png",
+    );
+    expect(revokeObjectURL.mock.calls.filter(([url]) => url === "blob:first.png")).toHaveLength(1);
+
+    unmount();
+    expect(revokeObjectURL.mock.calls.filter(([url]) => url === "blob:second.png")).toHaveLength(1);
+
+    if (originalCreateObjectURL) {
+      Object.defineProperty(URL, "createObjectURL", originalCreateObjectURL);
+    } else {
+      delete (URL as unknown as { createObjectURL?: unknown }).createObjectURL;
+    }
+    if (originalRevokeObjectURL) {
+      Object.defineProperty(URL, "revokeObjectURL", originalRevokeObjectURL);
+    } else {
+      delete (URL as unknown as { revokeObjectURL?: unknown }).revokeObjectURL;
+    }
+  });
+
   test("Custom Emojis upload validates names and file types before submit", async () => {
     resetMswState({ me: DEV_USER, customEmojis: [] });
     mountWithCustomEmojiProvider();
@@ -485,6 +600,108 @@ describe("<SettingsModal>", () => {
     });
     expect(await screen.findByText(":renamed_party:")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent(/renamed to :renamed_party:/i);
+  });
+
+  test("Custom Emoji rows serialize rename against delete", async () => {
+    const rename = deferred();
+    const originalConfirm = window.confirm;
+    const confirm = vi.fn(() => true);
+    Object.defineProperty(window, "confirm", { configurable: true, value: confirm });
+    resetMswState({
+      me: DEV_USER,
+      customEmojis: [
+        {
+          id: 123,
+          name: "party",
+          image_url: "/uploads/emojis/123.webp?v=10",
+          animated: false,
+          created_by_user_id: 1,
+          created_at: 10,
+          updated_at: 10,
+          deleted_at: null,
+        },
+      ],
+    });
+    server.use(
+      http.patch(`${TEST_SERVER}/emojis/123`, async () => {
+        await rename.promise;
+        return HttpResponse.json({ ...mswState().customEmojis[0], name: "renamed_party" });
+      }),
+    );
+    mountWithCustomEmojiProvider();
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Emojis" }));
+    await screen.findByText(":party:");
+
+    const input = screen.getByLabelText(/rename :party:/i);
+    fireEvent.input(input, { target: { value: "renamed_party" } });
+    fireEvent.click(screen.getByRole("button", { name: /save rename/i }));
+
+    expect(input).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^delete$/i })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+    expect(confirm).not.toHaveBeenCalled();
+
+    await act(async () => {
+      rename.resolve();
+      await rename.promise;
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: /^delete$/i })).toBeEnabled());
+    Object.defineProperty(window, "confirm", { configurable: true, value: originalConfirm });
+  });
+
+  test("Custom Emoji rows serialize delete and restore against rename", async () => {
+    const remove = deferred();
+    const restore = deferred();
+    const originalConfirm = window.confirm;
+    Object.defineProperty(window, "confirm", { configurable: true, value: vi.fn(() => true) });
+    resetMswState({
+      me: DEV_USER,
+      customEmojis: [
+        {
+          id: 123,
+          name: "party",
+          image_url: "/uploads/emojis/123.webp?v=10",
+          animated: false,
+          created_by_user_id: 1,
+          created_at: 10,
+          updated_at: 10,
+          deleted_at: null,
+        },
+      ],
+    });
+    server.use(
+      http.delete(`${TEST_SERVER}/emojis/123`, async () => {
+        await remove.promise;
+        return HttpResponse.json({ ...mswState().customEmojis[0], deleted_at: 20 });
+      }),
+      http.post(`${TEST_SERVER}/emojis/123/restore`, async () => {
+        await restore.promise;
+        return HttpResponse.json({ ...mswState().customEmojis[0], deleted_at: null });
+      }),
+    );
+    mountWithCustomEmojiProvider();
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Emojis" }));
+    await screen.findByText(":party:");
+
+    fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+    expect(screen.getByLabelText(/rename :party:/i)).toBeDisabled();
+    expect(screen.getByRole("button", { name: /save rename/i })).toBeDisabled();
+
+    await act(async () => {
+      remove.resolve();
+      await remove.promise;
+    });
+    const restoreButton = await screen.findByRole("button", { name: /^restore$/i });
+    fireEvent.click(restoreButton);
+    expect(screen.getByLabelText(/rename :party:/i)).toBeDisabled();
+    expect(screen.getByRole("button", { name: /save rename/i })).toBeDisabled();
+
+    await act(async () => {
+      restore.resolve();
+      await restore.promise;
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: /^delete$/i })).toBeEnabled());
+    Object.defineProperty(window, "confirm", { configurable: true, value: originalConfirm });
   });
 
   test("Custom Emojis tab soft-deletes after confirmation and moves to deleted view", async () => {

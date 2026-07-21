@@ -1,7 +1,5 @@
-import { useRef } from "react";
-import { flushSync } from "react-dom";
+import { useLayoutEffect, useState } from "react";
 
-import { useSignalState, useMountEffect } from "../hooks/react-state";
 import type { Message, UserTyping } from "../api";
 import type { EventsContextValue } from "../contexts/events";
 import { TYPING_EXPIRY_MS } from "../constants";
@@ -33,72 +31,60 @@ interface TypingEntry {
   lastSeen: number;
 }
 
-export default function TypingIndicator(props: Props) {
-  const now = () => (props.now ?? Date.now)();
-  const [entries, setEntries] = useSignalState<Record<number, TypingEntry>>({});
-  const propsRef = useRef(props);
-  propsRef.current = props;
+export default function TypingIndicator({ channelId, currentUserId, events, now }: Props) {
+  const [entries, setEntries] = useState<Record<number, TypingEntry>>({});
 
-  const prune = () => {
-    const cutoff = now() - TYPING_EXPIRY_MS;
-    setEntries((prev) => {
-      let changed = false;
-      const next: Record<number, TypingEntry> = {};
-      for (const [key, entry] of Object.entries(prev)) {
-        if (entry.lastSeen >= cutoff) {
-          next[Number(key)] = entry;
-        } else {
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
+  useLayoutEffect(() => {
+    setEntries({});
+    const currentTime = now ?? Date.now;
+
+    const clearUser = (userId: number) => {
+      setEntries((previous) => {
+        if (!(userId in previous)) return previous;
+        const next = { ...previous };
+        delete next[userId];
+        return next;
+      });
+    };
+
+    const unsubscribeTyping = events.onUserTyping((typing: UserTyping) => {
+      if (typing.channel_id !== channelId || typing.user_id === currentUserId) return;
+      setEntries((previous) => ({
+        ...previous,
+        [typing.user_id]: { username: typing.username, lastSeen: currentTime() },
+      }));
     });
-  };
-
-  const clearUser = (userId: number) => {
-    setEntries((prev) => {
-      if (!(userId in prev)) return prev;
-      const next = { ...prev };
-      delete next[userId];
-      return next;
+    const unsubscribeMessages = events.onMessage((message: Message) => {
+      if (message.channel_id !== channelId) return;
+      clearUser(message.user_id);
     });
-  };
-
-  useMountEffect(() => {
-    const unsubscribers = [
-      props.events.onUserTyping((t: UserTyping) => {
-        if (t.channel_id !== propsRef.current.channelId) return;
-        if (
-          propsRef.current.currentUserId !== null &&
-          t.user_id === propsRef.current.currentUserId
-        ) {
-          return;
+    const timer = window.setInterval(() => {
+      const cutoff = currentTime() - TYPING_EXPIRY_MS;
+      setEntries((previous) => {
+        let changed = false;
+        const next: Record<number, TypingEntry> = {};
+        for (const [key, entry] of Object.entries(previous)) {
+          if (entry.lastSeen >= cutoff) {
+            next[Number(key)] = entry;
+          } else {
+            changed = true;
+          }
         }
-        flushSync(() => {
-          setEntries((prev) => ({
-            ...prev,
-            [t.user_id]: { username: t.username, lastSeen: now() },
-          }));
-        });
-      }),
-      props.events.onMessage((m: Message) => {
-        if (m.channel_id !== propsRef.current.channelId) return;
-        flushSync(() => clearUser(m.user_id));
-      }),
-    ];
-    const timer = window.setInterval(prune, TYPING_SWEEP_MS);
+        return changed ? next : previous;
+      });
+    }, TYPING_SWEEP_MS);
+
     return () => {
-      unsubscribers.forEach((unsubscribe) => unsubscribe());
+      unsubscribeTyping();
+      unsubscribeMessages();
       window.clearInterval(timer);
     };
-  });
+  }, [channelId, currentUserId, events, now]);
 
-  const usernames = () =>
-    Object.values(entries())
-      .map((e) => e.username)
-      .sort((a, b) => a.localeCompare(b));
-
-  const message = formatTypingMessage(usernames());
+  const usernames = Object.values(entries)
+    .map((entry) => entry.username)
+    .sort((a, b) => a.localeCompare(b));
+  const message = formatTypingMessage(usernames);
 
   return message ? (
     <div

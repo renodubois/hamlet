@@ -1,12 +1,13 @@
-import { fireEvent, render, screen, within } from "../test/testing-library";
+import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 import { MESSAGE_PHOTO_MAX_BYTES } from "../constants";
 import { expectNoA11yViolations } from "../test/a11y";
+import { renderNative } from "../test/render";
 import {
   PhotoAttachControl,
   SelectedPhotoPreviewList,
-  createComposerPhotoSelection,
+  useComposerPhotoSelection,
 } from "./composer-photo-selection";
 
 function mockObjectUrls() {
@@ -40,28 +41,31 @@ function mockObjectUrls() {
 }
 
 function renderHarness() {
-  let fileInput: HTMLInputElement | null = null;
-  const result = render(() => {
-    const selection = createComposerPhotoSelection();
+  function Harness() {
+    const selection = useComposerPhotoSelection();
 
     return (
       <form>
         <SelectedPhotoPreviewList
-          photos={selection.photos()}
-          error={selection.error()}
+          photos={selection.photos}
+          error={selection.error}
           errorId="photo-error"
           onRemove={selection.removePhoto}
         />
         <PhotoAttachControl
           onFilesSelected={selection.addFiles}
-          describedBy={selection.error() ? "photo-error" : undefined}
+          describedBy={selection.error ? "photo-error" : undefined}
         />
+        <button type="button" onClick={selection.clearPhotos}>
+          Clear photos
+        </button>
         <input aria-label="Message text" />
       </form>
     );
-  });
+  }
 
-  fileInput = result.container.querySelector('input[type="file"]');
+  const result = renderNative(<Harness />);
+  const fileInput = result.container.querySelector<HTMLInputElement>('input[type="file"]');
   if (!fileInput) throw new Error("file input not found");
   return { ...result, fileInput };
 }
@@ -175,13 +179,29 @@ describe("composer photo selection", () => {
     }
   });
 
-  test("revokes selected photo object URLs on cleanup", () => {
+  test("clearing revokes every selected URL exactly once", () => {
+    const urls = mockObjectUrls();
+    const { fileInput, unmount } = renderHarness();
+
+    fireEvent.change(fileInput, {
+      target: { files: [photo("one.png"), photo("two.png")] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Clear photos" }));
+
+    expect(urls.revokeObjectURL.mock.calls).toEqual([["blob:one.png-0"], ["blob:two.png-1"]]);
+    unmount();
+    expect(urls.revokeObjectURL).toHaveBeenCalledTimes(2);
+    urls.restore();
+  });
+
+  test("revokes selected photo object URLs exactly once on Strict Mode cleanup", () => {
     const urls = mockObjectUrls();
     const { fileInput, unmount } = renderHarness();
 
     fireEvent.change(fileInput, { target: { files: [photo("cleanup.png")] } });
     unmount();
 
+    expect(urls.revokeObjectURL).toHaveBeenCalledTimes(1);
     expect(urls.revokeObjectURL).toHaveBeenCalledWith("blob:cleanup.png-0");
     urls.restore();
   });

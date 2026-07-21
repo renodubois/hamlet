@@ -2,6 +2,7 @@ import {
   cloneElement,
   Fragment,
   isValidElement,
+  useCallback,
   useEffect,
   useId,
   useMemo,
@@ -351,7 +352,7 @@ export default function MessageText(props: {
   const mentionedUsers = useMemo(() => mentionUsersById(props.mentions ?? []), [props.mentions]);
   const previewUser = preview ? (mentionedUsers.get(preview.user.id) ?? preview.user) : null;
 
-  const closePreview = () => setPreview(null);
+  const closePreview = useCallback(() => setPreview(null), []);
 
   const handleMentionClick: MentionClickHandler = (user, event) => {
     previewOpenedAtRef.current = performance.now();
@@ -363,8 +364,14 @@ export default function MessageText(props: {
 
   useEffect(() => {
     if (!preview) return;
-    if (!textMentionsUser(props.text, preview.user.id)) closePreview();
-  });
+    if (
+      !textMentionsUser(props.text, preview.user.id) ||
+      !mentionedUsers.has(preview.user.id) ||
+      !preview.anchor.isConnected
+    ) {
+      closePreview();
+    }
+  }, [closePreview, mentionedUsers, preview, props.text]);
 
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
@@ -394,7 +401,7 @@ export default function MessageText(props: {
       document.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("scroll", onScroll, true);
     };
-  }, []);
+  }, [closePreview]);
 
   return (
     <div className={props.className ?? DEFAULT_TEXT_CLASS}>

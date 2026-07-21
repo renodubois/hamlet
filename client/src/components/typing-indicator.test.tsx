@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
-import { render, screen } from "../test/testing-library";
+import { act, screen } from "@testing-library/react";
+import { renderNative } from "../test/render";
 import TypingIndicator, { formatTypingMessage } from "./typing-indicator";
 import { TYPING_EXPIRY_MS } from "../constants";
 import type { EventsContextValue } from "../contexts/events";
@@ -44,7 +45,11 @@ function fakeEvents(): {
     onReadStateUpdated: () => () => {},
     onConnected: () => () => {},
   };
-  return { events, emit: (t) => emit(t), emitMessage: (m) => emitMessage(m) };
+  return {
+    events,
+    emit: (typing) => act(() => emit(typing)),
+    emitMessage: (message) => act(() => emitMessage(message)),
+  };
 }
 
 function fakeMessage(
@@ -97,20 +102,20 @@ describe("formatTypingMessage", () => {
 describe("<TypingIndicator>", () => {
   test("renders nothing when no one is typing", () => {
     const { events } = fakeEvents();
-    render(() => <TypingIndicator channelId={100} currentUserId={1} events={events} />);
+    renderNative(<TypingIndicator channelId={100} currentUserId={1} events={events} />);
     expect(screen.queryByTestId("typing-indicator")).toBeNull();
   });
 
   test("shows one typer", async () => {
     const { events, emit } = fakeEvents();
-    render(() => <TypingIndicator channelId={100} currentUserId={1} events={events} />);
+    renderNative(<TypingIndicator channelId={100} currentUserId={1} events={events} />);
     emit({ channel_id: 100, user_id: 2, username: "bob" });
     expect(await screen.findByText(/bob is typing/i)).toBeInTheDocument();
   });
 
   test("ignores typing pings from the current user", async () => {
     const { events, emit } = fakeEvents();
-    render(() => <TypingIndicator channelId={100} currentUserId={1} events={events} />);
+    renderNative(<TypingIndicator channelId={100} currentUserId={1} events={events} />);
     emit({ channel_id: 100, user_id: 1, username: "me" });
     await new Promise((r) => setTimeout(r, 10));
     expect(screen.queryByTestId("typing-indicator")).toBeNull();
@@ -118,7 +123,7 @@ describe("<TypingIndicator>", () => {
 
   test("ignores typing pings for other channels", async () => {
     const { events, emit } = fakeEvents();
-    render(() => <TypingIndicator channelId={100} currentUserId={1} events={events} />);
+    renderNative(<TypingIndicator channelId={100} currentUserId={1} events={events} />);
     emit({ channel_id: 999, user_id: 2, username: "bob" });
     await new Promise((r) => setTimeout(r, 10));
     expect(screen.queryByTestId("typing-indicator")).toBeNull();
@@ -130,7 +135,7 @@ describe("<TypingIndicator>", () => {
       let fakeTime = 1_000_000;
       const now = () => fakeTime;
       const { events, emit } = fakeEvents();
-      render(() => <TypingIndicator channelId={100} currentUserId={1} events={events} now={now} />);
+      renderNative(<TypingIndicator channelId={100} currentUserId={1} events={events} now={now} />);
 
       emit({ channel_id: 100, user_id: 2, username: "bob" });
       expect(screen.getByText(/bob is typing/i)).toBeInTheDocument();
@@ -150,7 +155,7 @@ describe("<TypingIndicator>", () => {
       let fakeTime = 1_000_000;
       const now = () => fakeTime;
       const { events, emit } = fakeEvents();
-      render(() => <TypingIndicator channelId={100} currentUserId={1} events={events} now={now} />);
+      renderNative(<TypingIndicator channelId={100} currentUserId={1} events={events} now={now} />);
 
       emit({ channel_id: 100, user_id: 2, username: "bob" });
       fakeTime += TYPING_EXPIRY_MS - 500;
@@ -165,7 +170,7 @@ describe("<TypingIndicator>", () => {
 
   test("clears a user's entry when they send a message in the channel", async () => {
     const { events, emit, emitMessage } = fakeEvents();
-    render(() => <TypingIndicator channelId={100} currentUserId={1} events={events} />);
+    renderNative(<TypingIndicator channelId={100} currentUserId={1} events={events} />);
     emit({ channel_id: 100, user_id: 2, username: "bob" });
     expect(await screen.findByText(/bob is typing/i)).toBeInTheDocument();
     emitMessage(fakeMessage({ user_id: 2, channel_id: 100, username: "bob" }));
@@ -174,7 +179,7 @@ describe("<TypingIndicator>", () => {
 
   test("ignores messages from other channels when clearing", async () => {
     const { events, emit, emitMessage } = fakeEvents();
-    render(() => <TypingIndicator channelId={100} currentUserId={1} events={events} />);
+    renderNative(<TypingIndicator channelId={100} currentUserId={1} events={events} />);
     emit({ channel_id: 100, user_id: 2, username: "bob" });
     expect(await screen.findByText(/bob is typing/i)).toBeInTheDocument();
     emitMessage(fakeMessage({ user_id: 2, channel_id: 999, username: "bob" }));
@@ -183,7 +188,7 @@ describe("<TypingIndicator>", () => {
 
   test("only clears the user who sent the message", async () => {
     const { events, emit, emitMessage } = fakeEvents();
-    render(() => <TypingIndicator channelId={100} currentUserId={1} events={events} />);
+    renderNative(<TypingIndicator channelId={100} currentUserId={1} events={events} />);
     emit({ channel_id: 100, user_id: 2, username: "bob" });
     emit({ channel_id: 100, user_id: 3, username: "carol" });
     expect(await screen.findByText(/bob and carol are typing/i)).toBeInTheDocument();
@@ -193,7 +198,7 @@ describe("<TypingIndicator>", () => {
 
   test("four typers collapses to 'Several people'", async () => {
     const { events, emit } = fakeEvents();
-    render(() => <TypingIndicator channelId={100} currentUserId={1} events={events} />);
+    renderNative(<TypingIndicator channelId={100} currentUserId={1} events={events} />);
     emit({ channel_id: 100, user_id: 2, username: "bob" });
     emit({ channel_id: 100, user_id: 3, username: "carol" });
     emit({ channel_id: 100, user_id: 4, username: "dave" });
@@ -201,20 +206,38 @@ describe("<TypingIndicator>", () => {
     expect(await screen.findByText(/several people are typing/i)).toBeInTheDocument();
   });
 
+  test("clears old entries and filters events after a channel switch", async () => {
+    const { events, emit } = fakeEvents();
+    const { rerender } = renderNative(
+      <TypingIndicator channelId={100} currentUserId={1} events={events} />,
+    );
+    emit({ channel_id: 100, user_id: 2, username: "bob" });
+    expect(screen.getByText(/bob is typing/i)).toBeInTheDocument();
+
+    rerender(<TypingIndicator channelId={200} currentUserId={1} events={events} />);
+    expect(screen.queryByTestId("typing-indicator")).toBeNull();
+    emit({ channel_id: 100, user_id: 3, username: "carol" });
+    expect(screen.queryByTestId("typing-indicator")).toBeNull();
+    emit({ channel_id: 200, user_id: 3, username: "carol" });
+    expect(screen.getByText(/carol is typing/i)).toBeInTheDocument();
+  });
+
   test("passes axe accessibility checks when someone is typing", async () => {
     const { events, emit } = fakeEvents();
-    const { container } = render(() => (
-      <TypingIndicator channelId={100} currentUserId={1} events={events} />
-    ));
+    const { container } = renderNative(
+      <TypingIndicator channelId={100} currentUserId={1} events={events} />,
+    );
     emit({ channel_id: 100, user_id: 2, username: "bob" });
     await screen.findByText(/bob is typing/i);
     await expectNoA11yViolations(container, "typing indicator");
   });
 
-  test("unsubscribes from the events context on cleanup", () => {
-    const unsub = vi.fn();
+  test("unsubscribes and clears the expiry timer on cleanup", () => {
+    const unsubscribeTyping = vi.fn();
+    const unsubscribeMessages = vi.fn();
+    const clearIntervalSpy = vi.spyOn(window, "clearInterval");
     const events: EventsContextValue = {
-      onMessage: () => () => {},
+      onMessage: () => unsubscribeMessages,
       onMessageUpdated: () => () => {},
       onMessageDeleted: () => () => {},
       onMessageEmbedsUpdated: () => () => {},
@@ -232,16 +255,19 @@ describe("<TypingIndicator>", () => {
       onScreenShareStopped: () => () => {},
       onCameraVideoStarted: () => () => {},
       onCameraVideoStopped: () => () => {},
-      onUserTyping: () => unsub,
+      onUserTyping: () => unsubscribeTyping,
       onThreadReplyCreated: () => () => {},
       onThreadReplyDeleted: () => () => {},
       onReadStateUpdated: () => () => {},
       onConnected: () => () => {},
     };
-    const { unmount } = render(() => (
-      <TypingIndicator channelId={100} currentUserId={1} events={events} />
-    ));
+    const { unmount } = renderNative(
+      <TypingIndicator channelId={100} currentUserId={1} events={events} />,
+    );
     unmount();
-    expect(unsub).toHaveBeenCalled();
+    expect(unsubscribeTyping).toHaveBeenCalled();
+    expect(unsubscribeMessages).toHaveBeenCalled();
+    expect(clearIntervalSpy).toHaveBeenCalled();
+    clearIntervalSpy.mockRestore();
   });
 });

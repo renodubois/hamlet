@@ -1,9 +1,12 @@
-import { describe, expect, test } from "vitest";
-import { render, screen, fireEvent, waitFor } from "../test/testing-library";
+import { http, HttpResponse } from "msw";
+import { describe, expect, test, vi } from "vitest";
+import { act, screen, fireEvent, waitFor } from "@testing-library/react";
 import { AuthProvider, useAuth } from "../contexts/auth";
-import { resetMswState } from "../test/msw/server";
-import { assertExists } from "../test/render";
+import { resetMswState, server } from "../test/msw/server";
+import { assertExists, renderNative } from "../test/render";
 import LoginScreen from "./login";
+
+const TEST_SERVER = import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL ?? "http://127.0.0.1:3030";
 
 function Harness() {
   const auth = useAuth();
@@ -12,11 +15,11 @@ function Harness() {
 }
 
 function mount() {
-  return render(() => (
+  return renderNative(
     <AuthProvider>
       <Harness />
-    </AuthProvider>
-  ));
+    </AuthProvider>,
+  );
 }
 
 async function fillAndSubmit(username: string, password: string) {
@@ -56,6 +59,131 @@ describe("Login flow", () => {
 
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: /create one/i })).toBeNull();
+    });
+    expect(screen.queryByPlaceholderText(/email/i)).toBeNull();
+  });
+
+  test("password typing does not refetch the public server config", async () => {
+    const configRequests = vi.fn();
+    server.use(
+      http.get(`${TEST_SERVER}/config`, () => {
+        configRequests();
+        return HttpResponse.json({ account_registration_enabled: true });
+      }),
+    );
+    mount();
+    await waitFor(() => expect(configRequests).toHaveBeenCalled());
+    const requestsAfterMount = configRequests.mock.calls.length;
+
+    fireEvent.input(screen.getByPlaceholderText("Password"), { target: { value: "secret" } });
+
+    await waitFor(() => expect(screen.getByPlaceholderText("Password")).toHaveValue("secret"));
+    expect(configRequests).toHaveBeenCalledTimes(requestsAfterMount);
+  });
+
+  test("a stale server config response cannot override the newest server", async () => {
+    let resolveOld: (() => void) | undefined;
+    const oldResponse = new Promise<void>((resolve) => {
+      resolveOld = resolve;
+    });
+    const newestServer = "http://newest.example.test";
+    const newestRequest = vi.fn();
+    server.use(
+      http.get(`${TEST_SERVER}/config`, async () => {
+        await oldResponse;
+        return HttpResponse.json({ account_registration_enabled: false });
+      }),
+      http.get(`${newestServer}/config`, () => {
+        newestRequest();
+        return HttpResponse.json({ account_registration_enabled: true });
+      }),
+    );
+    mount();
+
+    fireEvent.input(screen.getByPlaceholderText("Server URL"), {
+      target: { value: `${newestServer}/` },
+    });
+    await waitFor(() => expect(newestRequest).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: /create one/i })).toBeInTheDocument();
+
+    await act(async () => {
+      resolveOld?.();
+      await oldResponse;
+    });
+    expect(screen.getByRole("button", { name: /create one/i })).toBeInTheDocument();
+  });
+
+  test("ignores a successful server config completion after unmount", async () => {
+    let resolveConfig: (() => void) | undefined;
+    const configResponse = new Promise<void>((resolve) => {
+      resolveConfig = resolve;
+    });
+    const configRequests = vi.fn();
+    server.use(
+      http.get(`${TEST_SERVER}/config`, async () => {
+        configRequests();
+        await configResponse;
+        return HttpResponse.json({ account_registration_enabled: false });
+      }),
+    );
+    const view = mount();
+    await waitFor(() => expect(configRequests).toHaveBeenCalled());
+
+    view.unmount();
+    await act(async () => {
+      resolveConfig?.();
+      await configResponse;
+    });
+
+    expect(screen.queryByRole("heading", { name: /sign in/i })).toBeNull();
+  });
+
+  test("ignores a failed server config completion after unmount", async () => {
+    let resolveConfig: (() => void) | undefined;
+    const configResponse = new Promise<void>((resolve) => {
+      resolveConfig = resolve;
+    });
+    const configRequests = vi.fn();
+    server.use(
+      http.get(`${TEST_SERVER}/config`, async () => {
+        configRequests();
+        await configResponse;
+        return HttpResponse.error();
+      }),
+    );
+    const view = mount();
+    await waitFor(() => expect(configRequests).toHaveBeenCalled());
+
+    view.unmount();
+    await act(async () => {
+      resolveConfig?.();
+      await configResponse;
+    });
+
+    expect(screen.queryByRole("heading", { name: /sign in/i })).toBeNull();
+  });
+
+  test("returns to login mode if registration becomes disabled", async () => {
+    let resolveConfig: (() => void) | undefined;
+    const configResponse = new Promise<void>((resolve) => {
+      resolveConfig = resolve;
+    });
+    server.use(
+      http.get(`${TEST_SERVER}/config`, async () => {
+        await configResponse;
+        return HttpResponse.json({ account_registration_enabled: false });
+      }),
+    );
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: /create one/i }));
+    expect(screen.getByPlaceholderText(/email/i)).toBeInTheDocument();
+
+    await act(async () => {
+      resolveConfig?.();
+      await configResponse;
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: /sign in/i })).toBeInTheDocument();
     });
     expect(screen.queryByPlaceholderText(/email/i)).toBeNull();
   });

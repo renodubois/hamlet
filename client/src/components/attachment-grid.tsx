@@ -1,5 +1,4 @@
-import type { CSSProperties } from "react";
-import { useComputedValue, useSignalState } from "../hooks/react-state";
+import { useState, type CSSProperties } from "react";
 import { resolveServerUrl, type MessageAttachment } from "../api";
 import Modal from "./modal";
 
@@ -92,13 +91,14 @@ export default function AttachmentGrid(props: {
   attachments: readonly MessageAttachment[];
   authorName?: string | null;
 }) {
-  const photoAttachments = useComputedValue(() => props.attachments.filter(isPhotoAttachment));
-  const [brokenIds, setBrokenIds] = useSignalState<ReadonlySet<number>>(new Set());
-  const [selectedAttachment, setSelectedAttachment] =
-    useSignalState<SelectedAttachmentPreview | null>(null);
-  const [fullImageBroken, setFullImageBroken] = useSignalState(false);
+  const photoAttachments = props.attachments.filter(isPhotoAttachment);
+  const [brokenIds, setBrokenIds] = useState<ReadonlySet<number>>(() => new Set());
+  const [selectedAttachment, setSelectedAttachment] = useState<SelectedAttachmentPreview | null>(
+    null,
+  );
+  const [fullImageBroken, setFullImageBroken] = useState(false);
   const markBroken = (id: number) => setBrokenIds((current) => new Set(current).add(id));
-  const isBroken = (id: number) => brokenIds().has(id);
+  const isBroken = (id: number) => brokenIds.has(id);
   const closeAttachment = () => setSelectedAttachment(null);
   const openAttachment = (attachment: MessageAttachment, index: number, total: number) => {
     setFullImageBroken(false);
@@ -107,18 +107,18 @@ export default function AttachmentGrid(props: {
       alt: attachmentAlt(props.authorName, index, total),
     });
   };
-  const selected = selectedAttachment();
+  const selected = selectedAttachment;
 
   return (
     <>
-      {photoAttachments().length > 0 ? (
+      {photoAttachments.length > 0 ? (
         <div
           role="list"
-          aria-label={attachmentListLabel(photoAttachments().length)}
-          className={`mt-2 grid gap-2 ${gridClass(photoAttachments().length)}`}
+          aria-label={attachmentListLabel(photoAttachments.length)}
+          className={`mt-2 grid gap-2 ${gridClass(photoAttachments.length)}`}
         >
-          {photoAttachments().map((attachment, index) => {
-            const total = photoAttachments().length;
+          {photoAttachments.map((attachment, index) => {
+            const total = photoAttachments.length;
             const alt = attachmentAlt(props.authorName, index, total);
             const thumbnailUrl = resolveServerUrl(attachment.thumbnail_url);
 
@@ -158,7 +158,7 @@ export default function AttachmentGrid(props: {
       ) : null}
       {selected ? (
         <Modal open={true} onClose={closeAttachment} title={selected.alt} size="lg">
-          {!fullImageBroken() ? (
+          {!fullImageBroken ? (
             <img
               src={resolveServerUrl(selected.attachment.url)}
               alt={selected.alt}

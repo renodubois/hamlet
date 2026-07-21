@@ -451,6 +451,124 @@ describe("<EmojiPicker>", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: pickerName })).toBeNull());
   });
 
+  test("an unrelated parent rerender does not reinstall open-picker listeners", async () => {
+    const addWindow = vi.spyOn(window, "addEventListener");
+    const removeWindow = vi.spyOn(window, "removeEventListener");
+    const addDocument = vi.spyOn(document, "addEventListener");
+    const removeDocument = vi.spyOn(document, "removeEventListener");
+
+    function Harness() {
+      const [, rerender] = useState(0);
+      const anchorRef = useRef<HTMLButtonElement | null>(null);
+      return (
+        <>
+          <button ref={anchorRef} type="button">
+            anchor
+          </button>
+          <button type="button" onClick={() => rerender((count) => count + 1)}>
+            unrelated rerender
+          </button>
+          <EmojiPicker
+            open
+            anchor={() => anchorRef.current}
+            emojis={EMOJIS}
+            onSelect={vi.fn()}
+            onClose={vi.fn()}
+          />
+        </>
+      );
+    }
+
+    const view = renderNative(<Harness />);
+    await screen.findByRole("dialog", { name: pickerName });
+    const countCalls = () => ({
+      keydownAdds: addWindow.mock.calls.filter(([type]) => type === "keydown").length,
+      keydownRemoves: removeWindow.mock.calls.filter(([type]) => type === "keydown").length,
+      mouseDownAdds: addDocument.mock.calls.filter(([type]) => type === "mousedown").length,
+      mouseDownRemoves: removeDocument.mock.calls.filter(([type]) => type === "mousedown").length,
+    });
+    const beforeRerender = countCalls();
+
+    fireEvent.click(screen.getByRole("button", { name: "unrelated rerender" }));
+
+    expect(countCalls()).toEqual(beforeRerender);
+    view.unmount();
+    const afterUnmount = countCalls();
+    expect(afterUnmount.keydownRemoves).toBe(afterUnmount.keydownAdds);
+    expect(afterUnmount.mouseDownRemoves).toBe(afterUnmount.mouseDownAdds);
+
+    addWindow.mockRestore();
+    removeWindow.mockRestore();
+    addDocument.mockRestore();
+    removeDocument.mockRestore();
+  });
+
+  test("immediate close cancels queued open focus and positioning", async () => {
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      const anchorRef = useRef<HTMLButtonElement | null>(null);
+      return (
+        <>
+          <button ref={anchorRef} type="button" onClick={() => setOpen(true)}>
+            anchor
+          </button>
+          <EmojiPicker
+            open={open}
+            anchor={() => anchorRef.current}
+            emojis={EMOJIS}
+            onSelect={vi.fn()}
+            onClose={() => setOpen(false)}
+          />
+        </>
+      );
+    }
+
+    renderNative(<Harness />);
+    const anchor = screen.getByRole("button", { name: "anchor" });
+    anchor.focus();
+    fireEvent.click(anchor);
+    fireEvent.mouseDown(document.body);
+    await Promise.resolve();
+
+    expect(screen.queryByRole("dialog", { name: pickerName })).toBeNull();
+    expect(document.activeElement).toBe(anchor);
+  });
+
+  test("restores focus after an open-state rerender and Escape close", async () => {
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      const [label, setLabel] = useState("anchor");
+      const anchorRef = useRef<HTMLButtonElement | null>(null);
+      return (
+        <>
+          <button ref={anchorRef} type="button" onClick={() => setOpen(true)}>
+            {label}
+          </button>
+          <button type="button" onClick={() => setLabel("updated anchor")}>
+            rerender
+          </button>
+          <EmojiPicker
+            open={open}
+            anchor={() => anchorRef.current}
+            emojis={EMOJIS}
+            onSelect={vi.fn()}
+            onClose={() => setOpen(false)}
+          />
+        </>
+      );
+    }
+    renderNative(<Harness />);
+    const anchor = screen.getByRole("button", { name: "anchor" });
+    anchor.focus();
+    fireEvent.click(anchor);
+    const search = await screen.findByRole("combobox", { name: searchName });
+    await waitFor(() => expect(document.activeElement).toBe(search));
+    fireEvent.click(screen.getByRole("button", { name: "rerender" }));
+    search.focus();
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(document.activeElement).toBe(anchor));
+  });
+
   test("Escape closes the picker", async () => {
     const onClose = vi.fn();
     renderHarness(true, vi.fn(), onClose);

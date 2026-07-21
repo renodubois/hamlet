@@ -1696,17 +1696,17 @@ describe("Channel view integration", () => {
     });
 
     history.back();
-    panel = await screen.findByRole("complementary", { name: /thread panel/i });
     await waitFor(() => {
-      expect(within(panel).getByText("hello")).toBeInTheDocument();
       expect(history.get()).toBe("/channel/100?thread=1");
+      panel = screen.getByRole("complementary", { name: /thread panel/i });
+      expect(within(panel).getByText("hello")).toBeInTheDocument();
     });
 
     history.forward();
-    panel = await screen.findByRole("complementary", { name: /thread panel/i });
     await waitFor(() => {
-      expect(within(panel).getByText("world")).toBeInTheDocument();
       expect(history.get()).toBe("/channel/100?thread=2");
+      panel = screen.getByRole("complementary", { name: /thread panel/i });
+      expect(within(panel).getByText("world")).toBeInTheDocument();
     });
   });
 
@@ -2899,6 +2899,90 @@ describe("Channel view integration", () => {
     }
   });
 
+  test("a pending old-channel send cannot clear the new channel composer", async () => {
+    const urls = mockObjectUrls();
+    const state = seedAuthed();
+    state.channels.push({ id: 200, name: "random", position: 1, type: "text" });
+    state.messages["200"] = [
+      {
+        id: 2001,
+        user_id: 2,
+        channel_id: 200,
+        text: "different channel",
+        username: "carol",
+        display_name: null,
+        avatar_url: null,
+        suppress_embeds: false,
+        mentions: [],
+        attachments: [],
+        embeds: [],
+      },
+    ];
+    const requestStarted = deferred();
+    const releaseResponse = deferred();
+    server.use(
+      http.post(`${TEST_SERVER}/message/100`, async ({ request }) => {
+        await request.formData();
+        requestStarted.resolve();
+        await releaseResponse.promise;
+        return new HttpResponse(null, { status: 200 });
+      }),
+    );
+    const { history, unmount } = mountAt("/channel/100");
+
+    try {
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+      fireEvent.input(input, { target: { value: "old channel send" } });
+      fireEvent.change(fileInput(), { target: { files: [photoFile("carried-pending.png")] } });
+      fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+      await requestStarted.promise;
+
+      history.set({ value: "/channel/200" });
+      await waitFor(() => expect(screen.getByText("different channel")).toBeInTheDocument());
+      fireEvent.input(input, { target: { value: "new channel draft" } });
+      fireEvent.click(screen.getByRole("button", { name: /reply inline to message by carol/i }));
+      await screen.findByLabelText(/inline reply target/i);
+
+      releaseResponse.resolve();
+
+      await waitFor(() => expect(screen.getByRole("button", { name: /^send$/i })).toBeEnabled());
+      expect(input.value).toBe("new channel draft");
+      expect(screen.getByLabelText(/inline reply target/i)).toBeInTheDocument();
+      expect(
+        screen.getByRole("img", { name: /selected photo 1: carried-pending\.png/i }),
+      ).toHaveAttribute("src", "blob:carried-pending.png-0");
+      expect(urls.revokeObjectURL).not.toHaveBeenCalled();
+    } finally {
+      unmount();
+      urls.restore();
+    }
+  });
+
+  test("a pending send does not erase text entered after submission", async () => {
+    seedAuthed();
+    const requestStarted = deferred();
+    const releaseResponse = deferred();
+    server.use(
+      http.post(`${TEST_SERVER}/message/100`, async () => {
+        requestStarted.resolve();
+        await releaseResponse.promise;
+        return new HttpResponse(null, { status: 200 });
+      }),
+    );
+    mountAt("/channel/100");
+
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "submitted text" } });
+    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+    await requestStarted.promise;
+
+    fireEvent.input(input, { target: { value: "typed while pending" } });
+    releaseResponse.resolve();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /^send$/i })).toBeEnabled());
+    expect(input.value).toBe("typed while pending");
+  });
+
   test("channel switching clears inline reply target without clearing draft or selected photos", async () => {
     const urls = mockObjectUrls();
     const state = seedAuthed();
@@ -3044,6 +3128,65 @@ describe("Channel view integration", () => {
       ).toContain("/attachments/");
 
       await expectNoA11yViolations(container, "thread photo reply composer");
+    } finally {
+      unmount();
+      urls.restore();
+    }
+  });
+
+  test("switching thread roots resets photos once and ignores the old delayed failure", async () => {
+    const urls = mockObjectUrls();
+    seedAuthed();
+    const requestStarted = deferred();
+    const releaseResponse = deferred();
+    server.use(
+      http.post(`${TEST_SERVER}/thread/1/reply`, async ({ request }) => {
+        await request.formData();
+        requestStarted.resolve();
+        await releaseResponse.promise;
+        return new HttpResponse(null, { status: 500 });
+      }),
+    );
+    const { history, unmount } = mountAt("/channel/100?thread=1");
+
+    try {
+      let panel = await screen.findByRole("complementary", { name: /thread panel/i });
+      await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
+      fireEvent.input(within(panel).getByLabelText(/thread reply/i), {
+        target: { value: "thread A draft" },
+      });
+      fireEvent.change(fileInputWithin(panel), {
+        target: { files: [photoFile("thread-a.png")] },
+      });
+      fireEvent.click(within(panel).getByRole("button", { name: /^send$/i }));
+      await requestStarted.promise;
+
+      history.set({ value: "/channel/100?thread=2" });
+      await waitFor(() => {
+        panel = screen.getByRole("complementary", { name: /thread panel/i });
+        expect(within(panel).getByText("world")).toBeInTheDocument();
+      });
+      const threadBInput = within(panel).getByLabelText(/thread reply/i) as HTMLInputElement;
+      expect(threadBInput.value).toBe("");
+      expect(within(panel).queryByRole("img", { name: /thread-a\.png/i })).toBeNull();
+      expect(urls.revokeObjectURL).toHaveBeenCalledTimes(1);
+      expect(urls.revokeObjectURL).toHaveBeenCalledWith("blob:thread-a.png-0");
+
+      fireEvent.input(threadBInput, { target: { value: "thread B draft" } });
+      fireEvent.change(fileInputWithin(panel), {
+        target: { files: [photoFile("thread-b.png")] },
+      });
+      releaseResponse.resolve();
+
+      await waitFor(() =>
+        expect(within(panel).getByRole("button", { name: /^send$/i })).toBeEnabled(),
+      );
+      expect(threadBInput.value).toBe("thread B draft");
+      expect(
+        within(panel).getByRole("img", { name: /selected photo 1: thread-b\.png/i }),
+      ).toHaveAttribute("src", "blob:thread-b.png-1");
+      expect(within(panel).queryByRole("alert")).toBeNull();
+      expect(urls.revokeObjectURL).toHaveBeenCalledTimes(1);
     } finally {
       unmount();
       urls.restore();
@@ -4518,6 +4661,7 @@ describe("Channel view integration", () => {
     mountAt("/channel/100");
 
     await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+    await screen.findByRole("textbox", { name: /new message/i });
 
     const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
     es.pushUserTyping({ channel_id: 100, user_id: 2, username: "carol" });

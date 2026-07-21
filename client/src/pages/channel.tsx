@@ -13,7 +13,7 @@ import ChannelMessages from "../components/channel-messages";
 import {
   PhotoAttachControl,
   SelectedPhotoPreviewList,
-  createComposerPhotoSelection,
+  useComposerPhotoSelection,
 } from "../components/composer-photo-selection";
 import LocalCameraTile from "../components/local-camera-tile";
 import MessageInput from "../components/message-input";
@@ -67,7 +67,7 @@ export default function ChannelView() {
   const [message, setMessage] = useSignalState("");
   const [submitting, setSubmitting] = useSignalState(false);
   const [replyTarget, setReplyTarget] = useSignalState<Message | null>(null);
-  const photoSelection = createComposerPhotoSelection();
+  const photoSelection = useComposerPhotoSelection();
   const photoSelectionErrorId = useId();
   const replyBannerId = useId();
   const [focusComposerRootId, setFocusComposerRootId] = useSignalState<number | null>(null);
@@ -93,6 +93,8 @@ export default function ChannelView() {
   paramsIdRef.current = params.id;
   const replyTargetRef = useRef(replyTarget());
   replyTargetRef.current = replyTarget();
+  const draftVersionRef = useRef(0);
+  const replyTargetVersionRef = useRef(0);
   const userIdRef = useRef(user()?.id ?? null);
   userIdRef.current = user()?.id ?? null;
   const hasSeenInitialUserProfileRef = useRef(false);
@@ -248,17 +250,20 @@ export default function ChannelView() {
 
   const selectInlineReplyTarget = (target: Message) => {
     if (target.deleted_at != null || target.parent_id != null) return;
+    replyTargetVersionRef.current += 1;
     setReplyTarget(target);
     queueMicrotask(() => composerRef.current?.focus());
   };
 
   const dismissInlineReplyTarget = () => {
+    replyTargetVersionRef.current += 1;
     setReplyTarget(null);
     queueMicrotask(() => composerRef.current?.focus());
   };
 
   useEffect(() => {
     if (params.id) {
+      replyTargetVersionRef.current += 1;
       setReplyTarget(null);
       setHasNewMessagesBelow(false);
       lastMarkReadKeyRef.current = null;
@@ -280,6 +285,7 @@ export default function ChannelView() {
   });
 
   const handleMessageChange = (value: string) => {
+    draftVersionRef.current += 1;
     setMessage(value);
     if (value.length === 0) return;
     const now = Date.now();
@@ -288,7 +294,7 @@ export default function ChannelView() {
     void sendTyping(params.id ?? "");
   };
 
-  const hasDraftContent = () => message().trim().length > 0 || photoSelection.photos().length > 0;
+  const hasDraftContent = () => message().trim().length > 0 || photoSelection.photos.length > 0;
 
   const patchVisibleReplyReferences = (targetId: number, target: Message | null) => {
     setMessages((existing) => messageReferencesTarget(existing, targetId), {
@@ -310,12 +316,16 @@ export default function ChannelView() {
   const submitMessage = async () => {
     if (submitting() || !hasDraftContent()) return;
 
+    const submittedChannelId = params.id ?? "";
     const text = message();
-    const photos = photoSelection.photos().map((photo) => photo.file);
+    const submittedDraftVersion = draftVersionRef.current;
+    const submittedPhotos = photoSelection.photos;
+    const photos = submittedPhotos.map((photo) => photo.file);
     const target = replyTarget();
+    const submittedReplyTargetVersion = replyTargetVersionRef.current;
     setSubmitting(true);
     try {
-      const response = await sendMessage(params.id ?? "", text, photos, {
+      const response = await sendMessage(submittedChannelId, text, photos, {
         replyToMessageId: target?.id,
       });
       if (!response.ok) return;
@@ -324,9 +334,16 @@ export default function ChannelView() {
         .json()
         .catch(() => null)) as Message | null;
       primeMentionUsers(createdMessage?.mentions ?? []);
-      setMessage("");
-      setReplyTarget(null);
-      photoSelection.clearPhotos();
+      if (paramsIdRef.current !== submittedChannelId) return;
+      if (draftVersionRef.current === submittedDraftVersion) {
+        setMessage("");
+      }
+      if (replyTargetVersionRef.current === submittedReplyTargetVersion) {
+        setReplyTarget(null);
+      }
+      for (const photo of submittedPhotos) {
+        photoSelection.removePhoto(photo.id);
+      }
       lastTypingSentAtRef.current = 0;
       queueMicrotask(() => composerRef.current?.focus());
     } catch (e) {
@@ -469,6 +486,7 @@ export default function ChannelView() {
         </div>
         {openThreadRootId() !== null && (
           <ThreadPanel
+            key={`${params.id}:${openThreadRootId() as number}`}
             rootMessageId={openThreadRootId() as number}
             channelId={Number(params.id)}
             currentUserId={user()?.id ?? null}
@@ -496,8 +514,8 @@ export default function ChannelView() {
           }}
         >
           <SelectedPhotoPreviewList
-            photos={photoSelection.photos()}
-            error={photoSelection.error()}
+            photos={photoSelection.photos}
+            error={photoSelection.error}
             errorId={photoSelectionErrorId}
             disabled={submitting()}
             onRemove={photoSelection.removePhoto}
@@ -530,7 +548,7 @@ export default function ChannelView() {
             <PhotoAttachControl
               onFilesSelected={photoSelection.addFiles}
               disabled={submitting()}
-              describedBy={photoSelection.error() ? photoSelectionErrorId : undefined}
+              describedBy={photoSelection.error ? photoSelectionErrorId : undefined}
             />
             <MessageInput
               value={message()}

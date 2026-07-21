@@ -1,4 +1,4 @@
-import { useId, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import {
   useAfterRenderEffect,
   useCallableResource,
@@ -38,7 +38,7 @@ import Avatar from "./avatar";
 import {
   PhotoAttachControl,
   SelectedPhotoPreviewList,
-  createComposerPhotoSelection,
+  useComposerPhotoSelection,
 } from "./composer-photo-selection";
 import EmojiPicker from "./emoji-picker";
 import { DeleteIcon, EditIcon, EmojiIcon } from "./icons";
@@ -302,7 +302,7 @@ export default function ThreadPanel(props: {
   );
   const [draft, setDraft] = useSignalState("");
   const [submitting, setSubmitting] = useSignalState(false);
-  const photoSelection = createComposerPhotoSelection();
+  const photoSelection = useComposerPhotoSelection();
   const photoSelectionErrorId = useId();
   const [loadingOlder, setLoadingOlder] = useSignalState(false);
   const [error, setError] = useSignalState<string | null>(null);
@@ -321,6 +321,16 @@ export default function ThreadPanel(props: {
   const repliesScrollRef = useRef<HTMLDivElement | null>(null);
   const propsRef = useRef(props);
   propsRef.current = props;
+  const mountedRef = useRef(false);
+  const draftVersionRef = useRef(0);
+  const selectedPhotoIdsRef = useRef(photoSelection.photos.map((photo) => photo.id));
+  selectedPhotoIdsRef.current = photoSelection.photos.map((photo) => photo.id);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const appendReply = (reply: Message) => {
     props.onMentionUsers?.(reply.mentions ?? []);
     mutate((current) => {
@@ -654,24 +664,50 @@ export default function ThreadPanel(props: {
     }
   };
   const draftText = () => draft() || inputRef.current?.value || inputRef.current?.textContent || "";
-  const hasDraftContent = () => draftText().trim().length > 0 || photoSelection.photos().length > 0;
+  const hasDraftContent = () => draftText().trim().length > 0 || photoSelection.photos.length > 0;
+  const handleDraftChange = (value: string) => {
+    draftVersionRef.current += 1;
+    setDraft(value);
+  };
   const submitReply = async () => {
+    const submittedChannelId = props.channelId;
+    const submittedRootMessageId = props.rootMessageId;
     const text = draftText();
-    const photos = photoSelection.photos().map((photo) => photo.file);
+    const submittedDraftVersion = draftVersionRef.current;
+    const submittedPhotos = photoSelection.photos;
+    const submittedPhotoIds = submittedPhotos.map((photo) => photo.id);
+    const photos = submittedPhotos.map((photo) => photo.file);
     if ((text.trim().length === 0 && photos.length === 0) || submitting()) return;
     setSubmitting(true);
     setError(null);
     setDraft("");
+    const ownsSubmissionContext = () =>
+      mountedRef.current &&
+      propsRef.current.channelId === submittedChannelId &&
+      propsRef.current.rootMessageId === submittedRootMessageId;
     try {
-      const reply = await sendThreadReply(props.rootMessageId, text, photos);
+      const reply = await sendThreadReply(submittedRootMessageId, text, photos);
+      if (!ownsSubmissionContext()) return;
       appendReply(reply);
-      photoSelection.clearPhotos();
+      for (const photo of submittedPhotos) {
+        photoSelection.removePhoto(photo.id);
+      }
       queueMicrotask(() => inputRef.current?.focus());
     } catch (e) {
+      const stillOwnsSubmittedPhotos =
+        selectedPhotoIdsRef.current.length === submittedPhotoIds.length &&
+        selectedPhotoIdsRef.current.every((id, index) => id === submittedPhotoIds[index]);
+      if (
+        !ownsSubmissionContext() ||
+        draftVersionRef.current !== submittedDraftVersion ||
+        !stillOwnsSubmittedPhotos
+      ) {
+        return;
+      }
       setDraft(text);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setSubmitting(false);
+      if (ownsSubmissionContext()) setSubmitting(false);
     }
   };
   const startEditing = (message: Message) => {
@@ -850,8 +886,8 @@ export default function ThreadPanel(props: {
           </p>
         ) : null}
         <SelectedPhotoPreviewList
-          photos={photoSelection.photos()}
-          error={photoSelection.error()}
+          photos={photoSelection.photos}
+          error={photoSelection.error}
           errorId={photoSelectionErrorId}
           disabled={submitting()}
           onRemove={photoSelection.removePhoto}
@@ -860,11 +896,11 @@ export default function ThreadPanel(props: {
           <PhotoAttachControl
             onFilesSelected={photoSelection.addFiles}
             disabled={submitting()}
-            describedBy={photoSelection.error() ? photoSelectionErrorId : undefined}
+            describedBy={photoSelection.error ? photoSelectionErrorId : undefined}
           />
           <MessageInput
             value={draft()}
-            onChange={setDraft}
+            onChange={handleDraftChange}
             ariaLabel="Thread reply"
             placeholder="Reply in thread..."
             className="flex min-w-0 flex-1 items-end gap-2"

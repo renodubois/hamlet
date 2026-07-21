@@ -1,13 +1,16 @@
 import {
+  useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
+  useMemo,
   useRef,
+  useState,
   type ChangeEvent,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { createPortal, flushSync } from "react-dom";
-import { useComputedValue, useSignalState } from "../hooks/react-state";
+import { createPortal } from "react-dom";
 import { getServerUrl } from "../api";
 import { CONSERVATIVE_EMOJIS, type EmojiEntry } from "../emoji/emoji-data";
 import { searchEmojis } from "../emoji/emoji-search";
@@ -114,37 +117,46 @@ export default function EmojiPicker(props: {
   const searchRef = useRef<HTMLInputElement | null>(null);
   const gridScrollRef = useRef<HTMLDivElement | null>(null);
   const restoreFocusOnClose = useRef(true);
-  const [query, setQuery] = useSignalState("");
-  const [activeIndex, setActiveIndex] = useSignalState(-1);
-  const [panelStyle, setPanelStyle] = useSignalState<CSSProperties>({
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+  const anchorRef = useRef(props.anchor);
+  const onCloseRef = useRef(props.onClose);
+  const emojisRef = useRef(props.emojis ?? CONSERVATIVE_EMOJIS);
+  const setupGenerationRef = useRef(0);
+  anchorRef.current = props.anchor;
+  onCloseRef.current = props.onClose;
+  emojisRef.current = props.emojis ?? CONSERVATIVE_EMOJIS;
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [panelStyle, setPanelStyle] = useState<CSSProperties>({
     left: `${VIEWPORT_MARGIN}px`,
     top: `${VIEWPORT_MARGIN}px`,
     width: `${PICKER_WIDTH}px`,
   });
 
-  const emojis = () => props.emojis ?? CONSERVATIVE_EMOJIS;
-  const filtered = useComputedValue(() => searchEmojis(query(), emojis()));
-  const rows = useComputedValue(() => chunkEmojis(filtered()));
-  const activeEntry = useComputedValue(() => {
-    const entry = filtered()[activeIndex()];
-    return entry;
-  });
-  const activeGridcellId = useComputedValue(() => {
-    const entry = activeEntry();
-    return entry ? emojiGridcellId(resultsGridId, entry) : undefined;
-  });
+  const emojis = props.emojis ?? CONSERVATIVE_EMOJIS;
+  const filtered = useMemo(() => searchEmojis(query, emojis), [query, emojis]);
+  const rows = useMemo(() => chunkEmojis(filtered), [filtered]);
+  const activeEntry = filtered[activeIndex];
+  const activeGridcellId = activeEntry ? emojiGridcellId(resultsGridId, activeEntry) : undefined;
 
-  const updatePosition = () => {
-    const position = pickerPosition(props.anchor(), panelRef.current);
+  const updatePosition = useCallback(() => {
+    const position = pickerPosition(anchorRef.current(), panelRef.current);
     setPanelStyle({
       left: `${position.left}px`,
       top: `${position.top}px`,
       width: `${position.width}px`,
     });
-  };
+  }, []);
+
+  const requestClose = useCallback(() => {
+    if (restoreFocusOnClose.current && panelRef.current?.contains(document.activeElement)) {
+      previouslyFocusedRef.current?.focus?.();
+    }
+    onCloseRef.current();
+  }, []);
 
   const scrollActiveEmojiIntoView = (index: number) => {
-    const entry = filtered()[index];
+    const entry = filtered[index];
     if (!entry) return;
 
     document
@@ -153,18 +165,21 @@ export default function EmojiPicker(props: {
   };
 
   const moveActiveIndex = (delta: number) => {
-    const resultCount = filtered().length;
+    const resultCount = filtered.length;
     if (resultCount === 0) return;
 
-    const currentIndex = activeIndex() >= 0 ? activeIndex() : 0;
+    const currentIndex = activeIndex >= 0 ? activeIndex : 0;
     const nextIndex = clampIndex(currentIndex + delta, resultCount - 1);
-    flushSync(() => setActiveIndex(nextIndex));
-    queueMicrotask(() => scrollActiveEmojiIntoView(nextIndex));
+    setActiveIndex(nextIndex);
+    const generation = setupGenerationRef.current;
+    queueMicrotask(() => {
+      if (setupGenerationRef.current === generation) scrollActiveEmojiIntoView(nextIndex);
+    });
   };
 
   const selectEntry = (entry: EmojiEntry) => {
     props.onSelect(entry.emoji);
-    props.onClose();
+    requestClose();
   };
 
   const handlePanelKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -182,7 +197,7 @@ export default function EmojiPicker(props: {
 
     if (event.key === "Enter") {
       event.preventDefault();
-      const entry = activeEntry();
+      const entry = activeEntry;
       if (!entry) return;
 
       event.stopPropagation();
@@ -192,7 +207,7 @@ export default function EmojiPicker(props: {
 
     if (!isArrowKey(event.key)) return;
     if (isComposing || isModifiedKeyboardEvent(event)) return;
-    if (filtered().length === 0) return;
+    if (filtered.length === 0) return;
 
     event.preventDefault();
     event.stopPropagation();
@@ -208,14 +223,17 @@ export default function EmojiPicker(props: {
     }
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!props.open) return;
 
+    const generation = setupGenerationRef.current + 1;
+    setupGenerationRef.current = generation;
     restoreFocusOnClose.current = true;
     setQuery("");
-    setActiveIndex(searchEmojis("", emojis()).length > 0 ? 0 : -1);
-    const previouslyFocused = document.activeElement as HTMLElement | null;
+    setActiveIndex(searchEmojis("", emojisRef.current).length > 0 ? 0 : -1);
+    previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
     queueMicrotask(() => {
+      if (setupGenerationRef.current !== generation) return;
       if (gridScrollRef.current) gridScrollRef.current.scrollTop = 0;
       updatePosition();
       searchRef.current?.focus();
@@ -224,14 +242,14 @@ export default function EmojiPicker(props: {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
-      props.onClose();
+      requestClose();
     };
     const handleMouseDown = (event: MouseEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
       if (panelRef.current?.contains(target)) return;
-      if (props.anchor()?.contains(target)) return;
-      props.onClose();
+      if (anchorRef.current()?.contains(target)) return;
+      requestClose();
     };
 
     window.addEventListener("keydown", handleKeyDown);
@@ -240,29 +258,30 @@ export default function EmojiPicker(props: {
     document.addEventListener("mousedown", handleMouseDown);
 
     return () => {
+      if (setupGenerationRef.current === generation) setupGenerationRef.current += 1;
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
       document.removeEventListener("mousedown", handleMouseDown);
       if (restoreFocusOnClose.current && panelRef.current?.contains(document.activeElement)) {
-        previouslyFocused?.focus?.();
+        previouslyFocusedRef.current?.focus?.();
       }
     };
-  }, [props.open]);
+  }, [props.open, requestClose, updatePosition]);
 
   useEffect(() => {
-    const resultCount = filtered().length;
-    const nextActiveIndex = resultCount > 0 ? 0 : -1;
-    if (activeIndex() !== nextActiveIndex) setActiveIndex(nextActiveIndex);
+    setActiveIndex(filtered.length > 0 ? 0 : -1);
+    if (!props.open) return;
 
-    if (props.open) {
-      queueMicrotask(updatePosition);
-    }
-  }, [query(), props.emojis, props.open]);
+    const generation = setupGenerationRef.current;
+    queueMicrotask(() => {
+      if (setupGenerationRef.current === generation) updatePosition();
+    });
+  }, [filtered, props.open, updatePosition]);
 
   if (!props.open) return null;
 
-  const active = activeEntry();
+  const active = activeEntry;
 
   return createPortal(
     <div
@@ -272,7 +291,7 @@ export default function EmojiPicker(props: {
       role="dialog"
       aria-label="Emoji picker"
       className="fixed z-50 flex max-h-[360px] flex-col overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-md"
-      style={panelStyle()}
+      style={panelStyle}
       onKeyDown={handlePanelKeyDown}
     >
       <div className="flex-shrink-0 border-b border-border p-3">
@@ -285,10 +304,10 @@ export default function EmojiPicker(props: {
           aria-expanded="true"
           aria-haspopup="grid"
           aria-controls={resultsGridId}
-          aria-activedescendant={activeGridcellId()}
+          aria-activedescendant={activeGridcellId}
           placeholder="Search emojis"
           spellCheck="false"
-          value={query()}
+          value={query}
           onChange={(event: ChangeEvent<HTMLInputElement>) => setQuery(event.currentTarget.value)}
         />
       </div>
@@ -299,12 +318,12 @@ export default function EmojiPicker(props: {
         className="max-h-[224px] overflow-y-auto p-3"
       >
         <div id={resultsGridId} className="space-y-1" role="grid" aria-label="Emoji results">
-          {filtered().length > 0 ? (
-            rows().map((row, rowIndex) => (
+          {filtered.length > 0 ? (
+            rows.map((row, rowIndex) => (
               <div key={row.map(emojiEntryKey).join("|")} className="flex gap-1" role="row">
                 {row.map((entry, cellIndex) => {
                   const index = rowIndex * EMOJI_GRID_COLUMNS + cellIndex;
-                  const isActive = activeIndex() === index;
+                  const isActive = activeIndex === index;
                   const label = emojiLabel(entry);
                   const imageUrl = isCustomEmoji(entry) ? entry.imageUrl : undefined;
 

@@ -1,6 +1,4 @@
-import { useRef, type ChangeEvent, type FormEvent } from "react";
-
-import { useAfterRenderEffect, useSignalState, registerCleanup } from "../hooks/react-state";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import {
   changePassword,
   deleteAvatar,
@@ -65,68 +63,117 @@ function CustomEmojiRow(props: {
   onRestore: (id: number) => Promise<CustomEmoji>;
   status?: string | null;
 }) {
-  const [draft, setDraft] = useSignalState(props.emoji.name);
-  const [saving, setSaving] = useSignalState(false);
-  const [error, setError] = useSignalState<string | null>(null);
-  const [success, setSuccess] = useSignalState<string | null>(null);
-  const [actionBusy, setActionBusy] = useSignalState(false);
-  const [actionError, setActionError] = useSignalState<string | null>(null);
-  const trimmedDraft = () => draft().trim();
-  const draftValid = () => /^[A-Za-z0-9_]{2,32}$/.test(trimmedDraft());
-  const changed = () => trimmedDraft() !== props.emoji.name;
-  const canSave = () => changed() && draftValid() && !saving();
+  const [draft, setDraft] = useState(props.emoji.name);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const rowIdentityRef = useRef(props.emoji.id);
+  const operationRef = useRef(0);
+  const operationActiveRef = useRef(false);
+  const initialNameRef = useRef(props.emoji.name);
+  initialNameRef.current = props.emoji.name;
+  const trimmedDraft = draft.trim();
+  const draftValid = /^[A-Za-z0-9_]{2,32}$/.test(trimmedDraft);
+  const changed = trimmedDraft !== props.emoji.name;
+  const busy = saving || actionBusy;
+  const canSave = changed && draftValid && !busy;
 
-  const previousEmojiNameRef = useRef(props.emoji.name);
-  useAfterRenderEffect(() => {
-    if (previousEmojiNameRef.current === props.emoji.name) return;
-    previousEmojiNameRef.current = props.emoji.name;
-    setDraft(props.emoji.name);
-  });
+  useEffect(() => {
+    rowIdentityRef.current = props.emoji.id;
+    operationRef.current += 1;
+    operationActiveRef.current = false;
+    setDraft(initialNameRef.current);
+    setSaving(false);
+    setError(null);
+    setSuccess(null);
+    setActionBusy(false);
+    setActionError(null);
+    return () => {
+      rowIdentityRef.current = -1;
+      operationRef.current += 1;
+      operationActiveRef.current = false;
+    };
+  }, [props.emoji.id]);
 
   const save = async (ev: FormEvent<HTMLFormElement>) => {
     ev.preventDefault();
-    if (!canSave()) return;
+    if (!canSave || operationActiveRef.current) return;
+    const rowId = props.emoji.id;
+    const operation = ++operationRef.current;
+    operationActiveRef.current = true;
     setSaving(true);
     setError(null);
     setSuccess(null);
     setActionError(null);
     try {
-      const updated = await props.onRename(props.emoji.id, trimmedDraft());
-      setSuccess(`Renamed to :${updated.name}:`);
+      const updated = await props.onRename(rowId, trimmedDraft);
+      if (rowIdentityRef.current === rowId && operationRef.current === operation) {
+        setSuccess(`Renamed to :${updated.name}:`);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Emoji rename failed");
+      if (rowIdentityRef.current === rowId && operationRef.current === operation) {
+        setError(err instanceof Error ? err.message : "Emoji rename failed");
+      }
     } finally {
-      setSaving(false);
+      if (rowIdentityRef.current === rowId && operationRef.current === operation) {
+        operationActiveRef.current = false;
+        setSaving(false);
+      }
     }
   };
 
   const requestDelete = async () => {
-    const ok = window.confirm(`Delete :${props.emoji.name}:? Old messages will still render it.`);
-    if (!ok) return;
+    if (operationActiveRef.current) return;
+    const rowId = props.emoji.id;
+    const rowName = props.emoji.name;
+    const ok = window.confirm(`Delete :${rowName}:? Old messages will still render it.`);
+    if (!ok || operationActiveRef.current) return;
+    const operation = ++operationRef.current;
+    operationActiveRef.current = true;
     setActionBusy(true);
     setActionError(null);
     setSuccess(null);
     try {
-      await props.onDelete(props.emoji.id);
-      setSuccess(`Deleted :${props.emoji.name}:`);
+      await props.onDelete(rowId);
+      if (rowIdentityRef.current === rowId && operationRef.current === operation) {
+        setSuccess(`Deleted :${rowName}:`);
+      }
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Emoji delete failed");
+      if (rowIdentityRef.current === rowId && operationRef.current === operation) {
+        setActionError(err instanceof Error ? err.message : "Emoji delete failed");
+      }
     } finally {
-      setActionBusy(false);
+      if (rowIdentityRef.current === rowId && operationRef.current === operation) {
+        operationActiveRef.current = false;
+        setActionBusy(false);
+      }
     }
   };
 
   const restore = async () => {
+    if (operationActiveRef.current) return;
+    const rowId = props.emoji.id;
+    const operation = ++operationRef.current;
+    operationActiveRef.current = true;
     setActionBusy(true);
     setActionError(null);
     setSuccess(null);
     try {
-      const restored = await props.onRestore(props.emoji.id);
-      setSuccess(`Restored :${restored.name}:`);
+      const restored = await props.onRestore(rowId);
+      if (rowIdentityRef.current === rowId && operationRef.current === operation) {
+        setSuccess(`Restored :${restored.name}:`);
+      }
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Emoji restore failed");
+      if (rowIdentityRef.current === rowId && operationRef.current === operation) {
+        setActionError(err instanceof Error ? err.message : "Emoji restore failed");
+      }
     } finally {
-      setActionBusy(false);
+      if (rowIdentityRef.current === rowId && operationRef.current === operation) {
+        operationActiveRef.current = false;
+        setActionBusy(false);
+      }
     }
   };
 
@@ -152,37 +199,37 @@ function CustomEmojiRow(props: {
             id={`custom-emoji-rename-${props.emoji.id}`}
             type="text"
             className="h-7 w-40 px-2 text-xs md:text-xs"
-            value={draft()}
+            value={draft}
             onChange={(e) => {
               setError(null);
               setSuccess(null);
               setDraft(e.currentTarget.value);
             }}
             aria-label={`Rename :${props.emoji.name}:`}
-            disabled={saving()}
+            disabled={busy}
           />
-          <Button type="submit" size="xs" disabled={!canSave()}>
-            {saving() ? "Renaming..." : "Save rename"}
+          <Button type="submit" size="xs" disabled={!canSave}>
+            {saving ? "Renaming..." : "Save rename"}
           </Button>
         </form>
-        {trimmedDraft().length > 0 && !draftValid() ? (
+        {trimmedDraft.length > 0 && !draftValid ? (
           <p className="mt-1 text-xs text-destructive">
             Use 2–32 letters, numbers, or underscores.
           </p>
         ) : null}
-        {error() ? (
+        {error ? (
           <p role="alert" className="mt-1 text-xs text-destructive">
-            {error()}
+            {error}
           </p>
         ) : null}
-        {actionError() ? (
+        {actionError ? (
           <p role="alert" className="mt-1 text-xs text-destructive">
-            {actionError()}
+            {actionError}
           </p>
         ) : null}
-        {(success() ?? props.status) ? (
+        {(success ?? props.status) ? (
           <p role="status" className="mt-1 text-xs text-green-600">
-            {success() ?? props.status}
+            {success ?? props.status}
           </p>
         ) : null}
       </div>
@@ -192,8 +239,8 @@ function CustomEmojiRow(props: {
           {props.emoji.deleted_at ? <Badge variant="destructive">deleted</Badge> : null}
         </div>
         {props.emoji.deleted_at !== null ? (
-          <Button type="button" size="xs" onClick={() => void restore()} disabled={actionBusy()}>
-            {actionBusy() ? "Restoring..." : "Restore"}
+          <Button type="button" size="xs" onClick={() => void restore()} disabled={busy}>
+            {actionBusy ? "Restoring..." : "Restore"}
           </Button>
         ) : (
           <Button
@@ -201,9 +248,9 @@ function CustomEmojiRow(props: {
             variant="destructive"
             size="xs"
             onClick={() => void requestDelete()}
-            disabled={actionBusy()}
+            disabled={busy}
           >
-            {actionBusy() ? "Deleting..." : "Delete"}
+            {actionBusy ? "Deleting..." : "Delete"}
           </Button>
         )}
       </div>
@@ -213,47 +260,50 @@ function CustomEmojiRow(props: {
 
 function CustomEmojiSettings() {
   const registry = useCustomEmojis();
-  const all = () => registry.allEmojis() ?? [];
-  const active = registry.activeEmojis;
-  const deleted = () => all().filter((emoji) => emoji.deleted_at !== null);
-  const deletedCount = () => deleted().length;
-  const [name, setName] = useSignalState("");
-  const [file, setFile] = useSignalState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useSignalState<string | null>(null);
-  const [uploading, setUploading] = useSignalState(false);
-  const [uploadError, setUploadError] = useSignalState<string | null>(null);
-  const [rowStatuses, setRowStatuses] = useSignalState<Record<number, string>>({});
+  const all = registry.allEmojis() ?? [];
+  const active = registry.activeEmojis();
+  const deleted = all.filter((emoji) => emoji.deleted_at !== null);
+  const deletedCount = deleted.length;
+  const [name, setName] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [rowStatuses, setRowStatuses] = useState<Record<number, string>>({});
+  const fileRef = useRef<File | null>(null);
+  const uploadOperationRef = useRef(0);
+  const uploadOwnerRef = useRef(false);
+  const emojiIdsRef = useRef<ReadonlySet<number>>(new Set());
+  emojiIdsRef.current = new Set(all.map((emoji) => emoji.id));
   const nameHelpId = "custom-emoji-name-help";
   const fileHelpId = "custom-emoji-file-help";
   const allowedTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"];
-  const trimmedName = () => name().trim();
-  const nameLooksValid = () => /^[A-Za-z0-9_]{2,32}$/.test(trimmedName());
-  const fileLooksValid = () => {
-    const selected = file();
-    return !!selected && allowedTypes.includes(selected.type);
-  };
-  const canSubmit = () => nameLooksValid() && fileLooksValid() && !uploading();
+  const trimmedName = name.trim();
+  const nameLooksValid = /^[A-Za-z0-9_]{2,32}$/.test(trimmedName);
+  const fileLooksValid = !!file && allowedTypes.includes(file.type);
+  const canSubmit = nameLooksValid && fileLooksValid && !uploading;
 
-  const previewRef = useRef<{ file: File; url: string } | null>(null);
-  useAfterRenderEffect(() => {
-    const selected = file();
-    if (previewRef.current?.file === selected) return;
-    if (previewRef.current) {
-      URL.revokeObjectURL?.(previewRef.current.url);
-      previewRef.current = null;
-    }
+  useEffect(() => {
+    uploadOwnerRef.current = true;
+    return () => {
+      uploadOwnerRef.current = false;
+      uploadOperationRef.current += 1;
+      fileRef.current = null;
+    };
+  }, []);
 
-    if (selected && typeof URL.createObjectURL === "function") {
-      const url = URL.createObjectURL(selected);
-      previewRef.current = { file: selected, url };
-      setPreviewUrl(url);
-    } else {
+  useEffect(() => {
+    if (!file || typeof URL.createObjectURL !== "function") {
       setPreviewUrl(null);
+      return;
     }
-  });
-  registerCleanup(() => {
-    if (previewRef.current) URL.revokeObjectURL?.(previewRef.current.url);
-  });
+
+    const ownedUrl = URL.createObjectURL(file);
+    setPreviewUrl(ownedUrl);
+    return () => {
+      URL.revokeObjectURL?.(ownedUrl);
+    };
+  }, [file]);
 
   const setRowStatus = (id: number, message: string) => {
     setRowStatuses((current) => ({ ...current, [id]: message }));
@@ -261,45 +311,75 @@ function CustomEmojiSettings() {
 
   const renameEmoji = async (id: number, nextName: string) => {
     const emoji = await registry.rename(id, nextName);
-    setRowStatus(id, `Renamed to :${emoji.name}:`);
+    if (uploadOwnerRef.current && emojiIdsRef.current.has(id)) {
+      setRowStatus(id, `Renamed to :${emoji.name}:`);
+    }
     return emoji;
   };
 
   const deleteEmoji = async (id: number) => {
     const emoji = await registry.remove(id);
-    setRowStatus(id, `Deleted :${emoji.name}:`);
+    if (uploadOwnerRef.current && emojiIdsRef.current.has(id)) {
+      setRowStatus(id, `Deleted :${emoji.name}:`);
+    }
     return emoji;
   };
 
   const restoreEmoji = async (id: number) => {
     const emoji = await registry.restore(id);
-    setRowStatus(id, `Restored :${emoji.name}:`);
+    if (uploadOwnerRef.current && emojiIdsRef.current.has(id)) {
+      setRowStatus(id, `Restored :${emoji.name}:`);
+    }
     return emoji;
   };
 
   const handleFilePicked = (ev: ChangeEvent<HTMLInputElement>) => {
+    const selected = ev.currentTarget.files?.[0] ?? null;
+    uploadOperationRef.current += 1;
+    fileRef.current = selected;
     setUploadError(null);
-    setFile(ev.currentTarget.files?.[0] ?? null);
+    setFile(selected);
   };
 
   const submit = async (ev: FormEvent<HTMLFormElement>) => {
     ev.preventDefault();
-    if (!canSubmit()) return;
-    const selected = file();
-    if (!selected) return;
+    if (!canSubmit || !file) return;
+    const selected = file;
+    const submittedName = trimmedName;
+    const operation = ++uploadOperationRef.current;
 
     setUploading(true);
     setUploadError(null);
     try {
-      await registry.create(trimmedName(), selected);
-      setName("");
-      setFile(null);
-      const input = document.getElementById("custom-emoji-file") as HTMLInputElement | null;
-      if (input) input.value = "";
+      await registry.create(submittedName, selected);
+      if (
+        uploadOwnerRef.current &&
+        fileRef.current === selected &&
+        uploadOperationRef.current === operation
+      ) {
+        setUploading(false);
+        fileRef.current = null;
+        setName("");
+        setFile(null);
+        const input = document.getElementById("custom-emoji-file") as HTMLInputElement | null;
+        if (input) input.value = "";
+      }
     } catch (err) {
-      setUploadError(err instanceof Error ? err.message : "Emoji upload failed");
+      if (
+        uploadOwnerRef.current &&
+        fileRef.current === selected &&
+        uploadOperationRef.current === operation
+      ) {
+        setUploadError(err instanceof Error ? err.message : "Emoji upload failed");
+      }
     } finally {
-      setUploading(false);
+      if (
+        uploadOwnerRef.current &&
+        fileRef.current === selected &&
+        uploadOperationRef.current === operation
+      ) {
+        setUploading(false);
+      }
     }
   };
 
@@ -323,18 +403,18 @@ function CustomEmojiSettings() {
             id="custom-emoji-name"
             type="text"
             className="mt-1"
-            value={name()}
+            value={name}
             onChange={(e) => {
               setUploadError(null);
               setName(e.currentTarget.value);
             }}
             aria-describedby={nameHelpId}
-            disabled={uploading()}
+            disabled={uploading}
           />
           <p id={nameHelpId} className="mt-1 text-xs text-muted-foreground">
             2–32 letters, numbers, or underscores.
           </p>
-          {trimmedName().length > 0 && !nameLooksValid() ? (
+          {trimmedName.length > 0 && !nameLooksValid ? (
             <p className="mt-1 text-xs text-destructive">
               Use 2–32 letters, numbers, or underscores.
             </p>
@@ -350,20 +430,20 @@ function CustomEmojiSettings() {
             className="mt-1"
             aria-describedby={fileHelpId}
             onChange={handleFilePicked}
-            disabled={uploading()}
+            disabled={uploading}
           />
           <p id={fileHelpId} className="mt-1 text-xs text-muted-foreground">
             PNG, JPEG, static WebP, animated GIF, or animated WebP. Maximum upload size is 2 MiB.
           </p>
-          {file() && !fileLooksValid() ? (
+          {file && !fileLooksValid ? (
             <p className="mt-1 text-xs text-destructive">
               Choose a PNG, JPEG, static WebP, animated GIF, or animated WebP image.
             </p>
           ) : null}
-          {file() && previewUrl() ? (
+          {file && previewUrl ? (
             <div className="mt-2 flex items-center gap-2 rounded-md border border-border bg-background p-2">
               <img
-                src={previewUrl() ?? undefined}
+                src={previewUrl ?? undefined}
                 alt="Selected custom emoji preview"
                 className="h-10 w-10 rounded-md object-contain bg-muted"
               />
@@ -374,14 +454,14 @@ function CustomEmojiSettings() {
           ) : null}
         </div>
 
-        {uploadError() ? (
+        {uploadError ? (
           <p role="alert" className="text-sm text-destructive">
-            {uploadError()}
+            {uploadError}
           </p>
         ) : null}
 
-        <Button type="submit" className="self-start" disabled={!canSubmit()}>
-          {uploading() ? "Uploading..." : "Upload emoji"}
+        <Button type="submit" className="self-start" disabled={!canSubmit}>
+          {uploading ? "Uploading..." : "Upload emoji"}
         </Button>
       </form>
 
@@ -406,22 +486,22 @@ function CustomEmojiSettings() {
       ) : null}
 
       {!registry.allEmojis.loading && !registry.error() ? (
-        all().length > 0 ? (
+        all.length > 0 ? (
           <div className="flex flex-col gap-4">
             <section className="rounded-md border border-border divide-y divide-border">
               <div className="px-3 py-2 text-xs text-muted-foreground">
-                Active emojis: {active().length} / {all().length} total
-                {deletedCount() > 0 ? ` (${deletedCount()} deleted)` : null}
+                Active emojis: {active.length} / {all.length} total
+                {deletedCount > 0 ? ` (${deletedCount} deleted)` : null}
               </div>
-              {active().length > 0 ? (
-                active().map((emoji) => (
+              {active.length > 0 ? (
+                active.map((emoji) => (
                   <CustomEmojiRow
                     key={emoji.id}
                     emoji={emoji}
                     onRename={renameEmoji}
                     onDelete={deleteEmoji}
                     onRestore={restoreEmoji}
-                    status={rowStatuses()[emoji.id] ?? null}
+                    status={rowStatuses[emoji.id] ?? null}
                   />
                 ))
               ) : (
@@ -433,15 +513,15 @@ function CustomEmojiSettings() {
               <div className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Deleted emojis
               </div>
-              {deleted().length > 0 ? (
-                deleted().map((emoji) => (
+              {deleted.length > 0 ? (
+                deleted.map((emoji) => (
                   <CustomEmojiRow
                     key={emoji.id}
                     emoji={emoji}
                     onRename={renameEmoji}
                     onDelete={deleteEmoji}
                     onRestore={restoreEmoji}
-                    status={rowStatuses()[emoji.id] ?? null}
+                    status={rowStatuses[emoji.id] ?? null}
                   />
                 ))
               ) : (
@@ -469,48 +549,78 @@ export default function SettingsModal(props: {
   user?: User | null;
   onAvatarChange?: () => void;
 }) {
-  const [section, setSection] = useSignalState<SectionId>("profile");
-  const [confirmLogout, setConfirmLogout] = useSignalState(false);
-  const [loggingOut, setLoggingOut] = useSignalState(false);
-  const [pendingFile, setPendingFile] = useSignalState<File | null>(null);
-  const [avatarError, setAvatarError] = useSignalState<string | null>(null);
-  const [removing, setRemoving] = useSignalState(false);
-  const [displayNameDraft, setDisplayNameDraft] = useSignalState(props.user?.display_name ?? "");
-  const [displayNameSaving, setDisplayNameSaving] = useSignalState(false);
-  const [displayNameError, setDisplayNameError] = useSignalState<string | null>(null);
-  const [currentPassword, setCurrentPassword] = useSignalState("");
-  const [newPassword, setNewPassword] = useSignalState("");
-  const [confirmNewPassword, setConfirmNewPassword] = useSignalState("");
-  const [passwordSaving, setPasswordSaving] = useSignalState(false);
-  const [passwordError, setPasswordError] = useSignalState<string | null>(null);
-  const [passwordSuccess, setPasswordSuccess] = useSignalState<string | null>(null);
-  const active = () => SECTIONS.find((s) => s.id === section()) ?? SECTIONS[0];
-  const passwordMismatch = () =>
-    confirmNewPassword().length > 0 && newPassword() !== confirmNewPassword();
-  const canChangePassword = () =>
-    currentPassword().length > 0 &&
-    newPassword().length > 0 &&
-    confirmNewPassword().length > 0 &&
-    !passwordMismatch() &&
-    !passwordSaving();
+  const [section, setSection] = useState<SectionId>("profile");
+  const [confirmLogout, setConfirmLogout] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
+  const [removing, setRemoving] = useState(false);
+  const [displayNameDraft, setDisplayNameDraft] = useState(props.user?.display_name ?? "");
+  const [displayNameSaving, setDisplayNameSaving] = useState(false);
+  const [displayNameError, setDisplayNameError] = useState<string | null>(null);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmNewPassword, setConfirmNewPassword] = useState("");
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
+  const active = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0];
+  const passwordMismatch = confirmNewPassword.length > 0 && newPassword !== confirmNewPassword;
+  const canChangePassword =
+    currentPassword.length > 0 &&
+    newPassword.length > 0 &&
+    confirmNewPassword.length > 0 &&
+    !passwordMismatch &&
+    !passwordSaving;
+  const userIdentityRef = useRef(props.user?.id ?? null);
+  const nextUserDraftRef = useRef(props.user?.display_name ?? "");
+  const pendingFileRef = useRef<File | null>(null);
+  const logoutOperationRef = useRef(0);
+  const avatarOperationRef = useRef(0);
+  const displayNameOperationRef = useRef(0);
+  const passwordOperationRef = useRef(0);
+  nextUserDraftRef.current = props.user?.display_name ?? "";
 
-  // Keep the editable field in sync with the latest persisted display name
-  // (e.g. when the auth context refetches after a successful save).
-  const previousDisplayNameRef = useRef(props.user?.display_name ?? "");
-  useAfterRenderEffect(() => {
-    const displayName = props.user?.display_name ?? "";
-    if (previousDisplayNameRef.current === displayName) return;
-    previousDisplayNameRef.current = displayName;
-    setDisplayNameDraft(displayName);
-  });
+  useEffect(() => {
+    userIdentityRef.current = props.user?.id ?? null;
+    logoutOperationRef.current += 1;
+    avatarOperationRef.current += 1;
+    displayNameOperationRef.current += 1;
+    passwordOperationRef.current += 1;
+    pendingFileRef.current = null;
+    setPendingFile(null);
+    setAvatarError(null);
+    setRemoving(false);
+    setDisplayNameDraft(nextUserDraftRef.current);
+    setDisplayNameSaving(false);
+    setDisplayNameError(null);
+    setCurrentPassword("");
+    setNewPassword("");
+    setConfirmNewPassword("");
+    setPasswordSaving(false);
+    setPasswordError(null);
+    setPasswordSuccess(null);
+    return () => {
+      userIdentityRef.current = null;
+      pendingFileRef.current = null;
+      logoutOperationRef.current += 1;
+      avatarOperationRef.current += 1;
+      displayNameOperationRef.current += 1;
+      passwordOperationRef.current += 1;
+    };
+  }, [props.user?.id]);
 
   const handleConfirmLogout = async () => {
+    const userId = props.user?.id ?? null;
+    const operation = ++logoutOperationRef.current;
     setLoggingOut(true);
     try {
       await props.onLogout();
     } finally {
-      setLoggingOut(false);
-      setConfirmLogout(false);
+      if (userIdentityRef.current === userId && logoutOperationRef.current === operation) {
+        setLoggingOut(false);
+        setConfirmLogout(false);
+      }
     }
   };
 
@@ -518,51 +628,80 @@ export default function SettingsModal(props: {
     setAvatarError(null);
     const file = ev.currentTarget.files?.[0];
     if (!file) return;
+    pendingFileRef.current = file;
     setPendingFile(file);
     // Reset so picking the same file again re-opens the cropper.
     ev.currentTarget.value = "";
   };
 
   const handleCropSave = async (blob: Blob) => {
+    const userId = props.user?.id ?? null;
+    const selectedFile = pendingFile;
+    const operation = ++avatarOperationRef.current;
     try {
       await uploadAvatar(blob);
-      props.onAvatarChange?.();
-      setPendingFile(null);
+      if (
+        userIdentityRef.current === userId &&
+        pendingFileRef.current === selectedFile &&
+        avatarOperationRef.current === operation
+      ) {
+        props.onAvatarChange?.();
+        pendingFileRef.current = null;
+        setPendingFile(null);
+      }
     } catch (e) {
-      setAvatarError(e instanceof Error ? e.message : "Upload failed");
+      if (userIdentityRef.current === userId && avatarOperationRef.current === operation) {
+        setAvatarError(e instanceof Error ? e.message : "Upload failed");
+      }
       throw e;
     }
   };
 
   const saveDisplayName = async () => {
-    const trimmed = displayNameDraft().trim();
+    const trimmed = displayNameDraft.trim();
     if (trimmed.length > DISPLAY_NAME_MAX_LEN) {
       setDisplayNameError(`Display name must be ${DISPLAY_NAME_MAX_LEN} characters or fewer`);
       return;
     }
+    const userId = props.user?.id ?? null;
+    const operation = ++displayNameOperationRef.current;
     setDisplayNameError(null);
     setDisplayNameSaving(true);
     try {
       await updateDisplayName(trimmed.length === 0 ? null : trimmed);
-      props.onAvatarChange?.();
+      if (userIdentityRef.current === userId && displayNameOperationRef.current === operation) {
+        props.onAvatarChange?.();
+      }
     } catch (e) {
-      setDisplayNameError(e instanceof Error ? e.message : "Save failed");
+      if (userIdentityRef.current === userId && displayNameOperationRef.current === operation) {
+        setDisplayNameError(e instanceof Error ? e.message : "Save failed");
+      }
     } finally {
-      setDisplayNameSaving(false);
+      if (userIdentityRef.current === userId && displayNameOperationRef.current === operation) {
+        setDisplayNameSaving(false);
+      }
     }
   };
 
   const clearDisplayName = async () => {
+    const userId = props.user?.id ?? null;
+    const operation = ++displayNameOperationRef.current;
     setDisplayNameError(null);
     setDisplayNameSaving(true);
     try {
       await updateDisplayName(null);
-      setDisplayNameDraft("");
-      props.onAvatarChange?.();
+      if (userIdentityRef.current === userId && displayNameOperationRef.current === operation) {
+        setDisplayNameDraft("");
+        props.onAvatarChange?.();
+      }
     } catch (e) {
-      setDisplayNameError(e instanceof Error ? e.message : "Reset failed");
+      if (userIdentityRef.current === userId && displayNameOperationRef.current === operation) {
+        setDisplayNameError(e instanceof Error ? e.message : "Reset failed");
+      }
     } finally {
-      setDisplayNameSaving(false);
+      if (userIdentityRef.current === userId && displayNameOperationRef.current === operation) {
+        setDisplayNameSaving(false);
+      }
     }
   };
 
@@ -577,49 +716,65 @@ export default function SettingsModal(props: {
     setPasswordSuccess(null);
 
     if (
-      currentPassword().length === 0 ||
-      newPassword().length === 0 ||
-      confirmNewPassword().length === 0
+      currentPassword.length === 0 ||
+      newPassword.length === 0 ||
+      confirmNewPassword.length === 0
     ) {
       setPasswordError("Fill out all password fields.");
       return;
     }
-    if (newPassword() !== confirmNewPassword()) {
+    if (newPassword !== confirmNewPassword) {
       setPasswordError("New passwords do not match.");
       return;
     }
 
+    const userId = props.user?.id ?? null;
+    const submittedCurrentPassword = currentPassword;
+    const submittedNewPassword = newPassword;
+    const operation = ++passwordOperationRef.current;
     setPasswordSaving(true);
     try {
-      await changePassword(currentPassword(), newPassword());
-      setCurrentPassword("");
-      setNewPassword("");
-      setConfirmNewPassword("");
-      setPasswordSuccess("Password changed.");
+      await changePassword(submittedCurrentPassword, submittedNewPassword);
+      if (userIdentityRef.current === userId && passwordOperationRef.current === operation) {
+        setCurrentPassword("");
+        setNewPassword("");
+        setConfirmNewPassword("");
+        setPasswordSuccess("Password changed.");
+      }
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Password change failed";
-      setPasswordError(
-        /invalid credentials/i.test(message) ? "Current password is incorrect." : message,
-      );
+      if (userIdentityRef.current === userId && passwordOperationRef.current === operation) {
+        const message = e instanceof Error ? e.message : "Password change failed";
+        setPasswordError(
+          /invalid credentials/i.test(message) ? "Current password is incorrect." : message,
+        );
+      }
     } finally {
-      setPasswordSaving(false);
+      if (userIdentityRef.current === userId && passwordOperationRef.current === operation) {
+        setPasswordSaving(false);
+      }
     }
   };
 
   const handleRemoveAvatar = async () => {
+    const userId = props.user?.id ?? null;
+    const operation = ++avatarOperationRef.current;
     setAvatarError(null);
     setRemoving(true);
     try {
       await deleteAvatar();
-      props.onAvatarChange?.();
+      if (userIdentityRef.current === userId && avatarOperationRef.current === operation) {
+        props.onAvatarChange?.();
+      }
     } catch (e) {
-      setAvatarError(e instanceof Error ? e.message : "Remove failed");
+      if (userIdentityRef.current === userId && avatarOperationRef.current === operation) {
+        setAvatarError(e instanceof Error ? e.message : "Remove failed");
+      }
     } finally {
-      setRemoving(false);
+      if (userIdentityRef.current === userId && avatarOperationRef.current === operation) {
+        setRemoving(false);
+      }
     }
   };
-
-  registerCleanup(() => setPendingFile(null));
 
   return (
     <>
@@ -633,7 +788,7 @@ export default function SettingsModal(props: {
               className="flex flex-col"
             >
               {SECTIONS.map((s) => {
-                const selected = section() === s.id;
+                const selected = section === s.id;
                 return (
                   <button
                     key={s.id}
@@ -668,11 +823,11 @@ export default function SettingsModal(props: {
           </div>
           <div
             role="tabpanel"
-            id={active().panelId}
-            aria-labelledby={active().tabId}
+            id={active.panelId}
+            aria-labelledby={active.tabId}
             className="flex-1 text-sm text-foreground"
           >
-            {section() === "profile" ? (
+            {section === "profile" ? (
               props.user ? (
                 <div className="flex flex-col items-start gap-4 w-full">
                   <div className="flex items-center gap-4">
@@ -713,15 +868,13 @@ export default function SettingsModal(props: {
                         type="button"
                         variant="destructive"
                         onClick={handleRemoveAvatar}
-                        disabled={removing()}
+                        disabled={removing}
                       >
-                        {removing() ? "Removing..." : "Remove picture"}
+                        {removing ? "Removing..." : "Remove picture"}
                       </Button>
                     ) : null}
                   </div>
-                  {avatarError() ? (
-                    <p className="text-destructive text-sm">{avatarError()}</p>
-                  ) : null}
+                  {avatarError ? <p className="text-destructive text-sm">{avatarError}</p> : null}
 
                   <form
                     className="flex flex-col gap-2 w-full max-w-md pt-4 border-t border-border"
@@ -740,33 +893,33 @@ export default function SettingsModal(props: {
                       type="text"
                       placeholder={props.user.username}
                       maxLength={DISPLAY_NAME_MAX_LEN}
-                      value={displayNameDraft()}
+                      value={displayNameDraft}
                       onChange={(e) => setDisplayNameDraft(e.currentTarget.value)}
-                      disabled={displayNameSaving()}
+                      disabled={displayNameSaving}
                     />
                     <div className="flex gap-2 items-center">
                       <Button
                         type="submit"
                         disabled={
-                          displayNameSaving() ||
-                          displayNameDraft().trim() === (props.user.display_name ?? "")
+                          displayNameSaving ||
+                          displayNameDraft.trim() === (props.user.display_name ?? "")
                         }
                       >
-                        {displayNameSaving() ? "Saving..." : "Save"}
+                        {displayNameSaving ? "Saving..." : "Save"}
                       </Button>
                       {props.user.display_name ? (
                         <Button
                           type="button"
                           variant="ghost"
                           onClick={() => void clearDisplayName()}
-                          disabled={displayNameSaving()}
+                          disabled={displayNameSaving}
                         >
                           Reset to username
                         </Button>
                       ) : null}
                     </div>
-                    {displayNameError() ? (
-                      <p className="text-destructive text-sm">{displayNameError()}</p>
+                    {displayNameError ? (
+                      <p className="text-destructive text-sm">{displayNameError}</p>
                     ) : null}
                   </form>
 
@@ -792,11 +945,11 @@ export default function SettingsModal(props: {
                         type="password"
                         autoComplete="current-password"
                         className="mt-1"
-                        value={currentPassword()}
+                        value={currentPassword}
                         onChange={(e) =>
                           handlePasswordInput(setCurrentPassword, e.currentTarget.value)
                         }
-                        disabled={passwordSaving()}
+                        disabled={passwordSaving}
                       />
                     </div>
 
@@ -807,9 +960,9 @@ export default function SettingsModal(props: {
                         type="password"
                         autoComplete="new-password"
                         className="mt-1"
-                        value={newPassword()}
+                        value={newPassword}
                         onChange={(e) => handlePasswordInput(setNewPassword, e.currentTarget.value)}
-                        disabled={passwordSaving()}
+                        disabled={passwordSaving}
                       />
                     </div>
 
@@ -820,31 +973,31 @@ export default function SettingsModal(props: {
                         type="password"
                         autoComplete="new-password"
                         className="mt-1"
-                        value={confirmNewPassword()}
+                        value={confirmNewPassword}
                         onChange={(e) =>
                           handlePasswordInput(setConfirmNewPassword, e.currentTarget.value)
                         }
-                        disabled={passwordSaving()}
+                        disabled={passwordSaving}
                       />
-                      {passwordMismatch() ? (
+                      {passwordMismatch ? (
                         <p role="alert" className="mt-1 text-xs text-destructive">
                           New passwords do not match.
                         </p>
                       ) : null}
                     </div>
 
-                    <Button type="submit" className="self-start" disabled={!canChangePassword()}>
-                      {passwordSaving() ? "Changing..." : "Change password"}
+                    <Button type="submit" className="self-start" disabled={!canChangePassword}>
+                      {passwordSaving ? "Changing..." : "Change password"}
                     </Button>
 
-                    {passwordError() ? (
+                    {passwordError ? (
                       <p role="alert" className="text-sm text-destructive">
-                        {passwordError()}
+                        {passwordError}
                       </p>
                     ) : null}
-                    {passwordSuccess() ? (
+                    {passwordSuccess ? (
                       <p role="status" className="text-sm text-green-600">
-                        {passwordSuccess()}
+                        {passwordSuccess}
                       </p>
                     ) : null}
                   </form>
@@ -852,7 +1005,7 @@ export default function SettingsModal(props: {
               ) : (
                 <p className="text-muted-foreground">Loading profile...</p>
               )
-            ) : section() === "voice" ? (
+            ) : section === "voice" ? (
               <VoiceSettings />
             ) : (
               <CustomEmojiSettings />
@@ -862,25 +1015,29 @@ export default function SettingsModal(props: {
       </Modal>
 
       <CropperDialog
-        open={pendingFile() !== null}
-        file={pendingFile()}
-        onCancel={() => setPendingFile(null)}
+        open={pendingFile !== null}
+        file={pendingFile}
+        onCancel={() => {
+          avatarOperationRef.current += 1;
+          pendingFileRef.current = null;
+          setPendingFile(null);
+        }}
         onSave={handleCropSave}
       />
 
       <Modal
-        open={confirmLogout()}
-        onClose={() => !loggingOut() && setConfirmLogout(false)}
+        open={confirmLogout}
+        onClose={() => !loggingOut && setConfirmLogout(false)}
         title="Log out?"
       >
         <p className="text-sm text-foreground mb-4">Are you sure you want to log out?</p>
-        {loggingOut() ? <p className="text-sm text-muted-foreground mb-2">Logging out...</p> : null}
+        {loggingOut ? <p className="text-sm text-muted-foreground mb-2">Logging out...</p> : null}
         <div className="flex gap-2 justify-end">
           <Button
             type="button"
             variant="ghost"
             onClick={() => setConfirmLogout(false)}
-            disabled={loggingOut()}
+            disabled={loggingOut}
           >
             Cancel
           </Button>
@@ -888,7 +1045,7 @@ export default function SettingsModal(props: {
             type="button"
             variant="destructive"
             onClick={handleConfirmLogout}
-            disabled={loggingOut()}
+            disabled={loggingOut}
           >
             Log out
           </Button>

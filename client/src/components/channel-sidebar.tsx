@@ -1,4 +1,4 @@
-import type { DragEvent } from "react";
+import { useRef, useState, type DragEvent } from "react";
 import { NavLink } from "react-router-dom";
 
 function classes(base: string, conditional: Record<string, boolean>): string {
@@ -9,7 +9,6 @@ function classes(base: string, conditional: Record<string, boolean>): string {
       .map(([name]) => name),
   ].join(" ");
 }
-import { useSignalState } from "../hooks/react-state";
 import { type Channel, type User } from "../api";
 import { useChannels } from "../contexts/channels";
 import { useReadStates } from "../contexts/read-states";
@@ -27,18 +26,23 @@ export default function ChannelSidebar(props: {
 }) {
   const { channels, reorder } = useChannels();
   const readStates = useReadStates();
-  const [addChannelOpen, setAddChannelOpen] = useSignalState(false);
-  const [settingsOpen, setSettingsOpen] = useSignalState(false);
-  const [draggedId, setDraggedId] = useSignalState<number | null>(null);
-  const [dropTargetId, setDropTargetId] = useSignalState<number | null>(null);
+  const [addChannelOpen, setAddChannelOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [draggedId, setDraggedId] = useState<number | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<number | null>(null);
+  const draggedIdRef = useRef<number | null>(null);
+  const dropTargetIdRef = useRef<number | null>(null);
   const channelList = channels();
 
   function clearDragState() {
+    draggedIdRef.current = null;
+    dropTargetIdRef.current = null;
     setDraggedId(null);
     setDropTargetId(null);
   }
 
   function handleDragStart(e: DragEvent<HTMLDivElement>, id: number) {
+    draggedIdRef.current = id;
     setDraggedId(id);
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = "move";
@@ -48,15 +52,18 @@ export default function ChannelSidebar(props: {
   }
 
   function handleDragOver(e: DragEvent<HTMLDivElement>, id: number) {
-    if (draggedId() === null) return;
+    if (draggedIdRef.current === null) return;
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-    if (dropTargetId() !== id) setDropTargetId(id);
+    if (dropTargetIdRef.current !== id) {
+      dropTargetIdRef.current = id;
+      setDropTargetId(id);
+    }
   }
 
   function handleDrop(e: DragEvent<HTMLDivElement>, targetId: number, list: Channel[]) {
     e.preventDefault();
-    const sourceId = draggedId();
+    const sourceId = draggedIdRef.current;
     clearDragState();
     if (sourceId == null || sourceId === targetId) return;
     const ids = list.map((c) => c.id);
@@ -103,9 +110,9 @@ export default function ChannelSidebar(props: {
             <div
               key={channel.id}
               className={classes("mx-2", {
-                "opacity-50": draggedId() === channel.id,
+                "opacity-50": draggedId === channel.id,
                 "ring-2 ring-sidebar-ring rounded-md":
-                  dropTargetId() === channel.id && draggedId() !== channel.id,
+                  dropTargetId === channel.id && draggedId !== channel.id,
               })}
               draggable={true}
               data-channel-id={channel.id}
@@ -113,7 +120,10 @@ export default function ChannelSidebar(props: {
               onDragStart={(e) => handleDragStart(e, channel.id)}
               onDragOver={(e) => handleDragOver(e, channel.id)}
               onDragLeave={() => {
-                if (dropTargetId() === channel.id) setDropTargetId(null);
+                if (dropTargetIdRef.current === channel.id) {
+                  dropTargetIdRef.current = null;
+                  setDropTargetId(null);
+                }
               }}
               onDrop={(e) => handleDrop(e, channel.id, channelList)}
               onDragEnd={clearDragState}
@@ -212,9 +222,9 @@ export default function ChannelSidebar(props: {
         </button>
       </div>
 
-      <AddChannelModal open={addChannelOpen()} onClose={() => setAddChannelOpen(false)} />
+      <AddChannelModal open={addChannelOpen} onClose={() => setAddChannelOpen(false)} />
       <SettingsModal
-        open={settingsOpen()}
+        open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         onLogout={props.onLogout}
         user={props.user}

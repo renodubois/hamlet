@@ -25,9 +25,8 @@ export default function Modal(props: {
   children: ReactNode;
 }) {
   const contentRef = useRef<HTMLDivElement | null>(null);
-  const setContentRef = (el: HTMLDivElement | null) => {
-    contentRef.current = el;
-  };
+  const onCloseRef = useRef(props.onClose);
+  onCloseRef.current = props.onClose;
   const titleId = useId();
 
   useLayoutEffect(() => {
@@ -55,7 +54,7 @@ export default function Modal(props: {
       if (modalStack[modalStack.length - 1] !== content) return;
       if (e.key === "Escape") {
         e.preventDefault();
-        props.onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key !== "Tab") return;
@@ -87,11 +86,12 @@ export default function Modal(props: {
 
     return () => {
       window.removeEventListener("keydown", handler);
-      const i = modalStack.indexOf(content);
-      if (i >= 0) modalStack.splice(i, 1);
-      previouslyFocused?.focus?.();
+      const index = modalStack.lastIndexOf(content);
+      const wasTopmost = index >= 0 && index === modalStack.length - 1;
+      if (index >= 0) modalStack.splice(index, 1);
+      if (wasTopmost) previouslyFocused?.focus();
     };
-  });
+  }, [props.open]);
 
   const sizeClass = props.size === "lg" ? "w-4xl" : "w-96";
 
@@ -105,7 +105,7 @@ export default function Modal(props: {
       }}
     >
       <div
-        ref={setContentRef}
+        ref={contentRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

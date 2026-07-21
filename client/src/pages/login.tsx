@@ -1,5 +1,4 @@
-import type { FormEvent } from "react";
-import { useAfterRenderEffect, useSignalState, registerCleanup } from "../hooks/react-state";
+import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "../contexts/auth";
 import { getPublicServerConfig, getServerUrl } from "../api";
 import { Button } from "../components/ui/button";
@@ -9,59 +8,63 @@ import { Separator } from "../components/ui/separator";
 
 export default function LoginScreen() {
   const auth = useAuth();
-  const [mode, setMode] = useSignalState<"login" | "register">("login");
-  const [server, setServer] = useSignalState(getServerUrl());
-  const [username, setUsername] = useSignalState("");
-  const [password, setPassword] = useSignalState("");
-  const [email, setEmail] = useSignalState("");
-  const [error, setError] = useSignalState<string | null>(null);
-  const [submitting, setSubmitting] = useSignalState(false);
-  const [accountRegistrationEnabled, setAccountRegistrationEnabled] = useSignalState(true);
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [server, setServer] = useState(getServerUrl);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [email, setEmail] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [accountRegistrationEnabled, setAccountRegistrationEnabled] = useState(true);
+  const normalizedServer = server.trim().replace(/\/+$/, "");
 
   const switchMode = (next: "login" | "register") => {
-    if (next === "register" && !accountRegistrationEnabled()) return;
+    if (next === "register" && !accountRegistrationEnabled) return;
     setMode(next);
     setError(null);
   };
 
-  useAfterRenderEffect(() => {
-    const currentServer = server().trim();
-    let cancelled = false;
-    if (!currentServer) {
+  useEffect(() => {
+    let current = true;
+    if (!normalizedServer) {
       setAccountRegistrationEnabled(true);
-      return;
+      return () => {
+        current = false;
+      };
     }
 
-    getPublicServerConfig(currentServer)
+    void getPublicServerConfig(normalizedServer)
       .then((config) => {
-        if (!cancelled) setAccountRegistrationEnabled(config.account_registration_enabled);
+        if (current) setAccountRegistrationEnabled(config.account_registration_enabled);
       })
       .catch(() => {
-        if (!cancelled) setAccountRegistrationEnabled(true);
+        if (current) setAccountRegistrationEnabled(true);
       });
 
-    registerCleanup(() => {
-      cancelled = true;
-    });
-  });
+    return () => {
+      current = false;
+    };
+  }, [normalizedServer]);
 
-  useAfterRenderEffect(() => {
-    if (!accountRegistrationEnabled() && mode() === "register") switchMode("login");
-  });
+  useEffect(() => {
+    if (!accountRegistrationEnabled) {
+      setMode((current) => (current === "register" ? "login" : current));
+    }
+  }, [accountRegistrationEnabled]);
 
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
-    if (mode() === "register" && !accountRegistrationEnabled()) {
+    if (mode === "register" && !accountRegistrationEnabled) {
       setError("Registration is disabled on this server");
       return;
     }
 
     setSubmitting(true);
     const err =
-      mode() === "login"
-        ? await auth.login(server(), username(), password())
-        : await auth.register(server(), username(), password(), email() || undefined);
+      mode === "login"
+        ? await auth.login(server, username, password)
+        : await auth.register(server, username, password, email || undefined);
     setSubmitting(false);
     if (err) setError(err);
   };
@@ -69,7 +72,7 @@ export default function LoginScreen() {
   const devLogin = async (devUsername: string) => {
     setError(null);
     setSubmitting(true);
-    const err = await auth.login(server(), devUsername, "password");
+    const err = await auth.login(server, devUsername, "password");
     setSubmitting(false);
     if (err) setError(err);
   };
@@ -79,7 +82,7 @@ export default function LoginScreen() {
       <Card className="w-96">
         <CardHeader>
           <h1 data-slot="card-title" className="text-2xl leading-snug font-bold tracking-tight">
-            {mode() === "login" ? "Sign in" : "Create account"}
+            {mode === "login" ? "Sign in" : "Create account"}
           </h1>
         </CardHeader>
         <CardContent>
@@ -87,35 +90,35 @@ export default function LoginScreen() {
             <Input
               type="text"
               placeholder="Server URL"
-              value={server()}
+              value={server}
               onChange={(e) => setServer(e.currentTarget.value)}
             />
             <Input
               type="text"
               placeholder="Username"
               autoComplete="username"
-              value={username()}
+              value={username}
               onChange={(e) => setUsername(e.currentTarget.value)}
             />
             <Input
               type="password"
               placeholder="Password"
-              autoComplete={mode() === "login" ? "current-password" : "new-password"}
-              value={password()}
+              autoComplete={mode === "login" ? "current-password" : "new-password"}
+              value={password}
               onChange={(e) => setPassword(e.currentTarget.value)}
             />
-            {mode() === "register" && accountRegistrationEnabled() ? (
+            {mode === "register" && accountRegistrationEnabled ? (
               <Input
                 type="email"
                 placeholder="Email (optional)"
                 autoComplete="email"
-                value={email()}
+                value={email}
                 onChange={(e) => setEmail(e.currentTarget.value)}
               />
             ) : null}
-            {error() ? <p className="text-destructive text-sm">{error()}</p> : null}
-            <Button type="submit" size="lg" disabled={submitting()}>
-              {submitting() ? "Please wait..." : mode() === "login" ? "Sign in" : "Create account"}
+            {error ? <p className="text-destructive text-sm">{error}</p> : null}
+            <Button type="submit" size="lg" disabled={submitting}>
+              {submitting ? "Please wait..." : mode === "login" ? "Sign in" : "Create account"}
             </Button>
           </form>
           {import.meta.env.DEV ? (
@@ -127,7 +130,7 @@ export default function LoginScreen() {
                   className="flex-1"
                   variant="secondary"
                   type="button"
-                  disabled={submitting()}
+                  disabled={submitting}
                   onClick={() => devLogin("baipas")}
                 >
                   Log in as baipas
@@ -136,7 +139,7 @@ export default function LoginScreen() {
                   className="flex-1"
                   variant="secondary"
                   type="button"
-                  disabled={submitting()}
+                  disabled={submitting}
                   onClick={() => devLogin("teo")}
                 >
                   Log in as teo
@@ -144,9 +147,9 @@ export default function LoginScreen() {
               </div>
             </div>
           ) : null}
-          {accountRegistrationEnabled() ? (
+          {accountRegistrationEnabled ? (
             <p className="text-muted-foreground text-sm mt-4 text-center">
-              {mode() === "login" ? (
+              {mode === "login" ? (
                 <>
                   Need an account?{" "}
                   <button
