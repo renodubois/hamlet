@@ -2,7 +2,6 @@ import { describe, expect, test, vi } from "vitest";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderNative } from "../test/render";
 import { cloneElement, useReducer, type ReactElement } from "react";
-import { flushSync } from "react-dom";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import type {
@@ -28,6 +27,12 @@ type ScreenShareStoppedListener = (p: ScreenShareStopped) => void;
 type CameraStartedListener = (p: CameraStream) => void;
 type CameraStoppedListener = (p: CameraVideoStopped) => void;
 type ConnectedListener = () => void;
+
+class ActSet<T> extends Set<T> {
+  override forEach(callback: (value: T, valueAgain: T, set: Set<T>) => void, thisArg?: unknown) {
+    act(() => super.forEach(callback, thisArg));
+  }
+}
 
 interface MockVoiceChatApi {
   activeChannelId: number | null;
@@ -71,15 +76,15 @@ interface MockVoiceChatApi {
 let mockVoice: MockVoiceChatApi;
 const preferenceMock = vi.hoisted(() => ({ showSpeakingEverywhere: false }));
 let notify: () => void = () => undefined;
-const joinedListeners = new Set<JoinedListener>();
-const leftListeners = new Set<LeftListener>();
-const speakingListeners = new Set<SpeakingListener>();
-const statusListeners = new Set<StatusListener>();
-const screenShareStartedListeners = new Set<ScreenShareStartedListener>();
-const screenShareStoppedListeners = new Set<ScreenShareStoppedListener>();
-const cameraStartedListeners = new Set<CameraStartedListener>();
-const cameraStoppedListeners = new Set<CameraStoppedListener>();
-const connectedListeners = new Set<ConnectedListener>();
+const joinedListeners = new ActSet<JoinedListener>();
+const leftListeners = new ActSet<LeftListener>();
+const speakingListeners = new ActSet<SpeakingListener>();
+const statusListeners = new ActSet<StatusListener>();
+const screenShareStartedListeners = new ActSet<ScreenShareStartedListener>();
+const screenShareStoppedListeners = new ActSet<ScreenShareStoppedListener>();
+const cameraStartedListeners = new ActSet<CameraStartedListener>();
+const cameraStoppedListeners = new ActSet<CameraStoppedListener>();
+const connectedListeners = new ActSet<ConnectedListener>();
 
 vi.mock("../contexts/voice-chat", () => ({ useVoiceChat: () => mockVoice }));
 vi.mock("../contexts/voice-preferences", () => ({
@@ -195,7 +200,7 @@ function setShowEverywhere(value: boolean) {
 function renderVoice(element: ReactElement) {
   function Harness() {
     const [, rerender] = useReducer((value: number) => value + 1, 0);
-    notify = () => flushSync(() => rerender());
+    notify = () => act(() => rerender());
     return cloneElement(element);
   }
   return renderNative(<Harness />);

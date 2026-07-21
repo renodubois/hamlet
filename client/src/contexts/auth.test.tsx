@@ -297,14 +297,20 @@ describe("AuthProvider", () => {
     mount();
     await waitFor(() => expect(screen.getByTestId("status")).toHaveTextContent("anonymous"));
 
-    await expect(currentAuth.login("http://server.test", "alice", "bad")).resolves.toBe(
-      "Invalid username or password",
-    );
-    await expect(currentAuth.register("http://server.test", "alice", "bad")).resolves.toBe(
-      "Username already taken",
-    );
-    await expect(currentAuth.register("http://server.test", "alice", "bad")).resolves.toBe(
-      "Registration is disabled on this server",
-    );
+    await act(async () => {
+      await expect(currentAuth.login("http://server.test", "alice", "bad")).resolves.toBe(
+        "Invalid username or password",
+      );
+    });
+    await act(async () => {
+      await expect(currentAuth.register("http://server.test", "alice", "bad")).resolves.toBe(
+        "Username already taken",
+      );
+    });
+    await act(async () => {
+      await expect(currentAuth.register("http://server.test", "alice", "bad")).resolves.toBe(
+        "Registration is disabled on this server",
+      );
+    });
   });
 });

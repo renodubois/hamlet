@@ -1,9 +1,10 @@
-import { useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { useLocation } from "react-router-dom";
 import { describe, expect, test, vi } from "vitest";
 import type { Channel, CustomEmoji, MentionUser } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
-import { assertExists, renderNative } from "../test/render";
+import { assertExists, renderNative, renderWithRouterNative } from "../test/render";
 import MessageText, { renderRichText } from "./message-text";
 
 const SELF: MentionUser = {
@@ -50,7 +51,7 @@ function customEmojiById(id: number): CustomEmoji | null {
 describe("renderRichText", () => {
   test("renders mixed links, mentions, custom emoji, repeated markers, and malformed text safely", () => {
     const onMentionClick = vi.fn();
-    renderNative(
+    renderWithRouterNative(
       <div data-testid="rich-text">
         {renderRichText({
           text: "hi <@2> and <@1> <:party:123> see <#100> voice <#200> missing <@999> <#999> <:ghost:999> malformed <@abc> javascript:alert(1) https://example.test/path again <@2>",
@@ -96,10 +97,41 @@ describe("renderRichText", () => {
   });
 
   test("renders channel mentions as static labels through MessageText props", () => {
-    renderNative(<MessageText text="join <#100> then <#999>" channels={CHANNELS} />);
+    renderWithRouterNative(<MessageText text="join <#100> then <#999>" channels={CHANNELS} />);
 
     expect(screen.getByRole("link", { name: "#general" })).toHaveAttribute("href", "/channel/100");
     expect(screen.getByText(/then <#999>/)).toBeInTheDocument();
+  });
+
+  test("navigates channel mentions through the client router without reloading providers", () => {
+    let providerMounts = 0;
+    let providerCleanups = 0;
+
+    function RouterHarness() {
+      const location = useLocation();
+      useEffect(() => {
+        providerMounts += 1;
+        return () => {
+          providerCleanups += 1;
+        };
+      }, []);
+      return (
+        <>
+          <output aria-label="Current route">{location.pathname}</output>
+          <MessageText text="join <#100>" channels={CHANNELS} />
+        </>
+      );
+    }
+
+    renderWithRouterNative(<RouterHarness />, "/channel/200");
+    const lifecycleBeforeNavigation = [providerMounts, providerCleanups];
+    const documentPathBeforeNavigation = window.location.pathname;
+
+    fireEvent.click(screen.getByRole("link", { name: "#general" }));
+
+    expect(screen.getByRole("status", { name: "Current route" })).toHaveTextContent("/channel/100");
+    expect(window.location.pathname).toBe(documentPathBeforeNavigation);
+    expect([providerMounts, providerCleanups]).toEqual(lifecycleBeforeNavigation);
   });
 
   test("renders mentions as static labels when no click handler is provided", () => {

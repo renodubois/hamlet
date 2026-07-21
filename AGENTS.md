@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Hamlet** is a Discord-like chat app. It has two independent parts:
 
 - `server/` — Rust/Actix-web HTTP API on `127.0.0.1:3030` with SQLite
-- `client/` — Electron desktop app wrapping a SolidJS frontend
+- `client/` — Electron desktop app wrapping a React frontend
 
 The server has its own `CLAUDE.md` with commands, architecture details, and gotchas. The Electron client keeps its usage and QA notes in `client/README.md`.
 
@@ -21,10 +21,10 @@ New functionality should come with tests. The Electron client has a full test st
 
 Before marking any change as done, run the relevant checks for the side you touched:
 
-- **`client/`** — `pnpm run fmt`, `pnpm run lint`, `pnpm run typecheck`, `pnpm run test`. Run `pnpm run test:e2e` if the change could affect a smoke-tested flow (login, sending messages, shell launch). Run `pnpm run size` if the change might affect bundle size.
+- **`client/`** — `pnpm run fmt`, `pnpm run lint`, `pnpm run check:native-react`, `pnpm run typecheck`, `pnpm run test`. Run `pnpm run test:e2e` if the change could affect a smoke-tested flow (login, sending messages, shell launch). Run `pnpm run size` if the change might affect bundle size.
 - **`server/`** — follow `server/CLAUDE.md` for its test/format/lint commands.
 
-A single `scripts/check.sh` runs the default checks both sides expose — fmt, lint, typecheck/clippy, tests, and (if installed) `cargo audit` — in the order CI would. `scripts/check.sh server` or `scripts/check.sh client` scopes to one side; `--fix` applies formatter fixes before running the rest; `--e2e` adds the Playwright E2E suite. Use E2E testing for features whenever it feels necessary for confidence; prefer more testing over less. Use it as a pre-push gate.
+A single `scripts/check.sh` runs the default checks both sides expose — fmt, lint, the client's native-React audit, typecheck/clippy, tests, and (if installed) `cargo audit` — in the order CI would. `scripts/check.sh server` or `scripts/check.sh client` scopes to one side; `--fix` applies formatter fixes before running the rest; `--e2e` adds the Playwright E2E suite. Use E2E testing for features whenever it feels necessary for confidence; prefer more testing over less. Use it as a pre-push gate.
 
 ### Fix failing checks even if you didn't cause them
 

@@ -40,7 +40,7 @@ Add a server-owned configuration file with account registration enabled by defau
 - Auth HTTP tests will cover successful registration by default, disabled registration returning the explicit error, no session cookie on disabled registration, and the public settings endpoint.
 - Client API tests will cover fetching public server settings from the configured server URL.
 - Login-screen tests will cover registration being available when enabled and hidden when disabled through the mocked server public settings endpoint.
-- Existing auth and login tests are prior art for request/response assertions and Solid/MSW integration coverage.
+- Existing auth and login tests are prior art for request/response assertions and React/MSW integration coverage.
 
 ## Out of Scope
 

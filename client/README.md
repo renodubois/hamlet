@@ -41,29 +41,30 @@ shell does not proxy application APIs through Electron IPC.
 
 Run commands from `client/` unless noted.
 
-| Goal                             | Command                                     | Notes                                                                                                                                                                                                           |
-| -------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Renderer-only browser dev        | `pnpm run dev`                              | Starts Vite on `http://127.0.0.1:${HAMLET_RENDERER_PORT:-1422}` with `strictPort`. Open that URL in a normal browser.                                                                                           |
-| Renderer-only built preview      | `pnpm run build:renderer && pnpm run serve` | Serves built renderer assets on the same configured loopback origin for browser-only checks.                                                                                                                    |
-| Storybook component workshop     | `pnpm run storybook`                        | Starts Storybook on port 6006 with React/Vite, Hamlet CSS, router decorator, and browser MSW support.                                                                                                           |
-| Storybook static build           | `pnpm run storybook:build`                  | Builds Storybook into `storybook-static/` for smoke/CI validation.                                                                                                                                              |
-| Electron dev launch              | `pnpm run electron:dev`                     | Builds main/preload, starts Vite, waits for the configured renderer URL, then launches Electron with `HAMLET_RENDERER_URL` pointing at Vite. Server must already be running.                                    |
-| Build everything                 | `pnpm run build`                            | Builds renderer output in `dist/` and Electron main/preload output in `dist-electron/`.                                                                                                                         |
-| Static web build                 | `pnpm run build:web`                        | Runs a normal Vite renderer build, then writes GitHub Pages-friendly SPA fallback files (`dist/404.html` and `dist/.nojekyll`). Set `HAMLET_BUILD_SOURCE_MAPS=true` to emit deployable `.map` files.            |
-| Electron-only build              | `pnpm run electron:build`                   | Builds only main/preload. Useful before launching multiple dev profiles against an already-running Vite server.                                                                                                 |
-| Local unpacked package           | `pnpm run package:unpacked`                 | Runs `pnpm run build`, then writes `release/Hamlet Electron Alpha-<platform>-<arch>/`.                                                                                                                          |
-| Launch unpacked package          | `pnpm run package:launch`                   | Rebuilds/repackages, clears `HAMLET_RENDERER_URL`, and launches the unpacked app against the packaged loopback static renderer.                                                                                 |
-| Package smoke                    | `pnpm run package:smoke`                    | Rebuilds/repackages, then Playwright launches the unpacked package and verifies the configured renderer origin.                                                                                                 |
-| Full public package              | `pnpm run package:full`                     | Intentionally fails with a deferral message. Signing, notarization, installers, auto-update, and public distribution are not configured for the alpha.                                                          |
-| Format                           | `pnpm run fmt` / `pnpm run fmt:check`       | Formatter check/fix for the Electron client tree.                                                                                                                                                               |
-| Lint                             | `pnpm run lint`                             | Oxlint.                                                                                                                                                                                                         |
-| Typecheck                        | `pnpm run typecheck`                        | Renderer TypeScript plus `tsconfig.electron.json` for main/preload.                                                                                                                                             |
-| Unit/component/integration tests | `pnpm run test`                             | Vitest, MSW, fake SSE, axe/component coverage.                                                                                                                                                                  |
-| Browser E2E                      | `pnpm run test:e2e:renderer`                | Playwright Chromium against renderer-only Vite. The config starts `server` with `cargo run`.                                                                                                                    |
-| Browser voice E2E                | `pnpm run test:e2e:voice:browser`           | Playwright Chromium + Firefox against renderer-only Vite and the server-side Docker Compose LiveKit stack; includes fake-media camera start/stop and Chromium screen-share smoke paths with prerequisite skips. |
-| Electron E2E                     | `pnpm run test:e2e:electron`                | Builds, starts `server` with `cargo run`, then launches Electron through Playwright.                                                                                                                            |
-| All E2E                          | `pnpm run test:e2e`                         | Runs browser renderer E2E, then Electron shell E2E.                                                                                                                                                             |
-| Size budget                      | `pnpm run size`                             | Builds, then checks gzip JS/CSS renderer budgets in `.size-limit.json`. Electron package/artifact size is not budgeted yet.                                                                                     |
+| Goal                             | Command                                     | Notes                                                                                                                                                                                                                      |
+| -------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Renderer-only browser dev        | `pnpm run dev`                              | Starts Vite on `http://127.0.0.1:${HAMLET_RENDERER_PORT:-1422}` with `strictPort`. Open that URL in a normal browser.                                                                                                      |
+| Renderer-only built preview      | `pnpm run build:renderer && pnpm run serve` | Serves built renderer assets on the same configured loopback origin for browser-only checks.                                                                                                                               |
+| Storybook component workshop     | `pnpm run storybook`                        | Starts Storybook on port 6006 with React/Vite, Hamlet CSS, router decorator, and browser MSW support.                                                                                                                      |
+| Storybook static build           | `pnpm run storybook:build`                  | Builds Storybook into `storybook-static/` for smoke/CI validation.                                                                                                                                                         |
+| Electron dev launch              | `pnpm run electron:dev`                     | Builds main/preload, starts Vite, waits for the configured renderer URL, then launches Electron with `HAMLET_RENDERER_URL` pointing at Vite. Server must already be running.                                               |
+| Build everything                 | `pnpm run build`                            | Builds renderer output in `dist/` and Electron main/preload output in `dist-electron/`.                                                                                                                                    |
+| Static web build                 | `pnpm run build:web`                        | Runs a normal Vite renderer build, then writes GitHub Pages-friendly SPA fallback files (`dist/404.html` and `dist/.nojekyll`). Set `HAMLET_BUILD_SOURCE_MAPS=true` to emit deployable `.map` files.                       |
+| Electron-only build              | `pnpm run electron:build`                   | Builds only main/preload. Useful before launching multiple dev profiles against an already-running Vite server.                                                                                                            |
+| Local unpacked package           | `pnpm run package:unpacked`                 | Runs `pnpm run build`, then writes `release/Hamlet Electron Alpha-<platform>-<arch>/`.                                                                                                                                     |
+| Launch unpacked package          | `pnpm run package:launch`                   | Rebuilds/repackages, clears `HAMLET_RENDERER_URL`, and launches the unpacked app against the packaged loopback static renderer.                                                                                            |
+| Package smoke                    | `pnpm run package:smoke`                    | Rebuilds/repackages, then Playwright launches the unpacked package and verifies the configured renderer origin.                                                                                                            |
+| Full public package              | `pnpm run package:full`                     | Intentionally fails with a deferral message. Signing, notarization, installers, auto-update, and public distribution are not configured for the alpha.                                                                     |
+| Format                           | `pnpm run fmt` / `pnpm run fmt:check`       | Formatter check/fix for the Electron client tree.                                                                                                                                                                          |
+| Lint                             | `pnpm run lint`                             | Oxlint.                                                                                                                                                                                                                    |
+| Native React audit               | `pnpm run check:native-react`               | Rejects the deleted compatibility layer and identifiers across renderer, Electron, E2E, scripts, tests, and config; Solid dependencies/tooling/JSX configuration; and active docs that misidentify the renderer framework. |
+| Typecheck                        | `pnpm run typecheck`                        | Renderer TypeScript plus `tsconfig.electron.json` for main/preload.                                                                                                                                                        |
+| Unit/component/integration tests | `pnpm run test`                             | Vitest, MSW, fake SSE, axe/component coverage.                                                                                                                                                                             |
+| Browser E2E                      | `pnpm run test:e2e:renderer`                | Playwright Chromium against renderer-only Vite. The config starts `server` with `cargo run`.                                                                                                                               |
+| Browser voice E2E                | `pnpm run test:e2e:voice:browser`           | Playwright Chromium + Firefox against renderer-only Vite and the server-side Docker Compose LiveKit stack; includes fake-media camera start/stop and Chromium screen-share smoke paths with prerequisite skips.            |
+| Electron E2E                     | `pnpm run test:e2e:electron`                | Builds, starts `server` with `cargo run`, then launches Electron through Playwright.                                                                                                                                       |
+| All E2E                          | `pnpm run test:e2e`                         | Runs browser renderer E2E, then Electron shell E2E.                                                                                                                                                                        |
+| Size budget                      | `pnpm run size`                             | Builds, then checks gzip JS/CSS renderer budgets in `.size-limit.json`. Electron package/artifact size is not budgeted yet.                                                                                                |
 
 From the repository root, repo-level checks can target this client with:
 
@@ -87,7 +88,7 @@ Before running this slice from a worktree, source the worktree environment so th
 
 ```bash
 source ../.hamlet-worktree.env  # from client/
-pnpm run fmt && pnpm run lint && pnpm run typecheck && pnpm run test
+pnpm run fmt && pnpm run lint && pnpm run check:native-react && pnpm run typecheck && pnpm run test
 pnpm run test:e2e:voice:browser
 pnpm run test:e2e:electron
 ```
@@ -371,6 +372,21 @@ and [`../docs/webcam-video-calls-manual-qa.md`](../docs/webcam-video-calls-manua
 
 - `src/` is the React renderer. It owns auth, channels, messages, avatars,
   embeds, typing, SSE, localStorage preferences, and LiveKit/WebRTC calls.
+- Context hooks expose direct values (`auth.user`, `channels.channels`,
+  `voice.isMuted`) rather than callable getter/accessor wrappers. Providers memoize
+  context objects and stable commands where identity affects subscribers; consumers
+  should read values during render and use ordinary effects for synchronization.
+- Canonical reducers own event reconciliation for state with overlapping HTTP,
+  optimistic, and real-time updates: `messages/channel-message-reducer.ts` owns the
+  channel timeline, `messages/thread-reducer.ts` owns thread state, and
+  `voice/channel-presence.ts` owns voice-channel presence. Components dispatch
+  scoped actions instead of duplicating those transition rules in local setters.
+- `voice/voice-session.ts` is the imperative `VoiceSession` boundary for LiveKit
+  room/track lifecycle, serialized media commands, and external-store snapshots.
+  `VoiceChatProvider` adapts that session to React with `useSyncExternalStore`.
+  `VoicePreferencesProvider` separately owns persisted device, gain, suppression,
+  and speaking-display choices, and passes an immutable preference snapshot into
+  `VoiceSession`; UI components do not own LiveKit rooms or persistence directly.
 - `electron/preload.ts` is intentionally empty. Do not expose raw IPC or broad
   system APIs to the renderer.
 - `electron/security.ts` owns the trusted renderer origin, secure

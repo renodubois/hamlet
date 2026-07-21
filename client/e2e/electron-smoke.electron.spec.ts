@@ -33,17 +33,17 @@ async function expectEditorValue(input: Locator, expected: string) {
 }
 
 const test = base.extend<ElectronFixtures>({
-  electronApp: async ({ browserName: _browserName }, use, testInfo) => {
+  electronApp: async ({ browserName: _browserName }, provide, testInfo) => {
     const launched = await launchBuiltElectronApp(testInfo.outputPath("electron-user-data"));
     try {
-      await use(launched.app);
+      await provide(launched.app);
     } finally {
       await launched.close();
     }
   },
 
-  appWindow: async ({ electronApp }, use) => {
-    await use(await firstHamletWindow(electronApp));
+  appWindow: async ({ electronApp }, provide) => {
+    await provide(await firstHamletWindow(electronApp));
   },
 });
 

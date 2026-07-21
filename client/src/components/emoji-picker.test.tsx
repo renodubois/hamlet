@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 import type { EmojiEntry } from "../emoji/emoji-data";
 import { expectNoA11yViolations } from "../test/a11y";
@@ -140,6 +140,12 @@ function expectActiveEmoji(shortcodes: string | RegExp, root: HTMLElement | Docu
   return gridcell;
 }
 
+async function inputSearch(search: Element, value: string) {
+  await act(async () => {
+    fireEvent.input(search, { target: { value } });
+  });
+}
+
 function keyDown(target: Element, init: KeyboardEventInit & { key: string }) {
   const event = new KeyboardEvent("keydown", {
     bubbles: true,
@@ -191,7 +197,7 @@ describe("<EmojiPicker>", () => {
     const search = await screen.findByRole("combobox", { name: searchName });
     expectActiveEmoji(":smile:");
 
-    fireEvent.input(search, { target: { value: "heart" } });
+    await inputSearch(search, "heart");
 
     expectActiveEmoji(":heart:");
     expect(getFooter()).toHaveTextContent(":heart:");
@@ -201,10 +207,10 @@ describe("<EmojiPicker>", () => {
     renderHarness();
 
     const search = await screen.findByRole("combobox", { name: searchName });
-    fireEvent.input(search, { target: { value: ":thumbsup:" } });
+    await inputSearch(search, ":thumbsup:");
     expect(getEmojiGridcell(/emoji :thumbsup:, :\+1:/i)).toBeInTheDocument();
 
-    fireEvent.input(search, { target: { value: "smile" } });
+    await inputSearch(search, "smile");
     expect(getEmojiGridcell(":smile:")).toBeInTheDocument();
     expect(screen.queryByRole("gridcell", { name: /emoji :thumbsup:/i })).toBeNull();
   });
@@ -213,10 +219,10 @@ describe("<EmojiPicker>", () => {
     renderHarness();
 
     const search = await screen.findByRole("combobox", { name: searchName });
-    fireEvent.input(search, { target: { value: "WHITE check-mark" } });
+    await inputSearch(search, "WHITE check-mark");
     expect(getEmojiGridcell(":white_check_mark:")).toBeInTheDocument();
 
-    fireEvent.input(search, { target: { value: "favorite" } });
+    await inputSearch(search, "favorite");
     expect(screen.getByText(/no emojis found/i)).toBeInTheDocument();
     expect(screen.queryByRole("gridcell", { name: /emoji :heart:/i })).toBeNull();
   });
@@ -225,7 +231,7 @@ describe("<EmojiPicker>", () => {
     renderHarness();
 
     const search = await screen.findByRole("combobox", { name: searchName });
-    fireEvent.input(search, { target: { value: "thumb" } });
+    await inputSearch(search, "thumb");
 
     const footer = getFooter();
     expect(footer).toHaveTextContent(":thumbsup:");
@@ -236,7 +242,7 @@ describe("<EmojiPicker>", () => {
     renderHarness();
 
     const search = await screen.findByRole("combobox", { name: searchName });
-    fireEvent.input(search, { target: { value: "not-an-emoji" } });
+    await inputSearch(search, "not-an-emoji");
 
     expect(screen.getByText(/no emojis found/i)).toBeInTheDocument();
     expect(screen.queryByLabelText(footerName)).toBeNull();
@@ -260,7 +266,7 @@ describe("<EmojiPicker>", () => {
     renderHarness(true, onSelect);
 
     const search = await screen.findByRole("combobox", { name: searchName });
-    fireEvent.input(search, { target: { value: "party" } });
+    await inputSearch(search, "party");
     const partyCell = getEmojiGridcell(":party:");
     const image = partyCell.querySelector("img");
 
@@ -275,7 +281,7 @@ describe("<EmojiPicker>", () => {
     renderHarness(true, onSelect);
 
     const search = await screen.findByRole("combobox", { name: searchName });
-    fireEvent.input(search, { target: { value: "dance" } });
+    await inputSearch(search, "dance");
     const danceCell = getEmojiGridcell(/animated emoji :dance:/i);
     const image = danceCell.querySelector("img");
 
@@ -337,7 +343,7 @@ describe("<EmojiPicker>", () => {
     renderHarness(true, onSelect, vi.fn(), collidingEmojis);
 
     const search = await screen.findByRole("combobox", { name: searchName });
-    fireEvent.input(search, { target: { value: "party" } });
+    await inputSearch(search, "party");
 
     const cells = screen.getAllByRole("gridcell", { name: "Emoji :party:" });
     expect(cells).toHaveLength(2);
@@ -359,7 +365,7 @@ describe("<EmojiPicker>", () => {
       renderHarness(true, vi.fn(), onClose);
 
       const search = await screen.findByRole("combobox", { name: searchName });
-      fireEvent.input(search, { target: { value: "not-an-emoji" } });
+      await inputSearch(search, "not-an-emoji");
 
       const event = keyDown(search, { key });
 
@@ -374,7 +380,7 @@ describe("<EmojiPicker>", () => {
     renderHarness(true, onSelect, onClose);
 
     const search = await screen.findByRole("combobox", { name: searchName });
-    fireEvent.input(search, { target: { value: "not-an-emoji" } });
+    await inputSearch(search, "not-an-emoji");
     const event = keyDown(search, { key: "Enter" });
 
     expect(event.defaultPrevented).toBe(true);

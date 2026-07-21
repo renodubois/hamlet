@@ -323,7 +323,7 @@ Tasks:
   - exact/prefix before substring/fuzzy,
   - search both username and display name,
   - deterministic ties.
-- Unit-test marker parsing and token/ranking behavior independently of Solid components.
+- Unit-test marker parsing and token/ranking behavior independently of React components.
 
 ### 3. Add mention user cache/provider
 

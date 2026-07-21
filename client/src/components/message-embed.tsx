@@ -1,5 +1,54 @@
+import type { ReactNode } from "react";
 import type { Embed } from "../api";
 import { CloseIcon } from "./icons";
+
+function embedBody(embed: Embed, hasIframe: boolean, aspectRatio: string): ReactNode {
+  if (hasIframe && embed.iframe_url) {
+    return (
+      <div className="mt-2 w-full" style={{ aspectRatio }}>
+        <iframe
+          className="w-full h-full rounded-md border-0"
+          src={embed.iframe_url}
+          title={embed.title ?? "Embedded content"}
+          allow="accelerometer; autoPlay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+          referrerPolicy="strict-origin-when-cross-origin"
+          sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+          loading="lazy"
+          allowFullScreen
+        />
+      </div>
+    );
+  }
+
+  if (embed.embed_type === "photo" && embed.image_url) {
+    return (
+      <a href={embed.url} target="_blank" rel="noopener noreferrer">
+        <img
+          src={embed.image_url}
+          alt={embed.title ?? ""}
+          loading="lazy"
+          className="mt-2 max-h-96 w-full rounded-md object-contain"
+        />
+      </a>
+    );
+  }
+
+  return (
+    <>
+      {embed.description ? (
+        <p className="mt-1 text-sm text-muted-foreground line-clamp-3">{embed.description}</p>
+      ) : null}
+      {embed.image_url ? (
+        <img
+          src={embed.image_url}
+          alt=""
+          loading="lazy"
+          className="mt-2 max-h-64 rounded-md object-cover"
+        />
+      ) : null}
+    </>
+  );
+}
 
 /// A single OpenGraph/oEmbed preview card for a URL in a message.
 ///
@@ -39,56 +88,6 @@ export default function MessageEmbed(props: { embed: Embed; onRemove?: () => voi
     (props.embed.embed_type === "video" || props.embed.embed_type === "rich") &&
     props.embed.iframe_url !== null;
 
-  const renderBody = () => {
-    if (hasIframe && props.embed.iframe_url) {
-      return (
-        <div className="mt-2 w-full" style={{ aspectRatio }}>
-          <iframe
-            className="w-full h-full rounded-md border-0"
-            src={props.embed.iframe_url}
-            title={props.embed.title ?? "Embedded content"}
-            allow="accelerometer; autoPlay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-            referrerPolicy="strict-origin-when-cross-origin"
-            sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-            loading="lazy"
-            allowFullScreen
-          />
-        </div>
-      );
-    }
-
-    if (props.embed.embed_type === "photo" && props.embed.image_url) {
-      return (
-        <a href={props.embed.url} target="_blank" rel="noopener noreferrer">
-          <img
-            src={props.embed.image_url}
-            alt={props.embed.title ?? ""}
-            loading="lazy"
-            className="mt-2 max-h-96 w-full rounded-md object-contain"
-          />
-        </a>
-      );
-    }
-
-    return (
-      <>
-        {props.embed.description ? (
-          <p className="mt-1 text-sm text-muted-foreground line-clamp-3">
-            {props.embed.description}
-          </p>
-        ) : null}
-        {props.embed.image_url ? (
-          <img
-            src={props.embed.image_url}
-            alt=""
-            loading="lazy"
-            className="mt-2 max-h-64 rounded-md object-cover"
-          />
-        ) : null}
-      </>
-    );
-  };
-
   return (
     <div className="relative mt-1 max-w-xl rounded-md border-l-4 border-border bg-muted p-3">
       {props.onRemove ? (
@@ -115,7 +114,7 @@ export default function MessageEmbed(props: { embed: Embed; onRemove?: () => voi
         </a>
       ) : null}
 
-      {renderBody()}
+      {embedBody(props.embed, hasIframe, aspectRatio)}
     </div>
   );
 }

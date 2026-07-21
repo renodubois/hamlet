@@ -21,6 +21,16 @@ function rendererPort(env: Record<string, string>): number {
   return port;
 }
 
+function deploymentBasePath(env: Record<string, string>): string {
+  const rawBasePath = env["VITE_HAMLET_BASE_PATH"]?.trim();
+  if (rawBasePath === undefined || rawBasePath === "" || rawBasePath === "/") {
+    return "/";
+  }
+
+  const path = rawBasePath.replace(/^\/+|\/+$/g, "");
+  return path === "" ? "/" : `/${path}/`;
+}
+
 function envFlag(env: Record<string, string>, key: string): boolean {
   const rawValue = env[key]?.trim().toLowerCase();
   if (rawValue === undefined || rawValue === "" || rawValue === "0" || rawValue === "false") {
@@ -46,6 +56,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    base: deploymentBasePath(env),
 
     // Worktrees can override HAMLET_RENDERER_PORT to run side by side.
     clearScreen: false,

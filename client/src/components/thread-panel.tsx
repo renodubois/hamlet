@@ -109,15 +109,14 @@ function ThreadMessage(props: {
   searchMentionUsers?: (options: SearchUsersOptions) => Promise<PublicUser[]>;
   mentionSearchLimit?: number;
 }) {
-  const canReact = () => !isDeletedMessage(props.message) && props.currentUserId !== null;
-  const isOwnMessage = () =>
+  const canReact = !isDeletedMessage(props.message) && props.currentUserId !== null;
+  const isOwnMessage =
     !isDeletedMessage(props.message) &&
     props.currentUserId !== null &&
     props.message.user_id === props.currentUserId;
-  const isOwnReply = () => isOwnMessage() && props.message.parent_id != null;
-  const isMentionedCurrentUser = () =>
-    messageMentionsCurrentUser(props.message, props.currentUserId);
-  const actionAuthorName = () =>
+  const isOwnReply = isOwnMessage && props.message.parent_id != null;
+  const isMentionedCurrentUser = messageMentionsCurrentUser(props.message, props.currentUserId);
+  const actionAuthorName =
     props.currentUserId !== null &&
     props.message.user_id === props.currentUserId &&
     props.currentUserName
@@ -126,9 +125,9 @@ function ThreadMessage(props: {
   return (
     <article
       data-message-id={String(props.message.id)}
-      data-authored-by-current-user={isOwnMessage() ? "true" : undefined}
-      data-mentioned-current-user={isMentionedCurrentUser() ? "true" : undefined}
-      className={threadMessageClass(isOwnMessage(), isMentionedCurrentUser())}
+      data-authored-by-current-user={isOwnMessage ? "true" : undefined}
+      data-mentioned-current-user={isMentionedCurrentUser ? "true" : undefined}
+      className={threadMessageClass(isOwnMessage, isMentionedCurrentUser)}
     >
       <Avatar
         url={isDeletedMessage(props.message) ? null : props.message.avatar_url}
@@ -168,7 +167,9 @@ function ThreadMessage(props: {
                 onMentionUsers={props.onMentionUsers}
                 searchMentionUsers={props.searchMentionUsers}
                 mentionSearchLimit={props.mentionSearchLimit}
-                inputRef={(el) => queueMicrotask(() => el.focus())}
+                inputRef={(el) => {
+                  if (el) queueMicrotask(() => el.isConnected && el.focus());
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Escape") {
                     e.preventDefault();
@@ -212,7 +213,7 @@ function ThreadMessage(props: {
                 <MessageEmbed
                   key={embed.id}
                   embed={embed}
-                  onRemove={isOwnReply() ? () => props.onSuppressEmbeds(props.message) : undefined}
+                  onRemove={isOwnReply ? () => props.onSuppressEmbeds(props.message) : undefined}
                 />
               ))}
             </div>
@@ -227,21 +228,21 @@ function ThreadMessage(props: {
           </>
         ) : null}
       </div>
-      {(canReact() || isOwnReply()) && !props.editing ? (
+      {(canReact || isOwnReply) && !props.editing ? (
         <>
           <div
             role="toolbar"
             aria-label="Thread message actions"
             className="absolute right-1 top-1 flex gap-1 rounded-md border border-border bg-card shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
           >
-            {canReact() ? (
+            {canReact ? (
               <>
                 <button
                   type="button"
                   aria-label={
                     props.isRoot
-                      ? `Add reaction to thread root by ${actionAuthorName()}`
-                      : `Add reaction to message by ${actionAuthorName()}`
+                      ? `Add reaction to thread root by ${actionAuthorName}`
+                      : `Add reaction to message by ${actionAuthorName}`
                   }
                   title="Add reaction"
                   className="p-1.5 rounded-md transition-colors hover:bg-accent"
@@ -254,7 +255,7 @@ function ThreadMessage(props: {
                 </button>
               </>
             ) : null}
-            {isOwnReply() ? (
+            {isOwnReply ? (
               <>
                 <button
                   type="button"
@@ -310,7 +311,7 @@ export default function ThreadPanel(props: {
   const [reactionPicker, setReactionPicker] = useState<ReactionPickerState | null>(null);
   const photoSelection = useComposerPhotoSelection();
   const photoSelectionErrorId = useId();
-  const inputRef = useRef<(HTMLElement & { value?: string }) | null>(null);
+  const inputRef = useRef<HTMLDivElement | null>(null);
   const repliesScrollRef = useRef<HTMLDivElement | null>(null);
   const threadRef = useRef(thread);
   threadRef.current = thread;
@@ -649,7 +650,7 @@ export default function ThreadPanel(props: {
     }
   };
 
-  const draftText = draft || inputRef.current?.value || inputRef.current?.textContent || "";
+  const draftText = draft;
   const handleDraftChange = (value: string) => {
     draftVersionRef.current += 1;
     setDraft(value);

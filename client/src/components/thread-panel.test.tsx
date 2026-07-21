@@ -6,6 +6,17 @@ import { makeMessage } from "../test/fixtures";
 import { renderNative } from "../test/render";
 import ThreadPanel from "./thread-panel";
 
+function inputContenteditable(input: HTMLDivElement, value: string) {
+  input.textContent = value;
+  const range = document.createRange();
+  range.selectNodeContents(input);
+  range.collapse(false);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+  fireEvent.input(input);
+}
+
 const api = vi.hoisted(() => ({
   getThread: vi.fn(),
   sendThreadReply: vi.fn(),
@@ -280,8 +291,8 @@ describe("ThreadPanel reducer ownership", () => {
     act(() => initialRequests.get(rootId)?.at(-1)?.(thread()));
 
     const oldPanel = await screen.findByRole("complementary", { name: "Thread panel" });
-    const oldInput = within(oldPanel).getByLabelText("Thread reply") as HTMLInputElement;
-    fireEvent.input(oldInput, { target: { value: "reply for A" } });
+    const oldInput = within(oldPanel).getByLabelText("Thread reply") as HTMLDivElement;
+    inputContenteditable(oldInput, "reply for A");
     fireEvent.click(within(oldPanel).getByRole("button", { name: "Send response to thread" }));
     await waitFor(() =>
       expect(api.sendThreadReply.mock.calls.at(-1)?.slice(0, 3)).toEqual([
@@ -336,14 +347,14 @@ describe("ThreadPanel reducer ownership", () => {
     renderPanel();
     const panel = await screen.findByRole("complementary", { name: "Thread panel" });
     await within(panel).findByText(`message ${rootId}`);
-    const input = within(panel).getByLabelText("Thread reply") as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "keep this" } });
+    const input = within(panel).getByLabelText("Thread reply") as HTMLDivElement;
+    inputContenteditable(input, "keep this");
     fireEvent.click(within(panel).getByRole("button", { name: "Send response to thread" }));
 
     expect(await within(panel).findByRole("alert")).toHaveTextContent(
       "Invalid thread reply response",
     );
-    expect(input.value).toBe("keep this");
+    expect(input).toHaveTextContent("keep this");
     expect(within(panel).queryByText("message 101")).not.toBeInTheDocument();
   });
 
@@ -359,8 +370,8 @@ describe("ThreadPanel reducer ownership", () => {
     renderPanel();
     const panel = await screen.findByRole("complementary", { name: "Thread panel" });
     await within(panel).findByText(`message ${rootId}`);
-    const input = within(panel).getByLabelText("Thread reply") as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "still here" } });
+    const input = within(panel).getByLabelText("Thread reply") as HTMLDivElement;
+    inputContenteditable(input, "still here");
     fireEvent.click(within(panel).getByRole("button", { name: "Send response to thread" }));
     await waitFor(() => expect(sendSignal).toBeDefined());
 
@@ -370,7 +381,7 @@ describe("ThreadPanel reducer ownership", () => {
     await waitFor(() =>
       expect(within(panel).getByRole("button", { name: "Send response to thread" })).toBeEnabled(),
     );
-    expect(input.value).toBe("still here");
+    expect(input).toHaveTextContent("still here");
   });
 
   it("closes only once for duplicate hard-root deletions", async () => {
@@ -393,17 +404,17 @@ describe("ThreadPanel reducer ownership", () => {
     renderPanel();
     const panel = await screen.findByRole("complementary", { name: "Thread panel" });
     await within(panel).findByText(`message ${rootId}`);
-    const input = within(panel).getByLabelText("Thread reply") as HTMLInputElement;
+    const input = within(panel).getByLabelText("Thread reply") as HTMLDivElement;
 
-    fireEvent.input(input, { target: { value: "submitted" } });
+    inputContenteditable(input, "submitted");
     fireEvent.click(within(panel).getByRole("button", { name: "Send response to thread" }));
     await waitFor(() =>
       expect(api.sendThreadReply.mock.calls.at(-1)?.slice(0, 3)).toEqual([rootId, "submitted", []]),
     );
-    fireEvent.input(input, { target: { value: "replacement" } });
+    inputContenteditable(input, "replacement");
     act(() => rejectSend(new Error("send failed")));
 
-    await waitFor(() => expect(input.value).toBe("replacement"));
+    await waitFor(() => expect(input).toHaveTextContent("replacement"));
     expect(within(panel).queryByText("send failed")).not.toBeInTheDocument();
   });
 });

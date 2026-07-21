@@ -60,7 +60,7 @@ export const PACKAGER_IGNORE_PATTERNS = Object.freeze([
   /^\/\.gitignore$/,
   /^\/\.oxfmtrc\.json$/,
   /^\/\.size-limit\.json$/,
-  /^\/oxlint\.config\.ts$/,
+  /^\/oxlint\.config\.json$/,
   /^\/playwright(?:\.[^.]+)?\.config\.ts$/,
   /^\/playwright\.env\.ts$/,
   /^\/postcss\.config\.js$/,

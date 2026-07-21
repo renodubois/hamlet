@@ -382,11 +382,13 @@ function ChannelMessages(props: ChannelMessagesProps) {
                             onMentionUsers={props.onMentionUsers}
                             searchMentionUsers={props.searchMentionUsers}
                             mentionSearchLimit={props.mentionSearchLimit}
-                            inputRef={(el) =>
-                              queueMicrotask(() => {
-                                if (el.isConnected) el.focus();
-                              })
-                            }
+                            inputRef={(el) => {
+                              if (el) {
+                                queueMicrotask(() => {
+                                  if (el.isConnected) el.focus();
+                                });
+                              }
+                            }}
                             onKeyDown={(e) => {
                               if (e.key === "Escape") {
                                 e.preventDefault();

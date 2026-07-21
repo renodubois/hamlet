@@ -1,9 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
-import { act, render, screen, fireEvent, waitFor, within } from "../test/testing-library";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import * as ReactRouter from "react-router-dom";
-
-const makeRouter = (ReactRouter as any)["create" + "MemoryRouter"];
+import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { http, HttpResponse } from "msw";
 import { AuthProvider } from "../contexts/auth";
 import { ChannelsProvider } from "../contexts/channels";
@@ -17,6 +15,7 @@ import { expectNoA11yViolations } from "../test/a11y";
 import { makeAttachment } from "../test/fixtures";
 import { tinyJpegFile, tinyPngFile, tinyWebpFile } from "../test/image-fixtures";
 import { assertExists } from "../test/render";
+import { captureExpectedConsoleDiagnostics } from "../test/setup";
 import ChannelView from "./channel";
 import type { Message, PublicUser } from "../api";
 
@@ -31,29 +30,38 @@ vi.mock("../api", async () => {
 });
 
 function mountAt(path: string) {
-  const router = makeRouter([{ path: "/channel/:id", element: <ChannelView /> }], {
+  const router = createMemoryRouter([{ path: "/channel/:id", element: <ChannelView /> }], {
     initialEntries: [path],
   });
+  const navigate = (to: string | number) => {
+    act(() => {
+      if (typeof to === "number") {
+        void router.navigate(to);
+      } else {
+        void router.navigate(to);
+      }
+    });
+  };
   const history = {
     get: () => `${router.state.location.pathname}${router.state.location.search}`,
-    set: ({ value }: { value: string }) => void router.navigate(value),
-    back: () => void router.navigate(-1),
-    forward: () => void router.navigate(1),
+    set: ({ value }: { value: string }) => navigate(value),
+    back: () => navigate(-1),
+    forward: () => navigate(1),
   };
 
-  const result = render(() => (
+  const result = render(
     <AuthProvider>
       <EventsProvider>
         <CustomEmojisProvider>
           <ChannelsProvider>
             <ReadStatesProvider>
-              <ReactRouter.RouterProvider router={router} />
+              <RouterProvider router={router} />
             </ReadStatesProvider>
           </ChannelsProvider>
         </CustomEmojisProvider>
       </EventsProvider>
-    </AuthProvider>
-  ));
+    </AuthProvider>,
+  );
 
   return { ...result, history };
 }
@@ -92,18 +100,74 @@ function seedAuthed() {
   return state;
 }
 
-function setInputSelection(input: HTMLInputElement, start: number, end = start) {
+const CARET_SENTINEL = "\u200B";
+
+function serializedNode(node: Node): string {
+  if (node instanceof HTMLElement) {
+    const marker =
+      node.dataset.emojiMarker ?? node.dataset.mentionMarker ?? node.dataset.channelMarker;
+    if (marker) return marker;
+    if (node instanceof HTMLBRElement) return "\n";
+  }
+  if (node.nodeType === Node.TEXT_NODE) {
+    return (node.textContent ?? "").split(CARET_SENTINEL).join("");
+  }
+  return Array.from(node.childNodes, serializedNode).join("");
+}
+
+function editorValue(input: HTMLDivElement): string {
+  return serializedNode(input);
+}
+
+function domPositionForIndex(root: Node, index: number): { node: Node; offset: number } {
+  let remaining = Math.max(0, index);
+  for (const child of Array.from(root.childNodes)) {
+    const value = serializedNode(child);
+    const childOffset = Array.prototype.indexOf.call(root.childNodes, child) as number;
+    if (remaining === 0) return { node: root, offset: childOffset };
+    if (remaining < value.length && child.nodeType === Node.TEXT_NODE) {
+      return { node: child, offset: remaining };
+    }
+    if (remaining <= value.length) return { node: root, offset: childOffset + 1 };
+    remaining -= value.length;
+  }
+  return { node: root, offset: root.childNodes.length };
+}
+
+function editorSelection(input: HTMLDivElement) {
+  const selection = window.getSelection();
+  const offsetFor = (container: Node | null, offset: number) => {
+    if (!container || !input.contains(container)) return editorValue(input).length;
+    const range = document.createRange();
+    range.setStart(input, 0);
+    range.setEnd(container, offset);
+    return serializedNode(range.cloneContents()).length;
+  };
+  return {
+    start: offsetFor(selection?.anchorNode ?? null, selection?.anchorOffset ?? 0),
+    end: offsetFor(selection?.focusNode ?? null, selection?.focusOffset ?? 0),
+  };
+}
+
+function setInputSelection(input: HTMLDivElement, start: number, end = start) {
   act(() => {
     input.focus();
-    input.setSelectionRange(start, end);
+    const range = document.createRange();
+    const startPosition = domPositionForIndex(input, start);
+    const endPosition = domPositionForIndex(input, end);
+    range.setStart(startPosition.node, startPosition.offset);
+    range.setEnd(endPosition.node, endPosition.offset);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
     fireEvent.select(input);
   });
 }
 
-function inputFromUser(input: HTMLInputElement, value: string, caretIndex = value.length) {
+function inputFromUser(input: HTMLDivElement, value: string, caretIndex = value.length) {
   act(() => {
-    input.value = value;
-    input.setSelectionRange(caretIndex, caretIndex);
+    input.textContent = value;
+    setInputSelection(input, caretIndex);
     fireEvent.input(input);
   });
 }
@@ -258,7 +322,7 @@ function seedThreadWithOwnReply(overrides: Partial<Message> = {}) {
 
 async function openThreadReplyEdit(panel: HTMLElement) {
   fireEvent.click(within(panel).getByRole("button", { name: /edit reply/i }));
-  return (await within(panel).findByRole("textbox", { name: /edit reply/i })) as HTMLInputElement;
+  return (await within(panel).findByRole("textbox", { name: /edit reply/i })) as HTMLDivElement;
 }
 
 async function openMessageEdit(messageText: string) {
@@ -268,7 +332,7 @@ async function openMessageEdit(messageText: string) {
   const editItem = await screen.findByRole("menuitem", { name: /edit message/i });
   fireEvent.click(editItem);
 
-  return (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+  return (await screen.findByLabelText(/edit message/i)) as HTMLDivElement;
 }
 
 describe("Channel view integration", () => {
@@ -326,7 +390,7 @@ describe("Channel view integration", () => {
 
   test("a failed mark-read remains retryable on the next visibility trigger", async () => {
     const focusSpy = vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const warnCapture = captureExpectedConsoleDiagnostics("warn");
     seedAuthed();
     let attempts = 0;
     server.use(
@@ -351,10 +415,11 @@ describe("Channel view integration", () => {
     fireEvent.scroll(messagesRegion());
     await waitFor(() => expect(attempts).toBe(1));
 
-    window.dispatchEvent(new Event("focus"));
+    fireEvent(window, new Event("focus"));
     await waitFor(() => expect(attempts).toBe(2));
     focusSpy.mockRestore();
-    warnSpy.mockRestore();
+    expect(warnCapture.diagnostics).toEqual([["failed to mark channel read", expect.any(Error)]]);
+    warnCapture.stop();
   });
 
   test("an older A generation cannot clear newer A mark-read ownership after A-B-A navigation", async () => {
@@ -402,13 +467,13 @@ describe("Channel view integration", () => {
     fireEvent.scroll(messagesRegion());
     await waitFor(() => expect(attempts).toBe(2));
 
-    first.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    window.dispatchEvent(new Event("focus"));
-    await new Promise((resolve) => setTimeout(resolve, 180));
+    await act(async () => first.resolve());
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    fireEvent(window, new Event("focus"));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 180)));
     expect(attempts).toBe(2);
 
-    second.resolve();
+    await act(async () => second.resolve());
     focusSpy.mockRestore();
   });
 
@@ -554,9 +619,9 @@ describe("Channel view integration", () => {
     await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
     expect(history.get()).toBe("/channel/100?thread=1");
 
-    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
+    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLDivElement;
     await waitFor(() => expect(document.activeElement).toBe(input));
-    fireEvent.input(input, { target: { value: "reply from panel" } });
+    inputFromUser(input, "reply from panel");
     fireEvent.click(within(panel).getByRole("button", { name: "Send response to thread" }));
 
     await waitFor(() => {
@@ -597,8 +662,8 @@ describe("Channel view integration", () => {
     expect(within(rootText).getByText("@Bobby <Tables>")).toHaveAttribute("title", "@bob");
     await findRenderedMessageTextWithin(panel, "existing reply @Bobby <Tables>");
 
-    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "sent reply <@2>" } });
+    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLDivElement;
+    inputFromUser(input, "sent reply <@2>");
     fireEvent.click(within(panel).getByRole("button", { name: "Send response to thread" }));
 
     await findRenderedMessageTextWithin(panel, "sent reply @Bobby <Tables>");
@@ -768,7 +833,7 @@ describe("Channel view integration", () => {
     const panel = await screen.findByRole("complementary", { name: /thread panel/i });
     await waitFor(() => expect(within(panel).getByText("before mention edit")).toBeInTheDocument());
     const input = await openThreadReplyEdit(panel);
-    fireEvent.input(input, { target: { value: "after mention <@2>" } });
+    inputFromUser(input, "after mention <@2>");
     fireEvent.click(within(panel).getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => {
@@ -930,7 +995,7 @@ describe("Channel view integration", () => {
     });
     const channelFailure = deferred();
     const threadFailure = deferred();
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const errorCapture = captureExpectedConsoleDiagnostics("error");
     server.use(
       http.post(`${TEST_SERVER}/message/2/reactions`, async () => {
         await channelFailure.promise;
@@ -987,8 +1052,11 @@ describe("Channel view integration", () => {
         within(panel).getByRole("button", { name: /👍 1 reaction\. remove your reaction/i }),
       ).toHaveAttribute("aria-pressed", "true");
     });
-    expect(errorSpy).toHaveBeenCalledWith("failed to update reaction", expect.any(Error));
-    errorSpy.mockRestore();
+    expect(errorCapture.diagnostics).toEqual([
+      ["failed to update reaction", expect.any(Error)],
+      ["failed to update reaction", expect.any(Error)],
+    ]);
+    errorCapture.stop();
   });
 
   test("reaction picker and focused reactor preview expose accessible labels", async () => {
@@ -1010,7 +1078,9 @@ describe("Channel view integration", () => {
     const pill = await screen.findByRole("button", {
       name: /👍 3 reactions\. add your reaction/i,
     });
-    pill.focus();
+    await waitFor(() => expect(state.markReadRequests.length).toBeGreaterThan(0));
+    await act(async () => Promise.resolve());
+    act(() => pill.focus());
     await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent("Alice"));
     const describedBy = pill.getAttribute("aria-describedby");
     expect(describedBy).toBeTruthy();
@@ -1019,7 +1089,7 @@ describe("Channel view integration", () => {
     ).toHaveTextContent("3 reactions: Alice, Bob, Carol");
 
     const addReaction = screen.getByRole("button", { name: /add reaction to message by bob/i });
-    addReaction.focus();
+    act(() => addReaction.focus());
     expect(document.activeElement).toBe(addReaction);
     fireEvent.click(addReaction);
     await screen.findByRole("dialog", { name: /emoji picker/i });
@@ -1070,25 +1140,25 @@ describe("Channel view integration", () => {
     fireEvent.click(screen.getByRole("button", { name: /reply in thread to message by alice/i }));
 
     const panel = await screen.findByRole("complementary", { name: /thread panel/i });
-    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "thread first line" } });
+    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLDivElement;
+    inputFromUser(input, "thread first line");
     setInputSelection(input, "thread first line".length);
 
     fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
 
     await waitFor(() => {
-      expect(input.value).toBe("thread first line\n");
-      expect(input.selectionStart).toBe("thread first line\n".length);
+      expect(editorValue(input)).toBe("thread first line\n");
+      expect(editorSelection(input).start).toBe("thread first line\n".length);
     });
 
     const text = "thread first line\nthread second line";
-    fireEvent.input(input, { target: { value: text } });
+    inputFromUser(input, text);
     setInputSelection(input, text.length);
     fireEvent.keyDown(input, { key: "Enter" });
 
     await waitFor(() => {
       expect(state.sentThreadReplies).toContainEqual({ rootId: 1, text });
-      expect(input.value).toBe("");
+      expect(editorValue(input)).toBe("");
       expect(document.activeElement).toBe(input);
     });
     const replyText = await findRenderedMessageTextWithin(panel, text);
@@ -1102,9 +1172,9 @@ describe("Channel view integration", () => {
 
     const panel = await screen.findByRole("complementary", { name: /thread panel/i });
     await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
-    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
+    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLDivElement;
     const textWithToken = "thread :sm";
-    fireEvent.input(input, { target: { value: textWithToken } });
+    inputFromUser(input, textWithToken);
     setInputSelection(input, textWithToken.length);
 
     const listbox = await screen.findByRole("listbox", { name: /emoji suggestions/i });
@@ -1112,7 +1182,7 @@ describe("Channel view integration", () => {
 
     fireEvent.keyDown(input, { key: "Enter" });
 
-    await waitFor(() => expect(input.value).toBe("thread 😃"));
+    await waitFor(() => expect(editorValue(input)).toBe("thread 😃"));
     expect(state.sentThreadReplies).toEqual([]);
 
     fireEvent.keyDown(input, { key: "Enter" });
@@ -1135,7 +1205,7 @@ describe("Channel view integration", () => {
 
     const panel = await screen.findByRole("complementary", { name: /thread panel/i });
     await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
-    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
+    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLDivElement;
 
     inputFromUser(input, "thread @bobthread");
     const listbox = await screen.findByRole("listbox", { name: /mention suggestions/i });
@@ -1147,7 +1217,7 @@ describe("Channel view integration", () => {
 
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => {
-      expect(input.value).toBe("thread <@2> ");
+      expect(editorValue(input)).toBe("thread <@2> ");
       expect(within(input).getByText("@Bobby Thread Compose")).toBeInTheDocument();
     });
     expect(state.sentThreadReplies).toEqual([]);
@@ -1155,7 +1225,7 @@ describe("Channel view integration", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => {
       expect(state.sentThreadReplies).toContainEqual({ rootId: 1, text: "thread <@2> " });
-      expect(input.value).toBe("");
+      expect(editorValue(input)).toBe("");
     });
     expect(within(panel).getByText("@Bobby Thread Compose")).toHaveAttribute(
       "title",
@@ -1183,19 +1253,19 @@ describe("Channel view integration", () => {
     fireEvent.click(screen.getByRole("button", { name: /reply in thread to message by alice/i }));
 
     const panel = await screen.findByRole("complementary", { name: /thread panel/i });
-    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
+    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLDivElement;
     const text = "restore first line\nrestore second line";
-    fireEvent.input(input, { target: { value: text } });
+    inputFromUser(input, text);
     fireEvent.click(within(panel).getByRole("button", { name: "Send response to thread" }));
 
     await waitFor(() => {
       expect(state.sentThreadReplies).toContainEqual({ rootId: 1, text });
-      expect(input.value).toBe("");
+      expect(editorValue(input)).toBe("");
     });
     releaseReply();
 
     await waitFor(() => {
-      expect(input.value).toBe(text);
+      expect(editorValue(input)).toBe(text);
       expect(within(panel).getByRole("alert")).toHaveTextContent("Thread reply failed (500)");
     });
   });
@@ -1298,12 +1368,12 @@ describe("Channel view integration", () => {
     fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
 
     await waitFor(() => {
-      expect(input.value).toBe("reply first line\n");
-      expect(input.selectionStart).toBe("reply first line\n".length);
+      expect(editorValue(input)).toBe("reply first line\n");
+      expect(editorSelection(input).start).toBe("reply first line\n".length);
     });
 
     const text = "reply first line\nreply second line";
-    fireEvent.input(input, { target: { value: text } });
+    inputFromUser(input, text);
     setInputSelection(input, text.length);
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -1323,7 +1393,7 @@ describe("Channel view integration", () => {
     await waitFor(() => expect(within(panel).getByText("reply body")).toBeInTheDocument());
     const input = await openThreadReplyEdit(panel);
     const textWithToken = "reply :sm";
-    fireEvent.input(input, { target: { value: textWithToken } });
+    inputFromUser(input, textWithToken);
     setInputSelection(input, textWithToken.length);
 
     const listbox = await screen.findByRole("listbox", { name: /emoji suggestions/i });
@@ -1331,7 +1401,7 @@ describe("Channel view integration", () => {
 
     fireEvent.keyDown(input, { key: "Enter" });
 
-    await waitFor(() => expect(input.value).toBe("reply 😃"));
+    await waitFor(() => expect(editorValue(input)).toBe("reply 😃"));
     expect(state.editedMessages).toEqual([]);
 
     fireEvent.click(
@@ -1371,7 +1441,7 @@ describe("Channel view integration", () => {
 
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => {
-      expect(input.value).toBe("reply <@2> ");
+      expect(editorValue(input)).toBe("reply <@2> ");
       expect(within(input).getByText("@Bobby Thread Edit")).toBeInTheDocument();
     });
     expect(state.editedMessages).toEqual([]);
@@ -1398,7 +1468,7 @@ describe("Channel view integration", () => {
     await waitFor(() => expect(within(panel).getByText("button edit")).toBeInTheDocument());
     const input = await openThreadReplyEdit(panel);
     const text = "button first line\nbutton second line\nbutton third line";
-    fireEvent.input(input, { target: { value: text } });
+    inputFromUser(input, text);
     fireEvent.click(within(panel).getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => {
@@ -1418,7 +1488,7 @@ describe("Channel view integration", () => {
     );
     expect(original).toBeInTheDocument();
     const input = await openThreadReplyEdit(panel);
-    fireEvent.input(input, { target: { value: "cancel first line\ncancel second line\nunsaved" } });
+    inputFromUser(input, "cancel first line\ncancel second line\nunsaved");
     fireEvent.keyDown(input, { key: "Escape" });
 
     await waitFor(() =>
@@ -1486,7 +1556,7 @@ describe("Channel view integration", () => {
     const panel = await screen.findByRole("complementary", { name: /thread panel/i });
     await findRenderedMessageTextWithin(panel, "blank first line\nblank second line");
     const input = await openThreadReplyEdit(panel);
-    fireEvent.input(input, { target: { value: "" } });
+    inputFromUser(input, "");
     fireEvent.submit(assertExists(input.closest("form"), "thread reply edit form"));
 
     const dialog = await screen.findByRole("dialog", { name: /delete reply/i });
@@ -1515,7 +1585,7 @@ describe("Channel view integration", () => {
       within(panel).getByRole("img", { name: /photo attachment from baipas/i }),
     ).toBeInTheDocument();
     const input = await openThreadReplyEdit(panel);
-    fireEvent.input(input, { target: { value: "" } });
+    inputFromUser(input, "");
     fireEvent.submit(assertExists(input.closest("form"), "thread reply edit form"));
 
     await waitFor(() => expect(state.editedMessages).toContainEqual({ id: 70, text: "" }));
@@ -1563,10 +1633,8 @@ describe("Channel view integration", () => {
     mountAt("/channel/100?thread=1");
 
     const panel = await screen.findByRole("complementary", { name: /thread panel/i });
-    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
-    fireEvent.input(input, {
-      target: { value: "one\ntwo\nthree\nfour\nfive\nsix\nseven" },
-    });
+    const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLDivElement;
+    inputFromUser(input, "one\ntwo\nthree\nfour\nfive\nsix\nseven");
 
     expect(panel).toHaveClass("min-h-0", "flex", "flex-col");
     const scrollArea = panel.querySelector(".min-h-0.flex-1.overflow-y-auto");
@@ -2122,6 +2190,7 @@ describe("Channel view integration", () => {
     mountAt("/channel/100");
 
     await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
+    await waitFor(() => expect(screen.getByText("world")).toBeInTheDocument());
 
     const es = assertExists(latestFakeEventSource(), "latestFakeEventSource");
     es.pushMessage({
@@ -2139,7 +2208,7 @@ describe("Channel view integration", () => {
     });
 
     // Give reactivity a tick to flush; then assert nothing appeared.
-    await new Promise((r) => setTimeout(r, 10));
+    await act(() => new Promise((r) => setTimeout(r, 10)));
     expect(screen.queryByText("do not show")).toBeNull();
   });
 
@@ -2350,8 +2419,8 @@ describe("Channel view integration", () => {
     expect(within(panel).queryAllByRole("button", { name: /edit reply/i })).toHaveLength(1);
 
     fireEvent.click(within(panel).getByRole("button", { name: /edit reply/i }));
-    const editInput = (await within(panel).findByLabelText(/edit reply/i)) as HTMLInputElement;
-    fireEvent.input(editInput, { target: { value: "edited thread reply https://example.com" } });
+    const editInput = (await within(panel).findByLabelText(/edit reply/i)) as HTMLDivElement;
+    inputFromUser(editInput, "edited thread reply https://example.com");
     fireEvent.click(within(panel).getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => {
@@ -2524,18 +2593,18 @@ describe("Channel view integration", () => {
     seedAuthed();
     mountAt("/channel/100");
 
-    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "first line" } });
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+    inputFromUser(input, "first line");
     setInputSelection(input, "first line".length);
 
     fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
 
     await waitFor(() => {
-      expect(input.value).toBe("first line\n");
-      expect(input.selectionStart).toBe("first line\n".length);
+      expect(editorValue(input)).toBe("first line\n");
+      expect(editorSelection(input).start).toBe("first line\n".length);
     });
 
-    fireEvent.input(input, { target: { value: "first line\nsecond line" } });
+    inputFromUser(input, "first line\nsecond line");
     setInputSelection(input, "first line\nsecond line".length);
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -2546,7 +2615,7 @@ describe("Channel view integration", () => {
       });
     });
     await waitFor(() => {
-      expect(input.value).toBe("");
+      expect(editorValue(input)).toBe("");
       expect(document.activeElement).toBe(input);
     });
   });
@@ -2578,7 +2647,7 @@ describe("Channel view integration", () => {
     ];
     mountAt("/channel/100");
 
-    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
     await screen.findByText("@Bobby");
 
     inputFromUser(input, "<@2>");
@@ -2594,7 +2663,7 @@ describe("Channel view integration", () => {
 
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => {
-      expect(input.value).toBe("<@2> ");
+      expect(editorValue(input)).toBe("<@2> ");
       expect(within(input).getByText("@Bobby")).toBeInTheDocument();
     });
     expect(state.sentMessages).toEqual([]);
@@ -2602,7 +2671,7 @@ describe("Channel view integration", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => {
       expect(state.sentMessages).toContainEqual({ channel: "100", text: "<@2> " });
-      expect(input.value).toBe("");
+      expect(editorValue(input)).toBe("");
     });
 
     const created = state.messages["100"].at(-1);
@@ -2618,9 +2687,9 @@ describe("Channel view integration", () => {
     seedAuthed();
     mountAt("/channel/100");
 
-    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
     const text = "button first line\nbutton second line";
-    fireEvent.input(input, { target: { value: text } });
+    inputFromUser(input, text);
     fireEvent.click(screen.getByRole("button", { name: /open emoji picker/i }));
     await screen.findByRole("dialog", { name: /emoji picker/i });
 
@@ -2628,7 +2697,7 @@ describe("Channel view integration", () => {
 
     await waitFor(() => {
       expect(mswState().sentMessages).toContainEqual({ channel: "100", text });
-      expect(input.value).toBe("");
+      expect(editorValue(input)).toBe("");
       expect(screen.queryByRole("dialog", { name: /emoji picker/i })).toBeNull();
       expect(document.activeElement).toBe(input);
     });
@@ -2638,18 +2707,19 @@ describe("Channel view integration", () => {
     seedAuthed();
     mountAt("/channel/100");
 
-    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+    await screen.findByText("world");
     const sendButton = screen.getByRole("button", { name: /^send$/i });
     expect(sendButton).toBeDisabled();
 
     fireEvent.submit(assertExists(input.closest("form"), "form"));
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
     expect(mswState().sentMessages).toEqual([]);
 
-    fireEvent.input(input, { target: { value: "text draft" } });
+    inputFromUser(input, "text draft");
     await waitFor(() => expect(sendButton).not.toBeDisabled());
 
-    fireEvent.input(input, { target: { value: "" } });
+    inputFromUser(input, "");
     await waitFor(() => expect(sendButton).toBeDisabled());
   });
 
@@ -2659,7 +2729,7 @@ describe("Channel view integration", () => {
     const { unmount } = mountAt("/channel/100");
 
     try {
-      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
       const sendButton = screen.getByRole("button", { name: /^send$/i });
       expect(sendButton).toBeDisabled();
 
@@ -2673,7 +2743,7 @@ describe("Channel view integration", () => {
       expect(sendButton).not.toBeDisabled();
       expect(state.typingPings).toEqual([]);
 
-      fireEvent.input(input, { target: { value: "caption while preview remains" } });
+      inputFromUser(input, "caption while preview remains");
       await waitFor(() => expect(state.typingPings).toEqual(["100"]));
       expect(screen.getByRole("img", { name: /selected photo 1: cat\.png/i })).toBeInTheDocument();
 
@@ -2694,7 +2764,7 @@ describe("Channel view integration", () => {
     const { unmount } = mountAt("/channel/100");
 
     try {
-      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
       const sendButton = screen.getByRole("button", { name: /^send$/i });
 
       const catPhoto = photoFile("cat.png");
@@ -2710,7 +2780,7 @@ describe("Channel view integration", () => {
         });
         expect(screen.queryByRole("img", { name: /cat\.png/i })).toBeNull();
         expect(urls.revokeObjectURL).toHaveBeenCalledWith("blob:cat.png-0");
-        expect(input.value).toBe("");
+        expect(editorValue(input)).toBe("");
         expect(document.activeElement).toBe(input);
       });
     } finally {
@@ -2726,10 +2796,10 @@ describe("Channel view integration", () => {
     const { unmount } = mountAt("/channel/100");
 
     try {
-      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
       const photo = photoFile("mention-caption.png");
       const text = "caption <@2>";
-      fireEvent.input(input, { target: { value: text } });
+      inputFromUser(input, text);
       fireEvent.change(fileInput(), { target: { files: [photo] } });
       fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
 
@@ -2741,7 +2811,7 @@ describe("Channel view integration", () => {
         });
         expect(screen.queryByRole("img", { name: /mention-caption\.png/i })).toBeNull();
         expect(urls.revokeObjectURL).toHaveBeenCalledWith("blob:mention-caption.png-0");
-        expect(input.value).toBe("");
+        expect(editorValue(input)).toBe("");
         expect(document.activeElement).toBe(input);
       });
 
@@ -2789,15 +2859,15 @@ describe("Channel view integration", () => {
     const { unmount } = mountAt("/channel/100");
 
     try {
-      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-      fireEvent.input(input, { target: { value: "preserve malformed response" } });
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+      inputFromUser(input, "preserve malformed response");
       fireEvent.change(fileInput(), {
         target: { files: [photoFile("preserve.png", "image/png")] },
       });
       fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
 
       await waitFor(() => expect(alert).toHaveBeenCalledTimes(1));
-      expect(input.value).toBe("preserve malformed response");
+      expect(editorValue(input)).toBe("preserve malformed response");
       expect(screen.getByRole("img", { name: /selected photo 1: preserve\.png/i })).toHaveAttribute(
         "src",
         "blob:preserve.png-0",
@@ -2819,8 +2889,8 @@ describe("Channel view integration", () => {
     const { unmount } = mountAt("/channel/100");
 
     try {
-      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-      fireEvent.input(input, { target: { value: "retry caption" } });
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+      inputFromUser(input, "retry caption");
       fireEvent.change(fileInput(), { target: { files: [photoFile("retry.webp", "image/webp")] } });
 
       fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
@@ -2830,7 +2900,7 @@ describe("Channel view integration", () => {
           "src",
           "blob:retry.webp-0",
         );
-        expect(input.value).toBe("retry caption");
+        expect(editorValue(input)).toBe("retry caption");
         expect(screen.getByRole("button", { name: /^send$/i })).not.toBeDisabled();
       });
       expect(urls.revokeObjectURL).not.toHaveBeenCalled();
@@ -2852,8 +2922,8 @@ describe("Channel view integration", () => {
     const { container, unmount } = mountAt("/channel/100");
 
     try {
-      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-      fireEvent.input(input, { target: { value: "draft with photo" } });
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+      inputFromUser(input, "draft with photo");
       fireEvent.change(fileInput(), { target: { files: [photoFile("keep.png")] } });
       await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
 
@@ -2870,7 +2940,7 @@ describe("Channel view integration", () => {
         "src",
         "blob:keep.png-0",
       );
-      expect(input.value).toBe("draft with photo");
+      expect(editorValue(input)).toBe("draft with photo");
 
       fireEvent.click(screen.getByRole("button", { name: /reply inline to message by bob/i }));
       banner = screen.getByLabelText(/inline reply target/i);
@@ -2879,7 +2949,7 @@ describe("Channel view integration", () => {
       expect(within(banner).getByText("Attachment")).toBeInTheDocument();
       expect(within(banner).queryByText("hello")).toBeNull();
       expect(screen.getByRole("img", { name: /selected photo 1: keep\.png/i })).toBeInTheDocument();
-      expect(input.value).toBe("draft with photo");
+      expect(editorValue(input)).toBe("draft with photo");
 
       await expectNoA11yViolations(container, "inline reply composer banner");
 
@@ -2890,9 +2960,13 @@ describe("Channel view integration", () => {
       await user.keyboard("{Enter}");
       await waitFor(() => expect(screen.queryByLabelText(/inline reply target/i)).toBeNull());
       expect(screen.getByRole("img", { name: /selected photo 1: keep\.png/i })).toBeInTheDocument();
-      expect(input.value).toBe("draft with photo");
+      expect(editorValue(input)).toBe("draft with photo");
       await waitFor(() => expect(document.activeElement).toBe(input));
       expect(urls.revokeObjectURL).not.toHaveBeenCalled();
+      await waitFor(() => expect(state.markReadRequests).not.toEqual([]));
+      await act(async () => {
+        await Promise.resolve();
+      });
     } finally {
       unmount();
       urls.restore();
@@ -2905,7 +2979,7 @@ describe("Channel view integration", () => {
     const { unmount } = mountAt("/channel/100");
 
     try {
-      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
       const photo = photoFile("inline-success.png");
       fireEvent.change(fileInput(), { target: { files: [photo] } });
       await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
@@ -2928,7 +3002,7 @@ describe("Channel view integration", () => {
         expect(screen.queryByLabelText(/inline reply target/i)).toBeNull();
         expect(screen.queryByRole("img", { name: /inline-success\.png/i })).toBeNull();
         expect(urls.revokeObjectURL).toHaveBeenCalledWith("blob:inline-success.png-0");
-        expect(input.value).toBe("");
+        expect(editorValue(input)).toBe("");
         expect(document.activeElement).toBe(input);
       });
 
@@ -2977,8 +3051,8 @@ describe("Channel view integration", () => {
     const { unmount } = mountAt("/channel/100");
 
     try {
-      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-      fireEvent.input(input, { target: { value: "retry inline caption" } });
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+      inputFromUser(input, "retry inline caption");
       fireEvent.change(fileInput(), {
         target: { files: [photoFile("retry-inline.webp", "image/webp")] },
       });
@@ -3009,7 +3083,7 @@ describe("Channel view integration", () => {
         expect(
           screen.getByRole("img", { name: /selected photo 1: retry-inline\.webp/i }),
         ).toHaveAttribute("src", "blob:retry-inline.webp-0");
-        expect(input.value).toBe("retry inline caption");
+        expect(editorValue(input)).toBe("retry inline caption");
         expect(screen.getByRole("button", { name: /^send$/i })).not.toBeDisabled();
       });
       expect(urls.revokeObjectURL).not.toHaveBeenCalled();
@@ -3045,28 +3119,34 @@ describe("Channel view integration", () => {
         await request.formData();
         requestStarted.resolve();
         await releaseResponse.promise;
-        return new HttpResponse(null, { status: 200 });
+        return HttpResponse.json({
+          ...state.messages["100"][0],
+          id: 9001,
+          user_id: DEV_USER.id,
+          text: "old channel send",
+          parent_id: null,
+        });
       }),
     );
     const { history, unmount } = mountAt("/channel/100");
 
     try {
-      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-      fireEvent.input(input, { target: { value: "old channel send" } });
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+      inputFromUser(input, "old channel send");
       fireEvent.change(fileInput(), { target: { files: [photoFile("carried-pending.png")] } });
       fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
       await requestStarted.promise;
 
       history.set({ value: "/channel/200" });
       await waitFor(() => expect(screen.getByText("different channel")).toBeInTheDocument());
-      fireEvent.input(input, { target: { value: "new channel draft" } });
+      inputFromUser(input, "new channel draft");
       fireEvent.click(screen.getByRole("button", { name: /reply inline to message by carol/i }));
       await screen.findByLabelText(/inline reply target/i);
 
       releaseResponse.resolve();
 
       await waitFor(() => expect(screen.getByRole("button", { name: /^send$/i })).toBeEnabled());
-      expect(input.value).toBe("new channel draft");
+      expect(editorValue(input)).toBe("new channel draft");
       expect(screen.getByLabelText(/inline reply target/i)).toBeInTheDocument();
       expect(
         screen.getByRole("img", { name: /selected photo 1: carried-pending\.png/i }),
@@ -3079,28 +3159,34 @@ describe("Channel view integration", () => {
   });
 
   test("a pending send does not erase text entered after submission", async () => {
-    seedAuthed();
+    const state = seedAuthed();
     const requestStarted = deferred();
     const releaseResponse = deferred();
     server.use(
       http.post(`${TEST_SERVER}/message/100`, async () => {
         requestStarted.resolve();
         await releaseResponse.promise;
-        return new HttpResponse(null, { status: 200 });
+        return HttpResponse.json({
+          ...state.messages["100"][0],
+          id: 9002,
+          user_id: DEV_USER.id,
+          text: "submitted text",
+          parent_id: null,
+        });
       }),
     );
     mountAt("/channel/100");
 
-    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "submitted text" } });
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+    inputFromUser(input, "submitted text");
     fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
     await requestStarted.promise;
 
-    fireEvent.input(input, { target: { value: "typed while pending" } });
+    inputFromUser(input, "typed while pending");
     releaseResponse.resolve();
 
     await waitFor(() => expect(screen.getByRole("button", { name: /^send$/i })).toBeEnabled());
-    expect(input.value).toBe("typed while pending");
+    expect(editorValue(input)).toBe("typed while pending");
   });
 
   test("channel switching clears inline reply target without clearing draft or selected photos", async () => {
@@ -3125,8 +3211,8 @@ describe("Channel view integration", () => {
     const { history, unmount } = mountAt("/channel/100");
 
     try {
-      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-      fireEvent.input(input, { target: { value: "carry this draft" } });
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+      inputFromUser(input, "carry this draft");
       fireEvent.change(fileInput(), { target: { files: [photoFile("carry.png")] } });
       await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
       fireEvent.click(screen.getByRole("button", { name: /reply inline to message by alice/i }));
@@ -3137,7 +3223,7 @@ describe("Channel view integration", () => {
       await waitFor(() => {
         expect(screen.getByText("different channel")).toBeInTheDocument();
         expect(screen.queryByLabelText(/inline reply target/i)).toBeNull();
-        expect(input.value).toBe("carry this draft");
+        expect(editorValue(input)).toBe("carry this draft");
         expect(screen.getByRole("img", { name: /selected photo 1: carry\.png/i })).toHaveAttribute(
           "src",
           "blob:carry.png-0",
@@ -3156,8 +3242,8 @@ describe("Channel view integration", () => {
     const { unmount } = mountAt("/channel/100");
 
     try {
-      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-      fireEvent.input(input, { target: { value: "keep after deletion" } });
+      const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+      inputFromUser(input, "keep after deletion");
       fireEvent.change(fileInput(), { target: { files: [photoFile("delete-keep.png")] } });
       await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
       await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
@@ -3170,7 +3256,7 @@ describe("Channel view integration", () => {
 
       await waitFor(() => {
         expect(screen.queryByLabelText(/inline reply target/i)).toBeNull();
-        expect(input.value).toBe("keep after deletion");
+        expect(editorValue(input)).toBe("keep after deletion");
         expect(
           screen.getByRole("img", { name: /selected photo 1: delete-keep\.png/i }),
         ).toHaveAttribute("src", "blob:delete-keep.png-0");
@@ -3187,7 +3273,7 @@ describe("Channel view integration", () => {
       await waitFor(() => {
         expect(screen.queryByLabelText(/inline reply target/i)).toBeNull();
         expect(screen.getByLabelText(/original message deleted/i)).toBeInTheDocument();
-        expect(input.value).toBe("keep after deletion");
+        expect(editorValue(input)).toBe("keep after deletion");
         expect(
           screen.getByRole("img", { name: /selected photo 1: delete-keep\.png/i }),
         ).toHaveAttribute("src", "blob:delete-keep.png-0");
@@ -3207,7 +3293,8 @@ describe("Channel view integration", () => {
     try {
       const panel = await screen.findByRole("complementary", { name: /thread panel/i });
       await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
-      const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
+      await screen.findByText("world");
+      const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLDivElement;
       const sendButton = within(panel).getByRole("button", { name: "Send response to thread" });
       expect(sendButton).toBeDisabled();
 
@@ -3238,7 +3325,7 @@ describe("Channel view integration", () => {
         });
         expect(within(panel).queryByRole("img", { name: /thread-cat\.png/i })).toBeNull();
         expect(urls.revokeObjectURL).toHaveBeenCalledWith("blob:thread-cat.png-1");
-        expect(input.value).toBe("");
+        expect(editorValue(input)).toBe("");
         expect(document.activeElement).toBe(input);
       });
       expect(
@@ -3262,8 +3349,8 @@ describe("Channel view integration", () => {
     try {
       const panel = await screen.findByRole("complementary", { name: /thread panel/i });
       await within(panel).findByText("hello");
-      const input = within(panel).getByLabelText(/thread reply/i) as HTMLInputElement;
-      fireEvent.input(input, { target: { value: "survive reconnect" } });
+      const input = within(panel).getByLabelText(/thread reply/i) as HTMLDivElement;
+      inputFromUser(input, "survive reconnect");
       fireEvent.change(fileInputWithin(panel), {
         target: { files: [photoFile("reconnect.png")] },
       });
@@ -3272,7 +3359,7 @@ describe("Channel view integration", () => {
 
       await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
       expect(screen.getByRole("complementary", { name: /thread panel/i })).toBe(panel);
-      expect(input.value).toBe("survive reconnect");
+      expect(editorValue(input)).toBe("survive reconnect");
       expect(
         within(panel).getByRole("img", { name: /selected photo 1: reconnect\.png/i }),
       ).toHaveAttribute("src", "blob:reconnect.png-0");
@@ -3301,9 +3388,10 @@ describe("Channel view integration", () => {
     try {
       let panel = await screen.findByRole("complementary", { name: /thread panel/i });
       await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
-      fireEvent.input(within(panel).getByLabelText(/thread reply/i), {
-        target: { value: "thread A draft" },
-      });
+      inputFromUser(
+        within(panel).getByLabelText(/thread reply/i) as HTMLDivElement,
+        "thread A draft",
+      );
       fireEvent.change(fileInputWithin(panel), {
         target: { files: [photoFile("thread-a.png")] },
       });
@@ -3315,13 +3403,13 @@ describe("Channel view integration", () => {
         panel = screen.getByRole("complementary", { name: /thread panel/i });
         expect(within(panel).getByText("world")).toBeInTheDocument();
       });
-      const threadBInput = within(panel).getByLabelText(/thread reply/i) as HTMLInputElement;
-      expect(threadBInput.value).toBe("");
+      const threadBInput = within(panel).getByLabelText(/thread reply/i) as HTMLDivElement;
+      expect(editorValue(threadBInput)).toBe("");
       expect(within(panel).queryByRole("img", { name: /thread-a\.png/i })).toBeNull();
       expect(urls.revokeObjectURL).toHaveBeenCalledTimes(1);
       expect(urls.revokeObjectURL).toHaveBeenCalledWith("blob:thread-a.png-0");
 
-      fireEvent.input(threadBInput, { target: { value: "thread B draft" } });
+      inputFromUser(threadBInput, "thread B draft");
       fireEvent.change(fileInputWithin(panel), {
         target: { files: [photoFile("thread-b.png")] },
       });
@@ -3332,7 +3420,7 @@ describe("Channel view integration", () => {
           within(panel).getByRole("button", { name: "Send response to thread" }),
         ).toBeEnabled(),
       );
-      expect(threadBInput.value).toBe("thread B draft");
+      expect(editorValue(threadBInput)).toBe("thread B draft");
       expect(
         within(panel).getByRole("img", { name: /selected photo 1: thread-b\.png/i }),
       ).toHaveAttribute("src", "blob:thread-b.png-1");
@@ -3366,8 +3454,8 @@ describe("Channel view integration", () => {
     try {
       const panel = await screen.findByRole("complementary", { name: /thread panel/i });
       await waitFor(() => expect(within(panel).getByText("hello")).toBeInTheDocument());
-      const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLInputElement;
-      fireEvent.input(input, { target: { value: "retry thread caption" } });
+      const input = (await within(panel).findByLabelText(/thread reply/i)) as HTMLDivElement;
+      inputFromUser(input, "retry thread caption");
       fireEvent.change(fileInputWithin(panel), {
         target: { files: [photoFile("retry-thread.webp", "image/webp")] },
       });
@@ -3389,7 +3477,7 @@ describe("Channel view integration", () => {
         expect(
           within(panel).getByRole("img", { name: /selected photo 1: retry-thread\.webp/i }),
         ).toHaveAttribute("src", "blob:retry-thread.webp-0");
-        expect(input.value).toBe("retry thread caption");
+        expect(editorValue(input)).toBe("retry thread caption");
         expect(within(panel).getByRole("alert")).toHaveTextContent("Thread reply failed (500)");
         expect(
           within(panel).getByRole("button", { name: "Send response to thread" }),
@@ -3406,8 +3494,8 @@ describe("Channel view integration", () => {
     seedAuthed();
     mountAt("/channel/100");
 
-    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "first line" } });
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+    inputFromUser(input, "first line");
 
     await waitFor(() => {
       expect(mswState().typingPings).toEqual(["100"]);
@@ -3415,9 +3503,9 @@ describe("Channel view integration", () => {
 
     setInputSelection(input, "first line".length);
     fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
-    await waitFor(() => expect(input.value).toBe("first line\n"));
+    await waitFor(() => expect(editorValue(input)).toBe("first line\n"));
 
-    fireEvent.input(input, { target: { value: "first line\nsecond line" } });
+    inputFromUser(input, "first line\nsecond line");
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(mswState().typingPings).toEqual(["100"]);
@@ -3427,9 +3515,9 @@ describe("Channel view integration", () => {
     seedAuthed();
     mountAt("/channel/100");
 
-    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
     expect(screen.getByLabelText(/new message/i)).toBe(input);
-    fireEvent.input(input, { target: { value: "typed message" } });
+    inputFromUser(input, "typed message");
     const form = assertExists(input.closest("form"), "form");
     fireEvent.submit(form);
 
@@ -3439,7 +3527,7 @@ describe("Channel view integration", () => {
         text: "typed message",
       });
     });
-    await waitFor(() => expect(input.value).toBe(""));
+    await waitFor(() => expect(editorValue(input)).toBe(""));
   });
 
   test("selects an inline reply target, preserves the draft, and renders the SSE reply preview", async () => {
@@ -3447,25 +3535,25 @@ describe("Channel view integration", () => {
     mountAt("/channel/100");
 
     await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
-    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "draft reply body" } });
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+    inputFromUser(input, "draft reply body");
 
     fireEvent.click(screen.getByRole("button", { name: /reply inline to message by alice/i }));
     let banner = await screen.findByLabelText(/inline reply target/i);
     expect(within(banner).getByText(/replying to alice/i)).toBeInTheDocument();
     expect(within(banner).getByText("hello")).toBeInTheDocument();
-    expect(input.value).toBe("draft reply body");
+    expect(editorValue(input)).toBe("draft reply body");
 
     fireEvent.click(screen.getByRole("button", { name: /reply inline to message by bob/i }));
     banner = screen.getByLabelText(/inline reply target/i);
     expect(within(banner).getByText(/replying to bob/i)).toBeInTheDocument();
     expect(within(banner).getByText("world")).toBeInTheDocument();
     expect(within(banner).queryByText("hello")).toBeNull();
-    expect(input.value).toBe("draft reply body");
+    expect(editorValue(input)).toBe("draft reply body");
 
     fireEvent.click(within(banner).getByRole("button", { name: /dismiss inline reply/i }));
     expect(screen.queryByLabelText(/inline reply target/i)).toBeNull();
-    expect(input.value).toBe("draft reply body");
+    expect(editorValue(input)).toBe("draft reply body");
 
     fireEvent.click(screen.getByRole("button", { name: /reply inline to message by alice/i }));
     fireEvent.submit(assertExists(input.closest("form"), "form"));
@@ -3476,7 +3564,7 @@ describe("Channel view integration", () => {
         text: "draft reply body",
         replyToMessageId: 1,
       });
-      expect(input.value).toBe("");
+      expect(editorValue(input)).toBe("");
       expect(screen.queryByLabelText(/inline reply target/i)).toBeNull();
     });
 
@@ -3952,9 +4040,9 @@ describe("Channel view integration", () => {
     seedAuthed();
     mountAt("/channel/100");
 
-    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
     const draftWithToken = "native autocomplete :sm";
-    fireEvent.input(input, { target: { value: draftWithToken } });
+    inputFromUser(input, draftWithToken);
     setInputSelection(input, draftWithToken.length);
 
     const listbox = await screen.findByRole("listbox", { name: /emoji suggestions/i });
@@ -3962,7 +4050,7 @@ describe("Channel view integration", () => {
 
     fireEvent.keyDown(input, { key: "Enter" });
 
-    await waitFor(() => expect(input.value).toBe("native autocomplete 😃"));
+    await waitFor(() => expect(editorValue(input)).toBe("native autocomplete 😃"));
     expect(mswState().sentMessages).toEqual([]);
 
     fireEvent.keyDown(input, { key: "Enter" });
@@ -3991,8 +4079,8 @@ describe("Channel view integration", () => {
     ];
     mountAt("/channel/100");
 
-    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "hello " } });
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+    inputFromUser(input, "hello ");
     fireEvent.click(screen.getByRole("button", { name: /open emoji picker/i }));
     const dialog = await screen.findByRole("dialog", { name: /emoji picker/i });
     fireEvent.input(within(dialog).getByRole("combobox", { name: /search and select emoji/i }), {
@@ -4000,7 +4088,7 @@ describe("Channel view integration", () => {
     });
     const partyCell = await within(dialog).findByRole("gridcell", { name: /emoji :party:/i });
     fireEvent.click(within(partyCell).getByRole("button", { name: /emoji :party:/i }));
-    await waitFor(() => expect(input.value).toBe("hello <:party:123>"));
+    await waitFor(() => expect(editorValue(input)).toBe("hello <:party:123>"));
     fireEvent.submit(assertExists(input.closest("form"), "form"));
 
     await waitFor(() => {
@@ -4027,14 +4115,13 @@ describe("Channel view integration", () => {
     ];
     mountAt("/channel/100");
 
-    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "hello :pa" } });
-    input.setSelectionRange("hello :pa".length, "hello :pa".length);
-    fireEvent.select(input);
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+    inputFromUser(input, "hello :pa");
+    setInputSelection(input, "hello :pa".length);
     await screen.findByRole("option", { name: /emoji :party:/i });
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => {
-      expect(input.value).toBe("hello <:party:123>");
+      expect(editorValue(input)).toBe("hello <:party:123>");
       expect(screen.getByRole("img", { name: /custom emoji :party:/i })).toBeInTheDocument();
     });
     expect(screen.queryByText("<:party:123>")).toBeNull();
@@ -4070,8 +4157,8 @@ describe("Channel view integration", () => {
     seedAuthed();
     mountAt("/channel/100");
 
-    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "typed message" } });
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+    inputFromUser(input, "typed message");
     fireEvent.click(screen.getByRole("button", { name: /open emoji picker/i }));
     await screen.findByRole("dialog", { name: /emoji picker/i });
 
@@ -4079,7 +4166,7 @@ describe("Channel view integration", () => {
 
     await waitFor(() => {
       expect(mswState().sentMessages).toContainEqual({ channel: "100", text: "typed message" });
-      expect(input.value).toBe("");
+      expect(editorValue(input)).toBe("");
       expect(screen.queryByRole("dialog", { name: /emoji picker/i })).toBeNull();
     });
   });
@@ -4088,15 +4175,15 @@ describe("Channel view integration", () => {
     seedAuthed();
     mountAt("/channel/100");
 
-    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: ":grinning" } });
-    expect(input.value).toBe(":grinning");
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+    inputFromUser(input, ":grinning");
+    expect(editorValue(input)).toBe(":grinning");
 
-    fireEvent.input(input, { target: { value: ":grinning:" } });
+    inputFromUser(input, ":grinning:");
 
     await waitFor(() => {
-      expect(input.value).toBe("😀");
-      expect(input.selectionStart).toBe("😀".length);
+      expect(editorValue(input)).toBe("😀");
+      expect(editorSelection(input).start).toBe("😀".length);
     });
 
     fireEvent.submit(assertExists(input.closest("form"), "form"));
@@ -4110,8 +4197,8 @@ describe("Channel view integration", () => {
     mountAt("/channel/100");
 
     const input = await openMessageEdit("original");
-    expect(input.value).toBe("original");
-    fireEvent.input(input, { target: { value: "edited!" } });
+    expect(editorValue(input)).toBe("original");
+    inputFromUser(input, "edited!");
     const form = assertExists(input.closest("form"), "form");
     fireEvent.submit(form);
 
@@ -4133,7 +4220,7 @@ describe("Channel view integration", () => {
 
     const input = await openMessageEdit("original");
     const text = `edited mention <@${bob.id}>`;
-    fireEvent.input(input, { target: { value: text } });
+    inputFromUser(input, text);
     fireEvent.submit(assertExists(input.closest("form"), "form"));
 
     await waitFor(() => {
@@ -4166,7 +4253,7 @@ describe("Channel view integration", () => {
 
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => {
-      expect(input.value).toBe("edited <@2> ");
+      expect(editorValue(input)).toBe("edited <@2> ");
       expect(within(input).getByText("@Bobby Channel Edit")).toBeInTheDocument();
     });
     expect(state.editedMessages).toEqual([]);
@@ -4188,12 +4275,12 @@ describe("Channel view integration", () => {
     fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
 
     await waitFor(() => {
-      expect(input.value).toBe("first line\n");
-      expect(input.selectionStart).toBe("first line\n".length);
+      expect(editorValue(input)).toBe("first line\n");
+      expect(editorSelection(input).start).toBe("first line\n".length);
     });
 
     const text = "first line\nsecond line";
-    fireEvent.input(input, { target: { value: text } });
+    inputFromUser(input, text);
     setInputSelection(input, text.length);
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -4208,7 +4295,7 @@ describe("Channel view integration", () => {
 
     const input = await openMessageEdit("button edit");
     const text = "button first line\nbutton second line\nbutton third line";
-    fireEvent.input(input, { target: { value: text } });
+    inputFromUser(input, text);
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => {
@@ -4221,7 +4308,7 @@ describe("Channel view integration", () => {
     mountAt("/channel/100");
 
     const input = await openMessageEdit("cancel me");
-    fireEvent.input(input, { target: { value: "cancel me\nunsaved" } });
+    inputFromUser(input, "cancel me\nunsaved");
     fireEvent.keyDown(input, { key: "Escape" });
 
     await waitFor(() => expect(screen.queryByLabelText(/edit message/i)).toBeNull());
@@ -4235,7 +4322,7 @@ describe("Channel view integration", () => {
 
     const input = await openMessageEdit("escape edit");
     const draftWithToken = "escape edit :sm";
-    fireEvent.input(input, { target: { value: draftWithToken } });
+    inputFromUser(input, draftWithToken);
     setInputSelection(input, draftWithToken.length);
     await screen.findByRole("listbox", { name: /emoji suggestions/i });
 
@@ -4291,7 +4378,7 @@ describe("Channel view integration", () => {
     const original = await findRenderedMessageText(text);
     fireEvent.contextMenu(original);
     fireEvent.click(await screen.findByRole("menuitem", { name: /edit message/i }));
-    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLDivElement;
     fireEvent.submit(assertExists(input.closest("form"), "form"));
 
     await waitFor(() => expect(screen.queryByLabelText(/edit message/i)).toBeNull());
@@ -4303,11 +4390,11 @@ describe("Channel view integration", () => {
     mountAt("/channel/100");
 
     const input = await openMessageEdit("plain text");
-    fireEvent.input(input, { target: { value: "looks :grinning:" } });
+    inputFromUser(input, "looks :grinning:");
 
     await waitFor(() => {
-      expect(input.value).toBe("looks 😀");
-      expect(input.selectionStart).toBe("looks 😀".length);
+      expect(editorValue(input)).toBe("looks 😀");
+      expect(editorSelection(input).start).toBe("looks 😀".length);
     });
 
     fireEvent.submit(assertExists(input.closest("form"), "form"));
@@ -4322,7 +4409,7 @@ describe("Channel view integration", () => {
 
     const input = await openMessageEdit("plain text");
     const textWithToken = "edit :sm";
-    fireEvent.input(input, { target: { value: textWithToken } });
+    inputFromUser(input, textWithToken);
     setInputSelection(input, textWithToken.length);
 
     const listbox = await screen.findByRole("listbox", { name: /emoji suggestions/i });
@@ -4330,7 +4417,7 @@ describe("Channel view integration", () => {
 
     fireEvent.keyDown(input, { key: "Enter" });
 
-    await waitFor(() => expect(input.value).toBe("edit 😃"));
+    await waitFor(() => expect(editorValue(input)).toBe("edit 😃"));
     expect(mswState().editedMessages).toEqual([]);
 
     fireEvent.submit(assertExists(input.closest("form"), "form"));
@@ -4357,7 +4444,7 @@ describe("Channel view integration", () => {
     fireEvent.click(within(smileCell).getByRole("button", { name: /emoji :smile:/i }));
 
     await waitFor(() => {
-      expect(input.value).toBe("hello 😄world");
+      expect(editorValue(input)).toBe("hello 😄world");
       expect(document.activeElement).toBe(input);
     });
 
@@ -4384,7 +4471,7 @@ describe("Channel view integration", () => {
     fireEvent.click(within(heartCell).getByRole("button", { name: /emoji :heart:/i }));
 
     await waitFor(() => {
-      expect(input.value).toBe("hello ❤️");
+      expect(editorValue(input)).toBe("hello ❤️");
       expect(document.activeElement).toBe(input);
     });
   });
@@ -4511,8 +4598,8 @@ describe("Channel view integration", () => {
     const editItem = await screen.findByRole("menuitem", { name: /edit message/i });
     fireEvent.click(editItem);
 
-    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "" } });
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLDivElement;
+    inputFromUser(input, "");
     const form = assertExists(input.closest("form"), "form");
     fireEvent.submit(form);
 
@@ -4548,7 +4635,7 @@ describe("Channel view integration", () => {
     mountAt("/channel/100");
 
     const input = await openMessageEdit("photo caption");
-    fireEvent.input(input, { target: { value: "" } });
+    inputFromUser(input, "");
     fireEvent.submit(assertExists(input.closest("form"), "form"));
 
     await waitFor(() => {
@@ -4863,8 +4950,8 @@ describe("Channel view integration", () => {
     seedAuthed();
     mountAt("/channel/100");
 
-    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "h" } });
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+    inputFromUser(input, "h");
 
     await waitFor(() => {
       expect(mswState().typingPings).toContain("100");
@@ -4875,8 +4962,8 @@ describe("Channel view integration", () => {
     seedAuthed();
     mountAt("/channel/100");
 
-    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "hello world" } });
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+    inputFromUser(input, "hello world");
     setInputSelection(input, "hello ".length);
     fireEvent.click(screen.getByRole("button", { name: /open emoji picker/i }));
 
@@ -4887,7 +4974,7 @@ describe("Channel view integration", () => {
     const smileCell = within(dialog).getByRole("gridcell", { name: /emoji :smile:/i });
     fireEvent.click(within(smileCell).getByRole("button", { name: /emoji :smile:/i }));
 
-    await waitFor(() => expect(input.value).toBe("hello 😄world"));
+    await waitFor(() => expect(editorValue(input)).toBe("hello 😄world"));
     expect(screen.queryByRole("dialog", { name: /emoji picker/i })).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(input));
 
@@ -4901,8 +4988,8 @@ describe("Channel view integration", () => {
     seedAuthed();
     mountAt("/channel/100");
 
-    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "hello world" } });
+    const input = (await screen.findByPlaceholderText(/send a new message/i)) as HTMLDivElement;
+    inputFromUser(input, "hello world");
     setInputSelection(input, "hello ".length, "hello world".length);
     fireEvent.click(screen.getByRole("button", { name: /open emoji picker/i }));
 
@@ -4914,7 +5001,7 @@ describe("Channel view integration", () => {
     fireEvent.click(within(heartCell).getByRole("button", { name: /emoji :heart:/i }));
 
     await waitFor(() => {
-      expect(input.value).toBe("hello ❤️");
+      expect(editorValue(input)).toBe("hello ❤️");
       expect(document.activeElement).toBe(input);
     });
   });
@@ -4964,8 +5051,8 @@ describe("Channel view integration", () => {
     // the test can click them directly without simulating mouseover.
     fireEvent.click(await screen.findByRole("button", { name: /^edit$/i }));
 
-    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "after edit" } });
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLDivElement;
+    inputFromUser(input, "after edit");
     fireEvent.submit(assertExists(input.closest("form"), "form"));
 
     await waitFor(() => {

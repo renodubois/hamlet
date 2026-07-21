@@ -1,8 +1,8 @@
-import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
-import { act, fireEvent, render, screen, waitFor, within } from "../test/testing-library";
+import { useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { renderNative as render } from "../test/render";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
-import { useSignalState } from "../hooks/react-state";
 import { describe, expect, test, vi } from "vitest";
 import type { Channel, PublicUser, SearchUsersOptions } from "../api";
 import { AuthProvider } from "../contexts/auth";
@@ -107,22 +107,23 @@ function renderMentionHarness(
   const discoveredUsers: PublicUser[][] = [];
   const searchMentionUsers = options.searchMentionUsers ?? vi.fn(async () => MENTION_USER_FIXTURES);
 
-  const result = render(() => {
-    const [value, setValue] = useSignalState(initialValue);
-    const [mentionUsers, setMentionUsers] = useSignalState<readonly PublicUser[]>(
+  const result = render(<TestHarness />);
+  function TestHarness() {
+    const [value, setValue] = useState(initialValue);
+    const [mentionUsers, setMentionUsers] = useState<readonly PublicUser[]>(
       options.initialMentionUsers ?? [],
     );
 
     return (
       <MessageInput
-        value={value()}
+        value={value}
         onChange={(nextValue) => {
           changes.push(nextValue);
           setValue(nextValue);
         }}
         ariaLabel="Compose message"
         placeholder="Send a new message..."
-        mentionUsers={mentionUsers()}
+        mentionUsers={mentionUsers}
         onMentionUsers={(users) => {
           discoveredUsers.push([...users]);
           setMentionUsers((current) => mergeUsers(current, users));
@@ -131,7 +132,7 @@ function renderMentionHarness(
         onKeyDown={options.onKeyDown}
       />
     );
-  });
+  }
 
   return { ...result, changes, discoveredUsers, searchMentionUsers };
 }
@@ -144,12 +145,13 @@ function renderChannelHarness(
   } = {},
 ) {
   const changes: string[] = [];
-  const result = render(() => {
-    const [value, setValue] = useSignalState(initialValue);
+  const result = render(<TestHarness />);
+  function TestHarness() {
+    const [value, setValue] = useState(initialValue);
 
     return (
       <MessageInput
-        value={value()}
+        value={value}
         onChange={(nextValue) => {
           changes.push(nextValue);
           setValue(nextValue);
@@ -160,7 +162,7 @@ function renderChannelHarness(
         onKeyDown={options.onKeyDown}
       />
     );
-  });
+  }
 
   return { ...result, changes };
 }
@@ -169,13 +171,14 @@ function renderChannelFormHarness(initialValue = "") {
   const changes: string[] = [];
   const onSubmit = vi.fn((event: FormEvent<HTMLFormElement>) => event.preventDefault());
 
-  const result = render(() => {
-    const [value, setValue] = useSignalState(initialValue);
+  const result = render(<TestHarness />);
+  function TestHarness() {
+    const [value, setValue] = useState(initialValue);
 
     return (
       <form onSubmit={onSubmit}>
         <MessageInput
-          value={value()}
+          value={value}
           onChange={(nextValue) => {
             changes.push(nextValue);
             setValue(nextValue);
@@ -187,7 +190,7 @@ function renderChannelFormHarness(initialValue = "") {
         <button type="submit">Send</button>
       </form>
     );
-  });
+  }
 
   return { ...result, changes, onSubmit };
 }
@@ -197,28 +200,29 @@ function renderMentionFormHarness(initialValue = "", searchMentionUsers?: Mentio
   const onSubmit = vi.fn((event: FormEvent<HTMLFormElement>) => event.preventDefault());
   const search = searchMentionUsers ?? vi.fn(async () => MENTION_USER_FIXTURES);
 
-  const result = render(() => {
-    const [value, setValue] = useSignalState(initialValue);
-    const [mentionUsers, setMentionUsers] = useSignalState<readonly PublicUser[]>([]);
+  const result = render(<TestHarness />);
+  function TestHarness() {
+    const [value, setValue] = useState(initialValue);
+    const [mentionUsers, setMentionUsers] = useState<readonly PublicUser[]>([]);
 
     return (
       <form onSubmit={onSubmit}>
         <MessageInput
-          value={value()}
+          value={value}
           onChange={(nextValue) => {
             changes.push(nextValue);
             setValue(nextValue);
           }}
           ariaLabel="Compose message"
           placeholder="Send a new message..."
-          mentionUsers={mentionUsers()}
+          mentionUsers={mentionUsers}
           onMentionUsers={(users) => setMentionUsers((current) => mergeUsers(current, users))}
           searchMentionUsers={search}
         />
         <button type="submit">Send</button>
       </form>
     );
-  });
+  }
 
   return { ...result, changes, onSubmit, searchMentionUsers: search };
 }
@@ -227,13 +231,14 @@ function renderHarness(initialValue = "") {
   const changes: string[] = [];
   let setExternalValue: (value: string) => void = () => {};
 
-  const result = render(() => {
-    const [value, setValue] = useSignalState(initialValue);
+  const result = render(<TestHarness />);
+  function TestHarness() {
+    const [value, setValue] = useState(initialValue);
     setExternalValue = (nextValue: string) => act(() => setValue(nextValue));
 
     return (
       <MessageInput
-        value={value()}
+        value={value}
         onChange={(nextValue) => {
           changes.push(nextValue);
           setValue(nextValue);
@@ -242,7 +247,7 @@ function renderHarness(initialValue = "") {
         placeholder="Send a new message..."
       />
     );
-  });
+  }
 
   return { ...result, changes, setExternalValue };
 }
@@ -257,14 +262,15 @@ function renderHarnessWithCustomEmojis(
     customEmojis,
   });
 
-  const result = render(() => {
-    const [value, setValue] = useSignalState(initialValue);
+  const result = render(<TestHarness />);
+  function TestHarness() {
+    const [value, setValue] = useState(initialValue);
 
     return (
       <AuthProvider>
         <CustomEmojisProvider>
           <MessageInput
-            value={value()}
+            value={value}
             onChange={(nextValue) => {
               changes.push(nextValue);
               setValue(nextValue);
@@ -275,7 +281,7 @@ function renderHarnessWithCustomEmojis(
         </CustomEmojisProvider>
       </AuthProvider>
     );
-  });
+  }
 
   return { ...result, changes };
 }
@@ -294,23 +300,103 @@ async function selectEmoji(searchQuery: string, emojiName: RegExp) {
   fireEvent.click(within(cell).getByRole("button", { name: emojiName }));
 }
 
-function setInputSelection(input: HTMLInputElement, start: number, end = start) {
+const CARET_SENTINEL = "\u200B";
+
+function serializedNode(node: Node): string {
+  if (node instanceof HTMLElement) {
+    const marker =
+      node.dataset.emojiMarker ?? node.dataset.mentionMarker ?? node.dataset.channelMarker;
+    if (marker) return marker;
+    if (node instanceof HTMLBRElement) return "\n";
+  }
+  if (node.nodeType === Node.TEXT_NODE) {
+    return (node.textContent ?? "").split(CARET_SENTINEL).join("");
+  }
+  return Array.from(node.childNodes, serializedNode).join("");
+}
+
+function editorValue(input: HTMLDivElement): string {
+  return serializedNode(input);
+}
+
+function domPositionForIndex(root: Node, index: number): { node: Node; offset: number } {
+  let remaining = Math.max(0, index);
+  for (const child of Array.from(root.childNodes)) {
+    const value = serializedNode(child);
+    const childOffset = Array.prototype.indexOf.call(root.childNodes, child) as number;
+    if (remaining === 0) return { node: root, offset: childOffset };
+    if (remaining < value.length) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        let serializedOffset = 0;
+        const text = child.textContent ?? "";
+        for (let offset = 0; offset < text.length; offset += 1) {
+          if (serializedOffset === remaining) return { node: child, offset };
+          if (text[offset] !== CARET_SENTINEL) serializedOffset += 1;
+        }
+        return { node: child, offset: text.length };
+      }
+      if (child instanceof HTMLElement && child.dataset.emojiMarker) {
+        return { node: root, offset: childOffset + (remaining > value.length / 2 ? 1 : 0) };
+      }
+      return domPositionForIndex(child, remaining);
+    }
+    if (remaining === value.length) return { node: root, offset: childOffset + 1 };
+    remaining -= value.length;
+  }
+  return { node: root, offset: root.childNodes.length };
+}
+
+function serializedOffset(root: Node, container: Node | null, offset: number): number {
+  if (!container || !root.contains(container)) return editorValue(root as HTMLDivElement).length;
+  let current = container;
+  let result =
+    current.nodeType === Node.TEXT_NODE
+      ? (current.textContent ?? "").slice(0, offset).split(CARET_SENTINEL).join("").length
+      : Array.from(current.childNodes).slice(0, offset).map(serializedNode).join("").length;
+  while (current !== root && current.parentNode) {
+    const parent = current.parentNode;
+    const childOffset = Array.prototype.indexOf.call(parent.childNodes, current) as number;
+    result += Array.from(parent.childNodes)
+      .slice(0, childOffset)
+      .map(serializedNode)
+      .join("").length;
+    current = parent;
+  }
+  return result;
+}
+
+function editorSelection(input: HTMLDivElement) {
+  const selection = window.getSelection();
+  return {
+    start: serializedOffset(input, selection?.anchorNode ?? null, selection?.anchorOffset ?? 0),
+    end: serializedOffset(input, selection?.focusNode ?? null, selection?.focusOffset ?? 0),
+  };
+}
+
+function setInputSelection(input: HTMLDivElement, start: number, end = start) {
   act(() => {
     input.focus();
-    input.setSelectionRange(start, end);
-    fireEvent.select(input);
+    const range = document.createRange();
+    const startPosition = domPositionForIndex(input, start);
+    const endPosition = domPositionForIndex(input, end);
+    range.setStart(startPosition.node, startPosition.offset);
+    range.setEnd(endPosition.node, endPosition.offset);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    fireEvent.mouseUp(input);
   });
 }
 
 function inputFromUser(
-  input: HTMLInputElement,
+  input: HTMLDivElement,
   value: string,
   caretIndex = value.length,
   eventInit?: InputEventInit,
 ) {
   act(() => {
-    input.value = value;
-    input.setSelectionRange(caretIndex, caretIndex);
+    input.textContent = value;
+    setDomSelection(input.firstChild ?? input, input.firstChild ? caretIndex : 0);
     fireEvent.input(input, eventInit);
   });
 }
@@ -338,13 +424,14 @@ function renderFormHarness(initialValue = "") {
   const changes: string[] = [];
   const onSubmit = vi.fn((event: FormEvent<HTMLFormElement>) => event.preventDefault());
 
-  const result = render(() => {
-    const [value, setValue] = useSignalState(initialValue);
+  const result = render(<TestHarness />);
+  function TestHarness() {
+    const [value, setValue] = useState(initialValue);
 
     return (
       <form onSubmit={onSubmit}>
         <MessageInput
-          value={value()}
+          value={value}
           onChange={(nextValue) => {
             changes.push(nextValue);
             setValue(nextValue);
@@ -355,7 +442,7 @@ function renderFormHarness(initialValue = "") {
         <button type="submit">Send</button>
       </form>
     );
-  });
+  }
 
   return { ...result, changes, onSubmit };
 }
@@ -395,6 +482,29 @@ describe("<MessageInput>", () => {
       "dialog",
     );
     await expectNoA11yViolations(container, "message input");
+  });
+
+  test("exposes only the native div ref and reports detachment", () => {
+    const inputRef = vi.fn<(element: HTMLDivElement | null) => void>();
+    const { unmount } = render(
+      <MessageInput
+        value="draft"
+        onChange={vi.fn()}
+        ariaLabel="Compose message"
+        inputRef={inputRef}
+      />,
+    );
+
+    const input = screen.getByRole("textbox", { name: /compose message/i });
+    expect(inputRef).toHaveBeenLastCalledWith(input);
+    expect(input).toBeInstanceOf(HTMLDivElement);
+    expect(Object.hasOwn(input, "value")).toBe(false);
+    expect(Object.hasOwn(input, "selectionStart")).toBe(false);
+    expect(Object.hasOwn(input, "selectionEnd")).toBe(false);
+    expect(Object.hasOwn(input, "setSelectionRange")).toBe(false);
+
+    unmount();
+    expect(inputRef).toHaveBeenLastCalledWith(null);
   });
 
   test("keeps the multiline composer and emoji trigger keyboard reachable with visible focus styles", async () => {
@@ -438,16 +548,16 @@ describe("<MessageInput>", () => {
     "Shift+Enter inserts exactly one newline at the %s caret",
     async (_, value, caret, nextValue, nextCaret) => {
       const { changes } = renderHarness(value);
-      const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLInputElement;
+      const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLDivElement;
       setInputSelection(input, caret);
 
       const event = keyDown(input, { key: "Enter", shiftKey: true });
 
       expect(event.defaultPrevented).toBe(true);
       await waitFor(() => {
-        expect(input.value).toBe(nextValue);
-        expect(input.selectionStart).toBe(nextCaret);
-        expect(input.selectionEnd).toBe(nextCaret);
+        expect(editorValue(input)).toBe(nextValue);
+        expect(editorSelection(input).start).toBe(nextCaret);
+        expect(editorSelection(input).end).toBe(nextCaret);
       });
       expect(changes.at(-1)).toBe(nextValue);
     },
@@ -455,23 +565,23 @@ describe("<MessageInput>", () => {
 
   test("Shift+Enter replaces selected text with one newline and restores the caret after it", async () => {
     const { changes } = renderHarness("hello world");
-    const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLInputElement;
+    const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLDivElement;
     setInputSelection(input, "hello".length, "hello world".length);
 
     const event = keyDown(input, { key: "Enter", shiftKey: true });
 
     expect(event.defaultPrevented).toBe(true);
     await waitFor(() => {
-      expect(input.value).toBe("hello\n");
-      expect(input.selectionStart).toBe("hello\n".length);
-      expect(input.selectionEnd).toBe("hello\n".length);
+      expect(editorValue(input)).toBe("hello\n");
+      expect(editorSelection(input).start).toBe("hello\n".length);
+      expect(editorSelection(input).end).toBe("hello\n".length);
     });
     expect(changes.at(-1)).toBe("hello\n");
   });
 
   test("Shift+Enter replaces a serialized custom emoji chip selection with one newline", async () => {
     const { changes } = renderHarnessWithCustomEmojis("a <:party:123> b");
-    const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLInputElement;
+    const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLDivElement;
     await screen.findByRole("img", { name: /custom emoji :party:/i });
     setInputSelection(input, "a ".length, "a <:party:123>".length);
 
@@ -479,37 +589,115 @@ describe("<MessageInput>", () => {
 
     expect(event.defaultPrevented).toBe(true);
     await waitFor(() => {
-      expect(input.value).toBe("a \n b");
-      expect(input.selectionStart).toBe("a \n".length);
-      expect(input.selectionEnd).toBe("a \n".length);
+      expect(editorValue(input)).toBe("a \n b");
+      expect(editorSelection(input).start).toBe("a \n".length);
+      expect(editorSelection(input).end).toBe("a \n".length);
     });
     expect(changes.at(-1)).toBe("a \n b");
   });
 
   test("plain Enter submits the owning form without changing the editor text", async () => {
     const { changes, onSubmit } = renderFormHarness("ready to send");
-    const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLInputElement;
+    const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLDivElement;
     setInputSelection(input, "ready".length);
 
     const event = keyDown(input, { key: "Enter" });
 
     expect(event.defaultPrevented).toBe(true);
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(input.value).toBe("ready to send");
+    expect(editorValue(input)).toBe("ready to send");
     expect(input.querySelector("br, div")).toBeNull();
     expect(changes).toEqual([]);
   });
 
   test("Enter during IME composition does not submit or block composition", () => {
     const { onSubmit } = renderFormHarness("composing");
-    const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLInputElement;
+    const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLDivElement;
 
     const event = composingEnter(input);
 
     expect(event.defaultPrevented).toBe(false);
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(input.value).toBe("composing");
+    expect(editorValue(input)).toBe("composing");
   });
+
+  test("Enter cannot submit while the composition ref is active", () => {
+    const { onSubmit } = renderFormHarness("composing");
+    const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLDivElement;
+
+    fireEvent.compositionStart(input);
+    const event = keyDown(input, { key: "Enter" });
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.compositionEnd(input);
+  });
+
+  test("defers controlled DOM and selection reconstruction until IME composition ends", async () => {
+    renderHarness("a");
+    const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLDivElement;
+
+    fireEvent.compositionStart(input);
+    input.textContent = "あ";
+    const activeCompositionNode = input.firstChild;
+    setDomSelection(activeCompositionNode ?? input, 1);
+    const domSelection = window.getSelection();
+    if (!domSelection) throw new Error("Expected a document selection");
+    const removeAllRanges = vi.spyOn(domSelection, "removeAllRanges");
+    const addRange = vi.spyOn(domSelection, "addRange");
+
+    fireEvent.input(input, { data: "あ", inputType: "insertCompositionText", isComposing: true });
+
+    expect(editorValue(input)).toBe("あ");
+    expect(input.firstChild).toBe(activeCompositionNode);
+    expect(removeAllRanges).not.toHaveBeenCalled();
+    expect(addRange).not.toHaveBeenCalled();
+
+    fireEvent.compositionEnd(input, { data: "あ" });
+
+    expect(editorValue(input)).toBe("あ");
+    expect(input.firstChild).not.toBe(activeCompositionNode);
+    expect(removeAllRanges).not.toHaveBeenCalled();
+    expect(addRange).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(removeAllRanges).toHaveBeenCalledTimes(1);
+      expect(addRange).toHaveBeenCalledTimes(1);
+      expect(editorSelection(input)).toEqual({ start: 1, end: 1 });
+    });
+  });
+
+  test.each([
+    ["rejects", (nextValue: string) => (nextValue === "changed" ? "fixed" : nextValue)],
+    ["normalizes", (nextValue: string) => nextValue.toUpperCase()],
+  ])(
+    "restores the authoritative controlled value when the owner %s an edit",
+    async (_, ownEdit) => {
+      const changes: string[] = [];
+      render(<ControlledHarness />);
+
+      function ControlledHarness() {
+        const [value, setValue] = useState("fixed");
+        return (
+          <MessageInput
+            value={value}
+            ariaLabel="Compose message"
+            onChange={(nextValue) => {
+              changes.push(nextValue);
+              setValue(ownEdit(nextValue));
+            }}
+          />
+        );
+      }
+
+      const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLDivElement;
+      inputFromUser(input, "changed");
+
+      await waitFor(() => {
+        expect(editorValue(input)).toBe(ownEdit("changed"));
+      });
+      expect(changes).toEqual(["changed"]);
+    },
+  );
 
   test.each([
     ["Ctrl+Enter", { ctrlKey: true }],
@@ -518,7 +706,7 @@ describe("<MessageInput>", () => {
     ["Ctrl+Shift+Enter", { ctrlKey: true, shiftKey: true }],
   ])("%s is ignored without submitting or editing", async (_, modifiers) => {
     const { changes, onSubmit } = renderFormHarness("unchanged");
-    const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLInputElement;
+    const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLDivElement;
     setInputSelection(input, 4);
 
     const event = keyDown(input, { key: "Enter", ...modifiers });
@@ -526,25 +714,25 @@ describe("<MessageInput>", () => {
     expect(event.defaultPrevented).toBe(true);
     await Promise.resolve();
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(input.value).toBe("unchanged");
-    expect(input.selectionStart).toBe(4);
+    expect(editorValue(input)).toBe("unchanged");
+    expect(editorSelection(input).start).toBe(4);
     expect(changes).toEqual([]);
   });
 
   test("ignored non-Enter keys fall through to normal editing", () => {
     renderHarness("abc");
-    const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLInputElement;
+    const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLDivElement;
     setInputSelection(input, 1);
 
     const event = keyDown(input, { key: "a" });
 
     expect(event.defaultPrevented).toBe(false);
-    expect(input.value).toBe("abc");
+    expect(editorValue(input)).toBe("abc");
   });
 
   test("owner keyboard handlers can cancel editor handling", () => {
     const onCancel = vi.fn();
-    render(() => (
+    render(
       <MessageInput
         value="draft"
         onChange={vi.fn()}
@@ -555,20 +743,59 @@ describe("<MessageInput>", () => {
             onCancel();
           }
         }}
-      />
-    ));
-    const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLInputElement;
+      />,
+    );
+    const input = screen.getByRole("textbox", { name: /compose message/i }) as HTMLDivElement;
 
     const event = keyDown(input, { key: "Escape" });
 
     expect(event.defaultPrevented).toBe(true);
     expect(onCancel).toHaveBeenCalledTimes(1);
-    expect(input.value).toBe("draft");
+    expect(editorValue(input)).toBe("draft");
+  });
+
+  test("replays an initial mention search safely under Strict Mode", async () => {
+    const searchMentionUsers = vi.fn<MentionSearch>(async () => MENTION_USER_FIXTURES);
+    renderMentionHarness("@bo", { searchMentionUsers });
+
+    expect(await screen.findByRole("option", { name: /mention bobby @bob/i })).toBeInTheDocument();
+    expect(searchMentionUsers).toHaveBeenCalledWith({ query: "bo", limit: 8 });
+  });
+
+  test("reruns mention search when its callback is replaced for an unchanged token", async () => {
+    const staleSearch = deferred<PublicUser[]>();
+    const firstSearch = vi.fn<MentionSearch>(() => staleSearch.promise);
+    const replacementSearch = vi.fn<MentionSearch>(async () => [MENTION_USER_FIXTURES[2]]);
+    const result = render(
+      <MessageInput
+        value="@ca"
+        onChange={vi.fn()}
+        ariaLabel="Compose message"
+        searchMentionUsers={firstSearch}
+      />,
+    );
+
+    await waitFor(() => expect(firstSearch).toHaveBeenCalled());
+    result.rerender(
+      <MessageInput
+        value="@ca"
+        onChange={vi.fn()}
+        ariaLabel="Compose message"
+        searchMentionUsers={replacementSearch}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("option", { name: /mention carol @carol/i }),
+    ).toBeInTheDocument();
+    staleSearch.resolve([MENTION_USER_FIXTURES[1]]);
+    await Promise.resolve();
+    expect(screen.queryByRole("option", { name: /mention @alice/i })).toBeNull();
   });
 
   test("shows mention autocomplete for a boundary-valid empty @ token", async () => {
     const { container, searchMentionUsers, discoveredUsers } = renderMentionHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "@");
 
@@ -591,7 +818,7 @@ describe("<MessageInput>", () => {
 
   test("hides mention autocomplete while text is selected", async () => {
     renderMentionHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "@bo");
     await screen.findByRole("listbox", { name: /mention suggestions/i });
@@ -603,12 +830,11 @@ describe("<MessageInput>", () => {
   });
 
   test("ignores failed mention searches quietly", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const searchMentionUsers = vi.fn<MentionSearch>(async () => {
       throw new Error("network down");
     });
     renderMentionHarness("", { searchMentionUsers });
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "@zz");
 
@@ -616,8 +842,6 @@ describe("<MessageInput>", () => {
     await waitFor(() => {
       expect(screen.queryByRole("listbox", { name: /mention suggestions/i })).toBeNull();
     });
-    expect(errorSpy).not.toHaveBeenCalled();
-    errorSpy.mockRestore();
   });
 
   test("ignores stale mention search responses", async () => {
@@ -627,7 +851,7 @@ describe("<MessageInput>", () => {
       return Promise.resolve([MENTION_USER_FIXTURES[2]]);
     });
     renderMentionHarness("", { searchMentionUsers });
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "@a");
     await waitFor(() => expect(searchMentionUsers).toHaveBeenCalledWith({ query: "a", limit: 8 }));
@@ -643,9 +867,33 @@ describe("<MessageInput>", () => {
     expect(screen.getByRole("option", { name: /mention carol @carol/i })).toBeInTheDocument();
   });
 
+  test.each(["Enter", "Tab"])(
+    "%s does not replace an inline mention token when the caret has moved away",
+    async (key) => {
+      const { changes, onSubmit } = renderMentionFormHarness();
+      const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
+      const value = "before @bo after";
+
+      inputFromUser(input, value, "before @bo".length);
+      await screen.findByRole("listbox", { name: /mention suggestions/i });
+      setInputSelection(input, 0);
+      await waitFor(() => {
+        expect(screen.queryByRole("listbox", { name: /mention suggestions/i })).toBeNull();
+      });
+
+      const event = keyDown(input, { key });
+
+      expect(event.defaultPrevented).toBe(key === "Enter");
+      await Promise.resolve();
+      expect(editorValue(input)).toBe(value);
+      expect(changes).toEqual([value]);
+      expect(onSubmit).toHaveBeenCalledTimes(key === "Enter" ? 1 : 0);
+    },
+  );
+
   test("Enter commits the selected mention as a durable chip before form submit", async () => {
     const { changes, onSubmit } = renderMentionFormHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "hello @bo world", "hello @bo".length);
     await screen.findByRole("listbox", { name: /mention suggestions/i });
@@ -654,8 +902,8 @@ describe("<MessageInput>", () => {
 
     expect(commitEvent.defaultPrevented).toBe(true);
     await waitFor(() => {
-      expect(input.value).toBe("hello <@2> world");
-      expect(input.selectionStart).toBe("hello <@2> ".length);
+      expect(editorValue(input)).toBe("hello <@2> world");
+      expect(editorSelection(input).start).toBe("hello <@2> ".length);
       expect(screen.getByText("@Bobby")).toHaveClass("bg-primary/10", "text-primary");
     });
     expect(screen.queryByText("<@2>")).toBeNull();
@@ -670,7 +918,7 @@ describe("<MessageInput>", () => {
 
   test("Tab and mouse commit mention suggestions while arrow keys wrap selection", async () => {
     const { changes } = renderMentionFormHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "@");
     const listbox = await screen.findByRole("listbox", { name: /mention suggestions/i });
@@ -686,7 +934,7 @@ describe("<MessageInput>", () => {
 
     event = keyDown(input, { key: "Tab" });
     expect(event.defaultPrevented).toBe(true);
-    await waitFor(() => expect(input.value).toBe("<@3> "));
+    await waitFor(() => expect(editorValue(input)).toBe("<@3> "));
     expect(changes.at(-1)).toBe("<@3> ");
 
     inputFromUser(input, "@bo");
@@ -697,7 +945,7 @@ describe("<MessageInput>", () => {
     fireEvent.click(bob);
 
     await waitFor(() => {
-      expect(input.value).toBe("<@2> ");
+      expect(editorValue(input)).toBe("<@2> ");
       expect(document.activeElement).toBe(input);
     });
   });
@@ -707,7 +955,7 @@ describe("<MessageInput>", () => {
       if (event.key === "Escape") event.preventDefault();
     });
     renderMentionHarness("", { onKeyDown: ownerKeyDown });
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "@bo");
     await screen.findByRole("listbox", { name: /mention suggestions/i });
@@ -723,7 +971,7 @@ describe("<MessageInput>", () => {
 
   test("mention autocomplete, emoji autocomplete, and emoji picker are mutually exclusive", async () => {
     renderMentionHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     await openPicker();
     inputFromUser(input, "@bo");
@@ -747,9 +995,9 @@ describe("<MessageInput>", () => {
     const { changes } = renderMentionHarness("hello <@2> missing <@999>", {
       initialMentionUsers: [MENTION_USER_FIXTURES[0]],
     });
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
-    expect(input.value).toBe("hello <@2> missing <@999>");
+    expect(editorValue(input)).toBe("hello <@2> missing <@999>");
     await waitFor(() => {
       expect(within(input).getByText("@Bobby")).toHaveClass("bg-primary/10", "text-primary");
     });
@@ -761,14 +1009,14 @@ describe("<MessageInput>", () => {
     fireEvent.input(input);
 
     await waitFor(() => {
-      expect(input.value).toBe("hello <@2> missing <@999>!");
+      expect(editorValue(input)).toBe("hello <@2> missing <@999>!");
     });
     expect(changes.at(-1)).toBe("hello <@2> missing <@999>!");
   });
 
   test("shows channel autocomplete for a boundary-valid # token and suggests text channels only", async () => {
     const { container } = renderChannelHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "see #");
 
@@ -801,7 +1049,7 @@ describe("<MessageInput>", () => {
     "does not show channel autocomplete for %s",
     async (_, value, selectionStart, selectionEnd) => {
       renderChannelHarness();
-      const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+      const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
       inputFromUser(input, value, selectionEnd);
       setInputSelection(input, selectionStart, selectionEnd);
@@ -812,9 +1060,33 @@ describe("<MessageInput>", () => {
     },
   );
 
+  test.each(["Enter", "Tab"])(
+    "%s does not replace an inline channel token when the caret has moved away",
+    async (key) => {
+      const { changes, onSubmit } = renderChannelFormHarness();
+      const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
+      const value = "before #gen after";
+
+      inputFromUser(input, value, "before #gen".length);
+      await screen.findByRole("listbox", { name: /channel suggestions/i });
+      setInputSelection(input, 0);
+      await waitFor(() => {
+        expect(screen.queryByRole("listbox", { name: /channel suggestions/i })).toBeNull();
+      });
+
+      const event = keyDown(input, { key });
+
+      expect(event.defaultPrevented).toBe(key === "Enter");
+      await Promise.resolve();
+      expect(editorValue(input)).toBe(value);
+      expect(changes).toEqual([value]);
+      expect(onSubmit).toHaveBeenCalledTimes(key === "Enter" ? 1 : 0);
+    },
+  );
+
   test("Enter commits a selected channel before form submit and renders it as a chip", async () => {
     const { changes, onSubmit } = renderChannelFormHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "hello #gen world", "hello #gen".length);
     await screen.findByRole("listbox", { name: /channel suggestions/i });
@@ -823,8 +1095,8 @@ describe("<MessageInput>", () => {
 
     expect(event.defaultPrevented).toBe(true);
     await waitFor(() => {
-      expect(input.value).toBe("hello <#100> world");
-      expect(input.selectionStart).toBe("hello <#100> ".length);
+      expect(editorValue(input)).toBe("hello <#100> world");
+      expect(editorSelection(input).start).toBe("hello <#100> ".length);
       expect(within(input).getByText("#general")).toHaveClass("bg-muted", "text-foreground");
     });
     expect(screen.queryByText("<#100>")).toBeNull();
@@ -834,7 +1106,7 @@ describe("<MessageInput>", () => {
 
   test("Tab, mouse, and arrow keys work for channel autocomplete", async () => {
     const { changes } = renderChannelHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "#");
     const listbox = await screen.findByRole("listbox", { name: /channel suggestions/i });
@@ -850,7 +1122,7 @@ describe("<MessageInput>", () => {
 
     event = keyDown(input, { key: "Tab" });
     expect(event.defaultPrevented).toBe(true);
-    await waitFor(() => expect(input.value).toBe("<#100> "));
+    await waitFor(() => expect(editorValue(input)).toBe("<#100> "));
     expect(changes.at(-1)).toBe("<#100> ");
 
     inputFromUser(input, "#ran");
@@ -861,7 +1133,7 @@ describe("<MessageInput>", () => {
     fireEvent.click(random);
 
     await waitFor(() => {
-      expect(input.value).toBe("<#200> ");
+      expect(editorValue(input)).toBe("<#200> ");
       expect(document.activeElement).toBe(input);
     });
   });
@@ -871,7 +1143,7 @@ describe("<MessageInput>", () => {
       if (event.key === "Escape") event.preventDefault();
     });
     renderChannelHarness("", { onKeyDown: ownerKeyDown });
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "#gen");
     await screen.findByRole("listbox", { name: /channel suggestions/i });
@@ -887,9 +1159,9 @@ describe("<MessageInput>", () => {
 
   test("renders known channel markers as chips, leaves unknown markers readable, and edits safely", async () => {
     const { changes } = renderChannelHarness("hello <#100> missing <#999>");
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
-    expect(input.value).toBe("hello <#100> missing <#999>");
+    expect(editorValue(input)).toBe("hello <#100> missing <#999>");
     await waitFor(() => {
       expect(within(input).getByText("#general")).toHaveClass("bg-muted", "text-foreground");
     });
@@ -901,7 +1173,7 @@ describe("<MessageInput>", () => {
     fireEvent.input(input);
 
     await waitFor(() => {
-      expect(input.value).toBe("hello <#100> missing <#999>!");
+      expect(editorValue(input)).toBe("hello <#100> missing <#999>!");
     });
     expect(changes.at(-1)).toBe("hello <#100> missing <#999>!");
   });
@@ -909,30 +1181,30 @@ describe("<MessageInput>", () => {
   test("navigates and deletes channel chips as whole markers", async () => {
     const marker = "<#100>";
     const { changes } = renderChannelHarness(`one\n${marker}\ntwo`);
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
     await within(input).findByText("#general");
 
     setInputSelection(input, "one\n".length);
     fireEvent.keyDown(input, { key: "ArrowRight" });
     await waitFor(() => {
-      expect(input.selectionStart).toBe(`one\n${marker}`.length);
+      expect(editorSelection(input).start).toBe(`one\n${marker}`.length);
     });
 
     fireEvent.keyDown(input, { key: "ArrowLeft" });
     await waitFor(() => {
-      expect(input.selectionStart).toBe("one\n".length);
+      expect(editorSelection(input).start).toBe("one\n".length);
     });
 
     fireEvent.keyDown(input, { key: "Delete" });
     await waitFor(() => {
-      expect(input.value).toBe("one\n\ntwo");
+      expect(editorValue(input)).toBe("one\n\ntwo");
     });
     expect(changes).toContain("one\n\ntwo");
   });
 
   test("shows native emoji autocomplete suggestions for a boundary-valid prefix", async () => {
     const { container } = renderHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, ":sm");
 
@@ -950,7 +1222,7 @@ describe("<MessageInput>", () => {
 
   test("renders prominent shortcode rows with fixed previews and muted matched aliases", async () => {
     renderHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, ":satisfied");
 
@@ -966,7 +1238,7 @@ describe("<MessageInput>", () => {
 
   test("shows active custom emoji autocomplete suggestions with image previews and excludes deleted emojis", async () => {
     const { container } = renderHarnessWithCustomEmojis();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, ":pa");
 
@@ -991,7 +1263,7 @@ describe("<MessageInput>", () => {
 
   test("commits custom emoji autocomplete suggestions as durable marker chips", async () => {
     const { changes } = renderHarnessWithCustomEmojis();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "hello :pa world", "hello :pa".length);
     const partyOption = await screen.findByRole("option", { name: /emoji :party:/i });
@@ -1001,8 +1273,8 @@ describe("<MessageInput>", () => {
 
     expect(event.defaultPrevented).toBe(true);
     await waitFor(() => {
-      expect(input.value).toBe("hello <:party:123> world");
-      expect(input.selectionStart).toBe("hello <:party:123>".length);
+      expect(editorValue(input)).toBe("hello <:party:123> world");
+      expect(editorSelection(input).start).toBe("hello <:party:123>".length);
       expect(screen.getByRole("img", { name: /custom emoji :party:/i })).toBeInTheDocument();
     });
     expect(screen.queryByText("<:party:123>")).toBeNull();
@@ -1023,7 +1295,7 @@ describe("<MessageInput>", () => {
         deleted_at: null,
       },
     ]);
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, ":panda");
 
@@ -1050,14 +1322,15 @@ describe("<MessageInput>", () => {
         return HttpResponse.json(CUSTOM_EMOJI_FIXTURES);
       }),
     );
-    render(() => {
-      const [value, setValue] = useSignalState("");
+    render(<TestHarness />);
+    function TestHarness() {
+      const [value, setValue] = useState("");
 
       return (
         <AuthProvider>
           <CustomEmojisProvider>
             <MessageInput
-              value={value()}
+              value={value}
               onChange={setValue}
               ariaLabel="Compose message"
               placeholder="Send a new message..."
@@ -1065,8 +1338,8 @@ describe("<MessageInput>", () => {
           </CustomEmojisProvider>
         </AuthProvider>
       );
-    });
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    }
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, ":sm");
     expect(await screen.findByRole("option", { name: /emoji :smiley:/i })).toBeInTheDocument();
@@ -1080,7 +1353,7 @@ describe("<MessageInput>", () => {
 
   test("hides emoji autocomplete when a boundary-valid query has zero matches", async () => {
     renderHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, ":qq");
     await Promise.resolve();
@@ -1092,7 +1365,7 @@ describe("<MessageInput>", () => {
 
   test("opening the emoji picker closes the active emoji autocomplete menu", async () => {
     renderHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, ":sm");
     await expectEmojiAutocompleteOpen();
@@ -1105,7 +1378,7 @@ describe("<MessageInput>", () => {
 
   test("opening emoji autocomplete closes the emoji picker", async () => {
     renderHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     await openPicker();
 
@@ -1123,7 +1396,7 @@ describe("<MessageInput>", () => {
     ["after another emoji", "😄:sm", "😄:sm".length],
   ])("opens emoji autocomplete %s", async (_, value, caretIndex) => {
     renderHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, value, caretIndex);
 
@@ -1133,7 +1406,7 @@ describe("<MessageInput>", () => {
 
   test("opens emoji autocomplete after a custom emoji chip", async () => {
     renderHarnessWithCustomEmojis("<:party:123>:sm");
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
     await screen.findByRole("img", { name: /custom emoji :party:/i });
     setInputSelection(input, "<:party:123>:sm".length);
 
@@ -1155,7 +1428,7 @@ describe("<MessageInput>", () => {
     ["one-character prefix", ":s", ":s".length, ":s".length],
   ])("does not show emoji autocomplete for %s", async (_, value, selectionStart, selectionEnd) => {
     renderHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, value, selectionEnd);
     setInputSelection(input, selectionStart, selectionEnd);
@@ -1165,7 +1438,7 @@ describe("<MessageInput>", () => {
 
   test("Escape dismisses only the current emoji autocomplete token session", async () => {
     renderHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, ":sm");
     await expectEmojiAutocompleteOpen();
@@ -1188,9 +1461,31 @@ describe("<MessageInput>", () => {
     await expectEmojiAutocompleteOpen();
   });
 
+  test.each(["Enter", "Tab"])(
+    "%s does not replace an inline emoji token when the caret has moved away",
+    async (key) => {
+      const { changes, onSubmit } = renderFormHarness();
+      const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
+      const value = "before :sm after";
+
+      inputFromUser(input, value, "before :sm".length);
+      await screen.findByRole("listbox", { name: /emoji suggestions/i });
+      setInputSelection(input, 0);
+      await expectEmojiAutocompleteClosed();
+
+      const event = keyDown(input, { key });
+
+      expect(event.defaultPrevented).toBe(key === "Enter");
+      await Promise.resolve();
+      expect(editorValue(input)).toBe(value);
+      expect(changes).toEqual([value]);
+      expect(onSubmit).toHaveBeenCalledTimes(key === "Enter" ? 1 : 0);
+    },
+  );
+
   test("Enter commits the selected native emoji autocomplete suggestion without submitting", async () => {
     const { changes, onSubmit } = renderFormHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "hello :sm world", "hello :sm".length);
     await screen.findByRole("listbox", { name: /emoji suggestions/i });
@@ -1199,9 +1494,9 @@ describe("<MessageInput>", () => {
 
     expect(event.defaultPrevented).toBe(true);
     await waitFor(() => {
-      expect(input.value).toBe("hello 😃 world");
-      expect(input.selectionStart).toBe("hello 😃".length);
-      expect(input.selectionEnd).toBe("hello 😃".length);
+      expect(editorValue(input)).toBe("hello 😃 world");
+      expect(editorSelection(input).start).toBe("hello 😃".length);
+      expect(editorSelection(input).end).toBe("hello 😃".length);
     });
     expect(onSubmit).not.toHaveBeenCalled();
     expect(changes.at(-1)).toBe("hello 😃 world");
@@ -1210,7 +1505,7 @@ describe("<MessageInput>", () => {
 
   test("Tab commits the selected native emoji autocomplete suggestion without moving focus", async () => {
     const { changes, onSubmit } = renderFormHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "hello :sm world", "hello :sm".length);
     await screen.findByRole("listbox", { name: /emoji suggestions/i });
@@ -1219,8 +1514,8 @@ describe("<MessageInput>", () => {
 
     expect(event.defaultPrevented).toBe(true);
     await waitFor(() => {
-      expect(input.value).toBe("hello 😃 world");
-      expect(input.selectionStart).toBe("hello 😃".length);
+      expect(editorValue(input)).toBe("hello 😃 world");
+      expect(editorSelection(input).start).toBe("hello 😃".length);
       expect(document.activeElement).toBe(input);
     });
     expect(onSubmit).not.toHaveBeenCalled();
@@ -1230,7 +1525,7 @@ describe("<MessageInput>", () => {
 
   test("Arrow keys wrap autocomplete selection and query changes reset it", async () => {
     renderHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, ":sm");
     const listbox = await screen.findByRole("listbox", { name: /emoji suggestions/i });
@@ -1260,7 +1555,7 @@ describe("<MessageInput>", () => {
 
   test("Enter submits normally after Escape dismisses autocomplete", async () => {
     const { changes, onSubmit } = renderFormHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "hello :sm world", "hello :sm".length);
     await screen.findByRole("listbox", { name: /emoji suggestions/i });
@@ -1276,13 +1571,13 @@ describe("<MessageInput>", () => {
 
     expect(enterEvent.defaultPrevented).toBe(true);
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(input.value).toBe("hello :sm world");
+    expect(editorValue(input)).toBe("hello :sm world");
     expect(changes).toEqual(["hello :sm world"]);
   });
 
   test("Shift+Enter does not commit autocomplete suggestions", async () => {
     const { changes, onSubmit } = renderFormHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "hello :sm world", "hello :sm".length);
     await screen.findByRole("listbox", { name: /emoji suggestions/i });
@@ -1291,8 +1586,8 @@ describe("<MessageInput>", () => {
 
     expect(event.defaultPrevented).toBe(true);
     await waitFor(() => {
-      expect(input.value).toBe("hello :sm\n world");
-      expect(input.selectionStart).toBe("hello :sm\n".length);
+      expect(editorValue(input)).toBe("hello :sm\n world");
+      expect(editorSelection(input).start).toBe("hello :sm\n".length);
     });
     expect(onSubmit).not.toHaveBeenCalled();
     expect(changes.at(-1)).toBe("hello :sm\n world");
@@ -1304,12 +1599,13 @@ describe("<MessageInput>", () => {
     });
 
     const changes: string[] = [];
-    render(() => {
-      const [value, setValue] = useSignalState(":sm");
+    render(<TestHarness />);
+    function TestHarness() {
+      const [value, setValue] = useState(":sm");
 
       return (
         <MessageInput
-          value={value()}
+          value={value}
           onChange={(nextValue) => {
             changes.push(nextValue);
             setValue(nextValue);
@@ -1318,22 +1614,22 @@ describe("<MessageInput>", () => {
           onKeyDown={ownerKeyDown}
         />
       );
-    });
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    }
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
     setInputSelection(input, ":sm".length);
     await screen.findByRole("listbox", { name: /emoji suggestions/i });
 
     const event = keyDown(input, { key: "Enter" });
 
     expect(event.defaultPrevented).toBe(true);
-    await waitFor(() => expect(input.value).toBe("😃"));
+    await waitFor(() => expect(editorValue(input)).toBe("😃"));
     expect(changes.at(-1)).toBe("😃");
     expect(ownerKeyDown).not.toHaveBeenCalled();
   });
 
   test("clicking a native emoji autocomplete suggestion replaces only the active token", async () => {
     const { changes } = renderHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "before :sm after", "before :sm".length);
     const option = await screen.findByRole("option", { name: /:smile:/i });
@@ -1344,9 +1640,9 @@ describe("<MessageInput>", () => {
     fireEvent.click(option);
 
     await waitFor(() => {
-      expect(input.value).toBe("before 😄 after");
-      expect(input.selectionStart).toBe("before 😄".length);
-      expect(input.selectionEnd).toBe("before 😄".length);
+      expect(editorValue(input)).toBe("before 😄 after");
+      expect(editorSelection(input).start).toBe("before 😄".length);
+      expect(editorSelection(input).end).toBe("before 😄".length);
       expect(document.activeElement).toBe(input);
     });
     expect(changes.at(-1)).toBe("before 😄 after");
@@ -1354,20 +1650,20 @@ describe("<MessageInput>", () => {
 
   test("converts completed emoji shortcodes before the caret", async () => {
     const { changes } = renderHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, ":grinning:");
 
     await waitFor(() => {
-      expect(input.value).toBe("😀");
-      expect(input.selectionStart).toBe("😀".length);
+      expect(editorValue(input)).toBe("😀");
+      expect(editorSelection(input).start).toBe("😀".length);
     });
     expect(changes).toContain("😀");
   });
 
   test("converts pasted shortcode chains at a mid-draft caret", async () => {
     renderHarness("hello world");
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
     const rawValue = "hello :grinning::heart:world";
     const rawCaretIndex = "hello :grinning::heart:".length;
 
@@ -1377,9 +1673,9 @@ describe("<MessageInput>", () => {
     });
 
     await waitFor(() => {
-      expect(input.value).toBe("hello 😀❤️world");
-      expect(input.selectionStart).toBe("hello 😀❤️".length);
-      expect(input.selectionEnd).toBe("hello 😀❤️".length);
+      expect(editorValue(input)).toBe("hello 😀❤️world");
+      expect(editorSelection(input).start).toBe("hello 😀❤️".length);
+      expect(editorSelection(input).end).toBe("hello 😀❤️".length);
     });
   });
 
@@ -1388,7 +1684,7 @@ describe("<MessageInput>", () => {
     ["before a newline", "first :heart:\nsecond", "first :heart:".length, "first ❤️\nsecond"],
   ])("converts completed emoji shortcodes %s", async (_, rawValue, caretIndex, nextValue) => {
     renderHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
     const expectedCaretIndex = nextValue.includes("\nsecond")
       ? nextValue.indexOf("\n")
       : nextValue.length;
@@ -1399,14 +1695,14 @@ describe("<MessageInput>", () => {
     });
 
     await waitFor(() => {
-      expect(input.value).toBe(nextValue);
-      expect(input.selectionStart).toBe(expectedCaretIndex);
+      expect(editorValue(input)).toBe(nextValue);
+      expect(editorSelection(input).start).toBe(expectedCaretIndex);
     });
   });
 
   test("serializes browser-pasted line break elements as newline characters before shortcode replacement", async () => {
     renderHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
     const firstLine = document.createTextNode("first :heart:");
     const lineBreak = document.createElement("br");
     const secondLine = document.createTextNode("second");
@@ -1416,14 +1712,14 @@ describe("<MessageInput>", () => {
     fireEvent.input(input, { inputType: "insertFromPaste" });
 
     await waitFor(() => {
-      expect(input.value).toBe("first ❤️\nsecond");
-      expect(input.selectionStart).toBe("first ❤️".length);
+      expect(editorValue(input)).toBe("first ❤️\nsecond");
+      expect(editorSelection(input).start).toBe("first ❤️".length);
     });
   });
 
   test("serializes browser-pasted line break elements as newline characters after shortcode boundaries", async () => {
     renderHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
     const firstLine = document.createTextNode("first");
     const lineBreak = document.createElement("br");
     const secondLine = document.createTextNode(":grinning:");
@@ -1433,52 +1729,52 @@ describe("<MessageInput>", () => {
     fireEvent.input(input, { inputType: "insertFromPaste" });
 
     await waitFor(() => {
-      expect(input.value).toBe("first\n😀");
-      expect(input.selectionStart).toBe("first\n😀".length);
+      expect(editorValue(input)).toBe("first\n😀");
+      expect(editorSelection(input).start).toBe("first\n😀".length);
     });
   });
 
   test("converts shortcodes after opening punctuation and inserted emoji boundaries", async () => {
     renderHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "(:heart:");
 
     await waitFor(() => {
-      expect(input.value).toBe("(❤️");
-      expect(input.selectionStart).toBe("(❤️".length);
+      expect(editorValue(input)).toBe("(❤️");
+      expect(editorSelection(input).start).toBe("(❤️".length);
     });
 
     inputFromUser(input, "(❤️:grinning:");
 
     await waitFor(() => {
-      expect(input.value).toBe("(❤️😀");
-      expect(input.selectionStart).toBe("(❤️😀".length);
+      expect(editorValue(input)).toBe("(❤️😀");
+      expect(editorSelection(input).start).toBe("(❤️😀".length);
     });
   });
 
   test("leaves word-attached shortcode-looking text literal", async () => {
     renderHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     inputFromUser(input, "abc:grinning:");
 
     await waitFor(() => {
-      expect(input.value).toBe("abc:grinning:");
-      expect(input.selectionStart).toBe("abc:grinning:".length);
+      expect(editorValue(input)).toBe("abc:grinning:");
+      expect(editorSelection(input).start).toBe("abc:grinning:".length);
     });
   });
 
   test("inserts a selected emoji at the current caret", async () => {
     renderHarness("hello world");
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
     setInputSelection(input, "hello ".length);
 
     await selectEmoji(":smile:", /emoji :smile:/i);
 
     await waitFor(() => {
-      expect(input.value).toBe("hello 😄world");
-      expect(input.selectionStart).toBe("hello 😄".length);
+      expect(editorValue(input)).toBe("hello 😄world");
+      expect(editorSelection(input).start).toBe("hello 😄".length);
       expect(document.activeElement).toBe(input);
     });
     expect(screen.queryByRole("dialog", { name: pickerName })).toBeNull();
@@ -1486,28 +1782,28 @@ describe("<MessageInput>", () => {
 
   test("inserts a selected emoji at a caret after a newline", async () => {
     renderHarness("hello\nworld");
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
     setInputSelection(input, "hello\n".length);
 
     await selectEmoji("heart", /emoji :heart:/i);
 
     await waitFor(() => {
-      expect(input.value).toBe("hello\n❤️world");
-      expect(input.selectionStart).toBe("hello\n❤️".length);
+      expect(editorValue(input)).toBe("hello\n❤️world");
+      expect(editorSelection(input).start).toBe("hello\n❤️".length);
       expect(document.activeElement).toBe(input);
     });
   });
 
   test("replaces selected text spanning a newline with a selected emoji", async () => {
     renderHarness("hello\nworld");
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
     setInputSelection(input, "hello".length, "hello\nwor".length);
 
     await selectEmoji(":smile:", /emoji :smile:/i);
 
     await waitFor(() => {
-      expect(input.value).toBe("hello😄ld");
-      expect(input.selectionStart).toBe("hello😄".length);
+      expect(editorValue(input)).toBe("hello😄ld");
+      expect(editorSelection(input).start).toBe("hello😄".length);
       expect(document.activeElement).toBe(input);
     });
   });
@@ -1515,8 +1811,8 @@ describe("<MessageInput>", () => {
   test("renders controlled custom emoji markers as accessible image-only chips", async () => {
     renderHarnessWithCustomEmojis("hello <:party:123>");
 
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
-    expect(input.value).toBe("hello <:party:123>");
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
+    expect(editorValue(input)).toBe("hello <:party:123>");
     await screen.findByRole("img", { name: /custom emoji :party:/i });
     let chip: HTMLElement | null = null;
     await waitFor(() => {
@@ -1533,9 +1829,9 @@ describe("<MessageInput>", () => {
   test("renders custom emoji chips in multiline drafts while serialized markers stay stable", async () => {
     renderHarnessWithCustomEmojis("hello\n<:party:123>\n<a:dance:456>");
 
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
-    expect(input.value).toBe("hello\n<:party:123>\n<a:dance:456>");
-    expect(input.value).not.toContain("\u200B");
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
+    expect(editorValue(input)).toBe("hello\n<:party:123>\n<a:dance:456>");
+    expect(editorValue(input)).not.toContain("\u200B");
     await screen.findByRole("img", { name: /custom emoji :party:/i });
     await screen.findByRole("img", { name: /custom emoji :dance:/i });
     expect(screen.queryByText("<:party:123>")).toBeNull();
@@ -1545,29 +1841,29 @@ describe("<MessageInput>", () => {
   test("keeps a custom-emoji-only draft editable from the caret boundaries", async () => {
     const { changes } = renderHarnessWithCustomEmojis("<:party:123>");
 
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
     await screen.findByRole("img", { name: /custom emoji :party:/i });
 
-    expect(input.value).toBe("<:party:123>");
+    expect(editorValue(input)).toBe("<:party:123>");
     expect(input.firstChild).toBe(screen.getByRole("img", { name: /custom emoji :party:/i }));
     expect(input.lastChild?.textContent).toBe("\u200B");
 
     setInputSelection(input, 0);
     fireEvent.keyDown(input, { key: "ArrowRight" });
     await waitFor(() => {
-      expect(input.selectionStart).toBe(input.value.length);
+      expect(editorSelection(input).start).toBe(editorValue(input).length);
     });
 
     fireEvent.keyDown(input, { key: "ArrowLeft" });
     await waitFor(() => {
-      expect(input.selectionStart).toBe(0);
+      expect(editorSelection(input).start).toBe(0);
     });
 
-    setInputSelection(input, input.value.length);
+    setInputSelection(input, editorValue(input).length);
     fireEvent.keyDown(input, { key: "Backspace" });
 
     await waitFor(() => {
-      expect(input.value).toBe("");
+      expect(editorValue(input)).toBe("");
     });
     expect(changes).toContain("");
   });
@@ -1575,31 +1871,31 @@ describe("<MessageInput>", () => {
   test("navigates across custom emoji markers adjacent to newlines as whole markers", async () => {
     const marker = "<:party:123>";
     renderHarnessWithCustomEmojis(`one\n${marker}\ntwo`);
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
     await screen.findByRole("img", { name: /custom emoji :party:/i });
 
     setInputSelection(input, "one\n".length);
     fireEvent.keyDown(input, { key: "ArrowRight" });
     await waitFor(() => {
-      expect(input.selectionStart).toBe(`one\n${marker}`.length);
+      expect(editorSelection(input).start).toBe(`one\n${marker}`.length);
     });
 
     fireEvent.keyDown(input, { key: "ArrowLeft" });
     await waitFor(() => {
-      expect(input.selectionStart).toBe("one\n".length);
+      expect(editorSelection(input).start).toBe("one\n".length);
     });
   });
 
   test("deletes custom emoji markers adjacent to newlines as whole markers", async () => {
     const marker = "<:party:123>";
     const { changes } = renderHarnessWithCustomEmojis(`one\n${marker}\ntwo`);
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
     await screen.findByRole("img", { name: /custom emoji :party:/i });
 
     setInputSelection(input, `one\n${marker}`.length);
     fireEvent.keyDown(input, { key: "Backspace" });
     await waitFor(() => {
-      expect(input.value).toBe("one\n\ntwo");
+      expect(editorValue(input)).toBe("one\n\ntwo");
     });
     expect(changes).toContain("one\n\ntwo");
   });
@@ -1607,13 +1903,13 @@ describe("<MessageInput>", () => {
   test("forward-deletes custom emoji markers adjacent to newlines as whole markers", async () => {
     const marker = "<:party:123>";
     const { changes } = renderHarnessWithCustomEmojis(`one\n${marker}\ntwo`);
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
     await screen.findByRole("img", { name: /custom emoji :party:/i });
 
     setInputSelection(input, "one\n".length);
     fireEvent.keyDown(input, { key: "Delete" });
     await waitFor(() => {
-      expect(input.value).toBe("one\n\ntwo");
+      expect(editorValue(input)).toBe("one\n\ntwo");
     });
     expect(changes).toContain("one\n\ntwo");
   });
@@ -1621,22 +1917,22 @@ describe("<MessageInput>", () => {
   test("keeps plain typing order and honors a moved caret", async () => {
     const user = userEvent.setup();
     const { changes } = renderHarness();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     await user.click(input);
     await user.keyboard("abc");
 
     await waitFor(() => {
-      expect(input.value).toBe("abc");
-      expect(input.selectionStart).toBe("abc".length);
+      expect(editorValue(input)).toBe("abc");
+      expect(editorSelection(input).start).toBe("abc".length);
     });
 
     setInputSelection(input, "a".length);
     inputFromUser(input, "aXbc", "aX".length);
 
     await waitFor(() => {
-      expect(input.value).toBe("aXbc");
-      expect(input.selectionStart).toBe("aX".length);
+      expect(editorValue(input)).toBe("aXbc");
+      expect(editorSelection(input).start).toBe("aX".length);
     });
     expect(changes.at(-1)).toBe("aXbc");
   });
@@ -1644,14 +1940,14 @@ describe("<MessageInput>", () => {
   test("keeps the composer stable while typing a custom emoji shortcode prefix", async () => {
     const user = userEvent.setup();
     const { changes } = renderHarnessWithCustomEmojis();
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     await user.click(input);
     await user.keyboard(":taco");
 
     await waitFor(() => {
-      expect(input.value).toBe(":taco");
-      expect(input.selectionStart).toBe(":taco".length);
+      expect(editorValue(input)).toBe(":taco");
+      expect(editorSelection(input).start).toBe(":taco".length);
     });
     expect(changes).toContain(":t");
     expect(changes.at(-1)).toBe(":taco");
@@ -1659,7 +1955,7 @@ describe("<MessageInput>", () => {
 
   test("inserts active custom emoji markers from autocomplete and picker", async () => {
     const { changes } = renderHarnessWithCustomEmojis("hello world");
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
 
     const dialog = await openPicker();
     fireEvent.input(within(dialog).getByRole("combobox", { name: searchName }), {
@@ -1673,7 +1969,7 @@ describe("<MessageInput>", () => {
 
     inputFromUser(input, "hello :party:");
     await waitFor(() => {
-      expect(input.value).toBe("hello <:party:123>");
+      expect(editorValue(input)).toBe("hello <:party:123>");
       expect(screen.getByRole("img", { name: /custom emoji :party:/i })).toBeInTheDocument();
     });
     expect(screen.queryByText("<:party:123>")).toBeNull();
@@ -1681,12 +1977,12 @@ describe("<MessageInput>", () => {
 
     inputFromUser(input, "hello :retired:");
     await waitFor(() => {
-      expect(input.value).toBe("hello :retired:");
+      expect(editorValue(input)).toBe("hello :retired:");
     });
 
     inputFromUser(input, "hello :dance:");
     await waitFor(() => {
-      expect(input.value).toBe("hello <a:dance:456>");
+      expect(editorValue(input)).toBe("hello <a:dance:456>");
     });
     expect(changes).toContain("hello <a:dance:456>");
 
@@ -1694,20 +1990,20 @@ describe("<MessageInput>", () => {
     await selectEmoji("party", /emoji :party:/i);
 
     await waitFor(() => {
-      expect(input.value).toBe("hello <:party:123><a:dance:456>");
+      expect(editorValue(input)).toBe("hello <:party:123><a:dance:456>");
     });
   });
 
   test("replaces the selected text with a selected emoji", async () => {
     renderHarness("hello world");
-    const input = screen.getByLabelText(/compose message/i) as HTMLInputElement;
+    const input = screen.getByLabelText(/compose message/i) as HTMLDivElement;
     setInputSelection(input, "hello ".length, "hello world".length);
 
     await selectEmoji("heart", /emoji :heart:/i);
 
     await waitFor(() => {
-      expect(input.value).toBe("hello ❤️");
-      expect(input.selectionStart).toBe("hello ❤️".length);
+      expect(editorValue(input)).toBe("hello ❤️");
+      expect(editorSelection(input).start).toBe("hello ❤️".length);
       expect(document.activeElement).toBe(input);
     });
   });

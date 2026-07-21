@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import "vitest-axe/extend-expect";
 import { afterAll, afterEach, beforeAll, beforeEach, expect } from "vitest";
-import { act, cleanup } from "./testing-library";
+import { act, cleanup } from "@testing-library/react";
 import * as axeMatchers from "vitest-axe/matchers";
 import { clearCachedCsrfToken } from "../api/client";
 import { resetMswState, server } from "./msw/server";
@@ -9,41 +9,96 @@ import { resetFakeEventSources } from "./msw/sse";
 
 expect.extend(axeMatchers);
 
-export interface ReactDiagnosticsCapture {
+export type ConsoleDiagnosticLevel = "error" | "warn";
+
+export interface ConsoleDiagnosticsCapture {
   readonly diagnostics: readonly (readonly unknown[])[];
   stop(): void;
 }
 
-const diagnosticObservers = new Set<(args: readonly unknown[]) => void>();
+export type ReactDiagnosticsCapture = ConsoleDiagnosticsCapture;
+
+type Diagnostic = {
+  readonly level: ConsoleDiagnosticLevel;
+  readonly args: readonly unknown[];
+};
+
+const diagnosticObservers: Record<
+  ConsoleDiagnosticLevel,
+  Set<(args: readonly unknown[]) => void>
+> = {
+  error: new Set(),
+  warn: new Set(),
+};
+let unexpectedDiagnostics: Diagnostic[] = [];
 
 /**
- * Observe console diagnostics before the temporary legacy act-warning filter.
- * Focused native-React tests use this to keep warnings visible during migration.
+ * Consume diagnostics that are an explicit part of a test scenario. Keep this
+ * capture tightly scoped and assert on `diagnostics` before calling `stop()`.
  */
-export function captureReactDiagnostics(): ReactDiagnosticsCapture {
+export function captureExpectedConsoleDiagnostics(
+  level: ConsoleDiagnosticLevel,
+): ConsoleDiagnosticsCapture {
   const diagnostics: (readonly unknown[])[] = [];
   const observer = (args: readonly unknown[]) => diagnostics.push(args);
-  diagnosticObservers.add(observer);
+  diagnosticObservers[level].add(observer);
+  let active = true;
   return {
     diagnostics,
-    stop: () => diagnosticObservers.delete(observer),
+    stop: () => {
+      if (!active) return;
+      active = false;
+      diagnosticObservers[level].delete(observer);
+    },
   };
 }
 
-// Phase 7 removes this broad suppression after the legacy static-signal tests
-// migrate. Captures above still observe every diagnostic in focused tests.
+/** Capture expected React diagnostics, which React reports through console.error. */
+export function captureReactDiagnostics(): ConsoleDiagnosticsCapture {
+  return captureExpectedConsoleDiagnostics("error");
+}
+
 const originalConsoleError = console.error.bind(console);
-console.error = (...args: unknown[]) => {
-  for (const observer of diagnosticObservers) observer(args);
-  if (typeof args[0] === "string" && args[0].includes("not wrapped in act")) return;
-  originalConsoleError(...args);
-};
+const originalConsoleWarn = console.warn.bind(console);
+
+function reportDiagnostic(level: ConsoleDiagnosticLevel, args: readonly unknown[]) {
+  const observers = diagnosticObservers[level];
+  if (observers.size > 0) {
+    for (const observer of observers) observer(args);
+    return;
+  }
+
+  unexpectedDiagnostics.push({ level, args });
+  if (level === "error") originalConsoleError(...args);
+  else originalConsoleWarn(...args);
+}
+
+console.error = (...args: unknown[]) => reportDiagnostic("error", args);
+console.warn = (...args: unknown[]) => reportDiagnostic("warn", args);
+
+function formatDiagnostic({ level, args }: Diagnostic) {
+  const message = args
+    .map((arg) => {
+      if (arg instanceof Error) return arg.stack ?? arg.message;
+      if (typeof arg === "string") return arg;
+      try {
+        return JSON.stringify(arg);
+      } catch {
+        return String(arg);
+      }
+    })
+    .join(" ");
+  return `console.${level}: ${message}`;
+}
 
 beforeAll(() => {
   server.listen({ onUnhandledRequest: "error" });
 });
 
 beforeEach(() => {
+  assertNoUnexpectedDiagnostics();
+  diagnosticObservers.error.clear();
+  diagnosticObservers.warn.clear();
   localStorage.clear();
   clearCachedCsrfToken();
   resetMswState();
@@ -56,8 +111,22 @@ afterEach(async () => {
   });
   cleanup();
   server.resetHandlers();
+
+  assertNoUnexpectedDiagnostics();
 });
 
 afterAll(() => {
   server.close();
+  assertNoUnexpectedDiagnostics();
 });
+
+function assertNoUnexpectedDiagnostics() {
+  if (unexpectedDiagnostics.length === 0) return;
+
+  const pendingDiagnostics = unexpectedDiagnostics;
+  unexpectedDiagnostics = [];
+  const diagnostics = pendingDiagnostics.map(formatDiagnostic).join("\n\n");
+  throw new Error(
+    `Unexpected console diagnostics. Capture expected diagnostics explicitly:\n\n${diagnostics}`,
+  );
+}

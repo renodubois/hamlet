@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 import type { ReactionSummary } from "../api";
 import { renderNative } from "../test/render";
@@ -34,8 +34,7 @@ describe("<ReactionRow>", () => {
     renderNative(<Harness />);
 
     const heartButton = screen.getByRole("button", { name: /^❤️/ });
-    fireEvent.focus(heartButton);
-    heartButton.focus();
+    act(() => heartButton.focus());
     expect(heartButton).toHaveFocus();
     expect(screen.getByRole("tooltip")).toHaveTextContent("2 reactions: Alice, Bob");
 

@@ -1,10 +1,10 @@
 # Hosting Hamlet with a static web client and public server
 
-_Last reviewed: 2026-07-06_
+_Last reviewed: 2026-07-21_
 
 This runbook covers the production hosting shape Hamlet now supports:
 
-- **Web client**: the Solid/Vite renderer from `client/`, built as static HTML/CSS/JS and hosted on a static host such as GitHub Pages. Electron is not used.
+- **Web client**: the React/Vite renderer from `client/`, built as static HTML/CSS/JS and hosted on a static host such as GitHub Pages. Electron is not used.
 - **API server**: the Rust/Actix server from `server/`, hosted on an Ubuntu Server homelab machine or cloud VPS, behind HTTPS on a custom domain.
 - **Optional voice/video**: LiveKit, either self-hosted beside the server or provided by LiveKit Cloud.
 
@@ -91,6 +91,7 @@ cd client
 pnpm install --frozen-lockfile
 pnpm run fmt:check
 pnpm run lint
+pnpm run check:native-react
 pnpm run typecheck
 pnpm run test
 VITE_HAMLET_DEFAULT_SERVER_URL=https://api.example.com \
@@ -103,34 +104,29 @@ Notes:
 - Use `pnpm run build:web` for static hosting. It runs the Vite renderer build, copies `dist/index.html` to `dist/404.html` for GitHub Pages deep-link fallback, and writes `dist/.nojekyll`.
 - `VITE_HAMLET_DEFAULT_SERVER_URL` is baked into the static bundle as the default server URL shown by the login screen. Users can still override the server URL in localStorage from the login UI.
 - `VITE_HAMLET_SENTRY_DSN` is optional. Leave it unset or empty to disable renderer-side Sentry. This is separate from server-side `HAMLET_SENTRY_DSN`.
+- `VITE_HAMLET_BASE_PATH` is the static site's URL path. Use `/hamlet/` (or the repository's actual name) when locally reproducing a GitHub Pages project site at `https://<owner>.github.io/hamlet/`; omit it or use `/` for a custom domain or user/organization site. The value is normalized to leading and trailing slashes.
 - The API URL must be HTTPS. An HTTPS static page cannot use an insecure `http://` API because of browser mixed-content rules.
 
 Preview the output with any static server, then log in against the public/staging API.
 
-### GitHub Pages deployment workflow template
+### GitHub Pages deployment workflow
 
-Set the repository's Pages source to **GitHub Actions** when you are ready to deploy. This repository keeps an optional template at [`docs/examples/github-pages-deploy-web-client.yml`](examples/github-pages-deploy-web-client.yml) instead of enabling automatic deploys from `main` by default.
+Set the repository's Pages source to **GitHub Actions**. The checked-in [`.github/workflows/deploy-web-client.yml`](../.github/workflows/deploy-web-client.yml) automatically checks, builds, and deploys the web client on pushes to `main`; it can also be run manually with **Run workflow**.
 
-To use it:
+For a manual run, the `api_url` field is baked into the login screen and remains editable there by users. For push-triggered runs, which have no dispatch inputs, the workflow uses the `HAMLET_DEFAULT_SERVER_URL` repository Actions variable when set and otherwise safely falls back to `https://api.hamlet.chat`. Set that variable under **Settings → Secrets and variables → Actions → Variables** before pushing if your deployment uses another API origin.
 
-```bash
-mkdir -p .github/workflows
-cp docs/examples/github-pages-deploy-web-client.yml .github/workflows/deploy-web-client.yml
-```
+Renderer Sentry selection is deliberately event-specific: a manual run uses the `renderer_sentry_dsn` field exactly, and its blank default disables telemetry rather than falling through to a repository value. A push build uses the optional `HAMLET_RENDERER_SENTRY_DSN` repository variable. The workflow obtains GitHub's configured Pages `base_path` before building and passes it to Vite, so repository project sites receive `/repository-name/` asset URLs while custom domains and user/organization sites build at `/`. Its build job has read access to Pages metadata, while only the deploy job receives Pages and OIDC write permissions.
 
-Then edit the copied workflow:
-
-1. Replace `https://api.example.com` with your API origin.
-2. Add `VITE_HAMLET_SENTRY_DSN` only if you want renderer-side Sentry.
-3. Keep the manual `workflow_dispatch` trigger while validating. Add a `push` trigger only after you want auto-deploys.
+[`docs/examples/github-pages-deploy-web-client.yml`](examples/github-pages-deploy-web-client.yml) remains a manual-only generic template for downstream repositories that do not want Hamlet's checked-in automatic deployment. Its third-party actions are full-commit SHA pinned; when updating them, review the upstream release and replace both the SHA and version comment.
 
 After the first deploy:
 
 1. Open the repository's **Settings → Pages**.
 2. Set custom domain to `chat.example.com`.
 3. Wait for DNS verification.
-4. Enable **Enforce HTTPS** when GitHub makes it available.
-5. Test `https://chat.example.com/login` and a deep route refresh such as `https://chat.example.com/channel/<id>`.
+4. Re-run the deployment workflow so the client is rebuilt after GitHub reports the custom domain. This is required: the Pages base path is baked into asset URLs and the client router at build time, so an artifact built for a `/repository-name/` project site must not be reused at the custom-domain root.
+5. Enable **Enforce HTTPS** when GitHub makes it available.
+6. Test `https://chat.example.com/login` and a deep route refresh such as `https://chat.example.com/channel/<id>`.
 
 If you choose a host such as Netlify or Cloudflare Pages instead of GitHub Pages, configure a proper SPA rewrite (`/* -> /index.html`) instead of relying on `404.html`.
 

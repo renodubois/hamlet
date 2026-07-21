@@ -8,53 +8,11 @@
     "react/rules-of-hooks": "error",
     "react/exhaustive-deps": "error",
     "react/jsx-key": "error",
-    "typescript/no-explicit-any": "off",
+    "react/no-array-index-key": "error",
+    "react/jsx-no-constructed-context-values": "error",
+    "typescript/no-explicit-any": "error",
     "typescript/no-non-null-assertion": "error"
   },
-  "overrides": [
-    {
-      "files": ["src/hooks/react-state.tsx"],
-      "rules": {
-        "react/rules-of-hooks": "off",
-        "react/exhaustive-deps": "off"
-      }
-      // Phase 7 removes the compatibility implementation and this override.
-    },
-    {
-      "files": [
-        "src/components/local-camera-tile.test.tsx",
-        "src/components/remote-camera-tiles.test.tsx",
-        "src/components/screen-share-viewer.test.tsx",
-        "src/components/voice-channel.test.tsx",
-        "src/components/voice-status-controls.test.tsx"
-      ],
-      "rules": {
-        "react/rules-of-hooks": "off"
-      }
-      // Phase 6 migrates these compatibility-hook tests and removes this override.
-    },
-    {
-      "files": ["src/pages/channel.tsx"],
-      "rules": {
-        "react/exhaustive-deps": "off"
-      }
-      // Phase 5 migrates channel lifecycle ownership and removes this override.
-    },
-    {
-      "files": ["src/components/message-input.tsx"],
-      "rules": {
-        "react/exhaustive-deps": "off"
-      }
-      // Phase 7 modernizes the editor effects and removes this override.
-    },
-    {
-      "files": ["e2e/electron-smoke.electron.spec.ts"],
-      "rules": {
-        "react/rules-of-hooks": "off"
-      }
-      // Phase 7 removes this override and replaces the Playwright fixture `use` false positive with a narrow final exception.
-    }
-  ],
   "env": {
     "builtin": true
   },

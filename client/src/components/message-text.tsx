@@ -13,6 +13,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
+import { Link } from "react-router-dom";
 import { resolveServerUrl, type Channel, type CustomEmoji, type MentionUser } from "../api";
 import { useOptionalChannels } from "../contexts/channels";
 import { useOptionalCustomEmojis } from "../contexts/custom-emojis";
@@ -264,9 +265,9 @@ function renderChannelMention(channel: Channel): ReactElement {
   }
 
   return (
-    <a className={CHANNEL_LINK_CLASS} href={`/channel/${channel.id}`} title={label}>
+    <Link className={CHANNEL_LINK_CLASS} to={`/channel/${channel.id}`} title={label}>
       {label}
-    </a>
+    </Link>
   );
 }
 

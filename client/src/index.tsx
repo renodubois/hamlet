@@ -11,6 +11,7 @@ import NotFound from "./errors/404";
 import ChannelView from "./pages/channel";
 import LoginScreen from "./pages/login";
 import ThreadsPage from "./pages/threads";
+import { normalizeRouterBasename } from "./router-basename";
 import { initializeRendererSentry } from "./sentry";
 
 function ErrorFallback({ error, resetError }: { error: unknown; resetError?: () => void }) {
@@ -51,7 +52,7 @@ if (!(root instanceof HTMLElement)) {
 const app = (
   <StrictMode>
     <AuthProvider>
-      <BrowserRouter>
+      <BrowserRouter basename={normalizeRouterBasename(import.meta.env.BASE_URL)}>
         <Routes>
           <Route element={<App />}>
             <Route index element={null} />

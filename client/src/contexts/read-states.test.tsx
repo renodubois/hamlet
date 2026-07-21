@@ -30,6 +30,7 @@ vi.mock("../api", async (importOriginal) => {
 import { EventsProvider } from "./events";
 import { ReadStatesProvider, useReadStates } from "./read-states";
 import { FakeEventSource, latestFakeEventSource, resetFakeEventSources } from "../test/msw/sse";
+import { captureExpectedConsoleDiagnostics } from "../test/setup";
 
 const USER: User = {
   id: 1,
@@ -132,13 +133,14 @@ describe("ReadStatesProvider", () => {
     expect(screen.getByText("stable yes")).toBeInTheDocument();
 
     listReadStatesMock.mockRejectedValueOnce(new Error("network"));
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const warn = captureExpectedConsoleDiagnostics("warn");
     fireEvent.click(screen.getByRole("button", { name: "refresh" }));
     await waitFor(() => expect(screen.getByText("status error")).toBeInTheDocument());
     expect(screen.getByText("error yes")).toBeInTheDocument();
     expect(screen.getByText("unread yes")).toBeInTheDocument();
     expect(screen.getByText("stable yes")).toBeInTheDocument();
-    warn.mockRestore();
+    expect(warn.diagnostics).toEqual([["failed to load read-state snapshot", expect.any(Error)]]);
+    warn.stop();
   });
 
   test("latest-started snapshot wins", async () => {
@@ -235,7 +237,7 @@ describe("ReadStatesProvider", () => {
     markChannelReadMock
       .mockReturnValueOnce(staleMark.promise)
       .mockRejectedValueOnce(new Error("x"));
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const warn = captureExpectedConsoleDiagnostics("warn");
     render(<Harness />);
     await waitFor(() => expect(screen.getByText("status ready")).toBeInTheDocument());
 
@@ -252,8 +254,8 @@ describe("ReadStatesProvider", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "mark read" }));
     await waitFor(() => expect(screen.getByText("mark result null")).toBeInTheDocument());
-    expect(warn).toHaveBeenCalledWith("failed to mark channel read", expect.any(Error));
-    warn.mockRestore();
+    expect(warn.diagnostics).toEqual([["failed to mark channel read", expect.any(Error)]]);
+    warn.stop();
   });
 
   test("Strict Mode replay aborts obsolete work and commits only the current setup", async () => {

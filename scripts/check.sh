@@ -12,15 +12,15 @@ Local CI: run the same checks GitHub Actions would, without leaving your machine
 Usage:
   scripts/check.sh                         # everything (server + Electron client)
   scripts/check.sh server                  # just the Rust backend
-  scripts/check.sh client                  # just the Electron/Solid client
+  scripts/check.sh client                  # just the Electron/React client
   scripts/check.sh client electron         # explicit Electron client selector
-  scripts/check.sh all --client electron   # server + Electron/Solid client
+  scripts/check.sh all --client electron   # server + Electron/React client
   scripts/check.sh --fix                   # apply fmt fixes before running checks
   scripts/check.sh --e2e                   # also run Playwright E2E tests
 
 Client checks:
   electron -> client/: pnpm run fmt:check (or fmt with --fix), lint,
-              typecheck, test
+              check:native-react, typecheck, test
 
 Optional checks:
   --e2e -> run Playwright E2E for client/ when client checks are selected
@@ -143,6 +143,7 @@ client_checks() {
     run "client: pnpm run fmt:check" pnpm run fmt:check
   fi
   run "client: pnpm run lint" pnpm run lint
+  run "client: pnpm run check:native-react" pnpm run check:native-react
   run "client: pnpm run typecheck" pnpm run typecheck
   run "client: pnpm run test" pnpm run test
 }

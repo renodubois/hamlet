@@ -114,6 +114,7 @@ describe("Electron alpha package inputs", () => {
     expect(isIgnored("node_modules/electron/index.js")).toBe(true);
     expect(isIgnored("index.html")).toBe(true);
     expect(isIgnored("README.md")).toBe(true);
+    expect(isIgnored("oxlint.config.json")).toBe(true);
     expect(isIgnored("playwright.config.ts")).toBe(true);
     expect(isIgnored("playwright.electron.config.ts")).toBe(true);
     expect(isIgnored("playwright.package.config.ts")).toBe(true);

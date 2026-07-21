@@ -63,12 +63,7 @@ interface EmojiAutocompleteSession extends SelectionRange {
 
 type EmojiAutocompleteToken = EmojiAutocompleteSession;
 
-type MessageEditorElement = HTMLDivElement & {
-  value?: string;
-  selectionStart?: number;
-  selectionEnd?: number;
-  setSelectionRange?: (start: number, end?: number) => void;
-};
+type MessageEditorElement = HTMLDivElement;
 
 export interface MessageInputProps {
   value: string;
@@ -80,7 +75,7 @@ export interface MessageInputProps {
   inputClass?: string;
   emojiButtonClass?: string;
   emojiButtonLabel?: string;
-  inputRef?: (element: MessageEditorElement) => void;
+  inputRef?: (element: MessageEditorElement | null) => void;
   onKeyDown?: (event: ReactKeyboardEvent<MessageEditorElement>) => void;
   mentionUsers?: readonly PublicUser[];
   onMentionUsers?: (users: readonly PublicUser[]) => void;
@@ -100,6 +95,8 @@ const EMOJI_AUTOCOMPLETE_QUERY_PATTERN = /^[A-Za-z0-9_+-]{2,32}$/;
 const MAX_EMOJI_AUTOCOMPLETE_RESULTS = 8;
 const DEFAULT_MENTION_AUTOCOMPLETE_LIMIT = 8;
 const DEFAULT_CHANNEL_AUTOCOMPLETE_LIMIT = 8;
+const EMPTY_CHANNELS: readonly Channel[] = [];
+const EMPTY_CUSTOM_EMOJIS: readonly CustomEmoji[] = [];
 // Browsers struggle to place a caret after a contenteditable=false chip when
 // it has no editable text after it. Keep an invisible editable text boundary in
 // the DOM only where needed, then strip it from serialized text and offsets.
@@ -155,42 +152,6 @@ function findEmojiAutocompleteToken(
   if (!session || !EMOJI_AUTOCOMPLETE_QUERY_PATTERN.test(session.query)) return null;
 
   return session;
-}
-
-function findInlineEmojiAutocompleteToken(value: string): EmojiAutocompleteToken | null {
-  const pattern = /(^|\s):([A-Za-z0-9_+-]{2,32})(?=\s|$)/g;
-  let match: RegExpExecArray | null;
-  let last: EmojiAutocompleteToken | null = null;
-  while ((match = pattern.exec(value))) {
-    const start = match.index + match[1].length;
-    const query = match[2];
-    last = { start, end: start + query.length + 1, query };
-  }
-  return last;
-}
-
-function findInlineMentionAutocompleteToken(value: string): MentionAutocompleteToken | null {
-  const pattern = /(^|[\s([{"'`“‘])@([\p{L}\p{N}_.-]{0,64})(?=\s|$)/gu;
-  let match: RegExpExecArray | null;
-  let last: MentionAutocompleteToken | null = null;
-  while ((match = pattern.exec(value))) {
-    const start = match.index + match[1].length;
-    const query = match[2];
-    last = { start, end: start + query.length + 1, query };
-  }
-  return last;
-}
-
-function findInlineChannelAutocompleteToken(value: string): ChannelAutocompleteToken | null {
-  const pattern = /(^|[\s([{"'`“‘])#([A-Za-z0-9_-]{0,64})(?=\s|$)/g;
-  let match: RegExpExecArray | null;
-  let last: ChannelAutocompleteToken | null = null;
-  while ((match = pattern.exec(value))) {
-    const start = match.index + match[1].length;
-    const query = match[2];
-    last = { start, end: start + query.length + 1, query };
-  }
-  return last;
 }
 
 function emojiAutocompleteTokenKey(token: EmojiAutocompleteToken | null): string | null {
@@ -752,22 +713,17 @@ function AutocompleteMenu<T>(props: {
   );
 }
 
-function useLatestRef<T>(value: T) {
-  const ref = useRef(value);
-  ref.current = value;
-  return ref;
-}
-
 export default function MessageInput(props: MessageInputProps) {
+  const { inputRef: externalInputRef, onMentionUsers, placeholder } = props;
   const autocompleteListboxId = useId();
   const mentionListboxId = useId();
   const channelListboxId = useId();
   const customEmojis = useOptionalCustomEmojis();
   const optionalChannels = useOptionalChannels();
   const contextChannels = optionalChannels?.channels;
-  const channels = props.channels ?? contextChannels ?? [];
-  const allCustomEmojis = customEmojis?.allEmojis ?? [];
-  const activeCustomEmojis = customEmojis?.activeEmojis ?? [];
+  const channels = props.channels ?? contextChannels ?? EMPTY_CHANNELS;
+  const allCustomEmojis = customEmojis?.allEmojis ?? EMPTY_CUSTOM_EMOJIS;
+  const activeCustomEmojis = customEmojis?.activeEmojis ?? EMPTY_CUSTOM_EMOJIS;
   const emojiEntries = useMemo(
     () => [...CONSERVATIVE_EMOJIS, ...customEmojisToEntries(activeCustomEmojis)],
     [activeCustomEmojis],
@@ -779,7 +735,6 @@ export default function MessageInput(props: MessageInputProps) {
   const customEmojiRenderVersion = allCustomEmojis
     .map((emoji) => `${emoji.id}:${emoji.name}:${emoji.image_url}:${emoji.deleted_at ?? "active"}`)
     .join("|");
-  const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
   const mentionUsersById = useMemo(
     () => new Map((props.mentionUsers ?? []).map((user) => [user.id, user])),
     [props.mentionUsers],
@@ -789,14 +744,12 @@ export default function MessageInput(props: MessageInputProps) {
       (user) => `${user.id}:${user.username}:${user.display_name ?? ""}:${user.avatar_url ?? ""}`,
     )
     .join("|");
-  const mentionUserById = (id: number) => mentionUsersById.get(id) ?? null;
   const mentionChipsEnabled = !!props.searchMentionUsers || (props.mentionUsers?.length ?? 0) > 0;
   const mentionSearchLimit = props.mentionSearchLimit ?? DEFAULT_MENTION_AUTOCOMPLETE_LIMIT;
   const channelsById = useMemo(
     () => new Map(channels.map((channel) => [channel.id, channel])),
     [channels],
   );
-  const channelById = (id: number) => channelsById.get(id) ?? null;
   const channelRenderVersion = channels
     .map((channel) => `${channel.id}:${channel.name}:${channel.position}:${channel.type}`)
     .join("|");
@@ -822,28 +775,20 @@ export default function MessageInput(props: MessageInputProps) {
   const emojiButtonRef = useRef<HTMLButtonElement | null>(null);
   const previousValueRef = useRef(props.value);
   const previousRenderedKeyRef = useRef<string | null>(null);
+  const authoritativeValueRef = useRef(props.value);
+  authoritativeValueRef.current = props.value;
+  const isComposingRef = useRef(false);
   const previousAutocompleteTokenKeyRef = useRef<string | null>(null);
   const previousMentionAutocompleteTokenKeyRef = useRef<string | null>(null);
   const previousChannelAutocompleteTokenKeyRef = useRef<string | null>(null);
   const mentionSearchRequestIdRef = useRef(0);
-  const lastMentionSearchKeyRef = useRef<string | null>(null);
-  const compatibilitySelectionVersionRef = useRef(0);
+  const onMentionUsersRef = useRef(onMentionUsers);
+  onMentionUsersRef.current = onMentionUsers;
   const pendingSelectionRestoreRef = useRef<{
     value: string;
     selection: SelectionRange;
     focusInput?: boolean;
   } | null>(null);
-  const stagedEditorValueRef = useRef<string | null>(null);
-  const disposedRef = useRef(false);
-  const latestValueRef = useLatestRef(props.value);
-  const latestCustomEmojisRef = useLatestRef(allCustomEmojis);
-
-  useEffect(
-    () => () => {
-      disposedRef.current = true;
-    },
-    [],
-  );
 
   const setSelection = (
     nextValue: SelectionRange | ((current: SelectionRange) => SelectionRange),
@@ -856,24 +801,11 @@ export default function MessageInput(props: MessageInputProps) {
     setSelectionState(next);
   };
 
-  const effectiveSelection = () => {
-    const storedSelection = normalizeSelection(selectionRef.current, props.value);
-    return props.value.length > 0 && storedSelection.start === 0 && storedSelection.end === 0
-      ? { start: props.value.length, end: props.value.length }
-      : storedSelection;
-  };
+  const effectiveSelection = () => normalizeSelection(selectionRef.current, props.value);
 
   const currentSelection = effectiveSelection();
-  const autocompleteSession =
-    findEmojiAutocompleteSession(props.value, currentSelection) ??
-    (currentSelection.start === currentSelection.end
-      ? findInlineEmojiAutocompleteToken(props.value)
-      : null);
-  const rawAutocompleteToken =
-    findEmojiAutocompleteToken(props.value, currentSelection) ??
-    (currentSelection.start === currentSelection.end
-      ? findInlineEmojiAutocompleteToken(props.value)
-      : null);
+  const autocompleteSession = findEmojiAutocompleteSession(props.value, currentSelection);
+  const rawAutocompleteToken = findEmojiAutocompleteToken(props.value, currentSelection);
   const autocompleteToken =
     rawAutocompleteToken &&
     dismissedAutocompleteSessionStart !== null &&
@@ -881,21 +813,7 @@ export default function MessageInput(props: MessageInputProps) {
       ? null
       : rawAutocompleteToken;
 
-  const storedSelection = normalizeSelection(selectionRef.current, props.value);
-  const activeMentionToken =
-    findActiveMentionToken(props.value, currentSelection) ??
-    (currentSelection.start === currentSelection.end
-      ? findInlineMentionAutocompleteToken(props.value)
-      : null);
-  const trailingMentionToken =
-    storedSelection.start === storedSelection.end
-      ? findActiveMentionToken(props.value, { start: props.value.length, end: props.value.length })
-      : null;
-  const mentionAutocompleteSession =
-    trailingMentionToken &&
-    (!activeMentionToken || trailingMentionToken.query.length > activeMentionToken.query.length)
-      ? trailingMentionToken
-      : activeMentionToken;
+  const mentionAutocompleteSession = findActiveMentionToken(props.value, currentSelection);
   const rawMentionAutocompleteToken = props.searchMentionUsers ? mentionAutocompleteSession : null;
   const mentionAutocompleteToken =
     rawMentionAutocompleteToken &&
@@ -904,20 +822,7 @@ export default function MessageInput(props: MessageInputProps) {
       ? null
       : rawMentionAutocompleteToken;
 
-  const activeChannelToken =
-    findActiveChannelToken(props.value, currentSelection) ??
-    (currentSelection.start === currentSelection.end
-      ? findInlineChannelAutocompleteToken(props.value)
-      : null);
-  const trailingChannelToken =
-    storedSelection.start === storedSelection.end
-      ? findActiveChannelToken(props.value, { start: props.value.length, end: props.value.length })
-      : null;
-  const channelAutocompleteSession =
-    trailingChannelToken &&
-    (!activeChannelToken || trailingChannelToken.query.length > activeChannelToken.query.length)
-      ? trailingChannelToken
-      : activeChannelToken;
+  const channelAutocompleteSession = findActiveChannelToken(props.value, currentSelection);
   const rawChannelAutocompleteToken = channels.length > 0 ? channelAutocompleteSession : null;
   const channelAutocompleteToken =
     rawChannelAutocompleteToken &&
@@ -950,22 +855,31 @@ export default function MessageInput(props: MessageInputProps) {
   const autocompleteOpen = autocompleteSuggestions.length > 0;
   const mentionAutocompleteOpen = mentionAutocompleteSuggestions.length > 0;
   const channelAutocompleteOpen = channelAutocompleteSuggestions.length > 0;
-  const selectedAutocompleteSuggestion =
-    autocompleteSuggestions[selectedAutocompleteIndex] ?? autocompleteSuggestions[0];
+  const autocompleteIndex = Math.min(
+    selectedAutocompleteIndex,
+    Math.max(autocompleteSuggestions.length - 1, 0),
+  );
+  const mentionAutocompleteIndex = Math.min(
+    selectedMentionAutocompleteIndex,
+    Math.max(mentionAutocompleteSuggestions.length - 1, 0),
+  );
+  const channelAutocompleteIndex = Math.min(
+    selectedChannelAutocompleteIndex,
+    Math.max(channelAutocompleteSuggestions.length - 1, 0),
+  );
+  const selectedAutocompleteSuggestion = autocompleteSuggestions[autocompleteIndex];
   const selectedMentionAutocompleteSuggestion =
-    mentionAutocompleteSuggestions[selectedMentionAutocompleteIndex] ??
-    mentionAutocompleteSuggestions[0];
+    mentionAutocompleteSuggestions[mentionAutocompleteIndex];
   const selectedChannelAutocompleteSuggestion =
-    channelAutocompleteSuggestions[selectedChannelAutocompleteIndex] ??
-    channelAutocompleteSuggestions[0];
+    channelAutocompleteSuggestions[channelAutocompleteIndex];
   const selectedAutocompleteOptionId = autocompleteOpen
-    ? `${autocompleteListboxId}-option-${selectedAutocompleteIndex}`
+    ? `${autocompleteListboxId}-option-${autocompleteIndex}`
     : undefined;
   const selectedMentionAutocompleteOptionId = mentionAutocompleteOpen
-    ? `${mentionListboxId}-option-${selectedMentionAutocompleteIndex}`
+    ? `${mentionListboxId}-option-${mentionAutocompleteIndex}`
     : undefined;
   const selectedChannelAutocompleteOptionId = channelAutocompleteOpen
-    ? `${channelListboxId}-option-${selectedChannelAutocompleteIndex}`
+    ? `${channelListboxId}-option-${channelAutocompleteIndex}`
     : undefined;
   const activeAutocompleteListboxId = mentionAutocompleteOpen
     ? mentionListboxId
@@ -980,17 +894,23 @@ export default function MessageInput(props: MessageInputProps) {
       ? selectedChannelAutocompleteOptionId
       : selectedAutocompleteOptionId;
 
+  const autocompleteSessionStart = autocompleteSession?.start;
+  const mentionAutocompleteSessionStart = mentionAutocompleteSession?.start;
+  const channelAutocompleteSessionStart = channelAutocompleteSession?.start;
+
   useEffect(() => {
     if (autocompleteTokenKey !== previousAutocompleteTokenKeyRef.current) {
       previousAutocompleteTokenKeyRef.current = autocompleteTokenKey;
       setSelectedAutocompleteIndex(0);
     }
 
-    if (dismissedAutocompleteSessionStart === null) return;
-    if (!autocompleteSession || autocompleteSession.start !== dismissedAutocompleteSessionStart) {
+    if (
+      dismissedAutocompleteSessionStart !== null &&
+      autocompleteSessionStart !== dismissedAutocompleteSessionStart
+    ) {
       setDismissedAutocompleteSessionStart(null);
     }
-  });
+  }, [autocompleteSessionStart, autocompleteTokenKey, dismissedAutocompleteSessionStart]);
 
   useEffect(() => {
     if (mentionTokenKey !== previousMentionAutocompleteTokenKeyRef.current) {
@@ -998,14 +918,13 @@ export default function MessageInput(props: MessageInputProps) {
       setSelectedMentionAutocompleteIndex(0);
     }
 
-    if (dismissedMentionAutocompleteSessionStart === null) return;
     if (
-      !mentionAutocompleteSession ||
-      mentionAutocompleteSession.start !== dismissedMentionAutocompleteSessionStart
+      dismissedMentionAutocompleteSessionStart !== null &&
+      mentionAutocompleteSessionStart !== dismissedMentionAutocompleteSessionStart
     ) {
       setDismissedMentionAutocompleteSessionStart(null);
     }
-  });
+  }, [dismissedMentionAutocompleteSessionStart, mentionAutocompleteSessionStart, mentionTokenKey]);
 
   useEffect(() => {
     if (channelTokenKey !== previousChannelAutocompleteTokenKeyRef.current) {
@@ -1013,83 +932,61 @@ export default function MessageInput(props: MessageInputProps) {
       setSelectedChannelAutocompleteIndex(0);
     }
 
-    if (dismissedChannelAutocompleteSessionStart === null) return;
     if (
-      !channelAutocompleteSession ||
-      channelAutocompleteSession.start !== dismissedChannelAutocompleteSessionStart
+      dismissedChannelAutocompleteSessionStart !== null &&
+      channelAutocompleteSessionStart !== dismissedChannelAutocompleteSessionStart
     ) {
       setDismissedChannelAutocompleteSessionStart(null);
     }
-  });
+  }, [channelAutocompleteSessionStart, channelTokenKey, dismissedChannelAutocompleteSessionStart]);
 
+  const mentionSearchQuery = mentionAutocompleteToken?.query;
   useEffect(() => {
-    const token = mentionAutocompleteToken;
     const search = props.searchMentionUsers;
-    if (!token || !search) {
+    if (mentionSearchQuery === undefined || !search) {
       mentionSearchRequestIdRef.current += 1;
-      lastMentionSearchKeyRef.current = null;
       setMentionSearchResults((current) => (current.length === 0 ? current : []));
       return;
     }
 
-    const searchKey = `${mentionAutocompleteTokenKey(token)}:${mentionSearchLimit}`;
-    if (lastMentionSearchKeyRef.current === searchKey) return;
-    lastMentionSearchKeyRef.current = searchKey;
-
+    // Every effect setup owns a fresh generation. This intentionally does not
+    // retain query dedupe across cleanup: Strict Mode replays setup, and a new
+    // callback for the same token must be allowed to replace the old request.
     const requestId = ++mentionSearchRequestIdRef.current;
-    void search({ query: token.query, limit: mentionSearchLimit })
+    void search({ query: mentionSearchQuery, limit: mentionSearchLimit })
       .then((users) => {
         if (requestId !== mentionSearchRequestIdRef.current) return;
-        const rankedUsers = rankMentionUsers(users, token.query, mentionSearchLimit);
-        flushSync(() => {
-          setMentionSearchResults(rankedUsers);
-          props.onMentionUsers?.(rankedUsers);
-        });
+        const rankedUsers = rankMentionUsers(users, mentionSearchQuery, mentionSearchLimit);
+        setMentionSearchResults(rankedUsers);
+        onMentionUsersRef.current?.(rankedUsers);
         const exactableUsername = rankedUsers[0]?.username;
         if (
           exactableUsername &&
-          token.query.length >= 3 &&
-          exactableUsername !== token.query &&
-          exactableUsername.startsWith(token.query)
+          mentionSearchQuery.length >= 3 &&
+          exactableUsername !== mentionSearchQuery &&
+          exactableUsername.startsWith(mentionSearchQuery)
         ) {
-          void search({
-            query: exactableUsername,
-            limit: mentionSearchLimit,
-          }).catch(() => {});
+          void search({ query: exactableUsername, limit: mentionSearchLimit }).catch(() => {});
         }
       })
       .catch(() => {
         if (requestId === mentionSearchRequestIdRef.current) {
-          flushSync(() => setMentionSearchResults([]));
+          setMentionSearchResults([]);
         }
       });
-  });
+
+    return () => {
+      if (requestId === mentionSearchRequestIdRef.current) {
+        mentionSearchRequestIdRef.current += 1;
+      }
+    };
+  }, [mentionSearchLimit, mentionSearchQuery, mentionTokenKey, props.searchMentionUsers]);
 
   useEffect(() => {
-    const suggestionCount = autocompleteSuggestions.length;
-    if (suggestionCount === 0 || selectedAutocompleteIndex >= suggestionCount) {
-      setSelectedAutocompleteIndex(0);
-    }
-  });
-
-  useEffect(() => {
-    const suggestionCount = mentionAutocompleteSuggestions.length;
-    if (suggestionCount === 0 || selectedMentionAutocompleteIndex >= suggestionCount) {
-      setSelectedMentionAutocompleteIndex(0);
-    }
-  });
-
-  useEffect(() => {
-    const suggestionCount = channelAutocompleteSuggestions.length;
-    if (suggestionCount === 0 || selectedChannelAutocompleteIndex >= suggestionCount) {
-      setSelectedChannelAutocompleteIndex(0);
-    }
-  });
-
-  useEffect(() => {
-    if (autocompleteOpen || mentionAutocompleteOpen || channelAutocompleteOpen)
+    if (autocompleteOpen || mentionAutocompleteOpen || channelAutocompleteOpen) {
       setEmojiPickerOpen(false);
-  });
+    }
+  }, [autocompleteOpen, channelAutocompleteOpen, mentionAutocompleteOpen]);
 
   const readInputSelection = (): SelectionRange => {
     const editor = inputRef.current;
@@ -1100,12 +997,7 @@ export default function MessageInput(props: MessageInputProps) {
     if ((anchor && !editor.contains(anchor)) || (focus && !editor.contains(focus))) {
       return normalizeSelection(selectionRef.current, props.value);
     }
-    const editorSelection = readEditorSelection(editor, props.value);
-    if (props.value.length > 0 && editorSelection.start === 0 && editorSelection.end === 0) {
-      const storedSelection = normalizeSelection(selectionRef.current, props.value);
-      if (storedSelection.start !== 0 || storedSelection.end !== 0) return storedSelection;
-    }
-    return editorSelection;
+    return readEditorSelection(editor, props.value);
   };
 
   const rememberSelection = () => {
@@ -1116,9 +1008,18 @@ export default function MessageInput(props: MessageInputProps) {
     const normalized = normalizeSelection(nextSelection, props.value);
     setSelection(normalized);
 
+    const expectedEditor = inputRef.current;
     queueMicrotask(() => {
       const editor = inputRef.current;
-      if (disposedRef.current || !editor) return;
+      if (!editor || editor !== expectedEditor || !editor.isConnected) return;
+      if (isComposingRef.current) {
+        pendingSelectionRestoreRef.current = {
+          value: authoritativeValueRef.current,
+          selection: normalized,
+          focusInput,
+        };
+        return;
+      }
       if (focusInput) editor.focus();
       placeEditorSelection(editor, normalized);
       selectionRef.current = normalized;
@@ -1144,51 +1045,44 @@ export default function MessageInput(props: MessageInputProps) {
     props.onChange(value);
   };
 
-  const handleInput = (event: FormEvent<MessageEditorElement>) => {
-    const editor = inputRef.current;
-    if (!editor) return;
+  const reconcileEditorValue = useCallback(
+    (editor: MessageEditorElement, value: string): boolean => {
+      if (isComposingRef.current) return false;
 
-    const eventValue = event.currentTarget.value;
-    const hasEventValue = typeof eventValue === "string" && eventValue !== props.value;
-    const nativeInput = event.nativeEvent as InputEvent | undefined;
-    const insertedText =
-      stagedEditorValueRef.current === null &&
-      !hasEventValue &&
-      nativeInput?.inputType === "insertText" &&
-      typeof nativeInput.data === "string" &&
-      nativeInput.data.length === 1
-        ? nativeInput.data
-        : null;
-    const modelInsertionSelection = insertedText
-      ? normalizeSelection(selectionRef.current, props.value)
-      : null;
-    const usedStagedValue =
-      stagedEditorValueRef.current !== null || hasEventValue || modelInsertionSelection !== null;
-    const rawValue =
-      modelInsertionSelection && insertedText
-        ? `${props.value.slice(0, modelInsertionSelection.start)}${insertedText}${props.value.slice(
-            modelInsertionSelection.end,
-          )}`
-        : (stagedEditorValueRef.current ?? (hasEventValue ? eventValue : serializeEditor(editor)));
-    stagedEditorValueRef.current = null;
-    if (hasEventValue) editor.textContent = rawValue;
-    let currentSelection = modelInsertionSelection
-      ? {
-          start: modelInsertionSelection.start + (insertedText?.length ?? 0),
-          end: modelInsertionSelection.start + (insertedText?.length ?? 0),
-        }
-      : usedStagedValue
-        ? normalizeSelection(selectionRef.current, rawValue)
-        : readEditorSelection(editor, rawValue);
-    if (
-      rawValue !== props.value &&
-      rawValue.length > 0 &&
-      currentSelection.start === 0 &&
-      currentSelection.end === 0
-    ) {
+      const renderKey = `${value}\u0000${customEmojiRenderVersion}\u0000${mentionUsersRenderVersion}\u0000${channelRenderVersion}\u0000${mentionChipsEnabled}`;
+      if (previousRenderedKeyRef.current === renderKey && serializeEditor(editor) === value) {
+        return false;
+      }
+
+      previousRenderedKeyRef.current = renderKey;
+      renderEditorValue(
+        editor,
+        value,
+        (id) => customEmojis?.byId(id) ?? null,
+        (id) => mentionUsersById.get(id) ?? null,
+        (id) => channelsById.get(id) ?? null,
+        mentionChipsEnabled,
+      );
+      return true;
+    },
+    [
+      channelRenderVersion,
+      channelsById,
+      customEmojiRenderVersion,
+      customEmojis,
+      mentionChipsEnabled,
+      mentionUsersById,
+      mentionUsersRenderVersion,
+    ],
+  );
+
+  const handleInput = (event: FormEvent<MessageEditorElement>) => {
+    const editor = event.currentTarget;
+    const rawValue = serializeEditor(editor);
+    let currentSelection = readEditorSelection(editor, rawValue);
+    if (rawValue.length > 0 && currentSelection.start === 0 && currentSelection.end === 0) {
       currentSelection = { start: rawValue.length, end: rawValue.length };
     }
-    if (usedStagedValue) editor.replaceChildren();
     let next = replaceCompletedEmojiShortcodeBeforeCaret(
       rawValue,
       currentSelection.start,
@@ -1223,14 +1117,27 @@ export default function MessageInput(props: MessageInputProps) {
         restoreSelection: true,
       },
     );
+
+    // A controlled owner may reject or normalize this edit without changing
+    // the prop key. Re-check after React has processed the callback and restore
+    // the DOM from the latest authoritative prop rather than trusting its
+    // browser-mutated contenteditable children.
+    queueMicrotask(() => {
+      if (!editor.isConnected || isComposingRef.current) return;
+      const authoritativeValue = authoritativeValueRef.current;
+      if (serializeEditor(editor) === authoritativeValue) return;
+      if (pendingSelectionRestoreRef.current?.value !== authoritativeValue) {
+        pendingSelectionRestoreRef.current = null;
+      }
+      const selection = normalizeSelection(selectionRef.current, authoritativeValue);
+      reconcileEditorValue(editor, authoritativeValue);
+      placeEditorSelection(editor, selection);
+      selectionRef.current = selection;
+    });
   };
 
   const handleEmojiSelect = (emoji: string) => {
-    const stored = normalizeSelection(selectionRef.current, props.value);
-    const selection =
-      props.value.length > 0 && stored.start === 0 && stored.end === 0
-        ? { start: props.value.length, end: props.value.length }
-        : stored;
+    const selection = normalizeSelection(selectionRef.current, props.value);
     const nextValue = `${props.value.slice(0, selection.start)}${emoji}${props.value.slice(
       selection.end,
     )}`;
@@ -1241,7 +1148,14 @@ export default function MessageInput(props: MessageInputProps) {
 
   const commitAutocompleteSuggestion = (suggestion = selectedAutocompleteSuggestion): boolean => {
     const token = autocompleteToken;
-    if (!token || !suggestion) return false;
+    const caretToken = findEmojiAutocompleteToken(props.value, readInputSelection());
+    if (
+      !token ||
+      !caretToken ||
+      emojiAutocompleteTokenKey(token) !== emojiAutocompleteTokenKey(caretToken) ||
+      !suggestion
+    )
+      return false;
 
     const emoji = suggestion.emoji.emoji;
     const nextValue = `${props.value.slice(0, token.start)}${emoji}${props.value.slice(token.end)}`;
@@ -1257,7 +1171,14 @@ export default function MessageInput(props: MessageInputProps) {
     suggestion = selectedMentionAutocompleteSuggestion,
   ): boolean => {
     const token = mentionAutocompleteToken;
-    if (!token || !suggestion) return false;
+    const caretToken = findActiveMentionToken(props.value, readInputSelection());
+    if (
+      !token ||
+      !caretToken ||
+      mentionAutocompleteTokenKey(token) !== mentionAutocompleteTokenKey(caretToken) ||
+      !suggestion
+    )
+      return false;
 
     const replacement = replaceMentionToken(props.value, token, suggestion);
     props.onMentionUsers?.([suggestion]);
@@ -1275,7 +1196,14 @@ export default function MessageInput(props: MessageInputProps) {
     suggestion = selectedChannelAutocompleteSuggestion,
   ): boolean => {
     const token = channelAutocompleteToken;
-    if (!token || !suggestion) return false;
+    const caretToken = findActiveChannelToken(props.value, readInputSelection());
+    if (
+      !token ||
+      !caretToken ||
+      channelAutocompleteTokenKey(token) !== channelAutocompleteTokenKey(caretToken) ||
+      !suggestion
+    )
+      return false;
 
     const replacement = replaceChannelToken(props.value, token, suggestion);
     setSelectedChannelAutocompleteIndex(0);
@@ -1336,7 +1264,9 @@ export default function MessageInput(props: MessageInputProps) {
   const handleKeyDown = (event: ReactKeyboardEvent<MessageEditorElement>) => {
     const nativeEvent = event.nativeEvent as KeyboardEvent | undefined;
     const syntheticCompositionState = (event as unknown as { isComposing?: boolean }).isComposing;
-    const isComposing = Boolean(syntheticCompositionState || nativeEvent?.isComposing);
+    const isComposing = Boolean(
+      isComposingRef.current || syntheticCompositionState || nativeEvent?.isComposing,
+    );
     if (event.key === "Enter" && isComposing) {
       props.onKeyDown?.(event);
       return;
@@ -1540,124 +1470,25 @@ export default function MessageInput(props: MessageInputProps) {
     );
   };
 
-  const attachCompatibilityProperties = useCallback(
-    (el: MessageEditorElement | null) => {
-      if (!el) return;
-      Object.defineProperties(el, {
-        value: {
-          configurable: true,
-          get: () => {
-            const pendingSelectionRestore = pendingSelectionRestoreRef.current;
-            if (
-              pendingSelectionRestore &&
-              pendingSelectionRestore.value === latestValueRef.current &&
-              inputRef.current === el
-            ) {
-              const selection = normalizeSelection(
-                pendingSelectionRestore.selection,
-                latestValueRef.current,
-              );
-              pendingSelectionRestoreRef.current = null;
-              if (pendingSelectionRestore.focusInput) el.focus();
-              placeEditorSelection(el, selection);
-              selectionRef.current = selection;
-            }
-            return latestValueRef.current;
-          },
-          set: (nextValue: string) => {
-            const shortcodeMatch = nextValue.match(/(^|\s):([A-Za-z0-9_]{2,32}):$/);
-            const customEmoji = shortcodeMatch
-              ? latestCustomEmojisRef.current.find(
-                  (emoji) => emoji.deleted_at === null && emoji.name === shortcodeMatch[2],
-                )
-              : undefined;
-            const stagedValue =
-              shortcodeMatch && customEmoji
-                ? `${nextValue.slice(0, nextValue.length - shortcodeMatch[2].length - 2)}${customEmojiMarker(customEmoji)}`
-                : nextValue;
-            stagedEditorValueRef.current = stagedValue;
-            el.textContent = stagedValue;
-            const caretIndex = stagedValue.length;
-            const selection = { start: caretIndex, end: caretIndex };
-            const selectionVersion = ++compatibilitySelectionVersionRef.current;
-            selectionRef.current = selection;
-            queueMicrotask(() => {
-              if (
-                disposedRef.current ||
-                inputRef.current !== el ||
-                compatibilitySelectionVersionRef.current !== selectionVersion
-              ) {
-                return;
-              }
-              placeEditorSelection(el, selection);
-            });
-          },
-        },
-        selectionStart: {
-          configurable: true,
-          get: () => selectionRef.current.start,
-          set: (start: number) => {
-            compatibilitySelectionVersionRef.current += 1;
-            selectionRef.current = normalizeSelection(
-              { start, end: selectionRef.current.end },
-              stagedEditorValueRef.current ?? latestValueRef.current,
-            );
-            setSelectionState(selectionRef.current);
-          },
-        },
-        selectionEnd: {
-          configurable: true,
-          get: () => selectionRef.current.end,
-          set: (end: number) => {
-            compatibilitySelectionVersionRef.current += 1;
-            selectionRef.current = normalizeSelection(
-              { start: selectionRef.current.start, end },
-              stagedEditorValueRef.current ?? latestValueRef.current,
-            );
-            setSelectionState(selectionRef.current);
-          },
-        },
-      });
-
-      el.setSelectionRange = (start: number, end = start) => {
-        const normalized = normalizeSelection(
-          { start, end },
-          stagedEditorValueRef.current ?? latestValueRef.current,
-        );
-        compatibilitySelectionVersionRef.current += 1;
-        selectionRef.current = normalized;
-        setSelectionState(normalized);
-        el.focus();
-        placeEditorSelection(el, normalized);
-      };
-    },
-    [latestCustomEmojisRef, latestValueRef],
-  );
-
   useLayoutEffect(() => {
     const value = props.value;
-    const renderKey = `${value}\u0000${customEmojiRenderVersion}\u0000${mentionUsersRenderVersion}\u0000${channelRenderVersion}\u0000${mentionChipsEnabled}`;
-    if (inputRef.current && previousRenderedKeyRef.current !== renderKey) {
-      previousRenderedKeyRef.current = renderKey;
-      renderEditorValue(
-        inputRef.current,
-        value,
-        customEmojiById,
-        mentionUserById,
-        channelById,
-        mentionChipsEnabled,
-      );
-    }
+    if (inputRef.current) reconcileEditorValue(inputRef.current, value);
 
     const current = selectionRef.current;
     const normalizedSelection = normalizeSelection(current, value);
 
     if (current.start !== normalizedSelection.start || current.end !== normalizedSelection.end) {
-      setSelection(normalizedSelection);
+      selectionRef.current = normalizedSelection;
+      setSelectionState(normalizedSelection);
     }
 
     const pendingSelectionRestore = pendingSelectionRestoreRef.current;
-    if (pendingSelectionRestore && inputRef.current && value === pendingSelectionRestore.value) {
+    if (
+      !isComposingRef.current &&
+      pendingSelectionRestore &&
+      inputRef.current &&
+      value === pendingSelectionRestore.value
+    ) {
       const selection = normalizeSelection(pendingSelectionRestore.selection, value);
       pendingSelectionRestoreRef.current = null;
       if (pendingSelectionRestore.focusInput) inputRef.current.focus();
@@ -1670,27 +1501,52 @@ export default function MessageInput(props: MessageInputProps) {
 
     if (valueWasReset) {
       setEmojiPickerOpen(false);
-      dismissMentionAutocomplete();
-      dismissChannelAutocomplete();
-      restoreSelection({ start: 0, end: 0 });
+      setDismissedMentionAutocompleteSessionStart(mentionAutocompleteSessionStart ?? null);
+      setSelectedMentionAutocompleteIndex(0);
+      setMentionSearchResults([]);
+      setDismissedChannelAutocompleteSessionStart(channelAutocompleteSessionStart ?? null);
+      setSelectedChannelAutocompleteIndex(0);
+      selectionRef.current = { start: 0, end: 0 };
+      setSelectionState({ start: 0, end: 0 });
+      const editor = inputRef.current;
+      if (editor) {
+        if (isComposingRef.current) {
+          pendingSelectionRestoreRef.current = {
+            value,
+            selection: { start: 0, end: 0 },
+          };
+        } else {
+          placeEditorSelection(editor, { start: 0, end: 0 });
+        }
+      }
     }
-  });
+  }, [
+    channelAutocompleteSessionStart,
+    channelRenderVersion,
+    channelsById,
+    customEmojiRenderVersion,
+    customEmojis,
+    mentionAutocompleteSessionStart,
+    mentionChipsEnabled,
+    mentionUsersById,
+    mentionUsersRenderVersion,
+    props.value,
+    reconcileEditorValue,
+  ]);
 
   const handleEditorRef = useCallback(
-    (el: HTMLDivElement | null) => {
-      if (!el) {
-        inputRef.current = null;
+    (editor: HTMLDivElement | null) => {
+      inputRef.current = editor;
+      if (!editor) {
         previousRenderedKeyRef.current = null;
+        externalInputRef?.(null);
         return;
       }
-      const editor = el as MessageEditorElement;
-      inputRef.current = editor;
-      if (props.placeholder) editor.setAttribute("placeholder", props.placeholder);
+      if (placeholder) editor.setAttribute("placeholder", placeholder);
       else editor.removeAttribute("placeholder");
-      attachCompatibilityProperties(editor);
-      props.inputRef?.(editor);
+      externalInputRef?.(editor);
     },
-    [attachCompatibilityProperties, props.inputRef, props.placeholder],
+    [externalInputRef, placeholder],
   );
 
   return (
@@ -1701,7 +1557,7 @@ export default function MessageInput(props: MessageInputProps) {
             id={mentionListboxId}
             label="Mention suggestions"
             options={mentionAutocompleteSuggestions}
-            selectedIndex={selectedMentionAutocompleteIndex}
+            selectedIndex={mentionAutocompleteIndex}
             getOptionKey={(user) => user.id}
             optionLabel={mentionAutocompleteOptionLabel}
             onRememberSelection={rememberSelection}
@@ -1725,7 +1581,7 @@ export default function MessageInput(props: MessageInputProps) {
             id={channelListboxId}
             label="Channel suggestions"
             options={channelAutocompleteSuggestions}
-            selectedIndex={selectedChannelAutocompleteIndex}
+            selectedIndex={channelAutocompleteIndex}
             getOptionKey={(channel) => channel.id}
             optionLabel={channelAutocompleteOptionLabel}
             onRememberSelection={rememberSelection}
@@ -1751,7 +1607,7 @@ export default function MessageInput(props: MessageInputProps) {
             id={autocompleteListboxId}
             label="Emoji suggestions"
             options={autocompleteSuggestions}
-            selectedIndex={selectedAutocompleteIndex}
+            selectedIndex={autocompleteIndex}
             getOptionKey={(suggestion) =>
               suggestion.emoji.kind === "custom"
                 ? `custom:${suggestion.emoji.id}`
@@ -1811,6 +1667,42 @@ export default function MessageInput(props: MessageInputProps) {
           tabIndex={0}
           data-placeholder={props.placeholder}
           onInput={handleInput}
+          onCompositionStart={() => {
+            isComposingRef.current = true;
+          }}
+          onCompositionEnd={(event) => {
+            isComposingRef.current = false;
+            const editor = event.currentTarget;
+            const authoritativeValue = authoritativeValueRef.current;
+            const pendingSelectionRestore = pendingSelectionRestoreRef.current;
+            const matchingPendingRestore =
+              pendingSelectionRestore?.value === authoritativeValue
+                ? pendingSelectionRestore
+                : null;
+            pendingSelectionRestoreRef.current = null;
+            const selection = normalizeSelection(
+              matchingPendingRestore?.selection ??
+                readEditorSelection(editor, serializeEditor(editor)),
+              authoritativeValue,
+            );
+            const reconstructed = reconcileEditorValue(editor, authoritativeValue);
+            if (matchingPendingRestore || reconstructed) {
+              queueMicrotask(() => {
+                if (!editor.isConnected) return;
+                if (isComposingRef.current) {
+                  pendingSelectionRestoreRef.current = {
+                    value: authoritativeValueRef.current,
+                    selection,
+                    focusInput: matchingPendingRestore?.focusInput,
+                  };
+                  return;
+                }
+                if (matchingPendingRestore?.focusInput) editor.focus();
+                placeEditorSelection(editor, selection);
+                selectionRef.current = selection;
+              });
+            }
+          }}
           onKeyDown={handleKeyDown}
           onSelect={rememberSelection}
           onMouseUp={rememberSelection}

@@ -10,7 +10,7 @@ on:
       renderer_sentry_dsn:
         description: "Optional renderer-side Sentry DSN; leave blank to disable"
         required: false
-        default: "https://60c6e628bcadb37f23e2356423103d85@o4511678358880256.ingest.us.sentry.io/4511678668734464"
+        default: ""
   push:
     branches: [main]
 
@@ -24,6 +24,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -44,16 +47,19 @@ jobs:
         run: |
           pnpm run fmt:check
           pnpm run lint
+          pnpm run check:native-react
           pnpm run typecheck
           pnpm run test
+      - id: pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - name: Build static renderer
         working-directory: client
         env:
           HAMLET_BUILD_SOURCE_MAPS: "true"
-          VITE_HAMLET_DEFAULT_SERVER_URL: ${{ inputs.api_url }}
-          VITE_HAMLET_SENTRY_DSN: ${{ inputs.renderer_sentry_dsn }}
+          VITE_HAMLET_BASE_PATH: ${{ steps.pages.outputs.base_path }}
+          VITE_HAMLET_DEFAULT_SERVER_URL: ${{ inputs.api_url || vars.HAMLET_DEFAULT_SERVER_URL || 'https://api.hamlet.chat' }}
+          VITE_HAMLET_SENTRY_DSN: ${{ github.event_name == 'workflow_dispatch' && inputs.renderer_sentry_dsn || github.event_name == 'push' && vars.HAMLET_RENDERER_SENTRY_DSN || '' }}
         run: pnpm run build:web
-      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: client/dist

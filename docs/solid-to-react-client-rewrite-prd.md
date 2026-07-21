@@ -1,8 +1,14 @@
 # SolidJS to React Client Rewrite PRD
 
+> **Historical migration document.** The renderer now uses React. References to Solid below describe the pre-migration implementation, migration requirements, or artifacts that the completed migration must reject; they do not describe the active client stack.
+
+## Completion status
+
+The migration is complete, including Phases 7.6 and 7.7 and the follow-up removal of the temporary compatibility layer. Active developer, hosting, server, and deployment documentation identifies React as the renderer framework. `pnpm run check:native-react` audits the client manifest, lockfile, renderer and Electron code, tests, E2E suites, scripts, configuration, and active documentation for Solid dependencies or compatibility patterns; it runs in the repository check script and web deployment workflow. Historical requirements below remain as a record of the completed migration.
+
 ## Problem Statement
 
-Hamlet's Electron renderer is currently implemented with SolidJS, Solid-specific routing, Solid-specific testing helpers, and Solid runtime dependencies. The product goal is to move the desktop/web renderer to React while preserving the existing Hamlet user experience, Rust HTTP API contract, SSE real-time behavior, LiveKit voice/video behavior, Electron shell security model, packaging workflow, and local developer/test commands. Users should experience the rewrite as a framework migration, not as a product reset or protocol change.
+Hamlet's Electron renderer was implemented with SolidJS, Solid-specific routing, Solid-specific testing helpers, and Solid runtime dependencies. The product goal is to move the desktop/web renderer to React while preserving the existing Hamlet user experience, Rust HTTP API contract, SSE real-time behavior, LiveKit voice/video behavior, Electron shell security model, packaging workflow, and local developer/test commands. Users should experience the rewrite as a framework migration, not as a product reset or protocol change.
 
 The rewrite is complete only when no Solid runtime, Solid tooling, Solid source patterns, or Solid test utilities remain in the client. Keeping a mixed Solid/React renderer would leave duplicate mental models, larger bundles, and migration risk for future Hamlet features.
 
@@ -109,8 +115,8 @@ The implementation should migrate deep modules first where possible: API clients
 - Renderer E2E tests should continue validating login, registration/auth flows, channel navigation/reorder, sending messages, mentions, reactions, custom emoji, photo upload, and browser renderer smoke behavior against the Rust server.
 - Electron E2E tests should continue validating shell launch, renderer origin, package smoke behavior, trusted display-media path, and Electron-specific media automation where available.
 - Voice browser E2E should continue validating LiveKit-backed camera and screen-share flows with prerequisite skips for unavailable media infrastructure.
-- Static checks for the migrated client must include formatting, linting, TypeScript typechecking, Vitest, relevant Playwright suites, and size budget checks. The expected default gates are `npm run fmt`, `npm run lint`, `npm run typecheck`, `npm run test`, `npm run test:e2e` when smoke-tested flows are affected, and `npm run size` for bundle-budget confidence.
-- A Solid-removal check should be part of final validation: dependency manifests, lockfile, source, tests, configs, and docs that describe the current client stack should no longer reference Solid as active renderer technology.
+- Static checks for the migrated client must include formatting, linting, the native-React audit, TypeScript typechecking, Vitest, relevant Playwright suites, and size budget checks. The expected default gates are `pnpm run fmt`, `pnpm run lint`, `pnpm run check:native-react`, `pnpm run typecheck`, `pnpm run test`, `pnpm run test:e2e` when smoke-tested flows are affected, and `pnpm run size` for bundle-budget confidence.
+- The Solid-removal check is part of final validation: dependency manifests, lockfile, source, tests, and configs must not retain Solid artifacts, while historical migration documents may refer to Solid when clearly marked as historical. Docs that describe the current client stack must identify React.
 
 ## Out of Scope
 

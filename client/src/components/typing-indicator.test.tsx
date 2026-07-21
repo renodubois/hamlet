@@ -142,7 +142,7 @@ describe("<TypingIndicator>", () => {
 
       fakeTime += TYPING_EXPIRY_MS + 100;
       // Let the sweep interval fire.
-      await vi.advanceTimersByTimeAsync(1000);
+      await act(() => vi.advanceTimersByTimeAsync(1000));
       expect(screen.queryByTestId("typing-indicator")).toBeNull();
     } finally {
       vi.useRealTimers();
@@ -161,7 +161,7 @@ describe("<TypingIndicator>", () => {
       fakeTime += TYPING_EXPIRY_MS - 500;
       emit({ channel_id: 100, user_id: 2, username: "bob" });
       fakeTime += 500; // total is TYPING_EXPIRY_MS since the first ping, but only 500ms since the refresh.
-      await vi.advanceTimersByTimeAsync(1000);
+      await act(() => vi.advanceTimersByTimeAsync(1000));
       expect(screen.getByText(/bob is typing/i)).toBeInTheDocument();
     } finally {
       vi.useRealTimers();

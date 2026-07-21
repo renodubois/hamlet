@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { StrictMode, useState, type ReactElement } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { fireEvent, screen, waitFor, within } from "../test/testing-library";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Message, PublicUser, SearchUsersOptions } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
 import { makeAttachment, makeMessage } from "../test/fixtures";
-import { assertExists, renderNative } from "../test/render";
+import { assertExists } from "../test/render";
+import { captureExpectedConsoleDiagnostics } from "../test/setup";
 
 const customEmojiContext = vi.hoisted(() => ({
   current: undefined as
@@ -81,6 +82,10 @@ const otherMessage: Message = makeMessage({
   avatar_url: null,
 });
 
+function renderInStrictMode(ui: ReactElement) {
+  return render(ui, { wrapper: StrictMode });
+}
+
 function mount(
   messages: Message[],
   currentUserId: number | null,
@@ -88,7 +93,7 @@ function mount(
   onReactionsChange?: (messageId: number, reactions: import("../api").ReactionSummary[]) => void,
   onReplyToMessage?: (message: Message) => void,
 ) {
-  return renderNative(
+  return renderInStrictMode(
     <ChannelMessages
       messages={messages}
       loading={false}
@@ -109,7 +114,7 @@ function mountWithMentions(
     searchMentionUsers?: (options: SearchUsersOptions) => Promise<PublicUser[]>;
   },
 ) {
-  return renderNative(
+  return renderInStrictMode(
     <ChannelMessages
       messages={messages}
       loading={false}
@@ -122,10 +127,76 @@ function mountWithMentions(
   );
 }
 
-function setInputSelection(input: HTMLInputElement, start: number, end = start) {
-  input.focus();
-  input.setSelectionRange(start, end);
-  fireEvent.select(input);
+const CARET_SENTINEL = "\u200B";
+
+function serializedNode(node: Node): string {
+  if (node instanceof HTMLElement) {
+    const marker =
+      node.dataset.emojiMarker ?? node.dataset.mentionMarker ?? node.dataset.channelMarker;
+    if (marker) return marker;
+    if (node instanceof HTMLBRElement) return "\n";
+  }
+  if (node.nodeType === Node.TEXT_NODE) {
+    return (node.textContent ?? "").split(CARET_SENTINEL).join("");
+  }
+  return Array.from(node.childNodes, serializedNode).join("");
+}
+
+function editorValue(input: HTMLDivElement): string {
+  return serializedNode(input);
+}
+
+function domPositionForIndex(root: Node, index: number): { node: Node; offset: number } {
+  let remaining = Math.max(0, index);
+  for (const child of Array.from(root.childNodes)) {
+    const value = serializedNode(child);
+    const childOffset = Array.prototype.indexOf.call(root.childNodes, child) as number;
+    if (remaining === 0) return { node: root, offset: childOffset };
+    if (remaining < value.length && child.nodeType === Node.TEXT_NODE) {
+      return { node: child, offset: remaining };
+    }
+    if (remaining <= value.length) return { node: root, offset: childOffset + 1 };
+    remaining -= value.length;
+  }
+  return { node: root, offset: root.childNodes.length };
+}
+
+function editorSelection(input: HTMLDivElement) {
+  const selection = window.getSelection();
+  const offsetFor = (container: Node | null, offset: number) => {
+    if (!container || !input.contains(container)) return editorValue(input).length;
+    const range = document.createRange();
+    range.setStart(input, 0);
+    range.setEnd(container, offset);
+    return serializedNode(range.cloneContents()).length;
+  };
+  return {
+    start: offsetFor(selection?.anchorNode ?? null, selection?.anchorOffset ?? 0),
+    end: offsetFor(selection?.focusNode ?? null, selection?.focusOffset ?? 0),
+  };
+}
+
+function setInputSelection(input: HTMLDivElement, start: number, end = start) {
+  act(() => {
+    input.focus();
+    const range = document.createRange();
+    const startPosition = domPositionForIndex(input, start);
+    const endPosition = domPositionForIndex(input, end);
+    range.setStart(startPosition.node, startPosition.offset);
+    range.setEnd(endPosition.node, endPosition.offset);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    fireEvent.select(input);
+  });
+}
+
+function inputFromUser(input: HTMLDivElement, value: string, caretIndex = value.length) {
+  act(() => {
+    input.textContent = value;
+    setInputSelection(input, caretIndex);
+    fireEvent.input(input);
+  });
 }
 
 beforeEach(() => {
@@ -135,7 +206,7 @@ beforeEach(() => {
 
 describe("<ChannelMessages> state precedence", () => {
   test("a refresh error renders alongside retained channel message rows", () => {
-    renderNative(
+    renderInStrictMode(
       <ChannelMessages
         messages={[otherMessage]}
         loading={false}
@@ -173,17 +244,21 @@ describe("<ChannelMessages> native state and lifecycle", () => {
       );
     }
 
-    renderNative(<Harness />);
+    renderInStrictMode(<Harness />);
     const editedRow = assertExists(document.getElementById(channelMessageElementId(ownMessage.id)));
     fireEvent.click(within(editedRow).getByRole("button", { name: /^edit$/i }));
-    expect(within(editedRow).getByLabelText(/edit message/i)).toHaveValue(ownMessage.text);
+    expect(editorValue(within(editedRow).getByLabelText(/edit message/i) as HTMLDivElement)).toBe(
+      ownMessage.text,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /reverse messages/i }));
 
     const reorderedEditedRow = assertExists(
       document.getElementById(channelMessageElementId(ownMessage.id)),
     );
-    expect(within(reorderedEditedRow).getByLabelText(/edit message/i)).toHaveValue(ownMessage.text);
+    expect(
+      editorValue(within(reorderedEditedRow).getByLabelText(/edit message/i) as HTMLDivElement),
+    ).toBe(ownMessage.text);
     expect(document.querySelectorAll("[data-message-id]")[0]).toHaveAttribute(
       "data-message-id",
       String(secondOwnMessage.id),
@@ -194,7 +269,7 @@ describe("<ChannelMessages> native state and lifecycle", () => {
     const pending = deferred<Message>();
     vi.mocked(editMessage).mockReturnValueOnce(pending.promise);
     const onMessageUpdated = vi.fn();
-    const view = renderNative(
+    const view = renderInStrictMode(
       <ChannelMessages
         channelId={1}
         generation={1}
@@ -207,7 +282,7 @@ describe("<ChannelMessages> native state and lifecycle", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    fireEvent.input(screen.getByLabelText(/edit message/i), { target: { value: "edited" } });
+    inputFromUser(screen.getByLabelText(/edit message/i), "edited");
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     view.rerender(
@@ -221,7 +296,10 @@ describe("<ChannelMessages> native state and lifecycle", () => {
         onMessageUpdated={onMessageUpdated}
       />,
     );
-    pending.resolve({ ...ownMessage, text: "edited" });
+    await act(async () => {
+      pending.resolve({ ...ownMessage, text: "edited" });
+      await pending.promise;
+    });
 
     await waitFor(() => expect(screen.getByText("hello from them")).toBeInTheDocument());
     expect(onMessageUpdated).not.toHaveBeenCalled();
@@ -1155,7 +1233,7 @@ describe("<ChannelMessages> reactions", () => {
 
   test("toggles an existing pill and rolls back failed mutations", async () => {
     vi.mocked(removeMessageReaction).mockRejectedValueOnce(new Error("nope"));
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const errorCapture = captureExpectedConsoleDiagnostics("error");
     const onReactionsChange = vi.fn();
     const reacted = makeMessage({
       id: 601,
@@ -1174,8 +1252,8 @@ describe("<ChannelMessages> reactions", () => {
     );
     expect(onReactionsChange).toHaveBeenNthCalledWith(1, 601, []);
     expect(onReactionsChange).toHaveBeenLastCalledWith(601, reacted.reactions);
-    expect(errorSpy).toHaveBeenCalledWith("failed to update reaction", expect.any(Error));
-    errorSpy.mockRestore();
+    expect(errorCapture.diagnostics).toEqual([["failed to update reaction", expect.any(Error)]]);
+    errorCapture.stop();
   });
 
   test("toggles custom pills using the immutable custom id", async () => {
@@ -1738,15 +1816,15 @@ describe("<ChannelMessages> hover action toolbar", () => {
   test("clicking Edit swaps the row into edit mode", async () => {
     mount([ownMessage], SELF_ID);
     fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
-    expect(input.value).toBe(ownMessage.text);
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLDivElement;
+    expect(editorValue(input)).toBe(ownMessage.text);
   });
 
   test("editing a message via the toolbar calls editMessage", async () => {
     mount([ownMessage], SELF_ID);
     fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "edited text" } });
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLDivElement;
+    inputFromUser(input, "edited text");
     fireEvent.submit(assertExists(input.closest("form"), "form"));
     await waitFor(() => expect(editMessage).toHaveBeenCalledWith(ownMessage.id, "edited text"));
   });
@@ -1759,9 +1837,9 @@ describe("<ChannelMessages> hover action toolbar", () => {
     });
     mount([photoMessage], SELF_ID);
     fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLDivElement;
 
-    fireEvent.input(input, { target: { value: "" } });
+    inputFromUser(input, "");
     fireEvent.submit(assertExists(input.closest("form"), "form"));
 
     await waitFor(() => expect(editMessage).toHaveBeenCalledWith(photoMessage.id, ""));
@@ -1772,19 +1850,19 @@ describe("<ChannelMessages> hover action toolbar", () => {
   test("Shift+Enter inserts a newline while editing and Enter saves exact multiline text", async () => {
     mount([ownMessage], SELF_ID);
     fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
-    input.setSelectionRange(ownMessage.text.length, ownMessage.text.length);
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLDivElement;
+    setInputSelection(input, ownMessage.text.length);
 
     fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
 
     await waitFor(() => {
-      expect(input.value).toBe(`${ownMessage.text}\n`);
-      expect(input.selectionStart).toBe(`${ownMessage.text}\n`.length);
+      expect(editorValue(input)).toBe(`${ownMessage.text}\n`);
+      expect(editorSelection(input).start).toBe(`${ownMessage.text}\n`.length);
     });
 
     const multilineText = `${ownMessage.text}\nsecond line`;
-    fireEvent.input(input, { target: { value: multilineText } });
-    input.setSelectionRange(multilineText.length, multilineText.length);
+    inputFromUser(input, multilineText);
+    setInputSelection(input, multilineText.length);
     fireEvent.keyDown(input, { key: "Enter" });
 
     await waitFor(() => expect(editMessage).toHaveBeenCalledWith(ownMessage.id, multilineText));
@@ -1793,10 +1871,10 @@ describe("<ChannelMessages> hover action toolbar", () => {
   test("Save button preserves exact multiline edit text", async () => {
     mount([ownMessage], SELF_ID);
     fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLDivElement;
     const multilineText = "first visible line\nsecond visible line\nthird visible line";
 
-    fireEvent.input(input, { target: { value: multilineText } });
+    inputFromUser(input, multilineText);
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => expect(editMessage).toHaveBeenCalledWith(ownMessage.id, multilineText));
@@ -1805,11 +1883,11 @@ describe("<ChannelMessages> hover action toolbar", () => {
   test("Escape dismisses edit autocomplete before a second Escape cancels the edit", async () => {
     mount([ownMessage], SELF_ID);
     fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLDivElement;
     const draftWithAutocomplete = `${ownMessage.text} :sm`;
 
-    fireEvent.input(input, { target: { value: draftWithAutocomplete } });
-    input.setSelectionRange(draftWithAutocomplete.length, draftWithAutocomplete.length);
+    inputFromUser(input, draftWithAutocomplete);
+    setInputSelection(input, draftWithAutocomplete.length);
     await screen.findByRole("listbox", { name: /emoji suggestions/i });
 
     fireEvent.keyDown(input, { key: "Escape" });
@@ -1830,9 +1908,9 @@ describe("<ChannelMessages> hover action toolbar", () => {
   test("Escape cancels a multiline edit without saving", async () => {
     mount([ownMessage], SELF_ID);
     fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLDivElement;
 
-    fireEvent.input(input, { target: { value: `${ownMessage.text}\nunsaved` } });
+    inputFromUser(input, `${ownMessage.text}\nunsaved`);
     fireEvent.keyDown(input, { key: "Escape" });
 
     await waitFor(() => expect(screen.queryByLabelText(/edit message/i)).toBeNull());
@@ -1844,7 +1922,7 @@ describe("<ChannelMessages> hover action toolbar", () => {
     const multiline = makeMessage({ ...ownMessage, text: "same first line\nsame second line" });
     mount([multiline], SELF_ID);
     fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLDivElement;
 
     fireEvent.submit(assertExists(input.closest("form"), "form"));
 
@@ -1872,14 +1950,14 @@ describe("<ChannelMessages> hover action toolbar", () => {
     mount([message], SELF_ID);
     fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
 
-    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
-    expect(input.value).toBe("hello <:party:123>");
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLDivElement;
+    expect(editorValue(input)).toBe("hello <:party:123>");
     expect(screen.getByRole("img", { name: /custom emoji :party:/i })).toBeInTheDocument();
     expect(screen.queryByText("<:party:123>")).toBeNull();
 
     expect(editMessage).not.toHaveBeenCalled();
 
-    fireEvent.input(input, { target: { value: "hello <:party:123>!" } });
+    inputFromUser(input, "hello <:party:123>!");
     fireEvent.submit(assertExists(input.closest("form"), "form"));
     await waitFor(() =>
       expect(editMessage).toHaveBeenCalledWith(message.id, "hello <:party:123>!"),
@@ -1909,12 +1987,12 @@ describe("<ChannelMessages> hover action toolbar", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
 
-    const input = (await screen.findByLabelText(/edit message/i)) as HTMLInputElement;
-    expect(input.value).toBe("hello <@2>");
+    const input = (await screen.findByLabelText(/edit message/i)) as HTMLDivElement;
+    expect(editorValue(input)).toBe("hello <@2>");
     expect(within(input).getByText("@Bobby")).toHaveClass("bg-primary/10", "text-primary");
 
     const draft = "hello <@2> and @bo";
-    fireEvent.input(input, { target: { value: draft } });
+    inputFromUser(input, draft);
     setInputSelection(input, draft.length);
     const listbox = await screen.findByRole("listbox", { name: /mention suggestions/i });
     expect(
@@ -1922,7 +2000,7 @@ describe("<ChannelMessages> hover action toolbar", () => {
     ).toBeInTheDocument();
 
     fireEvent.keyDown(input, { key: "Enter" });
-    await waitFor(() => expect(input.value).toBe("hello <@2> and <@2> "));
+    await waitFor(() => expect(editorValue(input)).toBe("hello <@2> and <@2> "));
     expect(editMessage).not.toHaveBeenCalled();
 
     fireEvent.submit(assertExists(input.closest("form"), "form"));
@@ -1938,7 +2016,10 @@ describe("<ChannelMessages> hover action toolbar", () => {
     const dialog = await screen.findByRole("dialog", { name: /delete message/i });
     expect(dialog).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
-    expect(deleteMessage).toHaveBeenCalledWith(ownMessage.id);
+    await waitFor(() => expect(deleteMessage).toHaveBeenCalledWith(ownMessage.id));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /delete message/i })).toBeNull(),
+    );
   });
 
   test("renders the display_name in place of username when set", async () => {

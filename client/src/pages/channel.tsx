@@ -1,4 +1,12 @@
-import { useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import ChannelMessages from "../components/channel-messages";
 import {
@@ -55,7 +63,7 @@ export default function ChannelView() {
   const { channels } = useChannels();
   const events = useEvents();
   const { user } = useAuth();
-  const readStates = useReadStates();
+  const { markRead } = useReadStates();
   const channel = channels.find((candidate) => String(candidate.id) === params.id);
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -118,7 +126,7 @@ export default function ChannelView() {
   } | null>(null);
   const [validatedThreadKey, setValidatedThreadKey] = useState<string | null>(null);
 
-  const scheduleActiveChannelMarkRead = () => {
+  const scheduleActiveChannelMarkRead = useCallback(() => {
     if (!messagesScrollRef.current) return;
     const active = activeHistoryRef.current;
     if (!active || active.channelId !== validChannelId) return;
@@ -167,8 +175,7 @@ export default function ChannelView() {
         token: ++markReadTokenRef.current,
       };
       pendingMarkReadRef.current = ownership;
-      void readStates
-        .markRead(channelId, messageId)
+      void markRead(channelId, messageId)
         .then((accepted) => {
           const acceptedScope = activeHistoryRef.current;
           if (
@@ -184,16 +191,16 @@ export default function ChannelView() {
           if (pendingMarkReadRef.current === ownership) pendingMarkReadRef.current = null;
         });
     }, 120);
-  };
+  }, [markRead, validChannelId]);
 
-  const scrollMessagesToBottom = (afterScroll?: () => void) => {
+  const scrollMessagesToBottom = useCallback((afterScroll?: () => void) => {
     if (!messagesScrollRef.current) return;
     messagesScrollRef.current.scrollTop = messagesScrollRef.current.scrollHeight;
     setHasNewMessagesBelow(false);
     afterScroll?.();
-  };
+  }, []);
 
-  const requestScrollMessagesToBottom = (afterScroll?: () => void) => {
+  const requestScrollMessagesToBottom = useCallback((afterScroll?: () => void) => {
     const active = activeHistoryRef.current;
     if (!active) return;
     pendingScrollToBottomRef.current = {
@@ -202,7 +209,7 @@ export default function ChannelView() {
       afterScroll,
     };
     setScrollToBottomRequestVersion((version) => version + 1);
-  };
+  }, []);
 
   const handleMessagesScroll = () => {
     if (!messagesScrollRef.current) return;
@@ -233,7 +240,7 @@ export default function ChannelView() {
       return;
     }
     scrollMessagesToBottom(pendingScroll.afterScroll);
-  }, [scrollToBottomRequestVersion]);
+  }, [scrollMessagesToBottom, scrollToBottomRequestVersion]);
 
   const showNewMessagesBelow = hasNewMessagesBelow;
 
@@ -331,7 +338,13 @@ export default function ChannelView() {
       }
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [timeline.channelId, timeline.generation, timeline.status]);
+  }, [
+    scheduleActiveChannelMarkRead,
+    scrollMessagesToBottom,
+    timeline.channelId,
+    timeline.generation,
+    timeline.status,
+  ]);
 
   // When the current user's profile changes, patch authored rows and references
   // through the same canonical reducer as history and live events.
@@ -347,7 +360,7 @@ export default function ChannelView() {
       generation: timeline.generation,
       user,
     });
-  }, [user?.avatar_url, user?.display_name, user?.id, user?.username]);
+  }, [timeline.channelId, timeline.generation, user, validChannelId]);
 
   const channelPath = `/channel/${params.id}`;
 
@@ -463,6 +476,8 @@ export default function ChannelView() {
     requestedTimelineRoot,
     validChannelId,
     validatedThreadKey,
+    channelPath,
+    navigate,
   ]);
 
   const handleMessageChange = (value: string) => {
@@ -663,7 +678,7 @@ export default function ChannelView() {
       document.removeEventListener("visibilitychange", onFocusOrVisibility);
       if (markReadTimerRef.current) clearTimeout(markReadTimerRef.current);
     };
-  }, [events]);
+  }, [events, requestScrollMessagesToBottom, scheduleActiveChannelMarkRead]);
 
   // TODO(reno): Can the router ensure this parameter exists?
   if (!params.id) {

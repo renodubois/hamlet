@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { useEffect, useState, type ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { makeCameraStream, makeScreenShareStream } from "../test/fixtures";
+import { captureExpectedConsoleDiagnostics } from "../test/setup";
 import { FakeEventSource, latestFakeEventSource, resetFakeEventSources } from "../test/msw/sse";
 import { EventsProvider, useEvents, type EventsContextValue } from "./events";
 
@@ -248,7 +249,7 @@ describe("EventsProvider dispatch", () => {
 
   test("isolates malformed payloads and continues dispatching", async () => {
     vi.stubGlobal("EventSource", FakeEventSource);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const warn = captureExpectedConsoleDiagnostics("warn");
     const listener = vi.fn();
 
     render(
@@ -263,14 +264,19 @@ describe("EventsProvider dispatch", () => {
     latestFakeEventSource()?.pushRaw(JSON.stringify({ kind: "read_state_updated" }));
     latestFakeEventSource()?.pushReadStateUpdated(readStateSummary);
 
-    expect(warn).toHaveBeenCalledTimes(3);
+    expect(warn.diagnostics).toEqual([
+      ["bad SSE payload", expect.any(SyntaxError), "not json"],
+      ["bad SSE payload", null, "null"],
+      ["bad SSE payload", { kind: "read_state_updated" }, '{"kind":"read_state_updated"}'],
+    ]);
+    warn.stop();
     expect(listener).toHaveBeenCalledTimes(1);
     expect(listener).toHaveBeenCalledWith(readStateSummary);
   });
 
   test("continues to later listeners when one listener throws", async () => {
     vi.stubGlobal("EventSource", FakeEventSource);
-    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const error = captureExpectedConsoleDiagnostics("error");
     const laterListener = vi.fn();
 
     function ThrowingListeners() {
@@ -296,7 +302,10 @@ describe("EventsProvider dispatch", () => {
     await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
 
     latestFakeEventSource()?.pushReadStateUpdated(readStateSummary);
-    expect(error).toHaveBeenCalledOnce();
+    expect(error.diagnostics).toEqual([
+      ["SSE listener for read_state_updated threw", expect.any(Error)],
+    ]);
+    error.stop();
     expect(laterListener).toHaveBeenCalledWith(readStateSummary);
   });
 });
