@@ -1,4 +1,6 @@
-import { useSignalState, If } from "../hooks/react-state";
+import type { FormEvent } from "react";
+
+import { useSignalState } from "../hooks/react-state";
 import Modal from "./modal";
 import { createChannel, type ChannelType } from "../api";
 import { CHANNEL_NAME_MAX_LEN } from "../constants";
@@ -18,7 +20,7 @@ export default function AddChannelModal(props: { open: boolean; onClose: () => v
     props.onClose();
   };
 
-  const handleSubmit = async (e: any) => {
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const trimmed = name().trim();
     if (trimmed.length === 0) {
@@ -62,7 +64,7 @@ export default function AddChannelModal(props: { open: boolean; onClose: () => v
           autoFocus
           maxLength={CHANNEL_NAME_MAX_LEN}
           value={name()}
-          onInput={(e) => setName(e.currentTarget.value)}
+          onChange={(e) => setName(e.currentTarget.value)}
         />
         <fieldset className="flex gap-2">
           <legend className="text-muted-foreground text-sm mb-1">Channel type</legend>
@@ -87,9 +89,7 @@ export default function AddChannelModal(props: { open: boolean; onClose: () => v
             Voice
           </label>
         </fieldset>
-        <If when={error()}>
-          <p className="text-destructive text-sm">{error()}</p>
-        </If>
+        {error() ? <p className="text-destructive text-sm">{error()}</p> : null}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="ghost" onClick={close}>
             Cancel

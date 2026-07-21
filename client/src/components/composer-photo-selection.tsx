@@ -1,11 +1,6 @@
-import {
-  List,
-  If,
-  useSignalState,
-  registerCleanup,
-  type Getter,
-  type JSX,
-} from "../hooks/react-state";
+import type { ChangeEvent } from "react";
+
+import { useSignalState, registerCleanup } from "../hooks/react-state";
 import {
   MESSAGE_PHOTO_ACCEPT,
   MESSAGE_PHOTO_MAX_BYTES,
@@ -21,8 +16,8 @@ export interface SelectedComposerPhoto {
 }
 
 interface ComposerPhotoSelectionController {
-  photos: Getter<SelectedComposerPhoto[]>;
-  error: Getter<string | null>;
+  photos: () => SelectedComposerPhoto[];
+  error: () => string | null;
   addFiles: (files: FileList | readonly File[] | null | undefined) => void;
   removePhoto: (id: string) => void;
   clearPhotos: () => void;
@@ -128,7 +123,7 @@ export function PhotoAttachControl(props: {
   onFilesSelected: (files: FileList) => void;
   disabled?: boolean;
   describedBy?: string;
-  class?: string;
+  className?: string;
 }) {
   let inputRef: HTMLInputElement | null | undefined;
 
@@ -136,7 +131,7 @@ export function PhotoAttachControl(props: {
     if (!props.disabled) inputRef?.click();
   };
 
-  const handleFileChange: JSX.EventHandler<HTMLInputElement, Event> = (event) => {
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const files = event.currentTarget.files;
     if (files) props.onFilesSelected(files);
     event.currentTarget.value = "";
@@ -146,7 +141,7 @@ export function PhotoAttachControl(props: {
     <>
       <button
         type="button"
-        className={props.class ?? DEFAULT_ATTACH_BUTTON_CLASS}
+        className={props.className ?? DEFAULT_ATTACH_BUTTON_CLASS}
         aria-label="Attach photos"
         aria-describedby={props.describedBy}
         title="Attach photos"
@@ -180,64 +175,58 @@ export function SelectedPhotoPreviewList(props: {
   disabled?: boolean;
   onRemove: (id: string) => void;
 }) {
-  const selectedPhotoLabel = () =>
+  const selectedPhotoLabel =
     props.photos.length === 1 ? "1 selected photo" : `${props.photos.length} selected photos`;
 
+  if (props.photos.length === 0 && props.error === null) return null;
+
   return (
-    <If when={props.photos.length > 0 || props.error !== null}>
-      <div className="mb-2 flex flex-col gap-2">
-        <If when={props.photos.length > 0}>
-          <div
-            role="list"
-            aria-label={selectedPhotoLabel()}
-            className="flex max-w-full flex-wrap gap-2"
-          >
-            <List each={props.photos}>
-              {(photo, index) => (
+    <div className="mb-2 flex flex-col gap-2">
+      {props.photos.length > 0 ? (
+        <div
+          role="list"
+          aria-label={selectedPhotoLabel}
+          className="flex max-w-full flex-wrap gap-2"
+        >
+          {props.photos.map((photo, index) => (
+            <div
+              key={photo.id}
+              role="listitem"
+              className="relative h-24 w-24 overflow-hidden rounded-lg border border-border bg-muted"
+            >
+              {photo.previewUrl.length > 0 ? (
+                <img
+                  src={photo.previewUrl}
+                  alt={`Selected photo ${index + 1}: ${photo.file.name}`}
+                  className="h-full w-full object-cover"
+                />
+              ) : (
                 <div
-                  role="listitem"
-                  className="relative h-24 w-24 overflow-hidden rounded-lg border border-border bg-muted"
+                  role="img"
+                  aria-label={`Selected photo ${index + 1}: ${photo.file.name}`}
+                  className="flex h-full w-full items-center justify-center p-2 text-center text-xs text-muted-foreground"
                 >
-                  <If
-                    when={photo.previewUrl.length > 0}
-                    fallback={
-                      <div
-                        role="img"
-                        aria-label={`Selected photo ${index() + 1}: ${photo.file.name}`}
-                        className="flex h-full w-full items-center justify-center p-2 text-center text-xs text-muted-foreground"
-                      >
-                        Photo selected
-                      </div>
-                    }
-                  >
-                    <img
-                      src={photo.previewUrl}
-                      alt={`Selected photo ${index() + 1}: ${photo.file.name}`}
-                      className="h-full w-full object-cover"
-                    />
-                  </If>
-                  <button
-                    type="button"
-                    className="absolute right-1 top-1 rounded-md bg-background/90 px-2 py-1 text-xs font-medium text-foreground shadow focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-                    aria-label={`Remove selected photo ${index() + 1}: ${photo.file.name}`}
-                    disabled={props.disabled}
-                    onClick={() => props.onRemove(photo.id)}
-                  >
-                    Remove
-                  </button>
+                  Photo selected
                 </div>
               )}
-            </List>
-          </div>
-        </If>
-        <If when={props.error}>
-          {(error) => (
-            <p id={props.errorId} role="alert" className="text-sm font-medium text-destructive">
-              {error()}
-            </p>
-          )}
-        </If>
-      </div>
-    </If>
+              <button
+                type="button"
+                className="absolute right-1 top-1 rounded-md bg-background/90 px-2 py-1 text-xs font-medium text-foreground shadow focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                aria-label={`Remove selected photo ${index + 1}: ${photo.file.name}`}
+                disabled={props.disabled}
+                onClick={() => props.onRemove(photo.id)}
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {props.error ? (
+        <p id={props.errorId} role="alert" className="text-sm font-medium text-destructive">
+          {props.error}
+        </p>
+      ) : null}
+    </div>
   );
 }

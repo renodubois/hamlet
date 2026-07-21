@@ -1,4 +1,4 @@
-import { List, If, type JSX } from "../hooks/react-state";
+import { Fragment, type HTMLAttributes, type ReactNode } from "react";
 import { messageDisplayName, resolveServerUrl, type CustomEmoji } from "../api";
 import { useOptionalCustomEmojis } from "../contexts/custom-emojis";
 import { parseCustomEmojiMarkers, type CustomEmojiMarkerToken } from "../emoji/custom-emojis";
@@ -41,16 +41,15 @@ export interface MessageReferencePreviewProps {
   id?: string;
   reference?: MessageReferencePreviewSource | null;
   targetId?: number | null;
-  class?: string;
   className?: string;
   authorClass?: string;
   textClass?: string;
   authorPrefix?: string;
   ariaLabelPrefix?: string;
-  role?: JSX.HTMLAttributes<HTMLDivElement>["role"];
+  role?: HTMLAttributes<HTMLDivElement>["role"];
   ariaLive?: "off" | "polite" | "assertive";
   onActivate?: () => void;
-  children?: JSX.Element;
+  children?: ReactNode;
 }
 
 function referenceAuthorName(reference: MessageReferencePreviewSource | null | undefined): string {
@@ -159,7 +158,7 @@ export function messageReferencePreviewAriaLabel(
   return `Replying to ${author}: ${messageReferencePreviewText(reference)}`;
 }
 
-function renderCustomEmojiToken(token: PreviewCustomEmojiToken): JSX.Element {
+function renderCustomEmojiToken(token: PreviewCustomEmojiToken): ReactNode {
   if (!token.emoji) {
     return <span title={`Custom emoji ${token.marker.marker} is unavailable`}>{token.label}</span>;
   }
@@ -174,83 +173,82 @@ function renderCustomEmojiToken(token: PreviewCustomEmojiToken): JSX.Element {
   );
 }
 
+function keyedTokens(tokens: readonly PreviewRenderToken[]) {
+  const occurrences = new Map<string, number>();
+  return tokens.map((token) => {
+    const base = token.kind === "text" ? `text:${token.value}` : `custom:${token.marker.marker}`;
+    const occurrence = occurrences.get(base) ?? 0;
+    occurrences.set(base, occurrence + 1);
+    return { token, key: occurrence === 0 ? base : `${base}:${occurrence}` };
+  });
+}
+
 function PreviewText(props: { reference: MessageReferencePreviewSource }) {
   const customEmojis = useOptionalCustomEmojis();
   const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
-  const text = () => normalizedText(props.reference);
-  const tokens = () => textTokens(text(), customEmojiById);
+  const text = normalizedText(props.reference);
 
-  return (
-    <If
-      when={props.reference.deleted_at == null && text().length > 0}
-      fallback={messageReferencePreviewText(props.reference)}
-    >
-      <List each={tokens()}>
-        {(token) => (token.kind === "text" ? token.value : renderCustomEmojiToken(token))}
-      </List>
-    </If>
-  );
+  if (props.reference.deleted_at != null || text.length === 0) {
+    return messageReferencePreviewText(props.reference);
+  }
+
+  return keyedTokens(textTokens(text, customEmojiById)).map(({ token, key }) => (
+    <Fragment key={key}>
+      {token.kind === "text" ? token.value : renderCustomEmojiToken(token)}
+    </Fragment>
+  ));
 }
 
 export default function MessageReferencePreview(props: MessageReferencePreviewProps) {
-  const rootClass = () => {
-    const base = props.className ?? props.class ?? DEFAULT_ROOT_CLASS;
-    return props.onActivate
-      ? `${base} cursor-pointer rounded-sm text-left transition-colors hover:bg-primary/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring`
-      : base;
-  };
-  const authorClass = () => props.authorClass ?? DEFAULT_AUTHOR_CLASS;
-  const textClass = () => props.textClass ?? DEFAULT_TEXT_CLASS;
-  const ariaLabel = () =>
-    `${props.ariaLabelPrefix ?? ""}${messageReferencePreviewAriaLabel(
-      props.reference,
-      props.targetId,
-    )}`;
-  const content = () => (
+  const baseClass = props.className ?? DEFAULT_ROOT_CLASS;
+  const rootClass = props.onActivate
+    ? `${baseClass} cursor-pointer rounded-sm text-left transition-colors hover:bg-primary/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring`
+    : baseClass;
+  const authorClass = props.authorClass ?? DEFAULT_AUTHOR_CLASS;
+  const textClass = props.textClass ?? DEFAULT_TEXT_CLASS;
+  const ariaLabel = `${props.ariaLabelPrefix ?? ""}${messageReferencePreviewAriaLabel(
+    props.reference,
+    props.targetId,
+  )}`;
+  const content = (
     <>
-      <span className={authorClass()}>{`${props.authorPrefix ?? ""}${referenceAuthorName(
+      <span className={authorClass}>{`${props.authorPrefix ?? ""}${referenceAuthorName(
         props.reference,
       )}`}</span>
       <span aria-hidden="true" className="shrink-0 text-muted-foreground/70">
         —
       </span>
-      <span className={textClass()}>
-        <If when={props.reference} fallback="Original message unavailable">
-          {(reference) => <PreviewText reference={reference()} />}
-        </If>
+      <span className={textClass}>
+        {props.reference ? (
+          <PreviewText reference={props.reference} />
+        ) : (
+          "Original message unavailable"
+        )}
       </span>
       {props.children}
     </>
   );
 
-  return (
-    <If
-      when={props.onActivate}
-      keyed
-      fallback={
-        <div
-          id={props.id}
-          className={rootClass()}
-          role={props.role}
-          aria-live={props.ariaLive}
-          aria-label={ariaLabel()}
-        >
-          {content()}
-        </div>
-      }
+  return props.onActivate ? (
+    <button
+      id={props.id}
+      type="button"
+      className={rootClass}
+      aria-live={props.ariaLive}
+      aria-label={ariaLabel}
+      onClick={props.onActivate}
     >
-      {(onActivate) => (
-        <button
-          id={props.id}
-          type="button"
-          className={rootClass()}
-          aria-live={props.ariaLive}
-          aria-label={ariaLabel()}
-          onClick={() => onActivate()}
-        >
-          {content()}
-        </button>
-      )}
-    </If>
+      {content}
+    </button>
+  ) : (
+    <div
+      id={props.id}
+      className={rootClass}
+      role={props.role}
+      aria-live={props.ariaLive}
+      aria-label={ariaLabel}
+    >
+      {content}
+    </div>
   );
 }

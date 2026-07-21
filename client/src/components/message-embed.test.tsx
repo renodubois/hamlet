@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
-import { render, screen } from "../test/testing-library";
+import { screen } from "@testing-library/react";
+import { renderNative } from "../test/render";
 import type { Embed } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
 import MessageEmbed from "./message-embed";
@@ -28,7 +29,7 @@ describe("<MessageEmbed>", () => {
       description: "A description.",
       site_name: "Example",
     });
-    const { container } = render(() => <MessageEmbed embed={embed} />);
+    const { container } = renderNative(<MessageEmbed embed={embed} />);
     expect(screen.getByRole("link", { name: /example domain/i })).toHaveAttribute(
       "href",
       "https://example.com",
@@ -48,7 +49,7 @@ describe("<MessageEmbed>", () => {
       iframe_width: 560,
       iframe_height: 315,
     });
-    const { container } = render(() => <MessageEmbed embed={embed} />);
+    const { container } = renderNative(<MessageEmbed embed={embed} />);
     const iframe = container.querySelector("iframe");
     expect(iframe).not.toBeNull();
     expect(iframe?.getAttribute("src")).toBe("https://www.youtube.com/embed/abc");
@@ -75,11 +76,27 @@ describe("<MessageEmbed>", () => {
       iframe_width: 600,
       iframe_height: 400,
     });
-    const { container } = render(() => <MessageEmbed embed={embed} />);
+    const { container } = renderNative(<MessageEmbed embed={embed} />);
     const iframe = container.querySelector("iframe");
     expect(iframe?.getAttribute("src")).toBe(
       "https://embed.bsky.app/embed/alice/app.bsky.feed.post/abc",
     );
+  });
+
+  test("prefers iframe media when a rich embed also has a photo", () => {
+    const embed = makeEmbed({
+      title: "Mixed media",
+      embed_type: "rich",
+      iframe_url: "https://player.example.com/embed/abc",
+      image_url: "https://example.com/fallback.jpg",
+    });
+    const { container } = renderNative(<MessageEmbed embed={embed} />);
+
+    expect(container.querySelector("iframe")).toHaveAttribute(
+      "src",
+      "https://player.example.com/embed/abc",
+    );
+    expect(container.querySelector("img")).toBeNull();
   });
 
   test("video embed with null iframe_url falls back to the link card", () => {
@@ -91,7 +108,7 @@ describe("<MessageEmbed>", () => {
       embed_type: "video",
       iframe_url: null,
     });
-    const { container } = render(() => <MessageEmbed embed={embed} />);
+    const { container } = renderNative(<MessageEmbed embed={embed} />);
     expect(container.querySelector("iframe")).toBeNull();
     expect(screen.getByText("No iframe available")).toBeInTheDocument();
   });
@@ -102,7 +119,7 @@ describe("<MessageEmbed>", () => {
       embed_type: "photo",
       image_url: "https://example.com/img.jpg",
     });
-    const { container } = render(() => <MessageEmbed embed={embed} />);
+    const { container } = renderNative(<MessageEmbed embed={embed} />);
     const img = container.querySelector("img");
     expect(img?.getAttribute("src")).toBe("https://example.com/img.jpg");
     // Photo mode doesn't render a description block.
@@ -111,12 +128,12 @@ describe("<MessageEmbed>", () => {
 
   test("shows the remove button only when onRemove is provided", () => {
     const embed = makeEmbed({ title: "T" });
-    const { unmount } = render(() => <MessageEmbed embed={embed} />);
+    const { unmount } = renderNative(<MessageEmbed embed={embed} />);
     expect(screen.queryByRole("button", { name: /remove embed/i })).toBeNull();
     unmount();
 
     const onRemove = vi.fn();
-    render(() => <MessageEmbed embed={embed} onRemove={onRemove} />);
+    renderNative(<MessageEmbed embed={embed} onRemove={onRemove} />);
     const btn = screen.getByRole("button", { name: /remove embed/i });
     expect(btn).toBeInTheDocument();
     btn.click();

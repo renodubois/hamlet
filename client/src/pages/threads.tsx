@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { useCallableResource, List, If } from "../hooks/react-state";
+import { useCallableResource } from "../hooks/react-state";
 import { listParticipatedThreads, messageDisplayName, type Message } from "../api";
 import AttachmentGrid from "../components/attachment-grid";
 import MessageText from "../components/message-text";
@@ -51,14 +51,12 @@ function previewMessageStateClass(
 }
 
 function PreviewAttachments(props: { message: Message }) {
-  return (
-    <If when={!isDeletedMessage(props.message) && props.message.attachments.length > 0}>
-      <AttachmentGrid
-        attachments={props.message.attachments}
-        authorName={messageDisplayName(props.message)}
-      />
-    </If>
-  );
+  return !isDeletedMessage(props.message) && props.message.attachments.length > 0 ? (
+    <AttachmentGrid
+      attachments={props.message.attachments}
+      authorName={messageDisplayName(props.message)}
+    />
+  ) : null;
 }
 
 function ReplyPreview(props: { reply: Message; currentUserId: number | null }) {
@@ -77,21 +75,22 @@ function ReplyPreview(props: { reply: Message; currentUserId: number | null }) {
         "bg-muted",
       )}`}
     >
-      <If
-        when={!isDeletedMessage(props.reply)}
-        fallback={<p className="italic text-muted-foreground">Reply deleted</p>}
-      >
-        <p className="text-xs font-semibold text-muted-foreground">
-          {messageDisplayName(props.reply)}
-        </p>
-        <MessageText
-          text={props.reply.text}
-          mentions={props.reply.mentions ?? []}
-          currentUserId={props.currentUserId}
-          className="mt-1 whitespace-pre-wrap break-words text-sm text-foreground"
-        />
-        <PreviewAttachments message={props.reply} />
-      </If>
+      {!isDeletedMessage(props.reply) ? (
+        <>
+          <p className="text-xs font-semibold text-muted-foreground">
+            {messageDisplayName(props.reply)}
+          </p>
+          <MessageText
+            text={props.reply.text}
+            mentions={props.reply.mentions ?? []}
+            currentUserId={props.currentUserId}
+            className="mt-1 whitespace-pre-wrap break-words text-sm text-foreground"
+          />
+          <PreviewAttachments message={props.reply} />
+        </>
+      ) : (
+        <p className="italic text-muted-foreground">Reply deleted</p>
+      )}
     </li>
   );
 }
@@ -118,28 +117,23 @@ export default function ThreadsView() {
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        <If when={threads.loading}>
-          <p className="text-muted-foreground">Loading threads...</p>
-        </If>
-
-        <If when={threads.error}>
+        {threads.error ? (
           <p role="alert" className="text-destructive">
             Error loading threads: {String(threads.error)}
           </p>
-        </If>
-
-        <If when={threads()?.length === 0}>
+        ) : threads.loading ? (
+          <p className="text-muted-foreground">Loading threads...</p>
+        ) : threads()?.length === 0 ? (
           <p className="text-muted-foreground">No participated threads yet.</p>
-        </If>
-
-        <div className="space-y-4">
-          <List each={threads() ?? []}>
-            {(thread) => {
+        ) : (
+          <div className="space-y-4">
+            {(threads() ?? []).map((thread) => {
               const replyCountText = () =>
                 `${thread.reply_count} ${thread.reply_count === 1 ? "reply" : "replies"}`;
               const threadHref = () => `/channel/${thread.channel.id}?thread=${thread.root.id}`;
               return (
                 <article
+                  key={thread.root.id}
                   data-mentioned-current-user={
                     previewMentionsCurrentUser(thread) ? "true" : undefined
                   }
@@ -174,32 +168,35 @@ export default function ThreadsView() {
                       "",
                     )}`}
                   >
-                    <If
-                      when={!isDeletedMessage(thread.root)}
-                      fallback={
-                        <p className="italic text-muted-foreground">Original message deleted</p>
-                      }
-                    >
-                      <p className="text-sm font-semibold text-muted-foreground">
-                        {messageDisplayName(thread.root)}
-                      </p>
-                      <MessageText
-                        text={thread.root.text}
-                        mentions={thread.root.mentions ?? []}
-                        currentUserId={currentUserId()}
-                        className="mt-1 whitespace-pre-wrap break-words text-foreground"
-                      />
-                      <PreviewAttachments message={thread.root} />
-                    </If>
+                    {!isDeletedMessage(thread.root) ? (
+                      <>
+                        <p className="text-sm font-semibold text-muted-foreground">
+                          {messageDisplayName(thread.root)}
+                        </p>
+                        <MessageText
+                          text={thread.root.text}
+                          mentions={thread.root.mentions ?? []}
+                          currentUserId={currentUserId()}
+                          className="mt-1 whitespace-pre-wrap break-words text-foreground"
+                        />
+                        <PreviewAttachments message={thread.root} />
+                      </>
+                    ) : (
+                      <p className="italic text-muted-foreground">Original message deleted</p>
+                    )}
                   </div>
 
-                  <If when={thread.recent_replies.length > 0}>
+                  {thread.recent_replies.length > 0 ? (
                     <ol className="mt-3 space-y-2" aria-label="Recent replies">
-                      <List each={thread.recent_replies}>
-                        {(reply) => <ReplyPreview reply={reply} currentUserId={currentUserId()} />}
-                      </List>
+                      {thread.recent_replies.map((reply) => (
+                        <ReplyPreview
+                          key={reply.id}
+                          reply={reply}
+                          currentUserId={currentUserId()}
+                        />
+                      ))}
                     </ol>
-                  </If>
+                  ) : null}
 
                   <Link
                     to={threadHref()}
@@ -210,9 +207,9 @@ export default function ThreadsView() {
                   </Link>
                 </article>
               );
-            }}
-          </List>
-        </div>
+            })}
+          </div>
+        )}
       </div>
     </section>
   );

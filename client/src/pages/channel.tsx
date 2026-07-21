@@ -1,12 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   useAfterRenderEffect,
-  If,
   useComputedValue,
   useCallableResource,
   useSignalState,
-  useStableDomId,
   registerCleanup,
   useMountEffect,
 } from "../hooks/react-state";
@@ -70,8 +68,8 @@ export default function ChannelView() {
   const [submitting, setSubmitting] = useSignalState(false);
   const [replyTarget, setReplyTarget] = useSignalState<Message | null>(null);
   const photoSelection = createComposerPhotoSelection();
-  const photoSelectionErrorId = useStableDomId();
-  const replyBannerId = useStableDomId();
+  const photoSelectionErrorId = useId();
+  const replyBannerId = useId();
   const [focusComposerRootId, setFocusComposerRootId] = useSignalState<number | null>(null);
   const [hasNewMessagesBelow, setHasNewMessagesBelow] = useSignalState(false);
   const [scrollToBottomRequestVersion, setScrollToBottomRequestVersion] = useState(0);
@@ -419,6 +417,8 @@ export default function ChannelView() {
     return <div>Error: channel required</div>;
   }
 
+  const currentReplyTarget = replyTarget();
+
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-background text-foreground">
       <section className="flex-shrink-0 border-b border-border bg-background px-4 py-3 shadow-sm">
@@ -454,7 +454,7 @@ export default function ChannelView() {
             onMentionUsers={primeMentionUsers}
             searchMentionUsers={searchUsers}
           />
-          <If when={showNewMessagesBelow()}>
+          {showNewMessagesBelow() ? (
             <div className="sticky bottom-4 z-10 flex justify-center px-4" aria-live="polite">
               <button
                 type="button"
@@ -465,7 +465,7 @@ export default function ChannelView() {
                 New messages — Jump to bottom
               </button>
             </div>
-          </If>
+          ) : null}
         </div>
         {openThreadRootId() !== null && (
           <ThreadPanel
@@ -502,32 +502,30 @@ export default function ChannelView() {
             disabled={submitting()}
             onRemove={photoSelection.removePhoto}
           />
-          <If when={replyTarget()}>
-            {(target) => (
-              <MessageReferencePreview
-                id={replyBannerId}
-                reference={target()}
-                className="mb-2 flex min-w-0 items-center gap-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-sm text-foreground"
-                authorClass="shrink-0 font-semibold"
-                textClass="min-w-0 flex-1 truncate text-muted-foreground"
-                authorPrefix="Replying to "
-                ariaLabelPrefix="Inline reply target: "
-                role="status"
-                ariaLive="polite"
+          {currentReplyTarget ? (
+            <MessageReferencePreview
+              id={replyBannerId}
+              reference={currentReplyTarget}
+              className="mb-2 flex min-w-0 items-center gap-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-sm text-foreground"
+              authorClass="shrink-0 font-semibold"
+              textClass="min-w-0 flex-1 truncate text-muted-foreground"
+              authorPrefix="Replying to "
+              ariaLabelPrefix="Inline reply target: "
+              role="status"
+              ariaLive="polite"
+            >
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 text-sm font-medium text-primary transition-colors hover:bg-primary/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label={`Dismiss inline reply to message by ${messageDisplayName(
+                  currentReplyTarget,
+                )}: ${inlineReplyPreviewText(currentReplyTarget)}`}
+                onClick={dismissInlineReplyTarget}
               >
-                <button
-                  type="button"
-                  className="rounded-md px-2 py-1 text-sm font-medium text-primary transition-colors hover:bg-primary/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label={`Dismiss inline reply to message by ${messageDisplayName(
-                    target(),
-                  )}: ${inlineReplyPreviewText(target())}`}
-                  onClick={dismissInlineReplyTarget}
-                >
-                  Cancel
-                </button>
-              </MessageReferencePreview>
-            )}
-          </If>
+                Cancel
+              </button>
+            </MessageReferencePreview>
+          ) : null}
           <div className="flex items-center gap-2">
             <PhotoAttachControl
               onFilesSelected={photoSelection.addFiles}

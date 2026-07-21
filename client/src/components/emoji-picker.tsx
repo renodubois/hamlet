@@ -1,14 +1,13 @@
-import { useEffect, useRef } from "react";
-import { flushSync } from "react-dom";
 import {
-  useComputedValue,
-  useSignalState,
-  List,
-  If,
-  ignoreReactiveTracking,
-  PortalRoot,
-  type JSX,
-} from "../hooks/react-state";
+  useEffect,
+  useId,
+  useRef,
+  type ChangeEvent,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
+import { createPortal, flushSync } from "react-dom";
+import { useComputedValue, useSignalState } from "../hooks/react-state";
 import { getServerUrl } from "../api";
 import { CONSERVATIVE_EMOJIS, type EmojiEntry } from "../emoji/emoji-data";
 import { searchEmojis } from "../emoji/emoji-search";
@@ -18,8 +17,6 @@ const PICKER_WIDTH = 320;
 const PICKER_MAX_HEIGHT = 360;
 const VIEWPORT_MARGIN = 8;
 const ANCHOR_GAP = 8;
-const EMOJI_RESULTS_GRID_ID = "emoji-results-grid";
-
 export const EMOJI_GRID_COLUMNS = 8;
 
 function pickerPosition(
@@ -79,24 +76,25 @@ function isCustomEmoji(entry: EmojiEntry): boolean {
   return entry.kind === "custom" && !!entry.imageUrl;
 }
 
-function emojiGridcellId(entry: EmojiEntry): string {
-  const shortcodeKey = entry.shortcodes
-    .join("-")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  const emojiKey = Array.from(entry.emoji)
-    .map((char) => char.codePointAt(0)?.toString(16) ?? "emoji")
-    .join("-");
+function emojiEntryKey(entry: EmojiEntry): string {
+  return entry.kind === "custom" ? `custom:${entry.id}` : `native:${entry.emoji}`;
+}
 
-  return `emoji-gridcell-${shortcodeKey || emojiKey}`;
+function emojiGridcellId(gridId: string, entry: EmojiEntry): string {
+  return `${gridId}-${emojiEntryKey(entry)}`;
+}
+
+function shortcodeKey(shortcodes: readonly string[], index: number): string {
+  const shortcode = shortcodes[index];
+  const duplicateNumber = shortcodes.slice(0, index).filter((value) => value === shortcode).length;
+  return duplicateNumber === 0 ? shortcode : `${shortcode}:${duplicateNumber + 1}`;
 }
 
 function isArrowKey(key: string): boolean {
   return key === "ArrowLeft" || key === "ArrowRight" || key === "ArrowUp" || key === "ArrowDown";
 }
 
-function isModifiedKeyboardEvent(event: any): boolean {
+function isModifiedKeyboardEvent(event: ReactKeyboardEvent<HTMLElement>): boolean {
   return event.shiftKey || event.ctrlKey || event.metaKey || event.altKey;
 }
 
@@ -111,13 +109,14 @@ export default function EmojiPicker(props: {
   onSelect: (emoji: string) => void;
   onClose: () => void;
 }) {
+  const resultsGridId = useId();
   const panelRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const gridScrollRef = useRef<HTMLDivElement | null>(null);
   const restoreFocusOnClose = useRef(true);
   const [query, setQuery] = useSignalState("");
   const [activeIndex, setActiveIndex] = useSignalState(-1);
-  const [panelStyle, setPanelStyle] = useSignalState<JSX.CSSProperties>({
+  const [panelStyle, setPanelStyle] = useSignalState<CSSProperties>({
     left: `${VIEWPORT_MARGIN}px`,
     top: `${VIEWPORT_MARGIN}px`,
     width: `${PICKER_WIDTH}px`,
@@ -132,7 +131,7 @@ export default function EmojiPicker(props: {
   });
   const activeGridcellId = useComputedValue(() => {
     const entry = activeEntry();
-    return entry ? emojiGridcellId(entry) : undefined;
+    return entry ? emojiGridcellId(resultsGridId, entry) : undefined;
   });
 
   const updatePosition = () => {
@@ -148,7 +147,9 @@ export default function EmojiPicker(props: {
     const entry = filtered()[index];
     if (!entry) return;
 
-    document.getElementById(emojiGridcellId(entry))?.scrollIntoView?.({ block: "nearest" });
+    document
+      .getElementById(emojiGridcellId(resultsGridId, entry))
+      ?.scrollIntoView?.({ block: "nearest" });
   };
 
   const moveActiveIndex = (delta: number) => {
@@ -166,7 +167,7 @@ export default function EmojiPicker(props: {
     props.onClose();
   };
 
-  const handlePanelKeyDown = (event: any) => {
+  const handlePanelKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const activeElement = document.activeElement;
     if (!activeElement || !panelRef.current?.contains(activeElement)) return;
 
@@ -176,7 +177,7 @@ export default function EmojiPicker(props: {
       return;
     }
 
-    const isComposing = Boolean(event.isComposing || event.nativeEvent?.isComposing);
+    const isComposing = event.nativeEvent.isComposing;
     if (isComposing) return;
 
     if (event.key === "Enter") {
@@ -212,7 +213,7 @@ export default function EmojiPicker(props: {
 
     restoreFocusOnClose.current = true;
     setQuery("");
-    setActiveIndex(ignoreReactiveTracking(() => (searchEmojis("", emojis()).length > 0 ? 0 : -1)));
+    setActiveIndex(searchEmojis("", emojis()).length > 0 ? 0 : -1);
     const previouslyFocused = document.activeElement as HTMLElement | null;
     queueMicrotask(() => {
       if (gridScrollRef.current) gridScrollRef.current.scrollTop = 0;
@@ -220,12 +221,12 @@ export default function EmojiPicker(props: {
       searchRef.current?.focus();
     });
 
-    const handleKeyDown = (event: any) => {
+    const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
       props.onClose();
     };
-    const handleMouseDown = (event: any) => {
+    const handleMouseDown = (event: MouseEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
       if (panelRef.current?.contains(target)) return;
@@ -259,170 +260,149 @@ export default function EmojiPicker(props: {
     }
   }, [query(), props.emojis, props.open]);
 
-  return (
-    <If when={props.open}>
-      <PortalRoot>
-        <div
-          ref={(el) => {
-            panelRef.current = el;
-          }}
-          role="dialog"
-          aria-label="Emoji picker"
-          className="fixed z-50 flex max-h-[360px] flex-col overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-md"
-          style={panelStyle()}
-          onKeyDown={handlePanelKeyDown}
-        >
-          <div className="flex-shrink-0 border-b border-border p-3">
-            <Input
-              ref={(el: HTMLInputElement | null) => {
-                searchRef.current = el;
-              }}
-              role="combobox"
-              aria-label="Search and select emoji"
-              aria-expanded="true"
-              aria-haspopup="grid"
-              aria-controls={EMOJI_RESULTS_GRID_ID}
-              aria-activedescendant={activeGridcellId()}
-              placeholder="Search emojis"
-              spellCheck="false"
-              value={query()}
-              onInput={(event) => setQuery(event.currentTarget.value)}
-            />
-          </div>
-          <div
-            ref={(el) => {
-              gridScrollRef.current = el;
-            }}
-            className="max-h-[224px] overflow-y-auto p-3"
-          >
-            <div
-              id={EMOJI_RESULTS_GRID_ID}
-              className="space-y-1"
-              role="grid"
-              aria-label="Emoji results"
-            >
-              <If
-                when={filtered().length > 0}
-                fallback={
-                  <div role="row">
-                    <div
-                      role="gridcell"
-                      className="px-2 py-6 text-center text-sm text-muted-foreground"
-                    >
-                      No emojis found.
-                    </div>
-                  </div>
-                }
-              >
-                <List each={rows()}>
-                  {(row, rowIndex) => (
-                    <div className="flex gap-1" role="row">
-                      <List each={row}>
-                        {(entry, cellIndex) => {
-                          const index = () => rowIndex() * EMOJI_GRID_COLUMNS + cellIndex();
-                          const isActive = () => activeIndex() === index();
-                          const label = () => emojiLabel(entry);
+  if (!props.open) return null;
 
-                          return (
-                            <div
-                              id={emojiGridcellId(entry)}
-                              role="gridcell"
-                              aria-selected={isActive() ? "true" : "false"}
-                              aria-label={label()}
-                              onMouseEnter={() => setActiveIndex(index())}
+  const active = activeEntry();
+
+  return createPortal(
+    <div
+      ref={(el) => {
+        panelRef.current = el;
+      }}
+      role="dialog"
+      aria-label="Emoji picker"
+      className="fixed z-50 flex max-h-[360px] flex-col overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-md"
+      style={panelStyle()}
+      onKeyDown={handlePanelKeyDown}
+    >
+      <div className="flex-shrink-0 border-b border-border p-3">
+        <Input
+          ref={(el: HTMLInputElement | null) => {
+            searchRef.current = el;
+          }}
+          role="combobox"
+          aria-label="Search and select emoji"
+          aria-expanded="true"
+          aria-haspopup="grid"
+          aria-controls={resultsGridId}
+          aria-activedescendant={activeGridcellId()}
+          placeholder="Search emojis"
+          spellCheck="false"
+          value={query()}
+          onChange={(event: ChangeEvent<HTMLInputElement>) => setQuery(event.currentTarget.value)}
+        />
+      </div>
+      <div
+        ref={(el) => {
+          gridScrollRef.current = el;
+        }}
+        className="max-h-[224px] overflow-y-auto p-3"
+      >
+        <div id={resultsGridId} className="space-y-1" role="grid" aria-label="Emoji results">
+          {filtered().length > 0 ? (
+            rows().map((row, rowIndex) => (
+              <div key={row.map(emojiEntryKey).join("|")} className="flex gap-1" role="row">
+                {row.map((entry, cellIndex) => {
+                  const index = rowIndex * EMOJI_GRID_COLUMNS + cellIndex;
+                  const isActive = activeIndex() === index;
+                  const label = emojiLabel(entry);
+                  const imageUrl = isCustomEmoji(entry) ? entry.imageUrl : undefined;
+
+                  return (
+                    <div
+                      key={emojiEntryKey(entry)}
+                      id={emojiGridcellId(resultsGridId, entry)}
+                      role="gridcell"
+                      aria-selected={isActive ? "true" : "false"}
+                      aria-label={label}
+                      onMouseEnter={() => setActiveIndex(index)}
+                    >
+                      <button
+                        type="button"
+                        tabIndex={-1}
+                        className={`relative flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-xl leading-none transition-colors focus:outline-none ${
+                          isActive
+                            ? "bg-accent text-accent-foreground shadow-inner ring-2 ring-ring"
+                            : "hover:bg-accent focus:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+                        }`}
+                        aria-label={label}
+                        title={entry.shortcodes.join(" ")}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => selectEntry(entry)}
+                      >
+                        {imageUrl ? (
+                          <img
+                            src={resolveImageUrl(imageUrl)}
+                            alt=""
+                            className="h-6 w-6 object-contain"
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <span aria-hidden="true">{entry.emoji}</span>
+                        )}
+                        {isCustomEmoji(entry) && entry.animated ? (
+                          <>
+                            <span
+                              className="absolute bottom-0 right-0 rounded bg-purple-700 px-0.5 text-[8px] font-bold uppercase leading-3 text-white"
+                              aria-hidden="true"
+                              title="Animated custom emoji"
                             >
-                              <button
-                                type="button"
-                                tabIndex={-1}
-                                className={`relative flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-xl leading-none transition-colors focus:outline-none ${
-                                  isActive()
-                                    ? "bg-accent text-accent-foreground shadow-inner ring-2 ring-ring"
-                                    : "hover:bg-accent focus:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
-                                }`}
-                                aria-label={label()}
-                                title={entry.shortcodes.join(" ")}
-                                onMouseDown={(event) => event.preventDefault()}
-                                onClick={() => selectEntry(entry)}
-                              >
-                                <If
-                                  when={isCustomEmoji(entry) && entry.imageUrl}
-                                  fallback={<span aria-hidden="true">{entry.emoji}</span>}
-                                >
-                                  {(imageUrl) => (
-                                    <img
-                                      src={resolveImageUrl(imageUrl())}
-                                      alt=""
-                                      className="h-6 w-6 object-contain"
-                                      aria-hidden="true"
-                                    />
-                                  )}
-                                </If>
-                                <If when={isCustomEmoji(entry) && entry.animated}>
-                                  <span
-                                    className="absolute bottom-0 right-0 rounded bg-purple-700 px-0.5 text-[8px] font-bold uppercase leading-3 text-white"
-                                    aria-hidden="true"
-                                    title="Animated custom emoji"
-                                  >
-                                    A
-                                  </span>
-                                  <span className="sr-only">Animated custom emoji</span>
-                                </If>
-                              </button>
-                            </div>
-                          );
-                        }}
-                      </List>
+                              A
+                            </span>
+                            <span className="sr-only">Animated custom emoji</span>
+                          </>
+                        ) : null}
+                      </button>
                     </div>
-                  )}
-                </List>
-              </If>
+                  );
+                })}
+              </div>
+            ))
+          ) : (
+            <div role="row">
+              <div role="gridcell" className="px-2 py-6 text-center text-sm text-muted-foreground">
+                No emojis found.
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      {active ? (
+        <div
+          className="flex-shrink-0 border-t border-border bg-muted px-3 py-2"
+          role="group"
+          aria-label="Emoji shortcodes"
+        >
+          <div className="flex items-start gap-3">
+            {isCustomEmoji(active) && active.imageUrl ? (
+              <img
+                src={resolveImageUrl(active.imageUrl)}
+                alt=""
+                className="h-8 w-8 object-contain"
+                aria-hidden="true"
+              />
+            ) : (
+              <span className="text-2xl leading-none" aria-hidden="true">
+                {active.emoji}
+              </span>
+            )}
+            <div className="flex flex-1 flex-wrap gap-1 text-xs text-muted-foreground">
+              {isCustomEmoji(active) && active.animated ? (
+                <span className="rounded bg-purple-700 px-1.5 py-0.5 text-white">animated</span>
+              ) : null}
+              {active.shortcodes.map((shortcode, index) => (
+                <code
+                  key={shortcodeKey(active.shortcodes, index)}
+                  className="rounded bg-primary/10 px-1.5 py-0.5 text-primary"
+                >
+                  {shortcode}
+                </code>
+              ))}
             </div>
           </div>
-          <If when={activeEntry()} keyed>
-            {(entry) => (
-              <div
-                className="flex-shrink-0 border-t border-border bg-muted px-3 py-2"
-                role="group"
-                aria-label="Emoji shortcodes"
-              >
-                <div className="flex items-start gap-3">
-                  <If
-                    when={isCustomEmoji(entry) && entry.imageUrl}
-                    fallback={
-                      <span className="text-2xl leading-none" aria-hidden="true">
-                        {entry.emoji}
-                      </span>
-                    }
-                  >
-                    {(imageUrl) => (
-                      <img
-                        src={resolveImageUrl(imageUrl())}
-                        alt=""
-                        className="h-8 w-8 object-contain"
-                        aria-hidden="true"
-                      />
-                    )}
-                  </If>
-                  <div className="flex flex-1 flex-wrap gap-1 text-xs text-muted-foreground">
-                    <If when={isCustomEmoji(entry) && entry.animated}>
-                      <span className="rounded bg-purple-700 px-1.5 py-0.5 text-white">
-                        animated
-                      </span>
-                    </If>
-                    <List each={entry.shortcodes}>
-                      {(shortcode) => (
-                        <code className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
-                          {shortcode}
-                        </code>
-                      )}
-                    </List>
-                  </div>
-                </div>
-              </div>
-            )}
-          </If>
         </div>
-      </PortalRoot>
-    </If>
+      ) : null}
+    </div>,
+    document.body,
   );
 }

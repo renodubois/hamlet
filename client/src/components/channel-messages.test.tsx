@@ -124,6 +124,25 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+describe("<ChannelMessages> state precedence", () => {
+  test("an error suppresses retained channel message rows", () => {
+    render(() => (
+      <ChannelMessages
+        messages={[otherMessage]}
+        loading={false}
+        error={new Error("history unavailable")}
+        currentUserId={SELF_ID}
+      />
+    ));
+
+    expect(
+      screen.getByText("Error getting messages: Error: history unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("hello from them")).toBeNull();
+    expect(document.getElementById(channelMessageElementId(otherMessage.id))).toBeNull();
+  });
+});
+
 describe("<ChannelMessages> scroll layout", () => {
   test("bottom-anchors short histories without flex-end clipping overflowing histories", () => {
     const messages = Array.from({ length: 40 }, (_, index) =>

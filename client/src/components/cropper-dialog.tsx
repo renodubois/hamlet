@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import Cropper from "cropperjs";
-import { useAfterRenderEffect, useSignalState, registerCleanup, If } from "../hooks/react-state";
+import { useAfterRenderEffect, useSignalState, registerCleanup } from "../hooks/react-state";
 import Modal from "./modal";
 import { Button } from "./ui/button";
 
@@ -82,16 +82,17 @@ export default function CropperDialog(props: {
     }
   };
 
+  const currentObjectUrl = objectUrl();
+  const currentError = error();
+
   return (
     <Modal open={props.open} onClose={props.onCancel} title="Crop your picture" size="lg">
-      <If when={objectUrl()}>
-        {(u) => (
-          <div className="max-h-[60vh] overflow-hidden flex justify-center items-center bg-muted rounded-md">
-            <img ref={setImgRef} src={u()} alt="" className="max-w-full max-h-[50vh]" />
-          </div>
-        )}
-      </If>
-      <If when={error()}>{(msg) => <p className="text-destructive text-sm mt-3">{msg()}</p>}</If>
+      {currentObjectUrl ? (
+        <div className="max-h-[60vh] overflow-hidden flex justify-center items-center bg-muted rounded-md">
+          <img ref={setImgRef} src={currentObjectUrl} alt="" className="max-w-full max-h-[50vh]" />
+        </div>
+      ) : null}
+      {currentError ? <p className="text-destructive text-sm mt-3">{currentError}</p> : null}
       <div className="flex gap-2 justify-end mt-4">
         <Button type="button" variant="ghost" onClick={props.onCancel} disabled={saving()}>
           Cancel

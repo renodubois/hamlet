@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "../test/testing-library";
+import { act, fireEvent, render, screen, waitFor } from "../test/testing-library";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { expectNoA11yViolations } from "../test/a11y";
 import VoiceSettings from "./voice-settings";
@@ -179,6 +179,41 @@ describe("<VoiceSettings>", () => {
     expect(screen.getByRole("option", { name: "Camera 2" })).toBeInTheDocument();
     // "System default" appears once per select.
     expect(screen.getAllByRole("option", { name: "System default" }).length).toBe(3);
+  });
+
+  test("retains blank-device option identity across reorder and removal", async () => {
+    const firstCamera = fakeDevice("videoinput", "", "");
+    const secondCamera = fakeDevice("videoinput", "", "");
+    fakeMediaDevices.enumerateDevices.mockResolvedValue([firstCamera, secondCamera]);
+
+    render(() => <VoiceSettings />);
+    const camera = screen.getByLabelText("Camera") as HTMLSelectElement;
+    await waitFor(() => expect(camera.options).toHaveLength(3));
+
+    const firstOption = camera.options[1];
+    const secondOption = camera.options[2];
+    firstOption.dataset.testIdentity = "first";
+    secondOption.dataset.testIdentity = "second";
+
+    const deviceChange = fakeMediaDevices.addEventListener.mock.calls.find(
+      ([eventName]) => eventName === "devicechange",
+    )?.[1] as (() => Promise<void>) | undefined;
+    expect(deviceChange).toBeDefined();
+
+    fakeMediaDevices.enumerateDevices.mockResolvedValue([secondCamera, firstCamera]);
+    await act(async () => {
+      await deviceChange?.();
+    });
+    expect(camera.options[1]).toBe(secondOption);
+    expect(camera.options[2]).toBe(firstOption);
+
+    fakeMediaDevices.enumerateDevices.mockResolvedValue([secondCamera]);
+    await act(async () => {
+      await deviceChange?.();
+    });
+    expect(camera.options).toHaveLength(2);
+    expect(camera.options[1]).toBe(secondOption);
+    expect(camera.options[1]).toHaveAttribute("data-test-identity", "second");
   });
 
   test("persists selected input and camera devices to localStorage", async () => {

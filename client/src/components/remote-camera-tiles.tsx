@@ -1,9 +1,9 @@
 import { useRef } from "react";
 
-import { useAfterRenderEffect, List, registerCleanup, If } from "../hooks/react-state";
+import { useAfterRenderEffect, registerCleanup } from "../hooks/react-state";
 import type { RemoteVideoTrack } from "livekit-client";
 import { useOptionalVoiceChat, type RemoteCameraTile } from "../contexts/voice-chat";
-import { cameraDisplayName } from "../voice/camera";
+import { cameraDisplayName, cameraKey } from "../voice/camera";
 import { CameraIcon } from "./icons";
 
 function AttachedRemoteCameraVideo(props: { track: RemoteVideoTrack; label: string }) {
@@ -48,29 +48,24 @@ function AttachedRemoteCameraVideo(props: { track: RemoteVideoTrack; label: stri
 }
 
 function RemoteCameraTileCard(props: { tile: RemoteCameraTile }) {
-  const name = () => cameraDisplayName(props.tile.stream);
+  const name = cameraDisplayName(props.tile.stream);
 
   return (
     <article
       className="min-w-0 rounded-md border border-border bg-muted p-2"
-      aria-label={`${name()}'s camera`}
+      aria-label={`${name}'s camera`}
     >
       <div className="flex aspect-video items-center justify-center rounded-md bg-black">
-        <If
-          when={props.tile.track}
-          fallback={
-            <p className="p-4 text-center text-sm text-white/80" role="status">
-              Connecting to {name()}'s camera…
-            </p>
-          }
-        >
-          {(track) => (
-            <AttachedRemoteCameraVideo track={track()} label={`${name()}'s camera video`} />
-          )}
-        </If>
+        {props.tile.track ? (
+          <AttachedRemoteCameraVideo track={props.tile.track} label={`${name}'s camera video`} />
+        ) : (
+          <p className="p-4 text-center text-sm text-white/80" role="status">
+            Connecting to {name}'s camera…
+          </p>
+        )}
       </div>
       <div className="mt-2 min-w-0">
-        <p className="truncate text-sm font-medium text-foreground">{name()}</p>
+        <p className="truncate text-sm font-medium text-foreground">{name}</p>
         <p className="text-xs text-muted-foreground">Camera</p>
       </div>
     </article>
@@ -81,28 +76,29 @@ export default function RemoteCameraTiles() {
   const voice = useOptionalVoiceChat();
   if (!voice) return null;
 
-  const tiles = () => voice.remoteCameraTiles();
+  const tiles = voice.remoteCameraTiles();
+  if (voice.activeChannelId() == null || tiles.length === 0) return null;
 
   return (
-    <If when={voice.activeChannelId() != null && tiles().length > 0}>
-      <section
-        className="flex-shrink-0 border-b border-border bg-card p-4 text-card-foreground"
-        role="region"
-        aria-label="Remote camera tiles"
-      >
-        <div className="mb-3 flex items-center gap-2">
-          <CameraIcon size={16} aria-hidden="true" />
-          <div className="min-w-0">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">Cameras</p>
-            <h2 className="text-lg font-semibold">
-              {tiles().length === 1 ? "1 camera live" : `${tiles().length} cameras live`}
-            </h2>
-          </div>
+    <section
+      className="flex-shrink-0 border-b border-border bg-card p-4 text-card-foreground"
+      role="region"
+      aria-label="Remote camera tiles"
+    >
+      <div className="mb-3 flex items-center gap-2">
+        <CameraIcon size={16} aria-hidden="true" />
+        <div className="min-w-0">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Cameras</p>
+          <h2 className="text-lg font-semibold">
+            {tiles.length === 1 ? "1 camera live" : `${tiles.length} cameras live`}
+          </h2>
         </div>
-        <div className="grid max-h-72 grid-cols-1 gap-3 overflow-y-auto sm:grid-cols-2 xl:grid-cols-3">
-          <List each={tiles()}>{(tile) => <RemoteCameraTileCard tile={tile} />}</List>
-        </div>
-      </section>
-    </If>
+      </div>
+      <div className="grid max-h-72 grid-cols-1 gap-3 overflow-y-auto sm:grid-cols-2 xl:grid-cols-3">
+        {tiles.map((tile) => (
+          <RemoteCameraTileCard key={cameraKey(tile.stream)} tile={tile} />
+        ))}
+      </div>
+    </section>
   );
 }

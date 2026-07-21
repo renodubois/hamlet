@@ -1,7 +1,7 @@
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, beforeEach, test, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "../test/testing-library";
-import { If } from "../hooks/react-state";
 import type { CameraStream } from "../api";
+import { renderNative } from "../test/render";
 
 const apiMock = vi.hoisted(() => ({
   getVoiceToken: vi.fn(),
@@ -58,7 +58,9 @@ const livekitMock = vi.hoisted(() => {
     }
 
     emit(event: string, ...args: unknown[]) {
-      this.listeners.get(event)?.forEach((listener) => listener(...args));
+      act(() => {
+        this.listeners.get(event)?.forEach((listener) => listener(...args));
+      });
     }
   }
 
@@ -79,9 +81,11 @@ const livekitMock = vi.hoisted(() => {
     });
 
     dispatchEnded() {
-      this.readyState = "ended";
-      [...this.endedListeners].forEach((listener) => listener());
-      this.endedListeners.clear();
+      act(() => {
+        this.readyState = "ended";
+        [...this.endedListeners].forEach((listener) => listener());
+        this.endedListeners.clear();
+      });
     }
   }
 
@@ -358,7 +362,7 @@ function VoiceHarness() {
       </div>
       <div data-testid="watching">{voice.watchingScreenShare()?.track_sid ?? "none"}</div>
       <div data-testid="watch-track">{voice.watchingScreenShareTrack() ? "video" : "none"}</div>
-      <If when={voice.lastError()}>{(message) => <div role="alert">{message()}</div>}</If>
+      {voice.lastError() ? <div role="alert">{voice.lastError()}</div> : null}
       <button type="button" onClick={() => void voice.join(42)}>
         Join 42
       </button>
@@ -462,11 +466,11 @@ function VoiceHarness() {
 }
 
 function renderVoiceHarness() {
-  render(() => (
+  renderNative(
     <VoiceChatProvider>
       <VoiceHarness />
-    </VoiceChatProvider>
-  ));
+    </VoiceChatProvider>,
+  );
 }
 
 async function joinVoiceChannel(buttonName = "Join 42", expectedChannelId = "42") {
@@ -841,6 +845,7 @@ describe("VoiceChatProvider screen sharing", () => {
       participant,
     );
     await waitFor(() => expect(screen.getByTestId("watch-track")).toHaveTextContent("video"));
+    const detachAllCallsBeforeStop = audioMock.router.detachAll.mock.calls.length;
 
     fireEvent.click(screen.getByRole("button", { name: "Stop watching" }));
 
@@ -850,7 +855,7 @@ describe("VoiceChatProvider screen sharing", () => {
     expect(screen.getByTestId("active-channel")).toHaveTextContent("42");
     expect(audioMock.router.attach).toHaveBeenCalledWith(micTrack);
     expect(audioMock.router.detach).not.toHaveBeenCalled();
-    expect(audioMock.router.detachAll).not.toHaveBeenCalled();
+    expect(audioMock.router.detachAll).toHaveBeenCalledTimes(detachAllCallsBeforeStop);
   });
 
   test("switching watched screen shares disables the previous stream before receiving the next", async () => {

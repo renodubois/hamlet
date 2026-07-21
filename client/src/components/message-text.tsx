@@ -3,12 +3,15 @@ import {
   Fragment,
   isValidElement,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+  type ReactElement,
+  type ReactNode,
 } from "react";
-
-import { useStableDomId, type JSX } from "../hooks/react-state";
 import { resolveServerUrl, type Channel, type CustomEmoji, type MentionUser } from "../api";
 import { useOptionalChannels } from "../contexts/channels";
 import { useOptionalCustomEmojis } from "../contexts/custom-emojis";
@@ -32,7 +35,10 @@ const INTERACTIVE_CURRENT_USER_MENTION_CLASS = `${CURRENT_USER_MENTION_CLASS} cu
 const PREVIEW_WIDTH = 256;
 const PREVIEW_VERTICAL_GAP = 8;
 
-export type MentionClickHandler = (user: MentionUser, event: any) => void;
+export type MentionClickHandler = (
+  user: MentionUser,
+  event: ReactMouseEvent<HTMLButtonElement>,
+) => void;
 
 export interface RichTextRenderOptions {
   text: string;
@@ -108,7 +114,7 @@ function renderCustomEmoji(
   storedName: string,
   byId: (id: number) => CustomEmoji | null,
   id: number,
-): JSX.Element {
+): ReactElement {
   const emoji = byId(id);
   if (!emoji) {
     return <span title={`Custom emoji ${marker} is unavailable`}>:{storedName}:</span>;
@@ -187,8 +193,8 @@ function renderPlainTextSegment(
   mentionedUsers: ReadonlyMap<number, MentionUser>,
   knownChannels: ReadonlyMap<number, Channel>,
   options: RichTextRenderOptions,
-): JSX.Element[] {
-  const parts: JSX.Element[] = [];
+): ReactNode[] {
+  const parts: ReactNode[] = [];
   let cursor = 0;
 
   for (const range of collectMarkerRanges(text)) {
@@ -223,7 +229,7 @@ function renderPlainTextSegment(
   return parts;
 }
 
-function renderMention(user: MentionUser, options: RichTextRenderOptions): JSX.Element {
+function renderMention(user: MentionUser, options: RichTextRenderOptions): ReactElement {
   if (!options.onMentionClick) {
     return (
       <span className={mentionClass(user, options.currentUserId)} title={`@${user.username}`}>
@@ -239,14 +245,14 @@ function renderMention(user: MentionUser, options: RichTextRenderOptions): JSX.E
       title={`@${user.username}`}
       aria-label={mentionAccessibleName(user)}
       aria-haspopup="dialog"
-      onClick={(event) => options.onMentionClick?.(user, event.nativeEvent ?? event)}
+      onClick={(event) => options.onMentionClick?.(user, event)}
     >
       {mentionLabel(user)}
     </button>
   );
 }
 
-function renderChannelMention(channel: Channel): JSX.Element {
+function renderChannelMention(channel: Channel): ReactElement {
   const label = `#${channel.name}`;
   if (channel.type !== "text") {
     return (
@@ -263,18 +269,18 @@ function renderChannelMention(channel: Channel): JSX.Element {
   );
 }
 
-function keyedRichTextPart(part: JSX.Element, key: string): JSX.Element {
+function keyedRichTextPart(part: ReactNode, key: string): ReactElement {
   if (isValidElement(part)) return cloneElement(part, { key });
   return <Fragment key={key}>{part}</Fragment>;
 }
 
-export function renderRichText(options: RichTextRenderOptions): JSX.Element[] {
+export function renderRichText(options: RichTextRenderOptions): ReactNode[] {
   const mentionedUsers = mentionUsersById(options.mentions ?? []);
   const knownChannels = channelsById(options.channels ?? []);
   const linkClass = options.linkClass ?? DEFAULT_LINK_CLASS;
-  const parts: JSX.Element[] = [];
+  const parts: ReactNode[] = [];
   let partIndex = 0;
-  const pushPart = (part: JSX.Element) => {
+  const pushPart = (part: ReactNode) => {
     parts.push(keyedRichTextPart(part, `part-${partIndex}`));
     partIndex += 1;
   };
@@ -305,11 +311,11 @@ export function renderTextWithMentionsAndCustomEmojis(
   text: string,
   mentions: readonly MentionUser[],
   byId: (id: number) => CustomEmoji | null,
-): JSX.Element[] {
+): ReactNode[] {
   return renderRichText({ text, mentions, customEmojiById: byId });
 }
 
-function previewPosition(anchor: HTMLElement): JSX.CSSProperties {
+function previewPosition(anchor: HTMLElement): CSSProperties {
   const rect = anchor.getBoundingClientRect();
   const viewportWidth = window.innerWidth > 0 ? window.innerWidth : 1024;
   const viewportHeight = window.innerHeight > 0 ? window.innerHeight : 768;
@@ -327,7 +333,6 @@ export default function MessageText(props: {
   text: string;
   mentions?: readonly MentionUser[];
   currentUserId?: number | null;
-  class?: string;
   className?: string;
   linkClass?: string;
   onMentionClick?: MentionClickHandler;
@@ -337,7 +342,7 @@ export default function MessageText(props: {
   const optionalChannels = useOptionalChannels();
   const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
   const channels = props.channels ?? optionalChannels?.channels() ?? [];
-  const previewId = useStableDomId();
+  const previewId = useId();
   const [preview, setPreview] = useState<MentionPreviewState | null>(null);
   const previewRef = useRef<MentionPreviewState | null>(preview);
   previewRef.current = preview;
@@ -351,15 +356,9 @@ export default function MessageText(props: {
   const handleMentionClick: MentionClickHandler = (user, event) => {
     previewOpenedAtRef.current = performance.now();
     event.stopPropagation();
-    const eventTarget = event.currentTarget ?? event.target;
-    const anchor =
-      eventTarget instanceof HTMLElement
-        ? eventTarget
-        : document.activeElement instanceof HTMLElement
-          ? document.activeElement
-          : document.body;
+    const anchor = event.currentTarget;
     setPreview({ user, anchor });
-    props.onMentionClick?.(user, event.nativeEvent ?? event);
+    props.onMentionClick?.(user, event);
   };
 
   useEffect(() => {
@@ -398,7 +397,7 @@ export default function MessageText(props: {
   }, []);
 
   return (
-    <div className={props.className ?? props.class ?? DEFAULT_TEXT_CLASS}>
+    <div className={props.className ?? DEFAULT_TEXT_CLASS}>
       {renderRichText({
         text: props.text,
         mentions: props.mentions ?? [],

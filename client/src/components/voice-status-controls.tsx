@@ -1,4 +1,4 @@
-import { If, useStaticSignalRerender } from "../hooks/react-state";
+import { useStaticSignalRerender } from "../hooks/react-state";
 import { useVoiceChat } from "../contexts/voice-chat";
 import { HeadphoneOffIcon, HeadphonesIcon, MicIcon, MicOffIcon, PhoneOffIcon } from "./icons";
 
@@ -20,9 +20,11 @@ export default function VoiceStatusControls() {
         title={voice.isMuted() ? "Unmute microphone" : "Mute microphone"}
         onClick={() => void voice.toggleMuted()}
       >
-        <If when={voice.isMuted()} fallback={<MicIcon size={16} aria-hidden="true" />}>
+        {voice.isMuted() ? (
           <MicOffIcon size={16} aria-hidden="true" />
-        </If>
+        ) : (
+          <MicIcon size={16} aria-hidden="true" />
+        )}
       </button>
       <button
         type="button"
@@ -36,11 +38,13 @@ export default function VoiceStatusControls() {
         title={voice.isDeafened() ? "Undeafen" : "Deafen"}
         onClick={() => void voice.toggleDeafened()}
       >
-        <If when={voice.isDeafened()} fallback={<HeadphonesIcon size={16} aria-hidden="true" />}>
+        {voice.isDeafened() ? (
           <HeadphoneOffIcon size={16} aria-hidden="true" />
-        </If>
+        ) : (
+          <HeadphonesIcon size={16} aria-hidden="true" />
+        )}
       </button>
-      <If when={voice.activeChannelId() != null}>
+      {voice.activeChannelId() != null ? (
         <button
           type="button"
           className="p-1 rounded-md transition-colors hover:bg-sidebar-accent text-destructive hover:text-destructive/80"
@@ -50,7 +54,7 @@ export default function VoiceStatusControls() {
         >
           <PhoneOffIcon size={16} aria-hidden="true" />
         </button>
-      </If>
+      ) : null}
     </div>
   );
 }

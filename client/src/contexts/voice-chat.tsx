@@ -1,13 +1,6 @@
-import { useRef } from "react";
+import { createContext, useContext, useRef, type ReactNode } from "react";
 
-import {
-  createContext,
-  useComputedValue,
-  useSignalState,
-  registerCleanup,
-  type JSX,
-  useContext,
-} from "../hooks/react-state";
+import { useComputedValue, useSignalState, registerCleanup } from "../hooks/react-state";
 import {
   type LocalTrackPublication,
   type LocalVideoTrack,
@@ -162,7 +155,7 @@ function stopCameraPublicationTrack(publication: LocalTrackPublication | undefin
 
 const VoiceChatContext = createContext<VoiceChatContextValue | undefined>(undefined);
 
-export function VoiceChatProvider(props: { children: JSX.Element }) {
+export function VoiceChatProvider(props: { children: ReactNode }) {
   const [activeChannelId, setActiveChannelId] = useSignalState<number | null>(null);
   const [isConnecting, setIsConnecting] = useSignalState(false);
   const [isMuted, setIsMuted] = useSignalState(false);

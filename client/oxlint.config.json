@@ -28,13 +28,6 @@
       // Phase 3 renames and migrates this hook, then removes this override.
     },
     {
-      "files": ["src/components/channel-sidebar.test.tsx"],
-      "rules": {
-        "react/rules-of-hooks": "off"
-      }
-      // Phase 2 migrates this compatibility-hook test and removes this override.
-    },
-    {
       "files": ["src/components/modal.test.tsx"],
       "rules": {
         "react/rules-of-hooks": "off"

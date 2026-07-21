@@ -1,5 +1,5 @@
-import { render, screen, waitFor } from "../test/testing-library";
-import { List, If } from "../hooks/react-state";
+import { screen, waitFor } from "@testing-library/react";
+import { renderNative } from "../test/render";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { AuthProvider } from "./auth";
 import { CustomEmojisProvider, useCustomEmojis } from "./custom-emojis";
@@ -10,37 +10,39 @@ import { FakeEventSource, latestFakeEventSource } from "../test/msw/sse";
 
 function Probe() {
   const registry = useCustomEmojis();
-  const deleted = () => registry.byId(2);
+  const deleted = registry.byId(2);
   return (
     <div>
       <p>all {registry.allEmojis()?.length ?? 0}</p>
       <p>active {registry.activeEmojis().length}</p>
-      <If when={deleted()}>{(emoji) => <p>lookup {emoji().name}</p>}</If>
-      <List each={registry.activeEmojis()}>{(emoji) => <span>{emoji.name}</span>}</List>
+      {deleted ? <p>lookup {deleted.name}</p> : null}
+      {registry.activeEmojis().map((emoji) => (
+        <span key={emoji.id}>{emoji.name}</span>
+      ))}
     </div>
   );
 }
 
 function mountProbe() {
-  return render(() => (
+  return renderNative(
     <AuthProvider>
       <CustomEmojisProvider>
         <Probe />
       </CustomEmojisProvider>
-    </AuthProvider>
-  ));
+    </AuthProvider>,
+  );
 }
 
 function mountProbeWithEvents() {
-  return render(() => (
+  return renderNative(
     <AuthProvider>
       <EventsProvider>
         <CustomEmojisProvider>
           <Probe />
         </CustomEmojisProvider>
       </EventsProvider>
-    </AuthProvider>
-  ));
+    </AuthProvider>,
+  );
 }
 
 afterEach(() => {

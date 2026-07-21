@@ -1,4 +1,5 @@
-import { useAfterRenderEffect, useSignalState, registerCleanup, If } from "../hooks/react-state";
+import type { FormEvent } from "react";
+import { useAfterRenderEffect, useSignalState, registerCleanup } from "../hooks/react-state";
 import { useAuth } from "../contexts/auth";
 import { getPublicServerConfig, getServerUrl } from "../api";
 import { Button } from "../components/ui/button";
@@ -48,7 +49,7 @@ export default function LoginScreen() {
     if (!accountRegistrationEnabled() && mode() === "register") switchMode("login");
   });
 
-  const handleSubmit = async (e: any) => {
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
     if (mode() === "register" && !accountRegistrationEnabled()) {
@@ -87,39 +88,37 @@ export default function LoginScreen() {
               type="text"
               placeholder="Server URL"
               value={server()}
-              onInput={(e) => setServer(e.currentTarget.value)}
+              onChange={(e) => setServer(e.currentTarget.value)}
             />
             <Input
               type="text"
               placeholder="Username"
               autoComplete="username"
               value={username()}
-              onInput={(e) => setUsername(e.currentTarget.value)}
+              onChange={(e) => setUsername(e.currentTarget.value)}
             />
             <Input
               type="password"
               placeholder="Password"
               autoComplete={mode() === "login" ? "current-password" : "new-password"}
               value={password()}
-              onInput={(e) => setPassword(e.currentTarget.value)}
+              onChange={(e) => setPassword(e.currentTarget.value)}
             />
-            <If when={mode() === "register" && accountRegistrationEnabled()}>
+            {mode() === "register" && accountRegistrationEnabled() ? (
               <Input
                 type="email"
                 placeholder="Email (optional)"
                 autoComplete="email"
                 value={email()}
-                onInput={(e) => setEmail(e.currentTarget.value)}
+                onChange={(e) => setEmail(e.currentTarget.value)}
               />
-            </If>
-            <If when={error()}>
-              <p className="text-destructive text-sm">{error()}</p>
-            </If>
+            ) : null}
+            {error() ? <p className="text-destructive text-sm">{error()}</p> : null}
             <Button type="submit" size="lg" disabled={submitting()}>
               {submitting() ? "Please wait..." : mode() === "login" ? "Sign in" : "Create account"}
             </Button>
           </form>
-          <If when={import.meta.env.DEV}>
+          {import.meta.env.DEV ? (
             <div className="mt-4">
               <Separator className="mb-4" />
               <p className="text-muted-foreground text-xs mb-2">Dev shortcuts</p>
@@ -144,33 +143,32 @@ export default function LoginScreen() {
                 </Button>
               </div>
             </div>
-          </If>
-          <If when={accountRegistrationEnabled()}>
+          ) : null}
+          {accountRegistrationEnabled() ? (
             <p className="text-muted-foreground text-sm mt-4 text-center">
-              <If
-                when={mode() === "login"}
-                fallback={
-                  <>
-                    Have an account?{" "}
-                    <button
-                      className="text-primary hover:underline"
-                      onClick={() => switchMode("login")}
-                    >
-                      Sign in
-                    </button>
-                  </>
-                }
-              >
-                Need an account?{" "}
-                <button
-                  className="text-primary hover:underline"
-                  onClick={() => switchMode("register")}
-                >
-                  Create one
-                </button>
-              </If>
+              {mode() === "login" ? (
+                <>
+                  Need an account?{" "}
+                  <button
+                    className="text-primary hover:underline"
+                    onClick={() => switchMode("register")}
+                  >
+                    Create one
+                  </button>
+                </>
+              ) : (
+                <>
+                  Have an account?{" "}
+                  <button
+                    className="text-primary hover:underline"
+                    onClick={() => switchMode("login")}
+                  >
+                    Sign in
+                  </button>
+                </>
+              )}
             </p>
-          </If>
+          ) : null}
         </CardContent>
       </Card>
     </div>

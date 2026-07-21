@@ -1,3 +1,4 @@
+import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "../test/testing-library";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
@@ -166,7 +167,7 @@ function renderChannelHarness(
 
 function renderChannelFormHarness(initialValue = "") {
   const changes: string[] = [];
-  const onSubmit = vi.fn((event: any) => event.preventDefault());
+  const onSubmit = vi.fn((event: FormEvent<HTMLFormElement>) => event.preventDefault());
 
   const result = render(() => {
     const [value, setValue] = useSignalState(initialValue);
@@ -193,7 +194,7 @@ function renderChannelFormHarness(initialValue = "") {
 
 function renderMentionFormHarness(initialValue = "", searchMentionUsers?: MentionSearch) {
   const changes: string[] = [];
-  const onSubmit = vi.fn((event: any) => event.preventDefault());
+  const onSubmit = vi.fn((event: FormEvent<HTMLFormElement>) => event.preventDefault());
   const search = searchMentionUsers ?? vi.fn(async () => MENTION_USER_FIXTURES);
 
   const result = render(() => {
@@ -335,7 +336,7 @@ function setDomSelection(container: Node, offset: number) {
 
 function renderFormHarness(initialValue = "") {
   const changes: string[] = [];
-  const onSubmit = vi.fn((event: any) => event.preventDefault());
+  const onSubmit = vi.fn((event: FormEvent<HTMLFormElement>) => event.preventDefault());
 
   const result = render(() => {
     const [value, setValue] = useSignalState(initialValue);
@@ -359,13 +360,13 @@ function renderFormHarness(initialValue = "") {
   return { ...result, changes, onSubmit };
 }
 
-function keyDown(input: HTMLElement, init: KeyboardEventInit): any {
+function keyDown(input: HTMLElement, init: KeyboardEventInit): KeyboardEvent {
   const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
   fireEvent(input, event);
   return event;
 }
 
-function composingEnter(input: HTMLElement): any {
+function composingEnter(input: HTMLElement): KeyboardEvent {
   const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
   Object.defineProperty(event, "isComposing", { value: true });
   fireEvent(input, event);
@@ -702,7 +703,7 @@ describe("<MessageInput>", () => {
   });
 
   test("Escape dismisses mention autocomplete before owner keyboard handlers", async () => {
-    const ownerKeyDown = vi.fn((event: any) => {
+    const ownerKeyDown = vi.fn((event: ReactKeyboardEvent<HTMLDivElement>) => {
       if (event.key === "Escape") event.preventDefault();
     });
     renderMentionHarness("", { onKeyDown: ownerKeyDown });
@@ -866,7 +867,7 @@ describe("<MessageInput>", () => {
   });
 
   test("Escape dismisses channel autocomplete before owner keyboard handlers", async () => {
-    const ownerKeyDown = vi.fn((event: any) => {
+    const ownerKeyDown = vi.fn((event: ReactKeyboardEvent<HTMLDivElement>) => {
       if (event.key === "Escape") event.preventDefault();
     });
     renderChannelHarness("", { onKeyDown: ownerKeyDown });
@@ -1298,7 +1299,7 @@ describe("<MessageInput>", () => {
   });
 
   test("autocomplete shortcuts take priority over owner keyboard handlers while open", async () => {
-    const ownerKeyDown = vi.fn((event: any) => {
+    const ownerKeyDown = vi.fn((event: ReactKeyboardEvent<HTMLDivElement>) => {
       if (event.key === "Enter" || event.key === "Escape") event.preventDefault();
     });
 

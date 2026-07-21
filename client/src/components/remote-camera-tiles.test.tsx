@@ -1,9 +1,10 @@
+import { useState } from "react";
+import { act, screen, waitFor } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
-import { render, screen, waitFor } from "../test/testing-library";
-import { useSignalState } from "../hooks/react-state";
 import type { CameraStream } from "../api";
 import type { RemoteCameraTile } from "../contexts/voice-chat";
 import { expectNoA11yViolations } from "../test/a11y";
+import { renderNative } from "../test/render";
 
 class FakeRemoteVideoTrack {
   attach = vi.fn((element: HTMLMediaElement) => element);
@@ -43,24 +44,34 @@ function tile(stream: CameraStream, track: FakeRemoteVideoTrack | null): RemoteC
   return { stream, track: track as RemoteCameraTile["track"] };
 }
 
-function setupTiles(
+function renderTiles(
   initialTiles: readonly RemoteCameraTile[],
   activeChannelId: number | null = 42,
 ) {
-  const [tiles, setTiles] = useSignalState<readonly RemoteCameraTile[]>(initialTiles);
-  const [active, setActive] = useSignalState<number | null>(activeChannelId);
-  mockVoiceState.value = {
-    activeChannelId: active,
-    remoteCameraTiles: tiles,
-  };
-  return { setActive, setTiles };
+  let setTiles: (tiles: readonly RemoteCameraTile[]) => void = () => undefined;
+  let setActive: (channelId: number | null) => void = () => undefined;
+
+  function Harness() {
+    const [tiles, setTileState] = useState(initialTiles);
+    const [active, setActiveState] = useState(activeChannelId);
+    setTiles = setTileState;
+    setActive = setActiveState;
+    mockVoiceState.value = {
+      activeChannelId: () => active,
+      remoteCameraTiles: () => tiles,
+    };
+    return <RemoteCameraTiles />;
+  }
+
+  const view = renderNative(<Harness />);
+  return { ...view, setActive, setTiles };
 }
 
 describe("<RemoteCameraTiles>", () => {
   test("renders accessible remote camera tiles, attaches video, and bounds the layout", async () => {
     const track = new FakeRemoteVideoTrack();
     const stream = makeCamera();
-    setupTiles([
+    const { container } = renderTiles([
       tile(stream, track),
       tile(
         makeCamera({
@@ -75,8 +86,6 @@ describe("<RemoteCameraTiles>", () => {
       ),
     ]);
 
-    const { container } = render(() => <RemoteCameraTiles />);
-
     const region = await screen.findByRole("region", { name: /remote camera tiles/i });
     expect(region).toHaveTextContent("2 cameras live");
     expect(region.querySelector(".max-h-72.overflow-y-auto")).not.toBeNull();
@@ -89,9 +98,7 @@ describe("<RemoteCameraTiles>", () => {
 
   test("hides instead of rendering video for non-participants", async () => {
     const track = new FakeRemoteVideoTrack();
-    setupTiles([tile(makeCamera(), track)], null);
-
-    render(() => <RemoteCameraTiles />);
+    renderTiles([tile(makeCamera(), track)], null);
 
     await Promise.resolve();
     expect(screen.queryByRole("region", { name: /remote camera tiles/i })).toBeNull();
@@ -101,34 +108,58 @@ describe("<RemoteCameraTiles>", () => {
   test("detaches video when the remote track disappears or the tile is removed", async () => {
     const track = new FakeRemoteVideoTrack();
     const stream = makeCamera();
-    const { setTiles } = setupTiles([tile(stream, track)]);
-    render(() => <RemoteCameraTiles />);
+    const { setTiles } = renderTiles([tile(stream, track)]);
 
     const video = (await screen.findByLabelText("Bobby's camera video")) as HTMLVideoElement;
-    setTiles([tile(stream, null)]);
+    act(() => setTiles([tile(stream, null)]));
 
     await waitFor(() => expect(screen.queryByLabelText("Bobby's camera video")).toBeNull());
     expect(track.detach).toHaveBeenCalledWith(video);
     expect(screen.getByText("Connecting to Bobby's camera…")).toBeInTheDocument();
 
-    setTiles([]);
+    act(() => setTiles([]));
 
     await waitFor(() =>
       expect(screen.queryByRole("region", { name: /remote camera tiles/i })).toBeNull(),
     );
   });
 
+  test("retains each video element with its stream when camera tiles reorder", async () => {
+    const bobTrack = new FakeRemoteVideoTrack();
+    const carolTrack = new FakeRemoteVideoTrack();
+    const bobStream = makeCamera();
+    const carolStream = makeCamera({
+      sharer_user_id: 3,
+      username: "carol",
+      display_name: null,
+      participant_identity: "3",
+      track_sid: "TR_carol_camera",
+      started_at: 2,
+    });
+    const { setTiles } = renderTiles([tile(bobStream, bobTrack), tile(carolStream, carolTrack)]);
+
+    const bobVideo = (await screen.findByLabelText("Bobby's camera video")) as HTMLVideoElement;
+    const carolVideo = screen.getByLabelText("carol's camera video") as HTMLVideoElement;
+    act(() => setTiles([tile(carolStream, carolTrack), tile(bobStream, bobTrack)]));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Bobby's camera video")).toBe(bobVideo);
+      expect(screen.getByLabelText("carol's camera video")).toBe(carolVideo);
+    });
+    expect(bobTrack.attach.mock.calls.every(([element]) => element === bobVideo)).toBe(true);
+    expect(carolTrack.attach.mock.calls.every(([element]) => element === carolVideo)).toBe(true);
+  });
+
   test("detaches the previous video when a camera publication resubscribes", async () => {
     const firstTrack = new FakeRemoteVideoTrack();
     const secondTrack = new FakeRemoteVideoTrack();
     const stream = makeCamera();
-    const { setTiles } = setupTiles([tile(stream, firstTrack)]);
-    render(() => <RemoteCameraTiles />);
+    const { setTiles } = renderTiles([tile(stream, firstTrack)]);
 
     const video = (await screen.findByLabelText("Bobby's camera video")) as HTMLVideoElement;
     expect(firstTrack.attach).toHaveBeenCalledWith(video);
 
-    setTiles([tile(stream, secondTrack)]);
+    act(() => setTiles([tile(stream, secondTrack)]));
 
     await waitFor(() => expect(secondTrack.attach).toHaveBeenCalled());
     expect(firstTrack.detach).toHaveBeenCalledWith(video);

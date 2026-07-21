@@ -1,14 +1,6 @@
-import { useRef } from "react";
+import { useRef, type ChangeEvent, type FormEvent } from "react";
 
-import {
-  useAfterRenderEffect,
-  useSignalState,
-  List,
-  Case,
-  registerCleanup,
-  If,
-  Choose,
-} from "../hooks/react-state";
+import { useAfterRenderEffect, useSignalState, registerCleanup } from "../hooks/react-state";
 import {
   changePassword,
   deleteAvatar,
@@ -91,7 +83,7 @@ function CustomEmojiRow(props: {
     setDraft(props.emoji.name);
   });
 
-  const save = async (ev: any) => {
+  const save = async (ev: FormEvent<HTMLFormElement>) => {
     ev.preventDefault();
     if (!canSave()) return;
     setSaving(true);
@@ -161,7 +153,7 @@ function CustomEmojiRow(props: {
             type="text"
             className="h-7 w-40 px-2 text-xs md:text-xs"
             value={draft()}
-            onInput={(e) => {
+            onChange={(e) => {
               setError(null);
               setSuccess(null);
               setDraft(e.currentTarget.value);
@@ -173,58 +165,47 @@ function CustomEmojiRow(props: {
             {saving() ? "Renaming..." : "Save rename"}
           </Button>
         </form>
-        <If when={trimmedDraft().length > 0 && !draftValid()}>
+        {trimmedDraft().length > 0 && !draftValid() ? (
           <p className="mt-1 text-xs text-destructive">
             Use 2–32 letters, numbers, or underscores.
           </p>
-        </If>
-        <If when={error()}>
-          {(msg) => (
-            <p role="alert" className="mt-1 text-xs text-destructive">
-              {msg()}
-            </p>
-          )}
-        </If>
-        <If when={actionError()}>
-          {(msg) => (
-            <p role="alert" className="mt-1 text-xs text-destructive">
-              {msg()}
-            </p>
-          )}
-        </If>
-        <If when={success() ?? props.status}>
-          {(msg) => (
-            <p role="status" className="mt-1 text-xs text-green-600">
-              {msg()}
-            </p>
-          )}
-        </If>
+        ) : null}
+        {error() ? (
+          <p role="alert" className="mt-1 text-xs text-destructive">
+            {error()}
+          </p>
+        ) : null}
+        {actionError() ? (
+          <p role="alert" className="mt-1 text-xs text-destructive">
+            {actionError()}
+          </p>
+        ) : null}
+        {(success() ?? props.status) ? (
+          <p role="status" className="mt-1 text-xs text-green-600">
+            {success() ?? props.status}
+          </p>
+        ) : null}
       </div>
       <div className="ml-auto flex flex-col items-end gap-2">
         <div className="flex gap-2">
           <Badge variant="secondary">{props.emoji.animated ? "animated" : "static"}</Badge>
-          <If when={props.emoji.deleted_at}>
-            <Badge variant="destructive">deleted</Badge>
-          </If>
+          {props.emoji.deleted_at ? <Badge variant="destructive">deleted</Badge> : null}
         </div>
-        <If
-          when={props.emoji.deleted_at !== null}
-          fallback={
-            <Button
-              type="button"
-              variant="destructive"
-              size="xs"
-              onClick={() => void requestDelete()}
-              disabled={actionBusy()}
-            >
-              {actionBusy() ? "Deleting..." : "Delete"}
-            </Button>
-          }
-        >
+        {props.emoji.deleted_at !== null ? (
           <Button type="button" size="xs" onClick={() => void restore()} disabled={actionBusy()}>
             {actionBusy() ? "Restoring..." : "Restore"}
           </Button>
-        </If>
+        ) : (
+          <Button
+            type="button"
+            variant="destructive"
+            size="xs"
+            onClick={() => void requestDelete()}
+            disabled={actionBusy()}
+          >
+            {actionBusy() ? "Deleting..." : "Delete"}
+          </Button>
+        )}
       </div>
     </div>
   );
@@ -296,12 +277,12 @@ function CustomEmojiSettings() {
     return emoji;
   };
 
-  const handleFilePicked = (ev: any) => {
+  const handleFilePicked = (ev: ChangeEvent<HTMLInputElement>) => {
     setUploadError(null);
     setFile(ev.currentTarget.files?.[0] ?? null);
   };
 
-  const submit = async (ev: any) => {
+  const submit = async (ev: FormEvent<HTMLFormElement>) => {
     ev.preventDefault();
     if (!canSubmit()) return;
     const selected = file();
@@ -343,7 +324,7 @@ function CustomEmojiSettings() {
             type="text"
             className="mt-1"
             value={name()}
-            onInput={(e) => {
+            onChange={(e) => {
               setUploadError(null);
               setName(e.currentTarget.value);
             }}
@@ -353,11 +334,11 @@ function CustomEmojiSettings() {
           <p id={nameHelpId} className="mt-1 text-xs text-muted-foreground">
             2–32 letters, numbers, or underscores.
           </p>
-          <If when={trimmedName().length > 0 && !nameLooksValid()}>
+          {trimmedName().length > 0 && !nameLooksValid() ? (
             <p className="mt-1 text-xs text-destructive">
               Use 2–32 letters, numbers, or underscores.
             </p>
-          </If>
+          ) : null}
         </div>
 
         <div>
@@ -374,45 +355,41 @@ function CustomEmojiSettings() {
           <p id={fileHelpId} className="mt-1 text-xs text-muted-foreground">
             PNG, JPEG, static WebP, animated GIF, or animated WebP. Maximum upload size is 2 MiB.
           </p>
-          <If when={file() && !fileLooksValid()}>
+          {file() && !fileLooksValid() ? (
             <p className="mt-1 text-xs text-destructive">
               Choose a PNG, JPEG, static WebP, animated GIF, or animated WebP image.
             </p>
-          </If>
-          <If when={file() && previewUrl()}>
-            {(url) => (
-              <div className="mt-2 flex items-center gap-2 rounded-md border border-border bg-background p-2">
-                <img
-                  src={url()}
-                  alt="Selected custom emoji preview"
-                  className="h-10 w-10 rounded-md object-contain bg-muted"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Preview uses the original selected file.
-                </p>
-              </div>
-            )}
-          </If>
+          ) : null}
+          {file() && previewUrl() ? (
+            <div className="mt-2 flex items-center gap-2 rounded-md border border-border bg-background p-2">
+              <img
+                src={previewUrl() ?? undefined}
+                alt="Selected custom emoji preview"
+                className="h-10 w-10 rounded-md object-contain bg-muted"
+              />
+              <p className="text-xs text-muted-foreground">
+                Preview uses the original selected file.
+              </p>
+            </div>
+          ) : null}
         </div>
 
-        <If when={uploadError()}>
-          {(msg) => (
-            <p role="alert" className="text-sm text-destructive">
-              {msg()}
-            </p>
-          )}
-        </If>
+        {uploadError() ? (
+          <p role="alert" className="text-sm text-destructive">
+            {uploadError()}
+          </p>
+        ) : null}
 
         <Button type="submit" className="self-start" disabled={!canSubmit()}>
           {uploading() ? "Uploading..." : "Upload emoji"}
         </Button>
       </form>
 
-      <If when={registry.allEmojis.loading}>
+      {registry.allEmojis.loading ? (
         <p className="text-muted-foreground">Loading custom emojis...</p>
-      </If>
+      ) : null}
 
-      <If when={registry.error()}>
+      {registry.error() ? (
         <div
           role="alert"
           className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-destructive"
@@ -426,76 +403,61 @@ function CustomEmojiSettings() {
             Try again
           </button>
         </div>
-      </If>
+      ) : null}
 
-      <If when={!registry.allEmojis.loading && !registry.error()}>
-        <If
-          when={all().length > 0}
-          fallback={
-            <div className="rounded-md border border-dashed border-border bg-muted p-4">
-              <p className="font-medium text-foreground">No custom emojis yet</p>
-              <p className="mt-1 text-muted-foreground">
-                Uploaded emojis will be listed here for picker use and message rendering.
-              </p>
-            </div>
-          }
-        >
+      {!registry.allEmojis.loading && !registry.error() ? (
+        all().length > 0 ? (
           <div className="flex flex-col gap-4">
             <section className="rounded-md border border-border divide-y divide-border">
               <div className="px-3 py-2 text-xs text-muted-foreground">
                 Active emojis: {active().length} / {all().length} total
-                <If when={deletedCount() > 0}> ({deletedCount()} deleted)</If>
+                {deletedCount() > 0 ? ` (${deletedCount()} deleted)` : null}
               </div>
-              <If
-                when={active().length > 0}
-                fallback={
-                  <p className="px-3 py-3 text-sm text-muted-foreground">
-                    No active custom emojis.
-                  </p>
-                }
-              >
-                <List each={active()}>
-                  {(emoji) => (
-                    <CustomEmojiRow
-                      emoji={emoji}
-                      onRename={renameEmoji}
-                      onDelete={deleteEmoji}
-                      onRestore={restoreEmoji}
-                      status={rowStatuses()[emoji.id] ?? null}
-                    />
-                  )}
-                </List>
-              </If>
+              {active().length > 0 ? (
+                active().map((emoji) => (
+                  <CustomEmojiRow
+                    key={emoji.id}
+                    emoji={emoji}
+                    onRename={renameEmoji}
+                    onDelete={deleteEmoji}
+                    onRestore={restoreEmoji}
+                    status={rowStatuses()[emoji.id] ?? null}
+                  />
+                ))
+              ) : (
+                <p className="px-3 py-3 text-sm text-muted-foreground">No active custom emojis.</p>
+              )}
             </section>
 
             <section className="rounded-md border border-border divide-y divide-border">
               <div className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Deleted emojis
               </div>
-              <If
-                when={deleted().length > 0}
-                fallback={
-                  <p className="px-3 py-3 text-sm text-muted-foreground">
-                    No deleted custom emojis.
-                  </p>
-                }
-              >
-                <List each={deleted()}>
-                  {(emoji) => (
-                    <CustomEmojiRow
-                      emoji={emoji}
-                      onRename={renameEmoji}
-                      onDelete={deleteEmoji}
-                      onRestore={restoreEmoji}
-                      status={rowStatuses()[emoji.id] ?? null}
-                    />
-                  )}
-                </List>
-              </If>
+              {deleted().length > 0 ? (
+                deleted().map((emoji) => (
+                  <CustomEmojiRow
+                    key={emoji.id}
+                    emoji={emoji}
+                    onRename={renameEmoji}
+                    onDelete={deleteEmoji}
+                    onRestore={restoreEmoji}
+                    status={rowStatuses()[emoji.id] ?? null}
+                  />
+                ))
+              ) : (
+                <p className="px-3 py-3 text-sm text-muted-foreground">No deleted custom emojis.</p>
+              )}
             </section>
           </div>
-        </If>
-      </If>
+        ) : (
+          <div className="rounded-md border border-dashed border-border bg-muted p-4">
+            <p className="font-medium text-foreground">No custom emojis yet</p>
+            <p className="mt-1 text-muted-foreground">
+              Uploaded emojis will be listed here for picker use and message rendering.
+            </p>
+          </div>
+        )
+      ) : null}
     </div>
   );
 }
@@ -552,7 +514,7 @@ export default function SettingsModal(props: {
     }
   };
 
-  const handleFilePicked = (ev: any) => {
+  const handleFilePicked = (ev: ChangeEvent<HTMLInputElement>) => {
     setAvatarError(null);
     const file = ev.currentTarget.files?.[0];
     if (!file) return;
@@ -670,29 +632,28 @@ export default function SettingsModal(props: {
               aria-label="Settings sections"
               className="flex flex-col"
             >
-              <List each={SECTIONS}>
-                {(s) => {
-                  const selected = () => section() === s.id;
-                  return (
-                    <button
-                      type="button"
-                      role="tab"
-                      id={s.tabId}
-                      aria-selected={selected()}
-                      aria-controls={s.panelId}
-                      tabIndex={selected() ? 0 : -1}
-                      className={`text-left px-3 py-2 rounded-md text-sm mb-1 transition-colors ${
-                        selected()
-                          ? "bg-primary/10 text-primary font-medium"
-                          : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                      }`}
-                      onClick={() => setSection(s.id)}
-                    >
-                      {s.label}
-                    </button>
-                  );
-                }}
-              </List>
+              {SECTIONS.map((s) => {
+                const selected = section() === s.id;
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    role="tab"
+                    id={s.tabId}
+                    aria-selected={selected}
+                    aria-controls={s.panelId}
+                    tabIndex={selected ? 0 : -1}
+                    className={`text-left px-3 py-2 rounded-md text-sm mb-1 transition-colors ${
+                      selected
+                        ? "bg-primary/10 text-primary font-medium"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                    }`}
+                    onClick={() => setSection(s.id)}
+                  >
+                    {s.label}
+                  </button>
+                );
+              })}
             </div>
             <div className="mt-auto pt-2 border-t border-border">
               <button
@@ -711,211 +672,191 @@ export default function SettingsModal(props: {
             aria-labelledby={active().tabId}
             className="flex-1 text-sm text-foreground"
           >
-            <Choose>
-              <Case when={section() === "profile"}>
-                <If
-                  when={props.user}
-                  fallback={<p className="text-muted-foreground">Loading profile...</p>}
-                >
-                  {(u) => (
-                    <div className="flex flex-col items-start gap-4 w-full">
-                      <div className="flex items-center gap-4">
-                        <Avatar
-                          url={u().avatar_url}
-                          username={u().display_name ?? u().username}
-                          size={96}
-                        />
-                        <div>
-                          <p className="font-semibold text-base">
-                            {u().display_name ?? u().username}
-                          </p>
-                          <If when={u().display_name}>
-                            <p className="text-xs text-muted-foreground">@{u().username}</p>
-                          </If>
-                          <If when={u().email}>
-                            {(e) => <p className="text-xs text-muted-foreground">{e()}</p>}
-                          </If>
-                        </div>
-                      </div>
-                      <input
-                        type="file"
-                        accept="image/jpeg,image/png,image/webp"
-                        className="sr-only"
-                        id="avatar-file-input"
-                        aria-label="Choose profile picture"
-                        onChange={handleFilePicked}
-                      />
-                      <div className="flex gap-2">
-                        <label
-                          htmlFor="avatar-file-input"
-                          className={cn(buttonVariants(), "cursor-pointer")}
-                        >
-                          Upload picture
-                        </label>
-                        <If when={u().avatar_url}>
-                          <Button
-                            type="button"
-                            variant="destructive"
-                            onClick={handleRemoveAvatar}
-                            disabled={removing()}
-                          >
-                            {removing() ? "Removing..." : "Remove picture"}
-                          </Button>
-                        </If>
-                      </div>
-                      <If when={avatarError()}>
-                        {(msg) => <p className="text-destructive text-sm">{msg()}</p>}
-                      </If>
-
-                      <form
-                        className="flex flex-col gap-2 w-full max-w-md pt-4 border-t border-border"
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          void saveDisplayName();
-                        }}
-                      >
-                        <Label htmlFor="display-name-input">Display name</Label>
-                        <p className="text-xs text-muted-foreground">
-                          Ifn next to your messages. Leave blank to use your username (@
-                          {u().username}).
-                        </p>
-                        <Input
-                          id="display-name-input"
-                          type="text"
-                          placeholder={u().username}
-                          maxLength={DISPLAY_NAME_MAX_LEN}
-                          value={displayNameDraft()}
-                          onInput={(e) => setDisplayNameDraft(e.currentTarget.value)}
-                          disabled={displayNameSaving()}
-                        />
-                        <div className="flex gap-2 items-center">
-                          <Button
-                            type="submit"
-                            disabled={
-                              displayNameSaving() ||
-                              displayNameDraft().trim() === (u().display_name ?? "")
-                            }
-                          >
-                            {displayNameSaving() ? "Saving..." : "Save"}
-                          </Button>
-                          <If when={u().display_name}>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              onClick={() => void clearDisplayName()}
-                              disabled={displayNameSaving()}
-                            >
-                              Reset to username
-                            </Button>
-                          </If>
-                        </div>
-                        <If when={displayNameError()}>
-                          {(msg) => <p className="text-destructive text-sm">{msg()}</p>}
-                        </If>
-                      </form>
-
-                      <form
-                        className="flex flex-col gap-3 w-full max-w-md pt-4 border-t border-border"
-                        aria-describedby="password-change-help"
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          void savePassword();
-                        }}
-                      >
-                        <div>
-                          <h3 className="text-sm font-semibold text-foreground">Change password</h3>
-                          <p
-                            id="password-change-help"
-                            className="mt-1 text-xs text-muted-foreground"
-                          >
-                            Enter your current password before choosing a new one.
-                          </p>
-                        </div>
-
-                        <div>
-                          <Label htmlFor="current-password-input">Current password</Label>
-                          <Input
-                            id="current-password-input"
-                            type="password"
-                            autoComplete="current-password"
-                            className="mt-1"
-                            value={currentPassword()}
-                            onInput={(e) =>
-                              handlePasswordInput(setCurrentPassword, e.currentTarget.value)
-                            }
-                            disabled={passwordSaving()}
-                          />
-                        </div>
-
-                        <div>
-                          <Label htmlFor="new-password-input">New password</Label>
-                          <Input
-                            id="new-password-input"
-                            type="password"
-                            autoComplete="new-password"
-                            className="mt-1"
-                            value={newPassword()}
-                            onInput={(e) =>
-                              handlePasswordInput(setNewPassword, e.currentTarget.value)
-                            }
-                            disabled={passwordSaving()}
-                          />
-                        </div>
-
-                        <div>
-                          <Label htmlFor="confirm-new-password-input">Confirm new password</Label>
-                          <Input
-                            id="confirm-new-password-input"
-                            type="password"
-                            autoComplete="new-password"
-                            className="mt-1"
-                            value={confirmNewPassword()}
-                            onInput={(e) =>
-                              handlePasswordInput(setConfirmNewPassword, e.currentTarget.value)
-                            }
-                            disabled={passwordSaving()}
-                          />
-                          <If when={passwordMismatch()}>
-                            <p role="alert" className="mt-1 text-xs text-destructive">
-                              New passwords do not match.
-                            </p>
-                          </If>
-                        </div>
-
-                        <Button
-                          type="submit"
-                          className="self-start"
-                          disabled={!canChangePassword()}
-                        >
-                          {passwordSaving() ? "Changing..." : "Change password"}
-                        </Button>
-
-                        <If when={passwordError()}>
-                          {(msg) => (
-                            <p role="alert" className="text-sm text-destructive">
-                              {msg()}
-                            </p>
-                          )}
-                        </If>
-                        <If when={passwordSuccess()}>
-                          {(msg) => (
-                            <p role="status" className="text-sm text-green-600">
-                              {msg()}
-                            </p>
-                          )}
-                        </If>
-                      </form>
+            {section() === "profile" ? (
+              props.user ? (
+                <div className="flex flex-col items-start gap-4 w-full">
+                  <div className="flex items-center gap-4">
+                    <Avatar
+                      url={props.user.avatar_url}
+                      username={props.user.display_name ?? props.user.username}
+                      size={96}
+                    />
+                    <div>
+                      <p className="font-semibold text-base">
+                        {props.user.display_name ?? props.user.username}
+                      </p>
+                      {props.user.display_name ? (
+                        <p className="text-xs text-muted-foreground">@{props.user.username}</p>
+                      ) : null}
+                      {props.user.email ? (
+                        <p className="text-xs text-muted-foreground">{props.user.email}</p>
+                      ) : null}
                     </div>
-                  )}
-                </If>
-              </Case>
-              <Case when={section() === "voice"}>
-                <VoiceSettings />
-              </Case>
-              <Case when={section() === "emojis"}>
-                <CustomEmojiSettings />
-              </Case>
-            </Choose>
+                  </div>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    className="sr-only"
+                    id="avatar-file-input"
+                    aria-label="Choose profile picture"
+                    onChange={handleFilePicked}
+                  />
+                  <div className="flex gap-2">
+                    <label
+                      htmlFor="avatar-file-input"
+                      className={cn(buttonVariants(), "cursor-pointer")}
+                    >
+                      Upload picture
+                    </label>
+                    {props.user.avatar_url ? (
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        onClick={handleRemoveAvatar}
+                        disabled={removing()}
+                      >
+                        {removing() ? "Removing..." : "Remove picture"}
+                      </Button>
+                    ) : null}
+                  </div>
+                  {avatarError() ? (
+                    <p className="text-destructive text-sm">{avatarError()}</p>
+                  ) : null}
+
+                  <form
+                    className="flex flex-col gap-2 w-full max-w-md pt-4 border-t border-border"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void saveDisplayName();
+                    }}
+                  >
+                    <Label htmlFor="display-name-input">Display name</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Ifn next to your messages. Leave blank to use your username (@
+                      {props.user.username}).
+                    </p>
+                    <Input
+                      id="display-name-input"
+                      type="text"
+                      placeholder={props.user.username}
+                      maxLength={DISPLAY_NAME_MAX_LEN}
+                      value={displayNameDraft()}
+                      onChange={(e) => setDisplayNameDraft(e.currentTarget.value)}
+                      disabled={displayNameSaving()}
+                    />
+                    <div className="flex gap-2 items-center">
+                      <Button
+                        type="submit"
+                        disabled={
+                          displayNameSaving() ||
+                          displayNameDraft().trim() === (props.user.display_name ?? "")
+                        }
+                      >
+                        {displayNameSaving() ? "Saving..." : "Save"}
+                      </Button>
+                      {props.user.display_name ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          onClick={() => void clearDisplayName()}
+                          disabled={displayNameSaving()}
+                        >
+                          Reset to username
+                        </Button>
+                      ) : null}
+                    </div>
+                    {displayNameError() ? (
+                      <p className="text-destructive text-sm">{displayNameError()}</p>
+                    ) : null}
+                  </form>
+
+                  <form
+                    className="flex flex-col gap-3 w-full max-w-md pt-4 border-t border-border"
+                    aria-describedby="password-change-help"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void savePassword();
+                    }}
+                  >
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground">Change password</h3>
+                      <p id="password-change-help" className="mt-1 text-xs text-muted-foreground">
+                        Enter your current password before choosing a new one.
+                      </p>
+                    </div>
+
+                    <div>
+                      <Label htmlFor="current-password-input">Current password</Label>
+                      <Input
+                        id="current-password-input"
+                        type="password"
+                        autoComplete="current-password"
+                        className="mt-1"
+                        value={currentPassword()}
+                        onChange={(e) =>
+                          handlePasswordInput(setCurrentPassword, e.currentTarget.value)
+                        }
+                        disabled={passwordSaving()}
+                      />
+                    </div>
+
+                    <div>
+                      <Label htmlFor="new-password-input">New password</Label>
+                      <Input
+                        id="new-password-input"
+                        type="password"
+                        autoComplete="new-password"
+                        className="mt-1"
+                        value={newPassword()}
+                        onChange={(e) => handlePasswordInput(setNewPassword, e.currentTarget.value)}
+                        disabled={passwordSaving()}
+                      />
+                    </div>
+
+                    <div>
+                      <Label htmlFor="confirm-new-password-input">Confirm new password</Label>
+                      <Input
+                        id="confirm-new-password-input"
+                        type="password"
+                        autoComplete="new-password"
+                        className="mt-1"
+                        value={confirmNewPassword()}
+                        onChange={(e) =>
+                          handlePasswordInput(setConfirmNewPassword, e.currentTarget.value)
+                        }
+                        disabled={passwordSaving()}
+                      />
+                      {passwordMismatch() ? (
+                        <p role="alert" className="mt-1 text-xs text-destructive">
+                          New passwords do not match.
+                        </p>
+                      ) : null}
+                    </div>
+
+                    <Button type="submit" className="self-start" disabled={!canChangePassword()}>
+                      {passwordSaving() ? "Changing..." : "Change password"}
+                    </Button>
+
+                    {passwordError() ? (
+                      <p role="alert" className="text-sm text-destructive">
+                        {passwordError()}
+                      </p>
+                    ) : null}
+                    {passwordSuccess() ? (
+                      <p role="status" className="text-sm text-green-600">
+                        {passwordSuccess()}
+                      </p>
+                    ) : null}
+                  </form>
+                </div>
+              ) : (
+                <p className="text-muted-foreground">Loading profile...</p>
+              )
+            ) : section() === "voice" ? (
+              <VoiceSettings />
+            ) : (
+              <CustomEmojiSettings />
+            )}
           </div>
         </div>
       </Modal>
@@ -933,9 +874,7 @@ export default function SettingsModal(props: {
         title="Log out?"
       >
         <p className="text-sm text-foreground mb-4">Are you sure you want to log out?</p>
-        <If when={loggingOut()}>
-          <p className="text-sm text-muted-foreground mb-2">Logging out...</p>
-        </If>
+        {loggingOut() ? <p className="text-sm text-muted-foreground mb-2">Logging out...</p> : null}
         <div className="flex gap-2 justify-end">
           <Button
             type="button"

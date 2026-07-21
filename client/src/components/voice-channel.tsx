@@ -4,10 +4,8 @@ import {
   useAfterRenderEffect,
   useComputedValue,
   useSignalState,
-  List,
   registerCleanup,
   useMountEffect,
-  If,
   useStaticSignalRerender,
 } from "../hooks/react-state";
 import {
@@ -351,75 +349,76 @@ export default function VoiceChannel(props: { channel: Channel }) {
       >
         <VoiceChannelIcon size={14} aria-hidden="true" />
         <span className="flex-1 truncate">{props.channel.name}</span>
-        <If when={isBusy() && voice.activeChannelId() !== props.channel.id}>
+        {isBusy() && voice.activeChannelId() !== props.channel.id ? (
           <span className="text-xs text-sidebar-foreground/70" aria-hidden="true">
             …
           </span>
-        </If>
+        ) : null}
       </button>
 
-      <If when={participants().length > 0}>
+      {participants().length > 0 ? (
         <ul
           className="ml-6 mt-1 flex flex-col gap-0.5"
           aria-label={`Participants in ${props.channel.name}`}
         >
-          <List each={participants()}>
-            {(p) => (
-              <li className="flex items-center gap-2 px-2 py-1 text-xs text-sidebar-foreground">
-                <Avatar
-                  url={p.avatar_url}
-                  username={p.username}
-                  size={18}
-                  isSpeaking={speakingIds().has(p.user_id)}
-                />
-                <span className="truncate">{p.username}</span>
-                <If when={p.muted}>
-                  <span
-                    className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-black/30 text-destructive"
-                    role="img"
-                    aria-label={`${p.username} is muted`}
-                    title={`${p.username} is muted`}
-                  >
-                    <MicOffIcon size={12} aria-hidden="true" />
-                  </span>
-                </If>
-                <If when={p.deafened}>
-                  <span
-                    className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-black/30 text-destructive"
-                    role="img"
-                    aria-label={`${p.username} is deafened`}
-                    title={`${p.username} is deafened`}
-                  >
-                    <HeadphoneOffIcon size={12} aria-hidden="true" />
-                  </span>
-                </If>
-                <If when={sharingUserIds().has(p.user_id)}>
-                  <span
-                    className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-green-900/60 text-green-300"
-                    role="img"
-                    aria-label={`${p.username} is sharing screen`}
-                    title={`${p.username} is sharing screen`}
-                  >
-                    <ScreenShareIcon size={12} aria-hidden="true" />
-                  </span>
-                </If>
-                <If when={cameraUserIds().has(p.user_id)}>
-                  <span
-                    className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-sidebar-primary/20 text-sidebar-primary"
-                    role="img"
-                    aria-label={`${p.username} has camera on`}
-                    title={`${p.username} has camera on`}
-                  >
-                    <CameraIcon size={12} aria-hidden="true" />
-                  </span>
-                </If>
-              </li>
-            )}
-          </List>
+          {participants().map((p) => (
+            <li
+              key={p.user_id}
+              className="flex items-center gap-2 px-2 py-1 text-xs text-sidebar-foreground"
+            >
+              <Avatar
+                url={p.avatar_url}
+                username={p.username}
+                size={18}
+                isSpeaking={speakingIds().has(p.user_id)}
+              />
+              <span className="truncate">{p.username}</span>
+              {p.muted ? (
+                <span
+                  className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-black/30 text-destructive"
+                  role="img"
+                  aria-label={`${p.username} is muted`}
+                  title={`${p.username} is muted`}
+                >
+                  <MicOffIcon size={12} aria-hidden="true" />
+                </span>
+              ) : null}
+              {p.deafened ? (
+                <span
+                  className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-black/30 text-destructive"
+                  role="img"
+                  aria-label={`${p.username} is deafened`}
+                  title={`${p.username} is deafened`}
+                >
+                  <HeadphoneOffIcon size={12} aria-hidden="true" />
+                </span>
+              ) : null}
+              {sharingUserIds().has(p.user_id) ? (
+                <span
+                  className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-green-900/60 text-green-300"
+                  role="img"
+                  aria-label={`${p.username} is sharing screen`}
+                  title={`${p.username} is sharing screen`}
+                >
+                  <ScreenShareIcon size={12} aria-hidden="true" />
+                </span>
+              ) : null}
+              {cameraUserIds().has(p.user_id) ? (
+                <span
+                  className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-sidebar-primary/20 text-sidebar-primary"
+                  role="img"
+                  aria-label={`${p.username} has camera on`}
+                  title={`${p.username} has camera on`}
+                >
+                  <CameraIcon size={12} aria-hidden="true" />
+                </span>
+              ) : null}
+            </li>
+          ))}
         </ul>
-      </If>
+      ) : null}
 
-      <If when={cameraStreams().length > 0 && !isActive()}>
+      {cameraStreams().length > 0 && !isActive() ? (
         <section
           className="ml-6 mt-1 mb-1 rounded-md border border-sidebar-primary/40 bg-sidebar-primary/10 p-2"
           aria-label={`Active cameras in ${props.channel.name}`}
@@ -434,9 +433,9 @@ export default function VoiceChannel(props: { channel: Channel }) {
           </div>
           <p className="mt-1 text-[11px] text-sidebar-foreground/70">Join voice to view cameras.</p>
         </section>
-      </If>
+      ) : null}
 
-      <If when={screenShares().length > 0}>
+      {screenShares().length > 0 ? (
         <section
           className="ml-6 mt-1 mb-1 rounded-md border border-green-900/70 bg-green-950/20 p-2"
           aria-label={`Active screen shares in ${props.channel.name}`}
@@ -453,136 +452,131 @@ export default function VoiceChannel(props: { channel: Channel }) {
             className="flex max-h-28 flex-col gap-1 overflow-y-auto"
             aria-label={`Screen shares in ${props.channel.name}`}
           >
-            <List each={screenShares()}>
-              {(stream) => {
-                const name = screenShareDisplayName(stream);
-                return (
-                  <li className="flex items-center gap-2 rounded-md bg-black/30 px-2 py-1 text-xs text-sidebar-foreground">
-                    <Avatar url={stream.avatar_url} username={name} size={16} />
-                    <span className="min-w-0 flex-1 truncate">{name}'s screen</span>
-                    <If
-                      when={isActive()}
-                      fallback={
-                        <span className="flex-shrink-0 text-[11px] text-sidebar-foreground/70">
-                          Join voice
-                        </span>
+            {screenShares().map((stream) => {
+              const name = screenShareDisplayName(stream);
+              return (
+                <li
+                  key={screenShareKey(stream)}
+                  className="flex items-center gap-2 rounded-md bg-black/30 px-2 py-1 text-xs text-sidebar-foreground"
+                >
+                  <Avatar url={stream.avatar_url} username={name} size={16} />
+                  <span className="min-w-0 flex-1 truncate">{name}'s screen</span>
+                  {isActive() ? (
+                    <button
+                      type="button"
+                      className={`flex-shrink-0 rounded-md bg-green-700 px-2 py-0.5 text-[11px] font-medium text-white transition-colors hover:bg-green-600 disabled:opacity-50 ${
+                        isWatchingStream(stream) ? "bg-sidebar-accent text-green-200" : ""
+                      }`}
+                      disabled={isBusy() || isWatchingStream(stream)}
+                      aria-label={
+                        isWatchingStream(stream)
+                          ? `Watching ${name}'s screen share`
+                          : `Watch ${name}'s screen share`
                       }
+                      aria-pressed={isWatchingStream(stream)}
+                      onClick={() => void handleWatchScreenShare(stream)}
                     >
-                      <button
-                        type="button"
-                        className={`flex-shrink-0 rounded-md bg-green-700 px-2 py-0.5 text-[11px] font-medium text-white transition-colors hover:bg-green-600 disabled:opacity-50 ${
-                          isWatchingStream(stream) ? "bg-sidebar-accent text-green-200" : ""
-                        }`}
-                        disabled={isBusy() || isWatchingStream(stream)}
-                        aria-label={
-                          isWatchingStream(stream)
-                            ? `Watching ${name}'s screen share`
-                            : `Watch ${name}'s screen share`
-                        }
-                        aria-pressed={isWatchingStream(stream)}
-                        onClick={() => void handleWatchScreenShare(stream)}
-                      >
-                        <If when={isWatchingStream(stream)} fallback="Watch">
-                          Watching
-                        </If>
-                      </button>
-                    </If>
-                  </li>
-                );
-              }}
-            </List>
+                      {isWatchingStream(stream) ? "Watching" : "Watch"}
+                    </button>
+                  ) : (
+                    <span className="flex-shrink-0 text-[11px] text-sidebar-foreground/70">
+                      Join voice
+                    </span>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </section>
-      </If>
+      ) : null}
 
-      <If when={screenShareAnnouncement()}>
+      {screenShareAnnouncement() ? (
         <p className="sr-only" role="status" aria-live="polite">
           {screenShareAnnouncement()}
         </p>
-      </If>
-      <If when={cameraAnnouncement()}>
+      ) : null}
+      {cameraAnnouncement() ? (
         <p className="sr-only" role="status" aria-live="polite">
           {cameraAnnouncement()}
         </p>
-      </If>
+      ) : null}
 
-      <If when={isActive()}>
-        <div
-          className="ml-6 mt-1 mb-1 flex items-center gap-1"
-          role="group"
-          aria-label="Voice controls"
-        >
-          <button
-            type="button"
-            className={`p-1.5 rounded-md transition-colors hover:bg-sidebar-accent ${
-              voice.isCameraEnabled()
-                ? "text-green-300 bg-sidebar-accent"
-                : "text-sidebar-foreground"
-            }`}
-            aria-pressed={voice.isCameraEnabled()}
-            aria-busy={voice.isCameraBusy()}
-            aria-label={
-              voice.isCameraBusy()
-                ? voice.isCameraEnabled()
-                  ? "Stopping camera"
-                  : "Starting camera"
+      {isActive() ? (
+        <>
+          <div
+            className="ml-6 mt-1 mb-1 flex items-center gap-1"
+            role="group"
+            aria-label="Voice controls"
+          >
+            <button
+              type="button"
+              className={`p-1.5 rounded-md transition-colors hover:bg-sidebar-accent ${
+                voice.isCameraEnabled()
+                  ? "text-green-300 bg-sidebar-accent"
+                  : "text-sidebar-foreground"
+              }`}
+              aria-pressed={voice.isCameraEnabled()}
+              aria-busy={voice.isCameraBusy()}
+              aria-label={
+                voice.isCameraBusy()
+                  ? voice.isCameraEnabled()
+                    ? "Stopping camera"
+                    : "Starting camera"
+                  : voice.isCameraEnabled()
+                    ? "Turn off camera"
+                    : "Turn on camera"
+              }
+              title={voice.isCameraEnabled() ? "Turn off camera" : "Turn on camera"}
+              disabled={voice.isCameraBusy()}
+              onClick={() => void handleToggleCamera()}
+            >
+              {voice.isCameraEnabled() ? (
+                <CameraOffIcon size={14} aria-hidden="true" />
+              ) : (
+                <CameraIcon size={14} aria-hidden="true" />
+              )}
+            </button>
+            <button
+              type="button"
+              className={`p-1.5 rounded-md transition-colors hover:bg-sidebar-accent ${
+                voice.isScreenSharing()
+                  ? "text-green-300 bg-sidebar-accent"
+                  : "text-sidebar-foreground"
+              }`}
+              aria-pressed={voice.isScreenSharing()}
+              aria-label={voice.isScreenSharing() ? "Stop sharing screen" : "Share screen"}
+              disabled={voice.isScreenShareStarting()}
+              onClick={() => void handleToggleScreenShare()}
+            >
+              {voice.isScreenSharing() ? (
+                <ScreenShareOffIcon size={14} aria-hidden="true" />
+              ) : (
+                <ScreenShareIcon size={14} aria-hidden="true" />
+              )}
+            </button>
+          </div>
+          {voice.isCameraEnabled() || voice.isCameraBusy() ? (
+            <p className="ml-6 mb-1 text-xs text-green-300" role="status">
+              {!voice.isCameraBusy()
+                ? "Camera on"
                 : voice.isCameraEnabled()
-                  ? "Turn off camera"
-                  : "Turn on camera"
-            }
-            title={voice.isCameraEnabled() ? "Turn off camera" : "Turn on camera"}
-            disabled={voice.isCameraBusy()}
-            onClick={() => void handleToggleCamera()}
-          >
-            <If
-              when={voice.isCameraEnabled()}
-              fallback={<CameraIcon size={14} aria-hidden="true" />}
-            >
-              <CameraOffIcon size={14} aria-hidden="true" />
-            </If>
-          </button>
-          <button
-            type="button"
-            className={`p-1.5 rounded-md transition-colors hover:bg-sidebar-accent ${
-              voice.isScreenSharing()
-                ? "text-green-300 bg-sidebar-accent"
-                : "text-sidebar-foreground"
-            }`}
-            aria-pressed={voice.isScreenSharing()}
-            aria-label={voice.isScreenSharing() ? "Stop sharing screen" : "Share screen"}
-            disabled={voice.isScreenShareStarting()}
-            onClick={() => void handleToggleScreenShare()}
-          >
-            <If
-              when={voice.isScreenSharing()}
-              fallback={<ScreenShareIcon size={14} aria-hidden="true" />}
-            >
-              <ScreenShareOffIcon size={14} aria-hidden="true" />
-            </If>
-          </button>
-        </div>
-        <If when={voice.isCameraEnabled() || voice.isCameraBusy()}>
-          <p className="ml-6 mb-1 text-xs text-green-300" role="status">
-            <If
-              when={!voice.isCameraBusy()}
-              fallback={voice.isCameraEnabled() ? "Stopping camera…" : "Starting camera…"}
-            >
-              Camera on
-            </If>
-          </p>
-        </If>
-        <If when={voice.isScreenSharing()}>
-          <p className="ml-6 mb-1 text-xs text-green-300" role="status">
-            Sharing screen
-          </p>
-        </If>
-      </If>
+                  ? "Stopping camera…"
+                  : "Starting camera…"}
+            </p>
+          ) : null}
+          {voice.isScreenSharing() ? (
+            <p className="ml-6 mb-1 text-xs text-green-300" role="status">
+              Sharing screen
+            </p>
+          ) : null}
+        </>
+      ) : null}
 
-      <If when={localError() || voice.lastError()}>
+      {localError() || voice.lastError() ? (
         <p className="ml-6 mb-1 text-xs text-destructive" role="alert">
           {localError() ?? voice.lastError()}
         </p>
-      </If>
+      ) : null}
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import type { DragEvent } from "react";
 import { NavLink } from "react-router-dom";
 
 function classes(base: string, conditional: Record<string, boolean>): string {
@@ -8,7 +9,7 @@ function classes(base: string, conditional: Record<string, boolean>): string {
       .map(([name]) => name),
   ].join(" ");
 }
-import { useSignalState, List, Case, If, Choose } from "../hooks/react-state";
+import { useSignalState } from "../hooks/react-state";
 import { type Channel, type User } from "../api";
 import { useChannels } from "../contexts/channels";
 import { useReadStates } from "../contexts/read-states";
@@ -30,13 +31,14 @@ export default function ChannelSidebar(props: {
   const [settingsOpen, setSettingsOpen] = useSignalState(false);
   const [draggedId, setDraggedId] = useSignalState<number | null>(null);
   const [dropTargetId, setDropTargetId] = useSignalState<number | null>(null);
+  const channelList = channels();
 
   function clearDragState() {
     setDraggedId(null);
     setDropTargetId(null);
   }
 
-  function handleDragStart(e: any, id: number) {
+  function handleDragStart(e: DragEvent<HTMLDivElement>, id: number) {
     setDraggedId(id);
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = "move";
@@ -45,14 +47,14 @@ export default function ChannelSidebar(props: {
     }
   }
 
-  function handleDragOver(e: any, id: number) {
+  function handleDragOver(e: DragEvent<HTMLDivElement>, id: number) {
     if (draggedId() === null) return;
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
     if (dropTargetId() !== id) setDropTargetId(id);
   }
 
-  function handleDrop(e: any, targetId: number, list: Channel[]) {
+  function handleDrop(e: DragEvent<HTMLDivElement>, targetId: number, list: Channel[]) {
     e.preventDefault();
     const sourceId = draggedId();
     clearDragState();
@@ -90,106 +92,96 @@ export default function ChannelSidebar(props: {
         </NavLink>
       </nav>
 
-      <If when={channels.loading}>
+      {channels.loading ? (
         <p className="px-3 py-2 text-sidebar-foreground/70 text-sm">Loading...</p>
-      </If>
-      <Choose>
-        <Case when={channels.error}>
-          <p className="px-3 py-2 text-destructive text-sm">Error loading channels</p>
-        </Case>
-        <Case when={channels()}>
-          <nav className="flex-1 overflow-y-auto py-2" aria-label="Channels">
-            <List each={channels()}>
-              {(channel) => (
-                <div
-                  className={classes("mx-2", {
-                    "opacity-50": draggedId() === channel.id,
-                    "ring-2 ring-sidebar-ring rounded-md":
-                      dropTargetId() === channel.id && draggedId() !== channel.id,
-                  })}
-                  draggable={true}
-                  data-channel-id={channel.id}
-                  data-channel-type={channel.type}
-                  onDragStart={(e) => handleDragStart(e, channel.id)}
-                  onDragOver={(e) => handleDragOver(e, channel.id)}
-                  onDragLeave={() => {
-                    if (dropTargetId() === channel.id) setDropTargetId(null);
-                  }}
-                  onDrop={(e) => handleDrop(e, channel.id, channels() ?? [])}
-                  onDragEnd={clearDragState}
+      ) : null}
+      {channels.error ? (
+        <p className="px-3 py-2 text-destructive text-sm">Error loading channels</p>
+      ) : channelList ? (
+        <nav className="flex-1 overflow-y-auto py-2" aria-label="Channels">
+          {channelList.map((channel) => (
+            <div
+              key={channel.id}
+              className={classes("mx-2", {
+                "opacity-50": draggedId() === channel.id,
+                "ring-2 ring-sidebar-ring rounded-md":
+                  dropTargetId() === channel.id && draggedId() !== channel.id,
+              })}
+              draggable={true}
+              data-channel-id={channel.id}
+              data-channel-type={channel.type}
+              onDragStart={(e) => handleDragStart(e, channel.id)}
+              onDragOver={(e) => handleDragOver(e, channel.id)}
+              onDragLeave={() => {
+                if (dropTargetId() === channel.id) setDropTargetId(null);
+              }}
+              onDrop={(e) => handleDrop(e, channel.id, channelList)}
+              onDragEnd={clearDragState}
+            >
+              {channel.type === "voice" ? (
+                <VoiceChannel channel={channel} />
+              ) : channel.type === "text" ? (
+                <NavLink
+                  to={`/channel/${channel.id}`}
+                  className={({ isActive }) =>
+                    classes(
+                      `relative flex items-center gap-2 px-3 py-1.5 rounded-md text-sm cursor-pointer transition-colors ${
+                        isActive
+                          ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+                          : readStates.hasUnread(channel.id) ||
+                              readStates.mentionCount(channel.id) > 0
+                            ? "text-sidebar-foreground font-semibold hover:bg-sidebar-accent"
+                            : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+                      }`,
+                      {
+                        "pl-6":
+                          readStates.hasUnread(channel.id) ||
+                          readStates.mentionCount(channel.id) > 0,
+                      },
+                    )
+                  }
+                  aria-label={
+                    readStates.mentionCount(channel.id) > 0
+                      ? `${channel.name}, ${readStates.mentionCount(channel.id)} unread mention${
+                          readStates.mentionCount(channel.id) === 1 ? "" : "s"
+                        }`
+                      : readStates.hasUnread(channel.id)
+                        ? `${channel.name}, unread messages`
+                        : channel.name
+                  }
+                  // Anchors are draggable by default as URLs, which hijacks
+                  // our custom drag-and-drop — suppress that here and let
+                  // the wrapping div own the drag.
+                  draggable={false}
                 >
-                  <Choose fallback={<p>unknown channel type: {channel.id}</p>}>
-                    <Case when={channel.type === "voice"}>
-                      <VoiceChannel channel={channel} />
-                    </Case>
-                    <Case when={channel.type === "text"}>
-                      <NavLink
-                        to={`/channel/${channel.id}`}
-                        className={({ isActive }) =>
-                          classes(
-                            `relative flex items-center gap-2 px-3 py-1.5 rounded-md text-sm cursor-pointer transition-colors ${
-                              isActive
-                                ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
-                                : readStates.hasUnread(channel.id) ||
-                                    readStates.mentionCount(channel.id) > 0
-                                  ? "text-sidebar-foreground font-semibold hover:bg-sidebar-accent"
-                                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground"
-                            }`,
-                            {
-                              "pl-6":
-                                readStates.hasUnread(channel.id) ||
-                                readStates.mentionCount(channel.id) > 0,
-                            },
-                          )
-                        }
-                        aria-label={
-                          readStates.mentionCount(channel.id) > 0
-                            ? `${channel.name}, ${readStates.mentionCount(channel.id)} unread mention${
-                                readStates.mentionCount(channel.id) === 1 ? "" : "s"
-                              }`
-                            : readStates.hasUnread(channel.id)
-                              ? `${channel.name}, unread messages`
-                              : channel.name
-                        }
-                        // Anchors are draggable by default as URLs, which hijacks
-                        // our custom drag-and-drop — suppress that here and let
-                        // the wrapping div own the drag.
-                        draggable={false}
-                      >
-                        <If
-                          when={
-                            readStates.hasUnread(channel.id) ||
-                            readStates.mentionCount(channel.id) > 0
-                          }
-                        >
-                          <span
-                            aria-hidden="true"
-                            className="absolute left-2 h-2 w-2 rounded-full bg-sidebar-primary"
-                            data-testid={`channel-unread-dot-${channel.id}`}
-                          />
-                        </If>
-                        <span aria-hidden="true">#</span>
-                        <span className="min-w-0 flex-1 truncate">{channel.name}</span>
-                        <If when={readStates.mentionCount(channel.id) > 0}>
-                          <span
-                            className="ml-auto min-w-5 rounded-full bg-destructive px-1.5 py-0.5 text-center text-[11px] font-bold leading-none text-white"
-                            role="img"
-                            aria-label={`${readStates.mentionCount(channel.id)} unread mention${
-                              readStates.mentionCount(channel.id) === 1 ? "" : "s"
-                            } in ${channel.name}`}
-                          >
-                            {readStates.mentionCount(channel.id)}
-                          </span>
-                        </If>
-                      </NavLink>
-                    </Case>
-                  </Choose>
-                </div>
+                  {readStates.hasUnread(channel.id) || readStates.mentionCount(channel.id) > 0 ? (
+                    <span
+                      aria-hidden="true"
+                      className="absolute left-2 h-2 w-2 rounded-full bg-sidebar-primary"
+                      data-testid={`channel-unread-dot-${channel.id}`}
+                    />
+                  ) : null}
+                  <span aria-hidden="true">#</span>
+                  <span className="min-w-0 flex-1 truncate">{channel.name}</span>
+                  {readStates.mentionCount(channel.id) > 0 ? (
+                    <span
+                      className="ml-auto min-w-5 rounded-full bg-destructive px-1.5 py-0.5 text-center text-[11px] font-bold leading-none text-white"
+                      role="img"
+                      aria-label={`${readStates.mentionCount(channel.id)} unread mention${
+                        readStates.mentionCount(channel.id) === 1 ? "" : "s"
+                      } in ${channel.name}`}
+                    >
+                      {readStates.mentionCount(channel.id)}
+                    </span>
+                  ) : null}
+                </NavLink>
+              ) : (
+                <p>unknown channel type: {channel.id}</p>
               )}
-            </List>
-          </nav>
-        </Case>
-      </Choose>
+            </div>
+          ))}
+        </nav>
+      ) : null}
 
       <div className="p-2 border-t border-sidebar-border">
         <button

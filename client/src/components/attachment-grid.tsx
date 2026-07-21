@@ -1,4 +1,5 @@
-import { List, If, useComputedValue, useSignalState } from "../hooks/react-state";
+import type { CSSProperties } from "react";
+import { useComputedValue, useSignalState } from "../hooks/react-state";
 import { resolveServerUrl, type MessageAttachment } from "../api";
 import Modal from "./modal";
 
@@ -38,7 +39,7 @@ function aspectRatio(attachment: MessageAttachment): string {
   return `${width} / ${height}`;
 }
 
-function previewStyle(attachment: MessageAttachment): Record<string, string> {
+function previewStyle(attachment: MessageAttachment): CSSProperties {
   const { width, height } = attachmentDimensions(attachment);
   const widthConstrainedByHeight = (width / height) * MAX_ATTACHMENT_PREVIEW_HEIGHT;
   const previewWidth = Math.max(
@@ -106,88 +107,75 @@ export default function AttachmentGrid(props: {
       alt: attachmentAlt(props.authorName, index, total),
     });
   };
+  const selected = selectedAttachment();
 
   return (
     <>
-      <If when={photoAttachments().length > 0}>
+      {photoAttachments().length > 0 ? (
         <div
           role="list"
           aria-label={attachmentListLabel(photoAttachments().length)}
           className={`mt-2 grid gap-2 ${gridClass(photoAttachments().length)}`}
         >
-          <List each={photoAttachments()}>
-            {(attachment, index) => {
-              const total = () => photoAttachments().length;
-              const alt = () => attachmentAlt(props.authorName, index(), total());
-              const thumbnailUrl = () => resolveServerUrl(attachment.thumbnail_url);
+          {photoAttachments().map((attachment, index) => {
+            const total = photoAttachments().length;
+            const alt = attachmentAlt(props.authorName, index, total);
+            const thumbnailUrl = resolveServerUrl(attachment.thumbnail_url);
 
-              return (
-                <div role="listitem" className="min-w-0">
-                  <button
-                    type="button"
-                    aria-label={attachmentOpenLabel(props.authorName, index(), total())}
-                    className="group block max-w-full overflow-hidden rounded-lg border border-border bg-muted p-0 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    style={previewStyle(attachment)}
-                    onClick={() => openAttachment(attachment, index(), total())}
-                  >
-                    <If
-                      when={!isBroken(attachment.id)}
-                      fallback={
-                        <div
-                          role="img"
-                          aria-label={`${alt()} unavailable`}
-                          className="flex h-full min-h-24 w-full items-center justify-center p-4 text-sm font-medium text-muted-foreground"
-                        >
-                          <span aria-hidden="true">Photo unavailable</span>
-                        </div>
-                      }
+            return (
+              <div key={attachment.id} role="listitem" className="min-w-0">
+                <button
+                  type="button"
+                  aria-label={attachmentOpenLabel(props.authorName, index, total)}
+                  className="group block max-w-full overflow-hidden rounded-lg border border-border bg-muted p-0 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  style={previewStyle(attachment)}
+                  onClick={() => openAttachment(attachment, index, total)}
+                >
+                  {!isBroken(attachment.id) ? (
+                    <img
+                      src={thumbnailUrl}
+                      alt={alt}
+                      decoding="async"
+                      width={positiveDimension(attachment.thumbnail_width)}
+                      height={positiveDimension(attachment.thumbnail_height)}
+                      className="block h-full w-full object-contain transition-transform group-hover:scale-[1.01]"
+                      onError={() => markBroken(attachment.id)}
+                    />
+                  ) : (
+                    <div
+                      role="img"
+                      aria-label={`${alt} unavailable`}
+                      className="flex h-full min-h-24 w-full items-center justify-center p-4 text-sm font-medium text-muted-foreground"
                     >
-                      <img
-                        src={thumbnailUrl()}
-                        alt={alt()}
-                        decoding="async"
-                        width={positiveDimension(attachment.thumbnail_width)}
-                        height={positiveDimension(attachment.thumbnail_height)}
-                        className="block h-full w-full object-contain transition-transform group-hover:scale-[1.01]"
-                        onError={() => markBroken(attachment.id)}
-                      />
-                    </If>
-                  </button>
-                </div>
-              );
-            }}
-          </List>
+                      <span aria-hidden="true">Photo unavailable</span>
+                    </div>
+                  )}
+                </button>
+              </div>
+            );
+          })}
         </div>
-      </If>
-      <If when={selectedAttachment()}>
-        {(selected) => {
-          const fullUrl = () => resolveServerUrl(selected().attachment.url);
-
-          return (
-            <Modal open={true} onClose={closeAttachment} title={selected().alt} size="lg">
-              <If
-                when={!fullImageBroken()}
-                fallback={
-                  <div
-                    role="img"
-                    aria-label={`${selected().alt} unavailable`}
-                    className="flex min-h-64 items-center justify-center rounded-lg bg-muted p-6 text-sm font-medium text-muted-foreground"
-                  >
-                    Photo unavailable
-                  </div>
-                }
-              >
-                <img
-                  src={fullUrl()}
-                  alt={selected().alt}
-                  className="mx-auto block max-h-[75vh] max-w-full rounded object-contain"
-                  onError={() => setFullImageBroken(true)}
-                />
-              </If>
-            </Modal>
-          );
-        }}
-      </If>
+      ) : null}
+      {selected ? (
+        <Modal open={true} onClose={closeAttachment} title={selected.alt} size="lg">
+          {!fullImageBroken() ? (
+            <img
+              src={resolveServerUrl(selected.attachment.url)}
+              alt={selected.alt}
+              className="mx-auto block max-h-[75vh] max-w-full rounded object-contain"
+              onError={() => setFullImageBroken(true)}
+            />
+          ) : (
+            <div
+              role="img"
+              aria-label={`${selected.alt} unavailable`}
+              className="flex min-h-64 items-center justify-center rounded-lg bg-muted p-6 text-sm font-medium text-muted-foreground"
+            >
+              Photo unavailable
+            </div>
+          )}
+        </Modal>
+      ) : null}
     </>
   );
 }

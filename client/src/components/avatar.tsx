@@ -1,5 +1,4 @@
 import { toSvg } from "jdenticon";
-import { If } from "../hooks/react-state";
 import { getServerUrl } from "../api";
 
 function resolveUrl(url: string): string {
@@ -13,36 +12,31 @@ export default function Avatar(props: {
   size: number;
   isSpeaking?: boolean;
 }) {
-  const label = () => `${props.username}'s avatar`;
+  const label = `${props.username}'s avatar`;
   return (
     <span
       className={`inline-block overflow-hidden rounded-full bg-muted flex-shrink-0 ${
         props.isSpeaking ? "ring-2 ring-green-500" : ""
       }`}
       style={{ width: `${props.size}px`, height: `${props.size}px` }}
-      aria-label={label()}
+      aria-label={label}
       role="img"
     >
-      <If
-        when={props.url}
-        fallback={
-          <span
-            aria-hidden="true"
-            style={{ width: `${props.size}px`, height: `${props.size}px` }}
-            dangerouslySetInnerHTML={{ __html: toSvg(props.username, props.size) }}
-          />
-        }
-      >
-        {(u) => (
-          <img
-            src={resolveUrl(u())}
-            alt=""
-            width={props.size}
-            height={props.size}
-            className="block w-full h-full object-cover"
-          />
-        )}
-      </If>
+      {props.url ? (
+        <img
+          src={resolveUrl(props.url)}
+          alt=""
+          width={props.size}
+          height={props.size}
+          className="block w-full h-full object-cover"
+        />
+      ) : (
+        <span
+          aria-hidden="true"
+          style={{ width: `${props.size}px`, height: `${props.size}px` }}
+          dangerouslySetInnerHTML={{ __html: toSvg(props.username, props.size) }}
+        />
+      )}
     </span>
   );
 }

@@ -1,19 +1,24 @@
+import { useState } from "react";
 import { describe, expect, test, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
 import * as ReactRouter from "react-router-dom";
+import { http, HttpResponse } from "msw";
 
-const makeRouter = (ReactRouter as any)["create" + "MemoryRouter"];
+const makeRouter = ReactRouter.createMemoryRouter;
 import { AuthProvider } from "../contexts/auth";
 import { ChannelsProvider } from "../contexts/channels";
 import { EventsProvider } from "../contexts/events";
 import { ReadStatesProvider } from "../contexts/read-states";
 import { FakeEventSource } from "../test/msw/sse";
-import { resetMswState } from "../test/msw/server";
+import { resetMswState, server } from "../test/msw/server";
 import { makeAttachment } from "../test/fixtures";
 import { DEV_USER } from "../test/msw/handlers";
 import { assertExists } from "../test/render";
+import ThreadPanel from "../components/thread-panel";
 import ChannelView from "./channel";
 import ThreadsView from "./threads";
+
+const TEST_SERVER = import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL ?? "http://127.0.0.1:3030";
 
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
@@ -51,6 +56,24 @@ function mountAt(path = "/threads") {
   ));
 
   return { ...result, history };
+}
+
+function ThreadPanelRequestFailureHarness() {
+  const [rootMessageId, setRootMessageId] = useState(20);
+
+  return (
+    <EventsProvider>
+      <button type="button" onClick={() => setRootMessageId(30)}>
+        Open failing thread
+      </button>
+      <ThreadPanel
+        rootMessageId={rootMessageId}
+        channelId={rootMessageId === 20 ? 200 : 100}
+        currentUserId={DEV_USER.id}
+        onClose={() => undefined}
+      />
+    </EventsProvider>
+  );
 }
 
 function expectAttributeEndsWith(element: Element, attribute: string, suffix: string) {
@@ -257,6 +280,44 @@ function seedParticipatedThreads() {
 }
 
 describe("Threads view integration", () => {
+  test("a thread load error suppresses data retained from the previous thread request", async () => {
+    seedParticipatedThreads();
+    server.use(http.get(`${TEST_SERVER}/thread/30`, () => new HttpResponse(null, { status: 500 })));
+    render(<ThreadPanelRequestFailureHarness />);
+
+    const panel = await screen.findByRole("complementary", { name: /thread panel/i });
+    await waitFor(() => expect(within(panel).getByText("root alice joined")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Open failing thread" }));
+
+    await waitFor(() =>
+      expect(within(panel).getByRole("alert")).toHaveTextContent(
+        "Error loading thread: Error: Thread load failed (500)",
+      ),
+    );
+    expect(within(panel).queryByText("root alice joined")).toBeNull();
+    expect(within(panel).queryByText("bob-only root")).toBeNull();
+  });
+
+  test("an error suppresses participated-thread previews and other resource states", async () => {
+    seedParticipatedThreads();
+    server.use(
+      http.get(
+        `${TEST_SERVER}/threads/participated`,
+        () => new HttpResponse(null, { status: 500 }),
+      ),
+    );
+    mountAt();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Error loading threads: Error: Participated threads load failed (500)",
+    );
+    expect(screen.queryByRole("article")).toBeNull();
+    expect(screen.queryByText("root alice joined")).toBeNull();
+    expect(screen.queryByText("No participated threads yet.")).toBeNull();
+    expect(screen.queryByText("Loading threads...")).toBeNull();
+  });
+
   test("renders hydrated mention labels in participated thread previews", async () => {
     const state = resetMswState();
     state.me = DEV_USER;

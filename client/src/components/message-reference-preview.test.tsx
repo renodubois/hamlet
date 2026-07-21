@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen } from "../test/testing-library";
+import { fireEvent, screen } from "@testing-library/react";
+import { renderNative } from "../test/render";
 import type { CustomEmoji } from "../api";
 
 const customEmojiContext = vi.hoisted(() => ({
@@ -42,11 +43,11 @@ beforeEach(() => {
 
 describe("<MessageReferencePreview>", () => {
   test("renders author attribution, one-line truncation, and non-navigational text", () => {
-    render(() => (
+    renderNative(
       <MessageReferencePreview
         reference={reference({ text: `${"long ".repeat(30)}https://example.com` })}
-      />
-    ));
+      />,
+    );
 
     const preview = screen.getByLabelText(/replying to casey:/i);
     expect(preview).toHaveTextContent("Casey");
@@ -73,11 +74,11 @@ describe("<MessageReferencePreview>", () => {
           : null,
     };
 
-    render(() => (
+    renderNative(
       <MessageReferencePreview
         reference={reference({ text: "custom <:party:123> missing <:ghost:999>" })}
-      />
-    ));
+      />,
+    );
 
     expect(screen.getByRole("img", { name: ":renamed_party:" })).toHaveAttribute(
       "src",
@@ -91,26 +92,26 @@ describe("<MessageReferencePreview>", () => {
   });
 
   test("renders attachment, deleted, and unavailable fallbacks with accessible labels", () => {
-    const { unmount } = render(() => (
-      <MessageReferencePreview reference={reference({ text: "", attachment_count: 2 })} />
-    ));
+    const { unmount } = renderNative(
+      <MessageReferencePreview reference={reference({ text: "", attachment_count: 2 })} />,
+    );
     expect(screen.getByLabelText(/replying to casey: 2 attachments/i)).toHaveTextContent(
       "2 attachments",
     );
     unmount();
 
-    const deleted = render(() => (
+    const deleted = renderNative(
       <MessageReferencePreview
         reference={reference({ text: "hidden text", deleted_at: 1_700_000_100_000_000 })}
-      />
-    ));
+      />,
+    );
     expect(screen.getByLabelText(/replying to deleted message by casey/i)).toHaveTextContent(
       "Original message deleted",
     );
     expect(screen.queryByText("hidden text")).toBeNull();
     deleted.unmount();
 
-    render(() => <MessageReferencePreview reference={null} targetId={99} />);
+    renderNative(<MessageReferencePreview reference={null} targetId={99} />);
     expect(screen.getByLabelText(/replying to unavailable message 99/i)).toHaveTextContent(
       "Original message unavailable",
     );
@@ -118,7 +119,7 @@ describe("<MessageReferencePreview>", () => {
 
   test("renders as a button and invokes activation when interactive", () => {
     const onActivate = vi.fn();
-    render(() => <MessageReferencePreview reference={reference()} onActivate={onActivate} />);
+    renderNative(<MessageReferencePreview reference={reference()} onActivate={onActivate} />);
 
     fireEvent.click(screen.getByRole("button", { name: /replying to casey: target text/i }));
 

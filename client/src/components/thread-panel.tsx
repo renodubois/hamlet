@@ -1,12 +1,8 @@
-import { useRef } from "react";
-
+import { useId, useRef } from "react";
 import {
-  List,
-  If,
   useAfterRenderEffect,
   useCallableResource,
   useSignalState,
-  useStableDomId,
   registerCleanup,
   useMountEffect,
 } from "../hooks/react-state";
@@ -52,16 +48,13 @@ import MessageReferencePreview from "./message-reference-preview";
 import MessageText from "./message-text";
 import Modal from "./modal";
 import ReactionRow from "./reaction-row";
-
 interface ReactionPickerState {
   messageId: number;
   anchor: HTMLElement;
 }
-
 function isDeletedMessage(message: Message): boolean {
   return message.deleted_at != null;
 }
-
 function threadMessageClass(authoredByCurrentUser: boolean, mentionedCurrentUser: boolean): string {
   const borderClass = authoredByCurrentUser
     ? "border-primary"
@@ -73,29 +66,23 @@ function threadMessageClass(authoredByCurrentUser: boolean, mentionedCurrentUser
     : authoredByCurrentUser
       ? "bg-primary/5 hover:bg-primary/10 focus-within:bg-primary/10"
       : "hover:bg-accent focus-within:bg-accent";
-
   return `group relative flex items-start gap-3 rounded-md border-l-4 py-2 pl-2 pr-12 transition-colors ${borderClass} ${stateClass}`;
 }
-
 function MessageBody(props: { message: Message; currentUserId: number | null }) {
-  return (
-    <If
-      when={!isDeletedMessage(props.message)}
-      fallback={
-        <p className="italic text-muted-foreground" aria-label="Original message deleted">
-          Original message deleted
-        </p>
-      }
-    >
+  return !isDeletedMessage(props.message) ? (
+    <>
       <MessageText
         text={props.message.text}
         mentions={props.message.mentions ?? []}
         currentUserId={props.currentUserId}
       />
-    </If>
+    </>
+  ) : (
+    <p className="italic text-muted-foreground" aria-label="Original message deleted">
+      Original message deleted
+    </p>
   );
 }
-
 function ThreadMessage(props: {
   message: Message;
   currentUserId: number | null;
@@ -130,7 +117,6 @@ function ThreadMessage(props: {
     props.currentUserName
       ? props.currentUserName
       : messageDisplayName(props.message);
-
   return (
     <article
       data-message-id={String(props.message.id)}
@@ -146,139 +132,150 @@ function ThreadMessage(props: {
         size={32}
       />
       <div className="min-w-0 flex-1">
-        <If when={!isDeletedMessage(props.message)}>
-          <div className="font-bold">{messageDisplayName(props.message)}</div>
-          <If when={props.message.reply_to ?? props.message.reply_to_message_id ?? null}>
-            <MessageReferencePreview
-              reference={props.message.reply_to ?? null}
-              targetId={props.message.reply_to_message_id ?? props.message.reply_to?.id}
-            />
-          </If>
-        </If>
-        <If
-          when={props.editing}
-          fallback={<MessageBody message={props.message} currentUserId={props.currentUserId} />}
-        >
-          <form
-            className="flex gap-2 items-center"
-            onSubmit={(e) => {
-              e.preventDefault();
-              props.onSaveEdit(props.message);
-            }}
-          >
-            <MessageInput
-              value={props.draft}
-              onChange={props.onDraftChange}
-              ariaLabel="Edit reply"
-              mentionUsers={props.mentionUsers}
-              onMentionUsers={props.onMentionUsers}
-              searchMentionUsers={props.searchMentionUsers}
-              mentionSearchLimit={props.mentionSearchLimit}
-              inputRef={(el) => queueMicrotask(() => el.focus())}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  props.onCancelEdit();
-                }
+        {!isDeletedMessage(props.message) ? (
+          <>
+            <div className="font-bold">{messageDisplayName(props.message)}</div>
+            {(props.message.reply_to ?? props.message.reply_to_message_id ?? null) ? (
+              <>
+                <MessageReferencePreview
+                  reference={props.message.reply_to ?? null}
+                  targetId={props.message.reply_to_message_id ?? props.message.reply_to?.id}
+                />
+              </>
+            ) : null}
+          </>
+        ) : null}
+        {props.editing ? (
+          <>
+            <form
+              className="flex gap-2 items-center"
+              onSubmit={(e) => {
+                e.preventDefault();
+                props.onSaveEdit(props.message);
               }}
-              className="flex min-w-0 flex-1 items-center gap-2"
-              inputClass="w-full rounded-md border border-input bg-transparent px-2 py-1 transition-colors focus:outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
-              emojiButtonClass="cursor-pointer rounded-md bg-muted px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              emojiButtonLabel="Open emoji picker for reply edit"
-            />
-            <button type="submit" className="text-sm text-primary">
-              Save
-            </button>
-            <button
-              type="button"
-              className="text-sm text-muted-foreground"
-              onClick={props.onCancelEdit}
             >
-              Cancel
-            </button>
-          </form>
-        </If>
-        <If when={!isDeletedMessage(props.message) && props.message.attachments.length > 0}>
-          <AttachmentGrid
-            attachments={props.message.attachments}
-            authorName={messageDisplayName(props.message)}
-          />
-        </If>
-        <If
-          when={
-            !isDeletedMessage(props.message) &&
-            !props.message.suppress_embeds &&
-            props.message.embeds.length > 0
-          }
-        >
-          <div className="mt-1 flex flex-col gap-1">
-            <List each={props.message.embeds}>
-              {(embed) => (
+              <MessageInput
+                value={props.draft}
+                onChange={props.onDraftChange}
+                ariaLabel="Edit reply"
+                mentionUsers={props.mentionUsers}
+                onMentionUsers={props.onMentionUsers}
+                searchMentionUsers={props.searchMentionUsers}
+                mentionSearchLimit={props.mentionSearchLimit}
+                inputRef={(el) => queueMicrotask(() => el.focus())}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    props.onCancelEdit();
+                  }
+                }}
+                className="flex min-w-0 flex-1 items-center gap-2"
+                inputClass="w-full rounded-md border border-input bg-transparent px-2 py-1 transition-colors focus:outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+                emojiButtonClass="cursor-pointer rounded-md bg-muted px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                emojiButtonLabel="Open emoji picker for reply edit"
+              />
+              <button type="submit" className="text-sm text-primary">
+                Save
+              </button>
+              <button
+                type="button"
+                className="text-sm text-muted-foreground"
+                onClick={props.onCancelEdit}
+              >
+                Cancel
+              </button>
+            </form>
+          </>
+        ) : (
+          <MessageBody message={props.message} currentUserId={props.currentUserId} />
+        )}
+        {!isDeletedMessage(props.message) && props.message.attachments.length > 0 ? (
+          <>
+            <AttachmentGrid
+              attachments={props.message.attachments}
+              authorName={messageDisplayName(props.message)}
+            />
+          </>
+        ) : null}
+        {!isDeletedMessage(props.message) &&
+        !props.message.suppress_embeds &&
+        props.message.embeds.length > 0 ? (
+          <>
+            <div className="mt-1 flex flex-col gap-1">
+              {props.message.embeds.map((embed) => (
                 <MessageEmbed
+                  key={embed.id}
                   embed={embed}
                   onRemove={isOwnReply() ? () => props.onSuppressEmbeds(props.message) : undefined}
                 />
-              )}
-            </List>
-          </div>
-        </If>
-        <If when={!isDeletedMessage(props.message)}>
-          <ReactionRow
-            reactions={props.message.reactions ?? []}
-            onToggle={(reaction) => props.onToggleReaction(props.message, reaction)}
-          />
-        </If>
+              ))}
+            </div>
+          </>
+        ) : null}
+        {!isDeletedMessage(props.message) ? (
+          <>
+            <ReactionRow
+              reactions={props.message.reactions ?? []}
+              onToggle={(reaction) => props.onToggleReaction(props.message, reaction)}
+            />
+          </>
+        ) : null}
       </div>
-      <If when={(canReact() || isOwnReply()) && !props.editing}>
-        <div
-          role="toolbar"
-          aria-label="Thread message actions"
-          className="absolute right-1 top-1 flex gap-1 rounded-md border border-border bg-card shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
-        >
-          <If when={canReact()}>
-            <button
-              type="button"
-              aria-label={
-                props.isRoot
-                  ? `Add reaction to thread root by ${actionAuthorName()}`
-                  : `Add reaction to message by ${actionAuthorName()}`
-              }
-              title="Add reaction"
-              className="p-1.5 rounded-md transition-colors hover:bg-accent"
-              onClick={(event) => {
-                event.stopPropagation();
-                props.onOpenReactionPicker(props.message, event.currentTarget);
-              }}
-            >
-              <EmojiIcon size={14} />
-            </button>
-          </If>
-          <If when={isOwnReply()}>
-            <button
-              type="button"
-              aria-label="Edit reply"
-              title="Edit reply"
-              className="p-1.5 rounded-md transition-colors hover:bg-accent"
-              onClick={() => props.onStartEdit(props.message)}
-            >
-              <EditIcon size={14} />
-            </button>
-            <button
-              type="button"
-              aria-label="Delete reply"
-              title="Delete reply"
-              className="p-1.5 rounded-md text-destructive transition-colors hover:bg-destructive/10"
-              onClick={() => props.onRequestDelete(props.message)}
-            >
-              <DeleteIcon size={14} />
-            </button>
-          </If>
-        </div>
-      </If>
+      {(canReact() || isOwnReply()) && !props.editing ? (
+        <>
+          <div
+            role="toolbar"
+            aria-label="Thread message actions"
+            className="absolute right-1 top-1 flex gap-1 rounded-md border border-border bg-card shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+          >
+            {canReact() ? (
+              <>
+                <button
+                  type="button"
+                  aria-label={
+                    props.isRoot
+                      ? `Add reaction to thread root by ${actionAuthorName()}`
+                      : `Add reaction to message by ${actionAuthorName()}`
+                  }
+                  title="Add reaction"
+                  className="p-1.5 rounded-md transition-colors hover:bg-accent"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    props.onOpenReactionPicker(props.message, event.currentTarget);
+                  }}
+                >
+                  <EmojiIcon size={14} />
+                </button>
+              </>
+            ) : null}
+            {isOwnReply() ? (
+              <>
+                <button
+                  type="button"
+                  aria-label="Edit reply"
+                  title="Edit reply"
+                  className="p-1.5 rounded-md transition-colors hover:bg-accent"
+                  onClick={() => props.onStartEdit(props.message)}
+                >
+                  <EditIcon size={14} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Delete reply"
+                  title="Delete reply"
+                  className="p-1.5 rounded-md text-destructive transition-colors hover:bg-destructive/10"
+                  onClick={() => props.onRequestDelete(props.message)}
+                >
+                  <DeleteIcon size={14} />
+                </button>
+              </>
+            ) : null}
+          </div>
+        </>
+      ) : null}
     </article>
   );
 }
-
 export default function ThreadPanel(props: {
   rootMessageId: number;
   channelId: number;
@@ -299,7 +296,6 @@ export default function ThreadPanel(props: {
     ...customEmojisToEntries(activeCustomEmojis()),
   ];
   const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
-
   const [thread, { mutate }] = useCallableResource(
     () => props.rootMessageId,
     (rootMessageId) => getThread(rootMessageId),
@@ -307,7 +303,7 @@ export default function ThreadPanel(props: {
   const [draft, setDraft] = useSignalState("");
   const [submitting, setSubmitting] = useSignalState(false);
   const photoSelection = createComposerPhotoSelection();
-  const photoSelectionErrorId = useStableDomId();
+  const photoSelectionErrorId = useId();
   const [loadingOlder, setLoadingOlder] = useSignalState(false);
   const [error, setError] = useSignalState<string | null>(null);
   const [olderError, setOlderError] = useSignalState<string | null>(null);
@@ -316,20 +312,26 @@ export default function ThreadPanel(props: {
   const [pendingDeleteId, setPendingDeleteId] = useSignalState<number | null>(null);
   const [reactionPicker, setReactionPicker] = useSignalState<ReactionPickerState | null>(null);
   const events = useEvents();
-  const inputRef = useRef<(HTMLElement & { value?: string }) | null>(null);
+  const inputRef = useRef<
+    | (HTMLElement & {
+        value?: string;
+      })
+    | null
+  >(null);
   const repliesScrollRef = useRef<HTMLDivElement | null>(null);
   const propsRef = useRef(props);
   propsRef.current = props;
-
   const appendReply = (reply: Message) => {
     props.onMentionUsers?.(reply.mentions ?? []);
     mutate((current) => {
       if (!current) return current;
       if (current.replies.some((existing) => existing.id === reply.id)) return current;
-      return { ...current, replies: [...current.replies, reply] };
+      return {
+        ...current,
+        replies: [...current.replies, reply],
+      };
     });
   };
-
   const updateMessageInThread = (message: Message) => {
     props.onMentionUsers?.(message.mentions ?? []);
     mutate((current) => {
@@ -337,7 +339,11 @@ export default function ThreadPanel(props: {
       const reference = messageReferenceFromMessage(message);
       const patchReference = (candidate: Message) =>
         messageReferencesTarget(candidate, message.id)
-          ? { ...candidate, reply_to_message_id: message.id, reply_to: reference }
+          ? {
+              ...candidate,
+              reply_to_message_id: message.id,
+              reply_to: reference,
+            }
           : candidate;
       const root = current.root.id === message.id ? message : patchReference(current.root);
       return {
@@ -349,13 +355,16 @@ export default function ThreadPanel(props: {
       };
     });
   };
-
   const markReferencedMessageUnavailable = (messageId: number) => {
     mutate((current) => {
       if (!current) return current;
       const patchReference = (candidate: Message) =>
         messageReferencesTarget(candidate, messageId)
-          ? { ...candidate, reply_to_message_id: messageId, reply_to: null }
+          ? {
+              ...candidate,
+              reply_to_message_id: messageId,
+              reply_to: null,
+            }
           : candidate;
       return {
         ...current,
@@ -364,36 +373,46 @@ export default function ThreadPanel(props: {
       };
     });
   };
-
   const removeReply = (replyId: number) => {
     mutate((current) => {
       if (!current) return current;
-      return { ...current, replies: current.replies.filter((reply) => reply.id !== replyId) };
+      return {
+        ...current,
+        replies: current.replies.filter((reply) => reply.id !== replyId),
+      };
     });
   };
-
   const updateMessageReactions = (messageId: number, reactions: ReactionSummary[]) => {
     mutate((current) => {
       if (!current) return current;
       if (current.root.id === messageId) {
-        return { ...current, root: { ...current.root, reactions } };
+        return {
+          ...current,
+          root: {
+            ...current.root,
+            reactions,
+          },
+        };
       }
       return {
         ...current,
         replies: current.replies.map((reply) =>
-          reply.id === messageId ? { ...reply, reactions } : reply,
+          reply.id === messageId
+            ? {
+                ...reply,
+                reactions,
+              }
+            : reply,
         ),
       };
     });
   };
-
   const findThreadMessage = (messageId: number): Message | null => {
     const current = thread();
     if (!current) return null;
     if (current.root.id === messageId) return current.root;
     return current.replies.find((reply) => reply.id === messageId) ?? null;
   };
-
   const mutateReaction = async (
     message: Message,
     reaction: ReactionRequest,
@@ -409,7 +428,6 @@ export default function ThreadPanel(props: {
       );
     };
     updateMessageReactions(message.id, optimistic);
-
     try {
       const canonical =
         mutation === "add"
@@ -425,7 +443,6 @@ export default function ThreadPanel(props: {
       console.error("failed to update reaction", e);
     }
   };
-
   const addReactionFromPicker = (message: Message, emoji: string) => {
     setReactionPicker(null);
     const customToken = parseCustomEmojiMarkers(emoji)[0];
@@ -445,14 +462,22 @@ export default function ThreadPanel(props: {
       );
       return;
     }
-
-    void mutateReaction(message, { kind: "native", emoji }, "add");
+    void mutateReaction(
+      message,
+      {
+        kind: "native",
+        emoji,
+      },
+      "add",
+    );
   };
-
   const toggleReaction = (message: Message, reaction: ReactionSummary) => {
     const request: ReactionRequest =
       reaction.kind === "native"
-        ? { kind: "native", emoji: reaction.emoji }
+        ? {
+            kind: "native",
+            emoji: reaction.emoji,
+          }
         : {
             kind: "custom",
             emoji_id: reaction.emoji_id,
@@ -462,13 +487,11 @@ export default function ThreadPanel(props: {
           };
     void mutateReaction(message, request, reaction.me_reacted ? "remove" : "add");
   };
-
   useMountEffect(() => {
-    const onKey = (event: any) => {
+    const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") setReactionPicker(null);
     };
     document.addEventListener("keydown", onKey);
-
     const unsubscribeCreated = events.onThreadReplyCreated((event) => {
       if (
         event.channel_id !== propsRef.current.channelId ||
@@ -513,7 +536,11 @@ export default function ThreadPanel(props: {
           ...current,
           replies: current.replies.map((reply) =>
             reply.id === event.id
-              ? { ...reply, suppress_embeds: event.suppress_embeds, embeds: event.embeds }
+              ? {
+                  ...reply,
+                  suppress_embeds: event.suppress_embeds,
+                  embeds: event.embeds,
+                }
               : reply,
           ),
         };
@@ -569,7 +596,6 @@ export default function ThreadPanel(props: {
       unsubscribeReactions();
     });
   });
-
   useAfterRenderEffect(() => {
     const rootMessageId = props.rootMessageId;
     if (props.focusComposer && rootMessageId > 0) {
@@ -579,7 +605,6 @@ export default function ThreadPanel(props: {
       });
     }
   });
-
   useAfterRenderEffect(() => {
     const loaded = thread();
     if (!loaded) return;
@@ -588,7 +613,6 @@ export default function ThreadPanel(props: {
       ...loaded.replies.flatMap((reply) => reply.mentions ?? []),
     ]);
   });
-
   const loadOlderReplies = async () => {
     const current = thread();
     const oldestReply = current?.replies[0];
@@ -600,7 +624,6 @@ export default function ThreadPanel(props: {
     ) {
       return;
     }
-
     setLoadingOlder(true);
     setOlderError(null);
     const previousScrollHeight = repliesScrollRef.current?.scrollHeight ?? 0;
@@ -630,11 +653,8 @@ export default function ThreadPanel(props: {
       setLoadingOlder(false);
     }
   };
-
   const draftText = () => draft() || inputRef.current?.value || inputRef.current?.textContent || "";
-
   const hasDraftContent = () => draftText().trim().length > 0 || photoSelection.photos().length > 0;
-
   const submitReply = async () => {
     const text = draftText();
     const photos = photoSelection.photos().map((photo) => photo.file);
@@ -654,18 +674,15 @@ export default function ThreadPanel(props: {
       setSubmitting(false);
     }
   };
-
   const startEditing = (message: Message) => {
     props.onMentionUsers?.(message.mentions ?? []);
     setEditDraft(message.text);
     setEditingId(message.id);
   };
-
   const cancelEditing = () => {
     setEditingId(null);
     setEditDraft("");
   };
-
   const saveEdit = async (message: Message) => {
     const next = editDraft();
     if (next.length === 0 && message.attachments.length === 0) {
@@ -684,7 +701,6 @@ export default function ThreadPanel(props: {
     }
     cancelEditing();
   };
-
   const confirmDelete = async () => {
     const id = pendingDeleteId();
     if (id === null) return;
@@ -697,7 +713,6 @@ export default function ThreadPanel(props: {
     setPendingDeleteId(null);
     if (editingId() === id) cancelEditing();
   };
-
   const suppressEmbeds = async (message: Message) => {
     try {
       const updated = await setMessageEmbedsSuppressed(message.id, true);
@@ -707,7 +722,11 @@ export default function ThreadPanel(props: {
           ...current,
           replies: current.replies.map((reply) =>
             reply.id === message.id
-              ? { ...reply, suppress_embeds: updated.suppress_embeds, embeds: updated.embeds }
+              ? {
+                  ...reply,
+                  suppress_embeds: updated.suppress_embeds,
+                  embeds: updated.embeds,
+                }
               : reply,
           ),
         };
@@ -716,6 +735,9 @@ export default function ThreadPanel(props: {
       console.error("failed to suppress thread reply embeds", e);
     }
   };
+  const loadedThread = thread();
+  const currentOlderError = olderError();
+  const currentError = error();
 
   return (
     <aside
@@ -740,86 +762,79 @@ export default function ThreadPanel(props: {
           repliesScrollRef.current = el;
         }}
       >
-        <If when={thread.loading}>
-          <p>Loading thread...</p>
-        </If>
-        <If when={thread.error}>
+        {thread.error ? (
           <p role="alert" className="text-destructive">
             Error loading thread: {String(thread.error)}
           </p>
-        </If>
-        <If when={thread()}>
-          {(loaded) => (
-            <div className="flex flex-col gap-2">
-              <ThreadMessage
-                message={loaded().root}
-                currentUserId={props.currentUserId}
-                currentUserName={props.currentUserName}
-                isRoot={true}
-                editing={false}
-                draft=""
-                onDraftChange={() => undefined}
-                onStartEdit={startEditing}
-                onCancelEdit={cancelEditing}
-                onSaveEdit={saveEdit}
-                onRequestDelete={(message) => setPendingDeleteId(message.id)}
-                onSuppressEmbeds={suppressEmbeds}
-                onToggleReaction={toggleReaction}
-                onOpenReactionPicker={(message, anchor) =>
-                  setReactionPicker({ messageId: message.id, anchor })
-                }
-              />
-              <If when={loaded().replies.length > 0}>
-                <div className="border-t border-border pt-2">
-                  <If when={loaded().has_more_replies}>
-                    <div className="pb-2 text-center">
-                      <button
-                        type="button"
-                        className="rounded-md border border-border px-3 py-1 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
-                        onClick={() => void loadOlderReplies()}
-                        disabled={loadingOlder()}
-                      >
-                        {loadingOlder() ? "Loading older replies..." : "Load older replies"}
-                      </button>
-                    </div>
-                  </If>
-                  <If when={olderError()}>
-                    {(message) => (
-                      <p role="alert" className="pb-2 text-sm text-destructive">
-                        Error loading older replies: {message()}
-                      </p>
-                    )}
-                  </If>
-                  <List each={loaded().replies}>
-                    {(reply) => (
-                      <ThreadMessage
-                        message={reply}
-                        currentUserId={props.currentUserId}
-                        currentUserName={props.currentUserName}
-                        editing={editingId() === reply.id}
-                        draft={editDraft()}
-                        onDraftChange={setEditDraft}
-                        onStartEdit={startEditing}
-                        onCancelEdit={cancelEditing}
-                        onSaveEdit={saveEdit}
-                        onRequestDelete={(message) => setPendingDeleteId(message.id)}
-                        onSuppressEmbeds={suppressEmbeds}
-                        onToggleReaction={toggleReaction}
-                        onOpenReactionPicker={(message, anchor) =>
-                          setReactionPicker({ messageId: message.id, anchor })
-                        }
-                        mentionUsers={props.mentionUsers}
-                        onMentionUsers={props.onMentionUsers}
-                        searchMentionUsers={props.searchMentionUsers}
-                        mentionSearchLimit={props.mentionSearchLimit}
-                      />
-                    )}
-                  </List>
-                </div>
-              </If>
-            </div>
-          )}
-        </If>
+        ) : thread.loading ? (
+          <p>Loading thread...</p>
+        ) : loadedThread ? (
+          <div className="flex flex-col gap-2">
+            <ThreadMessage
+              message={loadedThread.root}
+              currentUserId={props.currentUserId}
+              currentUserName={props.currentUserName}
+              isRoot={true}
+              editing={false}
+              draft=""
+              onDraftChange={() => undefined}
+              onStartEdit={startEditing}
+              onCancelEdit={cancelEditing}
+              onSaveEdit={saveEdit}
+              onRequestDelete={(message) => setPendingDeleteId(message.id)}
+              onSuppressEmbeds={suppressEmbeds}
+              onToggleReaction={toggleReaction}
+              onOpenReactionPicker={(message, anchor) =>
+                setReactionPicker({ messageId: message.id, anchor })
+              }
+            />
+            {loadedThread.replies.length > 0 ? (
+              <div className="border-t border-border pt-2">
+                {loadedThread.has_more_replies ? (
+                  <div className="pb-2 text-center">
+                    <button
+                      type="button"
+                      className="rounded-md border border-border px-3 py-1 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
+                      onClick={() => void loadOlderReplies()}
+                      disabled={loadingOlder()}
+                    >
+                      {loadingOlder() ? "Loading older replies..." : "Load older replies"}
+                    </button>
+                  </div>
+                ) : null}
+                {currentOlderError ? (
+                  <p role="alert" className="pb-2 text-sm text-destructive">
+                    Error loading older replies: {currentOlderError}
+                  </p>
+                ) : null}
+                {loadedThread.replies.map((reply) => (
+                  <ThreadMessage
+                    key={reply.id}
+                    message={reply}
+                    currentUserId={props.currentUserId}
+                    currentUserName={props.currentUserName}
+                    editing={editingId() === reply.id}
+                    draft={editDraft()}
+                    onDraftChange={setEditDraft}
+                    onStartEdit={startEditing}
+                    onCancelEdit={cancelEditing}
+                    onSaveEdit={saveEdit}
+                    onRequestDelete={(message) => setPendingDeleteId(message.id)}
+                    onSuppressEmbeds={suppressEmbeds}
+                    onToggleReaction={toggleReaction}
+                    onOpenReactionPicker={(message, anchor) =>
+                      setReactionPicker({ messageId: message.id, anchor })
+                    }
+                    mentionUsers={props.mentionUsers}
+                    onMentionUsers={props.onMentionUsers}
+                    searchMentionUsers={props.searchMentionUsers}
+                    mentionSearchLimit={props.mentionSearchLimit}
+                  />
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <form
@@ -829,13 +844,11 @@ export default function ThreadPanel(props: {
           void submitReply();
         }}
       >
-        <If when={error()}>
-          {(message) => (
-            <p role="alert" className="mb-2 text-sm text-destructive">
-              {message()}
-            </p>
-          )}
-        </If>
+        {currentError ? (
+          <p role="alert" className="mb-2 text-sm text-destructive">
+            {currentError}
+          </p>
+        ) : null}
         <SelectedPhotoPreviewList
           photos={photoSelection.photos()}
           error={photoSelection.error()}

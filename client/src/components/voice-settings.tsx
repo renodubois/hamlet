@@ -3,10 +3,8 @@ import { useRef } from "react";
 import {
   useAfterRenderEffect,
   useSignalState,
-  List,
   registerCleanup,
   useMountEffect,
-  If,
 } from "../hooks/react-state";
 import {
   VOICE_INPUT_STORAGE_KEY,
@@ -25,6 +23,11 @@ import { Label } from "./ui/label";
 
 // "" means "let the browser pick the system default".
 const DEFAULT_DEVICE_ID = "";
+
+type NormalizedMediaDevice = {
+  device: MediaDeviceInfo;
+  key: string;
+};
 
 // `setSinkId` is only available on Chromium-based WebViews. We detect it once
 // so we can disable the output selector with a helpful note on other platforms.
@@ -46,9 +49,9 @@ export default function VoiceSettings() {
   const supported = mediaDevicesSupported();
   const canPickOutput = sinkIdSupported();
 
-  const [inputDevices, setInputDevices] = useSignalState<MediaDeviceInfo[]>([]);
-  const [outputDevices, setOutputDevices] = useSignalState<MediaDeviceInfo[]>([]);
-  const [cameraDevices, setCameraDevices] = useSignalState<MediaDeviceInfo[]>([]);
+  const [inputDevices, setInputDevices] = useSignalState<NormalizedMediaDevice[]>([]);
+  const [outputDevices, setOutputDevices] = useSignalState<NormalizedMediaDevice[]>([]);
+  const [cameraDevices, setCameraDevices] = useSignalState<NormalizedMediaDevice[]>([]);
   // `true` until audio warm-up resolves (success or silent failure). Stays `false`
   // on unsupported platforms so the fallback banner isn't obscured by the overlay.
   const [isLoading, setIsLoading] = useSignalState(supported);
@@ -81,6 +84,9 @@ export default function VoiceSettings() {
   let micCtx: AudioContext | null = null;
   let micRaf: number | null = null;
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
+  const syntheticDeviceKeysByObjectRef = useRef(new WeakMap<MediaDeviceInfo, string>());
+  const syntheticDeviceKeysBySignatureRef = useRef(new Map<string, string[]>());
+  const nextSyntheticDeviceKeyRef = useRef(0);
   const cameraPreviewRequestIdRef = useRef(0);
   const isDisposedRef = useRef(false);
   let inputSelectRef: HTMLSelectElement | null | undefined;
@@ -115,13 +121,40 @@ export default function VoiceSettings() {
     attachCameraPreview();
   };
 
+  const normalizeDevices = (devices: readonly MediaDeviceInfo[]): NormalizedMediaDevice[] => {
+    const signatureOccurrences = new Map<string, number>();
+
+    return devices.map((device) => {
+      if (device.deviceId) return { device, key: `${device.kind}:${device.deviceId}` };
+
+      const signature = `${device.kind}:${device.groupId}:${device.label}`;
+      const occurrence = signatureOccurrences.get(signature) ?? 0;
+      signatureOccurrences.set(signature, occurrence + 1);
+
+      let key = syntheticDeviceKeysByObjectRef.current.get(device);
+      if (!key) {
+        const signatureKeys = syntheticDeviceKeysBySignatureRef.current.get(signature) ?? [];
+        key = signatureKeys[occurrence];
+        if (!key) {
+          key = `${device.kind}:synthetic-${nextSyntheticDeviceKeyRef.current}`;
+          nextSyntheticDeviceKeyRef.current += 1;
+          signatureKeys.push(key);
+          syntheticDeviceKeysBySignatureRef.current.set(signature, signatureKeys);
+        }
+        syntheticDeviceKeysByObjectRef.current.set(device, key);
+      }
+
+      return { device, key };
+    });
+  };
+
   const refreshDevices = async () => {
     if (!supported) return;
     try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      setInputDevices(devices.filter((d) => d.kind === "audioinput"));
-      setOutputDevices(devices.filter((d) => d.kind === "audiooutput"));
-      setCameraDevices(devices.filter((d) => d.kind === "videoinput"));
+      const devices = normalizeDevices(await navigator.mediaDevices.enumerateDevices());
+      setInputDevices(devices.filter(({ device }) => device.kind === "audioinput"));
+      setOutputDevices(devices.filter(({ device }) => device.kind === "audiooutput"));
+      setCameraDevices(devices.filter(({ device }) => device.kind === "videoinput"));
     } catch {
       // Enumeration can fail in restricted contexts; leave lists empty and
       // the UI will fall through to "System default" only.
@@ -367,7 +400,7 @@ export default function VoiceSettings() {
 
   return (
     <div className="relative flex flex-col gap-6">
-      <If when={isLoading()}>
+      {isLoading() ? (
         <div
           role="status"
           aria-live="polite"
@@ -381,14 +414,14 @@ export default function VoiceSettings() {
             <span>Loading media devices…</span>
           </div>
         </div>
-      </If>
+      ) : null}
 
-      <If when={!supported}>
+      {!supported ? (
         <p className="text-destructive" role="alert">
           This platform does not expose media device APIs, so voice and video chat are unavailable
           here.
         </p>
-      </If>
+      ) : null}
 
       <div className="flex flex-col gap-2">
         <Label htmlFor="voice-input-select">Input device</Label>
@@ -407,9 +440,11 @@ export default function VoiceSettings() {
           }}
         >
           <option value={DEFAULT_DEVICE_ID}>System default</option>
-          <List each={inputDevices()}>
-            {(d, i) => <option value={d.deviceId}>{inputLabel(d, i())}</option>}
-          </List>
+          {inputDevices().map(({ device, key }, index) => (
+            <option key={key} value={device.deviceId}>
+              {inputLabel(device, index)}
+            </option>
+          ))}
         </select>
 
         <div className="flex items-center gap-3 mt-1">
@@ -430,18 +465,16 @@ export default function VoiceSettings() {
             />
           </div>
         </div>
-        <If when={micError()}>
-          {(msg) => (
-            <p className="text-destructive text-sm" role="alert">
-              {msg()}
-            </p>
-          )}
-        </If>
-        <If when={micTesting()}>
+        {micError() ? (
+          <p className="text-destructive text-sm" role="alert">
+            {micError()}
+          </p>
+        ) : null}
+        {micTesting() ? (
           <p className="text-xs text-muted-foreground">
             Speak into your mic — the bar should move.
           </p>
-        </If>
+        ) : null}
       </div>
 
       <div className="flex flex-col gap-2">
@@ -459,9 +492,11 @@ export default function VoiceSettings() {
           }}
         >
           <option value={DEFAULT_DEVICE_ID}>System default</option>
-          <List each={cameraDevices()}>
-            {(d, i) => <option value={d.deviceId}>{cameraLabel(d, i())}</option>}
-          </List>
+          {cameraDevices().map(({ device, key }, index) => (
+            <option key={key} value={device.deviceId}>
+              {cameraLabel(device, index)}
+            </option>
+          ))}
         </select>
 
         <div className="mt-1 flex items-center gap-3">
@@ -472,20 +507,19 @@ export default function VoiceSettings() {
             disabled={!supported}
             aria-busy={cameraPreviewStarting()}
           >
-            <If
-              when={cameraPreviewStarting()}
-              fallback={cameraPreviewStream() ? "Stop preview" : "Preview camera"}
-            >
-              Starting preview…
-            </If>
+            {cameraPreviewStarting()
+              ? "Starting preview…"
+              : cameraPreviewStream()
+                ? "Stop preview"
+                : "Preview camera"}
           </Button>
-          <If when={cameraPreviewStream()}>
+          {cameraPreviewStream() ? (
             <p className="text-xs text-muted-foreground">
               Your camera preview stays local to this device.
             </p>
-          </If>
+          ) : null}
         </div>
-        <If when={cameraPreviewStream()}>
+        {cameraPreviewStream() ? (
           <video
             ref={setCameraVideoRef}
             aria-label="Camera preview"
@@ -494,14 +528,12 @@ export default function VoiceSettings() {
             playsInline
             className="mt-2 aspect-video w-full max-w-sm rounded-md bg-black object-cover"
           />
-        </If>
-        <If when={cameraError()}>
-          {(msg) => (
-            <p className="text-destructive text-sm" role="alert">
-              {msg()}
-            </p>
-          )}
-        </If>
+        ) : null}
+        {cameraError() ? (
+          <p className="text-destructive text-sm" role="alert">
+            {cameraError()}
+          </p>
+        ) : null}
       </div>
 
       <div className="flex flex-col gap-2">
@@ -515,16 +547,18 @@ export default function VoiceSettings() {
           onChange={(e) => setOutputId(e.currentTarget.value)}
         >
           <option value={DEFAULT_DEVICE_ID}>System default</option>
-          <List each={outputDevices()}>
-            {(d, i) => <option value={d.deviceId}>{outputLabel(d, i())}</option>}
-          </List>
+          {outputDevices().map(({ device, key }, index) => (
+            <option key={key} value={device.deviceId}>
+              {outputLabel(device, index)}
+            </option>
+          ))}
         </select>
-        <If when={supported && !canPickOutput}>
+        {supported && !canPickOutput ? (
           <p className="text-xs text-muted-foreground">
             This platform plays audio through the system default device; per-app output selection is
             not supported here.
           </p>
-        </If>
+        ) : null}
 
         <div className="mt-1">
           <Button
@@ -536,13 +570,11 @@ export default function VoiceSettings() {
             {playingTestSound() ? "Playing..." : "Play test sound"}
           </Button>
         </div>
-        <If when={outputError()}>
-          {(msg) => (
-            <p className="text-destructive text-sm" role="alert">
-              {msg()}
-            </p>
-          )}
-        </If>
+        {outputError() ? (
+          <p className="text-destructive text-sm" role="alert">
+            {outputError()}
+          </p>
+        ) : null}
       </div>
 
       <div className="flex flex-col gap-3 border-t border-border pt-4">
@@ -595,7 +627,7 @@ export default function VoiceSettings() {
             value={inputGain()}
             disabled={!supported}
             className="w-full"
-            onInput={(e) => setInputGain(Number.parseFloat(e.currentTarget.value))}
+            onChange={(e) => setInputGain(Number.parseFloat(e.currentTarget.value))}
           />
           <p className="text-xs text-muted-foreground">
             Adjusts how loud your voice is to other participants.

@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import { flushSync } from "react-dom";
 
-import { If, useSignalState, useMountEffect } from "../hooks/react-state";
+import { useSignalState, useMountEffect } from "../hooks/react-state";
 import type { Message, UserTyping } from "../api";
 import type { EventsContextValue } from "../contexts/events";
 import { TYPING_EXPIRY_MS } from "../constants";
@@ -98,33 +98,29 @@ export default function TypingIndicator(props: Props) {
       .map((e) => e.username)
       .sort((a, b) => a.localeCompare(b));
 
-  const message = () => formatTypingMessage(usernames());
+  const message = formatTypingMessage(usernames());
 
-  return (
-    <If when={message()} keyed>
-      {(text) => (
-        <div
-          className="flex items-center gap-2 text-xs text-muted-foreground px-1 pb-1 h-5"
-          aria-live="polite"
-          data-testid="typing-indicator"
-        >
-          <span className="inline-flex items-center gap-0.5" aria-hidden="true">
-            <span
-              className="inline-block w-1 h-1 rounded-full bg-muted-foreground animate-bounce"
-              style={{ animationDelay: "0ms" }}
-            />
-            <span
-              className="inline-block w-1 h-1 rounded-full bg-muted-foreground animate-bounce"
-              style={{ animationDelay: "150ms" }}
-            />
-            <span
-              className="inline-block w-1 h-1 rounded-full bg-muted-foreground animate-bounce"
-              style={{ animationDelay: "300ms" }}
-            />
-          </span>
-          <span>{text}</span>
-        </div>
-      )}
-    </If>
-  );
+  return message ? (
+    <div
+      className="flex items-center gap-2 text-xs text-muted-foreground px-1 pb-1 h-5"
+      aria-live="polite"
+      data-testid="typing-indicator"
+    >
+      <span className="inline-flex items-center gap-0.5" aria-hidden="true">
+        <span
+          className="inline-block w-1 h-1 rounded-full bg-muted-foreground animate-bounce"
+          style={{ animationDelay: "0ms" }}
+        />
+        <span
+          className="inline-block w-1 h-1 rounded-full bg-muted-foreground animate-bounce"
+          style={{ animationDelay: "150ms" }}
+        />
+        <span
+          className="inline-block w-1 h-1 rounded-full bg-muted-foreground animate-bounce"
+          style={{ animationDelay: "300ms" }}
+        />
+      </span>
+      <span>{message}</span>
+    </div>
+  ) : null;
 }

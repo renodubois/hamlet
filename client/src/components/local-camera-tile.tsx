@@ -1,6 +1,6 @@
 import { useRef } from "react";
 
-import { useAfterRenderEffect, registerCleanup, If } from "../hooks/react-state";
+import { useAfterRenderEffect, registerCleanup } from "../hooks/react-state";
 import type { LocalVideoTrack } from "livekit-client";
 import { useOptionalVoiceChat } from "../contexts/voice-chat";
 
@@ -50,26 +50,23 @@ export default function LocalCameraTile() {
   const voice = useOptionalVoiceChat();
   if (!voice) return null;
 
+  const track = voice.localCameraTrack();
+  if (!track) return null;
+
   return (
-    <If when={voice.localCameraTrack()}>
-      {(track) => (
-        <section
-          className="flex-shrink-0 border-b border-border bg-card p-4 text-card-foreground"
-          role="region"
-          aria-label="Local camera preview"
-        >
-          <div className="flex flex-wrap items-center gap-4">
-            <AttachedLocalCameraVideo track={track()} label="Your camera video" />
-            <div className="min-w-0">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Camera on</p>
-              <h2 className="text-lg font-semibold">Your camera</h2>
-              <p className="text-sm text-muted-foreground">
-                Only your local preview is shown here.
-              </p>
-            </div>
-          </div>
-        </section>
-      )}
-    </If>
+    <section
+      className="flex-shrink-0 border-b border-border bg-card p-4 text-card-foreground"
+      role="region"
+      aria-label="Local camera preview"
+    >
+      <div className="flex flex-wrap items-center gap-4">
+        <AttachedLocalCameraVideo track={track} label="Your camera video" />
+        <div className="min-w-0">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Camera on</p>
+          <h2 className="text-lg font-semibold">Your camera</h2>
+          <p className="text-sm text-muted-foreground">Only your local preview is shown here.</p>
+        </div>
+      </div>
+    </section>
   );
 }

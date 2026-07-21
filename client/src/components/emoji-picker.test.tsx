@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
-import { useSignalState } from "../hooks/react-state";
+import { useRef, useState } from "react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 import type { EmojiEntry } from "../emoji/emoji-data";
 import { expectNoA11yViolations } from "../test/a11y";
+import { renderNative } from "../test/render";
 import EmojiPicker from "./emoji-picker";
 
 const EMOJIS: readonly EmojiEntry[] = [
@@ -81,10 +82,15 @@ const searchName = /search and select emoji/i;
 const pickerName = /emoji picker/i;
 const footerName = /emoji shortcodes/i;
 
-function renderHarness(initialOpen = true, onSelect = vi.fn(), onClose = vi.fn()) {
-  return render(() => {
-    const [open, setOpen] = useSignalState(initialOpen);
-    let anchor: HTMLButtonElement | null | undefined;
+function renderHarness(
+  initialOpen = true,
+  onSelect = vi.fn(),
+  onClose = vi.fn(),
+  emojis: readonly EmojiEntry[] = EMOJIS,
+) {
+  function Harness() {
+    const [open, setOpen] = useState(initialOpen);
+    const anchorRef = useRef<HTMLButtonElement | null>(null);
     const close = () => {
       onClose();
       setOpen(false);
@@ -92,24 +98,21 @@ function renderHarness(initialOpen = true, onSelect = vi.fn(), onClose = vi.fn()
 
     return (
       <>
-        <button
-          ref={(el) => {
-            anchor = el;
-          }}
-          type="button"
-        >
+        <button ref={anchorRef} type="button">
           anchor
         </button>
         <EmojiPicker
-          open={open()}
-          anchor={() => anchor}
-          emojis={EMOJIS}
+          open={open}
+          anchor={() => anchorRef.current}
+          emojis={emojis}
           onSelect={onSelect}
           onClose={close}
         />
       </>
     );
-  });
+  }
+
+  return renderNative(<Harness />);
 }
 
 function getSearch(root: HTMLElement | Document = document): HTMLInputElement {
@@ -319,6 +322,34 @@ describe("<EmojiPicker>", () => {
     expect(event.defaultPrevented).toBe(true);
     expect(onSelect).toHaveBeenCalledWith("❤️");
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test("filter reordering keeps native and custom keyboard identity distinct", async () => {
+    const onSelect = vi.fn();
+    const collidingEmojis: readonly EmojiEntry[] = [
+      {
+        emoji: "🥳",
+        shortcodes: [":party:"],
+        category: "Smileys & Emotion",
+      },
+      EMOJIS[9],
+    ];
+    renderHarness(true, onSelect, vi.fn(), collidingEmojis);
+
+    const search = await screen.findByRole("combobox", { name: searchName });
+    fireEvent.input(search, { target: { value: "party" } });
+
+    const cells = screen.getAllByRole("gridcell", { name: "Emoji :party:" });
+    expect(cells).toHaveLength(2);
+    expect(cells[0].id).not.toBe(cells[1].id);
+    expect(cells[0]).toHaveAttribute("aria-selected", "true");
+    expect(cells[0].querySelector("img")).toBeInTheDocument();
+
+    keyDown(search, { key: "ArrowRight" });
+    expect(cells[1]).toHaveAttribute("aria-selected", "true");
+    keyDown(search, { key: "Enter" });
+
+    expect(onSelect).toHaveBeenCalledWith("🥳");
   });
 
   test.each(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"] as const)(

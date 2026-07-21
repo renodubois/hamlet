@@ -1,9 +1,10 @@
+import { StrictMode, useRef } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { fireEvent, screen } from "../test/testing-library";
-import { useCallableResource, If } from "../hooks/react-state";
+import { fireEvent, screen } from "@testing-library/react";
 import type { Channel, User } from "../api";
 import { expectNoA11yViolations } from "../test/a11y";
-import { renderWithRouter } from "../test/render";
+import { renderNative, renderWithRouterNative } from "../test/render";
 
 const channelsResource = vi.hoisted(() =>
   vi.fn<
@@ -39,11 +40,8 @@ vi.mock("./add-channel-modal", () => ({
 }));
 
 vi.mock("./settings-modal", () => ({
-  default: (props: { open: boolean }) => (
-    <If when={props.open}>
-      <div data-testid="settings-modal-stub">settings-open</div>
-    </If>
-  ),
+  default: (props: { open: boolean }) =>
+    props.open ? <div data-testid="settings-modal-stub">settings-open</div> : null,
 }));
 
 vi.mock("./voice-status-controls", () => ({
@@ -55,11 +53,18 @@ vi.mock("./voice-status-controls", () => ({
 // without standing up the whole voice stack — it has dedicated coverage in
 // voice-channel.test.tsx.
 vi.mock("./voice-channel", () => ({
-  default: (props: { channel: Channel }) => (
-    <button type="button" data-testid={`voice-channel-${props.channel.id}`}>
-      {props.channel.name}
-    </button>
-  ),
+  default: function VoiceChannelStub(props: { channel: Channel }) {
+    const initialChannelId = useRef(props.channel.id);
+    return (
+      <button
+        type="button"
+        data-testid={`voice-channel-${props.channel.id}`}
+        data-initial-channel-id={initialChannelId.current}
+      >
+        {props.channel.name}
+      </button>
+    );
+  },
 }));
 
 import ChannelSidebar from "./channel-sidebar";
@@ -74,14 +79,14 @@ const USER: User = {
 };
 
 function fakeChannels(data: Channel[] | undefined) {
-  // useCallableResource gives us something shaped like a Resource (loading/error/etc).
-  const [resource] = useCallableResource(async () => data ?? []);
-  const wrapped = (() => (data === undefined ? undefined : data)) as unknown as () => Channel[];
-  Object.assign(wrapped, {
-    loading: resource.loading,
-    error: undefined,
-    state: data ? "ready" : "pending",
-  });
+  const wrapped = (() => data) as (() => Channel[] | undefined) & {
+    loading: boolean;
+    error: unknown;
+    state: "ready" | "pending";
+  };
+  wrapped.loading = data === undefined;
+  wrapped.error = undefined;
+  wrapped.state = data === undefined ? "pending" : "ready";
   return wrapped;
 }
 
@@ -118,7 +123,7 @@ describe("<ChannelSidebar>", () => {
       reorder: async () => {},
     });
 
-    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
+    renderWithRouterNative(<ChannelSidebar user={USER} onLogout={async () => {}} />);
 
     expect(screen.getByText(/general/)).toBeInTheDocument();
     expect(screen.getByText(/random/)).toBeInTheDocument();
@@ -132,7 +137,7 @@ describe("<ChannelSidebar>", () => {
       refetch: () => {},
       reorder: async () => {},
     });
-    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
+    renderWithRouterNative(<ChannelSidebar user={USER} onLogout={async () => {}} />);
 
     expect(screen.getByRole("link", { name: /^threads$/i })).toHaveAttribute("href", "/threads");
   });
@@ -143,7 +148,7 @@ describe("<ChannelSidebar>", () => {
       refetch: () => {},
       reorder: async () => {},
     });
-    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
+    renderWithRouterNative(<ChannelSidebar user={USER} onLogout={async () => {}} />);
     expect(screen.getByText("alice")).toBeInTheDocument();
   });
 
@@ -153,7 +158,7 @@ describe("<ChannelSidebar>", () => {
       refetch: () => {},
       reorder: async () => {},
     });
-    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
+    renderWithRouterNative(<ChannelSidebar user={USER} onLogout={async () => {}} />);
     expect(screen.queryByTestId("settings-modal-stub")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByTestId("settings-modal-stub")).toBeInTheDocument();
@@ -165,7 +170,7 @@ describe("<ChannelSidebar>", () => {
       refetch: () => {},
       reorder: async () => {},
     });
-    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
+    renderWithRouterNative(<ChannelSidebar user={USER} onLogout={async () => {}} />);
     expect(screen.queryByRole("button", { name: /^log out$/i })).toBeNull();
   });
 
@@ -178,7 +183,7 @@ describe("<ChannelSidebar>", () => {
       refetch: () => {},
       reorder: async () => {},
     });
-    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
+    renderWithRouterNative(<ChannelSidebar user={USER} onLogout={async () => {}} />);
     const row = screen.getByText(/general/).closest("[data-channel-id]");
     expect(row).toHaveAttribute("draggable", "true");
     // The inner anchor should opt out of the native URL-drag behavior so it
@@ -199,7 +204,7 @@ describe("<ChannelSidebar>", () => {
       reorder,
     });
 
-    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
+    renderWithRouterNative(<ChannelSidebar user={USER} onLogout={async () => {}} />);
 
     const devRow = screen.getByText(/dev/).closest("[data-channel-id]") as HTMLElement;
     const generalRow = screen.getByText(/general/).closest("[data-channel-id]") as HTMLElement;
@@ -229,7 +234,7 @@ describe("<ChannelSidebar>", () => {
       reorder: async () => {},
     });
 
-    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
+    renderWithRouterNative(<ChannelSidebar user={USER} onLogout={async () => {}} />);
 
     expect(screen.queryByTestId("channel-unread-dot-10")).toBeNull();
     expect(screen.getByTestId("channel-unread-dot-20")).toBeInTheDocument();
@@ -252,9 +257,9 @@ describe("<ChannelSidebar>", () => {
       reorder: async () => {},
     });
 
-    const { container } = renderWithRouter(() => (
-      <ChannelSidebar user={USER} onLogout={async () => {}} />
-    ));
+    const { container } = renderWithRouterNative(
+      <ChannelSidebar user={USER} onLogout={async () => {}} />,
+    );
 
     expect(screen.getByRole("link", { name: /random, 3 unread mentions/i })).toBeInTheDocument();
     expect(screen.getByRole("img", { name: /3 unread mentions in random/i })).toHaveTextContent(
@@ -262,6 +267,39 @@ describe("<ChannelSidebar>", () => {
     );
     expect(screen.queryByRole("img", { name: /lobby/i })).toBeNull();
     await expectNoA11yViolations(container, "sidebar mention unread badge");
+  });
+
+  test("channel reordering retains row and VoiceChannel identity by channel ID", () => {
+    let channelData: Channel[] = [
+      { id: 10, name: "general", position: 0, type: "text" },
+      { id: 40, name: "lobby", position: 1, type: "voice" },
+    ];
+    channelsResource.mockImplementation(() => ({
+      channels: fakeChannels(channelData),
+      refetch: () => {},
+      reorder: async () => {},
+    }));
+
+    const { rerender } = renderNative(
+      <MemoryRouter>
+        <ChannelSidebar user={USER} onLogout={async () => {}} />
+      </MemoryRouter>,
+    );
+    const textRow = screen.getByText("general").closest("[data-channel-id]");
+    const voiceRow = screen.getByTestId("voice-channel-40").closest("[data-channel-id]");
+
+    channelData = [channelData[1], channelData[0]];
+    rerender(
+      <StrictMode>
+        <MemoryRouter>
+          <ChannelSidebar user={USER} onLogout={async () => {}} />
+        </MemoryRouter>
+      </StrictMode>,
+    );
+
+    expect(screen.getByText("general").closest("[data-channel-id]")).toBe(textRow);
+    expect(screen.getByTestId("voice-channel-40").closest("[data-channel-id]")).toBe(voiceRow);
+    expect(screen.getByTestId("voice-channel-40")).toHaveAttribute("data-initial-channel-id", "40");
   });
 
   test("voice channels render the VoiceChannel component instead of a link", () => {
@@ -273,7 +311,7 @@ describe("<ChannelSidebar>", () => {
       refetch: () => {},
       reorder: async () => {},
     });
-    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
+    renderWithRouterNative(<ChannelSidebar user={USER} onLogout={async () => {}} />);
 
     // Voice channels delegate to VoiceChannel (stubbed above) — they do not
     // render as navigation anchors.
@@ -295,7 +333,7 @@ describe("<ChannelSidebar>", () => {
       refetch: () => {},
       reorder,
     });
-    renderWithRouter(() => <ChannelSidebar user={USER} onLogout={async () => {}} />);
+    renderWithRouterNative(<ChannelSidebar user={USER} onLogout={async () => {}} />);
     const row = screen.getByText(/general/).closest("[data-channel-id]") as HTMLElement;
     const dt = makeDataTransfer();
     fireEvent.dragStart(row, { dataTransfer: dt });

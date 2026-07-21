@@ -1,33 +1,6 @@
-import React, {
-  createContext,
-  lazy,
-  useContext,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
-import { createPortal, flushSync } from "react-dom";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
-export { createContext, lazy, useContext };
-export namespace JSX {
-  export type Element = React.ReactNode;
-  export type CSSProperties = React.CSSProperties;
-  export type HTMLAttributes<T> = React.HTMLAttributes<T>;
-  export type EventHandler<T, E extends Event> = {
-    bivarianceHack(
-      event: React.SyntheticEvent<T> &
-        Partial<Pick<KeyboardEvent, "key" | "altKey" | "ctrlKey" | "metaKey" | "shiftKey">> & {
-          currentTarget: T;
-          isComposing?: boolean;
-          __event?: E;
-        },
-    ): void;
-  }["bivarianceHack"];
-}
-export type Component<P = Record<string, never>> = (props: P) => ReactNode;
 export type Getter<T> = () => T;
 export type ValueUpdater<T> = (value: T | ((current: T) => T)) => void;
 
@@ -181,18 +154,6 @@ export function useMountEffect(fn: () => void | Cleanup): void {
   useLayoutEffect(() => runWithCleanup(() => fnRef.current()), []);
 }
 
-export function useStableDomId(): string {
-  return useId().replace(/:/g, "");
-}
-
-export function ignoreReactiveTracking<T>(fn: () => T): T {
-  return fn();
-}
-
-export function PortalRoot(props: { children?: ReactNode; mount?: globalThis.Element }) {
-  return createPortal(props.children, props.mount ?? document.body);
-}
-
 export type CallableResource<T> = Getter<T | undefined> & {
   loading: boolean;
   error: unknown;
@@ -304,62 +265,6 @@ export function useCallableResource<S, T>(
       },
     },
   ];
-}
-
-export function If<T>(props: {
-  when: T | false | null | undefined;
-  fallback?: ReactNode;
-  keyed?: boolean;
-  children?: any;
-}) {
-  if (!props.when) return <>{props.fallback ?? null}</>;
-  if (typeof props.children === "function") {
-    const value = () => props.when as NonNullable<T>;
-    return (
-      <>
-        {props.keyed
-          ? (props.children as (value: NonNullable<T>) => ReactNode)(props.when as NonNullable<T>)
-          : (props.children as (value: Getter<NonNullable<T>>) => ReactNode)(value)}
-      </>
-    );
-  }
-  return <>{props.children}</>;
-}
-
-export function List(props: {
-  each: readonly any[] | undefined | null;
-  fallback?: ReactNode;
-  children: (item: any, index: Getter<number>) => any;
-}) {
-  const list = props.each ?? [];
-  if (list.length === 0) return <>{props.fallback ?? null}</>;
-  return (
-    <>
-      {list.map((item, index) => (
-        <React.Fragment key={(item as { id?: unknown }).id?.toString() ?? index}>
-          {props.children(item, () => index)}
-        </React.Fragment>
-      ))}
-    </>
-  );
-}
-
-export function Case(props: { when: unknown; children?: any }) {
-  if (!props.when) return null;
-  if (typeof props.children === "function") {
-    return <>{props.children(() => props.when)}</>;
-  }
-  return <>{props.children}</>;
-}
-
-export function Choose(props: { fallback?: ReactNode; children?: ReactNode }) {
-  const childrenArray = React.Children.toArray(props.children) as React.ReactElement<{
-    when?: unknown;
-  }>[];
-  for (const child of childrenArray) {
-    if (React.isValidElement(child) && child.props.when) return child;
-  }
-  return <>{props.fallback ?? null}</>;
 }
 
 type StoreUpdater<T> = (

@@ -76,7 +76,6 @@ export interface MessageInputProps {
   placeholder?: string;
   ariaLabel?: string;
   describedBy?: string;
-  class?: string;
   className?: string;
   inputClass?: string;
   emojiButtonClass?: string;
@@ -105,10 +104,6 @@ const DEFAULT_CHANNEL_AUTOCOMPLETE_LIMIT = 8;
 // it has no editable text after it. Keep an invisible editable text boundary in
 // the DOM only where needed, then strip it from serialized text and offsets.
 const EDITOR_CARET_SENTINEL = "\u200B";
-
-function stableDomId(id: string): string {
-  return id.replace(/:/g, "");
-}
 
 function stripEditorCaretSentinels(value: string): string {
   return value.split(EDITOR_CARET_SENTINEL).join("");
@@ -715,6 +710,7 @@ function AutocompleteMenu<T>(props: {
   label: string;
   options: readonly T[];
   selectedIndex: number;
+  getOptionKey: (option: T) => string | number;
   optionLabel: (option: T) => string;
   renderOption: (option: T, selected: boolean) => ReactNode;
   onRememberSelection: () => void;
@@ -731,7 +727,7 @@ function AutocompleteMenu<T>(props: {
         const selected = index === props.selectedIndex;
         return (
           <li
-            key={`${props.id}-option-${index}`}
+            key={props.getOptionKey(option)}
             id={`${props.id}-option-${index}`}
             role="option"
             aria-label={props.optionLabel(option)}
@@ -763,9 +759,9 @@ function useLatestRef<T>(value: T) {
 }
 
 export default function MessageInput(props: MessageInputProps) {
-  const autocompleteListboxId = stableDomId(useId());
-  const mentionListboxId = stableDomId(useId());
-  const channelListboxId = stableDomId(useId());
+  const autocompleteListboxId = useId();
+  const mentionListboxId = useId();
+  const channelListboxId = useId();
   const customEmojis = useOptionalCustomEmojis();
   const optionalChannels = useOptionalChannels();
   const contextChannels = optionalChannels?.channels();
@@ -1698,7 +1694,7 @@ export default function MessageInput(props: MessageInputProps) {
   );
 
   return (
-    <div className={props.className ?? props.class ?? DEFAULT_ROOT_CLASS}>
+    <div className={props.className ?? DEFAULT_ROOT_CLASS}>
       <div className="relative min-w-0 flex-1">
         {mentionAutocompleteOpen ? (
           <AutocompleteMenu
@@ -1706,6 +1702,7 @@ export default function MessageInput(props: MessageInputProps) {
             label="Mention suggestions"
             options={mentionAutocompleteSuggestions}
             selectedIndex={selectedMentionAutocompleteIndex}
+            getOptionKey={(user) => user.id}
             optionLabel={mentionAutocompleteOptionLabel}
             onRememberSelection={rememberSelection}
             onCommit={commitMentionAutocompleteSuggestion}
@@ -1729,6 +1726,7 @@ export default function MessageInput(props: MessageInputProps) {
             label="Channel suggestions"
             options={channelAutocompleteSuggestions}
             selectedIndex={selectedChannelAutocompleteIndex}
+            getOptionKey={(channel) => channel.id}
             optionLabel={channelAutocompleteOptionLabel}
             onRememberSelection={rememberSelection}
             onCommit={commitChannelAutocompleteSuggestion}
@@ -1754,6 +1752,11 @@ export default function MessageInput(props: MessageInputProps) {
             label="Emoji suggestions"
             options={autocompleteSuggestions}
             selectedIndex={selectedAutocompleteIndex}
+            getOptionKey={(suggestion) =>
+              suggestion.emoji.kind === "custom"
+                ? `custom:${suggestion.emoji.id}`
+                : `native:${suggestion.emoji.emoji}`
+            }
             optionLabel={emojiAutocompleteOptionLabel}
             onRememberSelection={rememberSelection}
             onCommit={commitAutocompleteSuggestion}

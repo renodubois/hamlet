@@ -1,6 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
-
-import { useStableDomId, If, type JSX } from "../hooks/react-state";
+import { useId, useLayoutEffect, useRef, type ReactNode } from "react";
 
 // Stack of currently-mounted modal content elements, topmost last. Nested modals
 // use this so only the topmost one handles keyboard input (Tab trap, Escape).
@@ -24,13 +22,13 @@ export default function Modal(props: {
   onClose: () => void;
   title: string;
   size?: "sm" | "lg";
-  children: JSX.Element;
+  children: ReactNode;
 }) {
   const contentRef = useRef<HTMLDivElement | null>(null);
   const setContentRef = (el: HTMLDivElement | null) => {
     contentRef.current = el;
   };
-  const titleId = useStableDomId();
+  const titleId = useId();
 
   useLayoutEffect(() => {
     if (!props.open) return;
@@ -53,7 +51,7 @@ export default function Modal(props: {
     const initialFocus = activeInside ?? autoFocusEl ?? getFocusable(content)[0] ?? content;
     initialFocus.focus();
 
-    const handler = (e: any) => {
+    const handler = (e: KeyboardEvent) => {
       if (modalStack[modalStack.length - 1] !== content) return;
       if (e.key === "Escape") {
         e.preventDefault();
@@ -95,40 +93,40 @@ export default function Modal(props: {
     };
   });
 
-  const sizeClass = () => (props.size === "lg" ? "w-4xl" : "w-96");
+  const sizeClass = props.size === "lg" ? "w-4xl" : "w-96";
+
+  if (!props.open) return null;
 
   return (
-    <If when={props.open}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      onClick={(e) => {
+        if (e.currentTarget === e.target) props.onClose();
+      }}
+    >
       <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-        onClick={(e) => {
-          if (e.currentTarget === e.target) props.onClose();
-        }}
+        ref={setContentRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className={`max-h-[90vh] overflow-y-auto rounded-xl border border-border bg-popover p-6 text-popover-foreground shadow-xl outline-none ${sizeClass}`}
       >
-        <div
-          ref={setContentRef}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby={titleId}
-          tabIndex={-1}
-          className={`max-h-[90vh] overflow-y-auto rounded-xl border border-border bg-popover p-6 text-popover-foreground shadow-xl outline-none ${sizeClass()}`}
-        >
-          <div className="flex items-center justify-between mb-4">
-            <h2 id={titleId} className="text-lg font-semibold">
-              {props.title}
-            </h2>
-            <button
-              type="button"
-              className="rounded-md text-xl leading-none text-muted-foreground transition-colors hover:text-foreground"
-              onClick={props.onClose}
-              aria-label="Close"
-            >
-              ×
-            </button>
-          </div>
-          {props.children}
+        <div className="flex items-center justify-between mb-4">
+          <h2 id={titleId} className="text-lg font-semibold">
+            {props.title}
+          </h2>
+          <button
+            type="button"
+            className="rounded-md text-xl leading-none text-muted-foreground transition-colors hover:text-foreground"
+            onClick={props.onClose}
+            aria-label="Close"
+          >
+            ×
+          </button>
         </div>
+        {props.children}
       </div>
-    </If>
+    </div>
   );
 }

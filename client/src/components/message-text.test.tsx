@@ -1,4 +1,5 @@
-import { useSignalState, type ValueUpdater } from "../hooks/react-state";
+import type { Dispatch, SetStateAction } from "react";
+import { useSignalState } from "../hooks/react-state";
 import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
 import { describe, expect, test, vi } from "vitest";
 import type { Channel, CustomEmoji, MentionUser } from "../api";
@@ -66,7 +67,10 @@ describe("renderRichText", () => {
     const bobMentions = screen.getAllByRole("button", { name: "Mention Bobby (@bob)" });
     expect(bobMentions).toHaveLength(2);
     fireEvent.click(bobMentions[0]);
-    expect(onMentionClick).toHaveBeenCalledWith(BOB, expect.any(MouseEvent));
+    expect(onMentionClick).toHaveBeenCalledWith(
+      BOB,
+      expect.objectContaining({ nativeEvent: expect.any(MouseEvent) }),
+    );
 
     expect(screen.getByRole("button", { name: "Mention Casey (@casey)" })).toHaveClass(
       "bg-primary/20",
@@ -208,7 +212,7 @@ describe("<MessageText> mention previews", () => {
 
   test("uses current hydrated public profile data for mention labels and open previews", async () => {
     localStorage.setItem("hamlet.serverUrl", "http://hamlet.test:4040");
-    let setMentions: ValueUpdater<MentionUser[]> | undefined;
+    let setMentions: Dispatch<SetStateAction<MentionUser[]>> | undefined;
     render(() => {
       const [mentions, updateMentions] = useSignalState<MentionUser[]>([
         { ...BOB, display_name: "Robert", avatar_url: "/avatars/bob-old.webp" },
