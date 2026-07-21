@@ -9,14 +9,11 @@ export interface User {
   avatar_url: string | null;
 }
 
-export async function getMe(): Promise<User | null> {
-  try {
-    const res = await apiFetch("/me");
-    if (res.status === 401) return null;
-    return res.json() as Promise<User>;
-  } catch {
-    return null;
-  }
+export async function getMe(signal?: AbortSignal): Promise<User | null> {
+  const res = await apiFetch("/me", { signal });
+  if (res.status === 401) return null;
+  if (!res.ok) throw new Error(`Current user request failed (${res.status})`);
+  return res.json() as Promise<User>;
 }
 
 export async function login(username: string, password: string): Promise<Response> {
@@ -40,7 +37,8 @@ export async function register(
 }
 
 export async function logout(): Promise<void> {
-  await apiFetch("/logout", { method: "POST" });
+  const res = await apiFetch("/logout", { method: "POST" });
+  if (!res.ok) throw new Error(`Logout failed (${res.status})`);
 }
 
 async function readApiError(res: Response, fallback: string): Promise<Error> {

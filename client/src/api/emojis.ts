@@ -22,8 +22,8 @@ async function readApiError(res: Response, fallback: string): Promise<Error> {
   return new Error(`${fallback} (${res.status})`);
 }
 
-export async function listCustomEmojis(): Promise<CustomEmoji[]> {
-  const res = await apiFetch("/emojis");
+export async function listCustomEmojis(signal?: AbortSignal): Promise<CustomEmoji[]> {
+  const res = await apiFetch("/emojis", { signal });
   if (!res.ok) throw new Error(`Emoji registry load failed (${res.status})`);
   return res.json() as Promise<CustomEmoji[]>;
 }

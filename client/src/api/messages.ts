@@ -199,8 +199,9 @@ export function messageReferencesTarget(message: Message, targetId: number): boo
   return message.reply_to_message_id === targetId || message.reply_to?.id === targetId;
 }
 
-export async function listMessages(channelId: string): Promise<Message[]> {
-  const res = await apiFetch(`/messages/${channelId}`);
+export async function listMessages(channelId: string, signal?: AbortSignal): Promise<Message[]> {
+  const res = await apiFetch(`/messages/${channelId}`, { signal });
+  if (!res.ok) throw new Error(`Message history load failed (${res.status})`);
   return res.json() as Promise<Message[]>;
 }
 
@@ -235,8 +236,10 @@ export async function sendMessage(
   });
 }
 
-export async function listParticipatedThreads(): Promise<ParticipatedThreadPreview[]> {
-  const res = await apiFetch("/threads/participated");
+export async function listParticipatedThreads(
+  signal?: AbortSignal,
+): Promise<ParticipatedThreadPreview[]> {
+  const res = await apiFetch("/threads/participated", { signal });
   if (!res.ok) throw new Error(`Participated threads load failed (${res.status})`);
   return res.json() as Promise<ParticipatedThreadPreview[]>;
 }
@@ -244,6 +247,7 @@ export async function listParticipatedThreads(): Promise<ParticipatedThreadPrevi
 export async function getThread(
   rootMessageId: number,
   options: ThreadPageOptions = {},
+  signal?: AbortSignal,
 ): Promise<Thread> {
   const params = new URLSearchParams();
   if (options.limit !== undefined) params.set("limit", String(options.limit));
@@ -252,7 +256,7 @@ export async function getThread(
   }
   if (options.beforeId !== undefined) params.set("before_id", String(options.beforeId));
   const query = params.toString();
-  const res = await apiFetch(`/thread/${rootMessageId}${query ? `?${query}` : ""}`);
+  const res = await apiFetch(`/thread/${rootMessageId}${query ? `?${query}` : ""}`, { signal });
   if (!res.ok) throw new Error(`Thread load failed (${res.status})`);
   return res.json() as Promise<Thread>;
 }

@@ -10,7 +10,7 @@ const customEmojiContext = vi.hoisted(() => ({
   current: undefined as
     | {
         byId: (id: number) => import("../api").CustomEmoji | null;
-        activeEmojis?: () => import("../api").CustomEmoji[];
+        activeEmojis?: readonly import("../api").CustomEmoji[];
       }
     | undefined,
 }));
@@ -985,7 +985,7 @@ describe("<ChannelMessages> reactions", () => {
               deleted_at: null,
             }
           : null,
-      activeEmojis: () => [
+      activeEmojis: [
         {
           id: 123,
           name: "party",
@@ -1757,7 +1757,7 @@ describe("<ChannelMessages> hover action toolbar", () => {
     };
     customEmojiContext.current = {
       byId: (id) => (id === 123 ? party : null),
-      activeEmojis: () => [party],
+      activeEmojis: [party],
     };
     const message = makeMessage({ ...ownMessage, text: "hello <:party:123>" });
 

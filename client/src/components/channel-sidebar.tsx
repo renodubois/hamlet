@@ -24,7 +24,7 @@ export default function ChannelSidebar(props: {
   onLogout: () => Promise<void>;
   onAvatarChange?: () => void;
 }) {
-  const { channels, reorder } = useChannels();
+  const { channels, status, error, reorder } = useChannels();
   const readStates = useReadStates();
   const [addChannelOpen, setAddChannelOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -32,7 +32,7 @@ export default function ChannelSidebar(props: {
   const [dropTargetId, setDropTargetId] = useState<number | null>(null);
   const draggedIdRef = useRef<number | null>(null);
   const dropTargetIdRef = useRef<number | null>(null);
-  const channelList = channels();
+  const channelList = channels;
 
   function clearDragState() {
     draggedIdRef.current = null;
@@ -61,7 +61,7 @@ export default function ChannelSidebar(props: {
     }
   }
 
-  function handleDrop(e: DragEvent<HTMLDivElement>, targetId: number, list: Channel[]) {
+  function handleDrop(e: DragEvent<HTMLDivElement>, targetId: number, list: readonly Channel[]) {
     e.preventDefault();
     const sourceId = draggedIdRef.current;
     clearDragState();
@@ -99,12 +99,12 @@ export default function ChannelSidebar(props: {
         </NavLink>
       </nav>
 
-      {channels.loading ? (
+      {status === "loading" ? (
         <p className="px-3 py-2 text-sidebar-foreground/70 text-sm">Loading...</p>
       ) : null}
-      {channels.error ? (
+      {error ? (
         <p className="px-3 py-2 text-destructive text-sm">Error loading channels</p>
-      ) : channelList ? (
+      ) : (
         <nav className="flex-1 overflow-y-auto py-2" aria-label="Channels">
           {channelList.map((channel) => (
             <div
@@ -191,7 +191,7 @@ export default function ChannelSidebar(props: {
             </div>
           ))}
         </nav>
-      ) : null}
+      )}
 
       <div className="p-2 border-t border-sidebar-border">
         <button

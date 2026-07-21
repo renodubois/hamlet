@@ -3,13 +3,14 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { fireEvent, screen } from "@testing-library/react";
 import type { Channel, User } from "../api";
+import type { ReadStatesContextValue } from "../contexts/read-states";
 import { expectNoA11yViolations } from "../test/a11y";
 import { renderNative, renderWithRouterNative } from "../test/render";
 
 const channelsResource = vi.hoisted(() =>
   vi.fn<
     () => {
-      channels: () => Channel[] | undefined;
+      channels: readonly Channel[];
       refetch: () => void;
       reorder: (ids: number[]) => Promise<void>;
     }
@@ -26,11 +27,25 @@ const readStatesContext = vi.hoisted(() =>
 );
 
 vi.mock("../contexts/channels", () => ({
-  useChannels: () => channelsResource(),
+  useChannels: () => ({
+    status: "ready" as const,
+    error: null,
+    reordering: false,
+    refresh: async () => {},
+    ...channelsResource(),
+  }),
 }));
 
 vi.mock("../contexts/read-states", () => ({
-  useReadStates: () => readStatesContext(),
+  useReadStates: (): ReadStatesContextValue => ({
+    states: {},
+    status: "ready",
+    error: null,
+    readState: () => undefined,
+    markRead: async () => null,
+    refresh: async () => {},
+    ...readStatesContext(),
+  }),
 }));
 
 // AddChannelModal pulls in the real api module transitively; stub it to keep
@@ -78,16 +93,8 @@ const USER: User = {
   avatar_url: null,
 };
 
-function fakeChannels(data: Channel[] | undefined) {
-  const wrapped = (() => data) as (() => Channel[] | undefined) & {
-    loading: boolean;
-    error: unknown;
-    state: "ready" | "pending";
-  };
-  wrapped.loading = data === undefined;
-  wrapped.error = undefined;
-  wrapped.state = data === undefined ? "pending" : "ready";
-  return wrapped;
+function fakeChannels(data: Channel[] | undefined): readonly Channel[] {
+  return data ?? [];
 }
 
 function makeDataTransfer(): DataTransfer {

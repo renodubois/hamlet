@@ -1,15 +1,21 @@
-import { fireEvent, render, screen, waitFor, within } from "../test/testing-library";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { StrictMode, useRef, useState } from "react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ReadStateSummary, User } from "../api";
 
-const authUser = vi.hoisted(() => vi.fn<() => User | null | undefined>());
-const listReadStatesMock = vi.hoisted(() => vi.fn<() => Promise<ReadStateSummary[]>>());
+const authState = vi.hoisted(() => ({
+  user: null as User | null,
+  status: "anonymous" as "loading" | "authenticated" | "anonymous",
+}));
+const listReadStatesMock = vi.hoisted(() =>
+  vi.fn<(signal?: AbortSignal) => Promise<ReadStateSummary[]>>(),
+);
 const markChannelReadMock = vi.hoisted(() =>
   vi.fn<(channelId: number, lastVisibleMessageId: number) => Promise<ReadStateSummary>>(),
 );
 
 vi.mock("./auth", () => ({
-  useAuth: () => ({ user: authUser }),
+  useAuth: () => ({ ...authState, error: null }),
 }));
 
 vi.mock("../api", async (importOriginal) => {
@@ -33,20 +39,81 @@ const USER: User = {
   email_verified: false,
   avatar_url: null,
 };
+const OTHER_USER: User = { ...USER, id: 2, username: "bob" };
+
+function summary(overrides: Partial<ReadStateSummary> = {}): ReadStateSummary {
+  return {
+    channel_id: 10,
+    has_unread: true,
+    mention_count: 3,
+    last_read_created_at: 100,
+    last_read_message_id: 20,
+    updated_at: 200,
+    ...overrides,
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 function Probe() {
   const readStates = useReadStates();
+  const initialActions = useRef({
+    readState: readStates.readState,
+    hasUnread: readStates.hasUnread,
+    mentionCount: readStates.mentionCount,
+    refresh: readStates.refresh,
+  });
+  const [markResult, setMarkResult] = useState("none");
+  const stable =
+    initialActions.current.readState === readStates.readState &&
+    initialActions.current.hasUnread === readStates.hasUnread &&
+    initialActions.current.mentionCount === readStates.mentionCount &&
+    initialActions.current.refresh === readStates.refresh;
   return (
     <div>
+      <p>status {readStates.status}</p>
+      <p>error {readStates.error ? "yes" : "no"}</p>
       <p>unread {readStates.hasUnread(10) ? "yes" : "no"}</p>
       <p>mentions {readStates.mentionCount(10)}</p>
-      <p>missing {readStates.hasUnread(99) ? "yes" : "no"}</p>
-      <button type="button" onClick={() => void readStates.markRead(10, 20)}>
+      <p>channel eleven mentions {readStates.mentionCount(11)}</p>
+      <p>stable {stable ? "yes" : "no"}</p>
+      <p>mark result {markResult}</p>
+      <button type="button" onClick={() => void readStates.refresh()}>
+        refresh
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          void readStates.markRead(10, 20).then((result) => setMarkResult(result ? "ok" : "null"))
+        }
+      >
         mark read
       </button>
     </div>
   );
 }
+
+function Harness(props: { events?: boolean }) {
+  const content = (
+    <ReadStatesProvider>
+      <Probe />
+    </ReadStatesProvider>
+  );
+  return props.events ? <EventsProvider>{content}</EventsProvider> : content;
+}
+
+beforeEach(() => {
+  authState.user = USER;
+  authState.status = "authenticated";
+});
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -55,148 +122,47 @@ afterEach(() => {
 });
 
 describe("ReadStatesProvider", () => {
-  test("loads a snapshot for an authenticated user and exposes selectors", async () => {
-    authUser.mockReturnValue(USER);
-    listReadStatesMock.mockResolvedValue([
-      {
-        channel_id: 10,
-        has_unread: true,
-        mention_count: 3,
-        last_read_created_at: 100,
-        last_read_message_id: 20,
-        updated_at: 200,
-      },
-    ]);
+  test("exposes snapshot status, errors, refresh, and stable selectors", async () => {
+    listReadStatesMock.mockResolvedValueOnce([summary()]);
+    render(<Harness />);
 
-    render(() => (
-      <ReadStatesProvider>
-        <Probe />
-      </ReadStatesProvider>
-    ));
-
-    await waitFor(() => expect(screen.getByText("unread yes")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("status ready")).toBeInTheDocument());
+    expect(screen.getByText("unread yes")).toBeInTheDocument();
     expect(screen.getByText("mentions 3")).toBeInTheDocument();
-    expect(screen.getByText("missing no")).toBeInTheDocument();
-    expect(listReadStatesMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("stable yes")).toBeInTheDocument();
+
+    listReadStatesMock.mockRejectedValueOnce(new Error("network"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    fireEvent.click(screen.getByRole("button", { name: "refresh" }));
+    await waitFor(() => expect(screen.getByText("status error")).toBeInTheDocument());
+    expect(screen.getByText("error yes")).toBeInTheDocument();
+    expect(screen.getByText("unread yes")).toBeInTheDocument();
+    expect(screen.getByText("stable yes")).toBeInTheDocument();
+    warn.mockRestore();
   });
 
-  test("markRead applies the returned summary and swallows failures", async () => {
-    authUser.mockReturnValue(USER);
-    listReadStatesMock.mockResolvedValue([
-      {
-        channel_id: 10,
-        has_unread: true,
-        mention_count: 3,
-        last_read_created_at: 100,
-        last_read_message_id: 20,
-        updated_at: 200,
-      },
-    ]);
-    markChannelReadMock.mockResolvedValue({
-      channel_id: 10,
-      has_unread: false,
-      mention_count: 0,
-      last_read_created_at: 200,
-      last_read_message_id: 30,
-      updated_at: 300,
-    });
+  test("latest-started snapshot wins", async () => {
+    const first = deferred<ReadStateSummary[]>();
+    const second = deferred<ReadStateSummary[]>();
+    listReadStatesMock.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    render(<Harness />);
 
-    render(() => (
-      <ReadStatesProvider>
-        <Probe />
-      </ReadStatesProvider>
-    ));
-
-    await waitFor(() => expect(screen.getByText("unread yes")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /mark read/i }));
-
-    await waitFor(() => expect(screen.getByText("unread no")).toBeInTheDocument());
-    expect(screen.getByText("mentions 0")).toBeInTheDocument();
-    expect(markChannelReadMock).toHaveBeenCalledWith(10, 20);
-
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    markChannelReadMock.mockRejectedValueOnce(new Error("network"));
-    fireEvent.click(screen.getByRole("button", { name: /mark read/i }));
-    await waitFor(() => expect(markChannelReadMock).toHaveBeenCalledTimes(2));
-    expect(warnSpy).toHaveBeenCalledWith("failed to mark channel read", expect.any(Error));
-    warnSpy.mockRestore();
+    fireEvent.click(screen.getByRole("button", { name: "refresh" }));
+    second.resolve([summary({ mention_count: 8, updated_at: 400 })]);
+    await waitFor(() => expect(screen.getByText("mentions 8")).toBeInTheDocument());
+    first.resolve([summary({ mention_count: 1, updated_at: 100 })]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByText("mentions 8")).toBeInTheDocument();
   });
 
-  test("applies read-state SSE updates and refetches on stream and focus recovery", async () => {
+  test("messages and summaries delivered during a snapshot survive completion", async () => {
     vi.stubGlobal("EventSource", FakeEventSource);
-    authUser.mockReturnValue(USER);
-    listReadStatesMock.mockResolvedValue([
-      {
-        channel_id: 10,
-        has_unread: true,
-        mention_count: 1,
-        last_read_created_at: 100,
-        last_read_message_id: 20,
-        updated_at: 200,
-      },
-    ]);
+    const pending = deferred<ReadStateSummary[]>();
+    listReadStatesMock.mockReturnValueOnce(pending.promise);
+    render(<Harness events />);
+    await waitFor(() => expect(latestFakeEventSource()).toBeDefined());
 
-    render(() => (
-      <EventsProvider>
-        <ReadStatesProvider>
-          <Probe />
-        </ReadStatesProvider>
-      </EventsProvider>
-    ));
-
-    await waitFor(() => expect(screen.getByText("unread yes")).toBeInTheDocument());
-    latestFakeEventSource()?.pushReadStateUpdated({
-      channel_id: 10,
-      has_unread: false,
-      mention_count: 0,
-      last_read_created_at: 200,
-      last_read_message_id: 30,
-      updated_at: 300,
-    });
-
-    await waitFor(() => expect(screen.getByText("unread no")).toBeInTheDocument());
-    latestFakeEventSource()?.pushConnected();
-    await waitFor(() => expect(listReadStatesMock).toHaveBeenCalledTimes(2));
-
-    window.dispatchEvent(new Event("focus"));
-    await waitFor(() => expect(listReadStatesMock).toHaveBeenCalledTimes(3));
-  });
-
-  test("applies incoming top-level message events across fake SSE clients", async () => {
-    vi.stubGlobal("EventSource", FakeEventSource);
-    authUser.mockReturnValue(USER);
-    listReadStatesMock.mockResolvedValue([
-      {
-        channel_id: 10,
-        has_unread: false,
-        mention_count: 0,
-        last_read_created_at: 100,
-        last_read_message_id: 20,
-        updated_at: 200,
-      },
-    ]);
-
-    render(() => (
-      <div>
-        <EventsProvider>
-          <ReadStatesProvider>
-            <section aria-label="client one">
-              <Probe />
-            </section>
-          </ReadStatesProvider>
-        </EventsProvider>
-        <EventsProvider>
-          <ReadStatesProvider>
-            <section aria-label="client two">
-              <Probe />
-            </section>
-          </ReadStatesProvider>
-        </EventsProvider>
-      </div>
-    ));
-
-    await waitFor(() => expect(listReadStatesMock).toHaveBeenCalledTimes(2));
-    const incoming = {
+    latestFakeEventSource()?.pushMessage({
       id: 21,
       user_id: 2,
       channel_id: 10,
@@ -210,87 +176,106 @@ describe("ReadStatesProvider", () => {
       mentions: [{ id: 1, username: "alice", display_name: null, avatar_url: null }],
       attachments: [],
       embeds: [],
-    };
-    FakeEventSource.instances[0]?.pushMessage(incoming);
-    FakeEventSource.instances[1]?.pushMessage(incoming);
-
-    await waitFor(() => {
-      const clientOne = screen.getByLabelText("client one");
-      const clientTwo = screen.getByLabelText("client two");
-      expect(within(clientOne).getByText("unread yes")).toBeInTheDocument();
-      expect(within(clientOne).getByText("mentions 1")).toBeInTheDocument();
-      expect(within(clientTwo).getByText("unread yes")).toBeInTheDocument();
-      expect(within(clientTwo).getByText("mentions 1")).toBeInTheDocument();
     });
+    latestFakeEventSource()?.pushReadStateUpdated(
+      summary({ channel_id: 11, mention_count: 4, updated_at: 300 }),
+    );
+    pending.resolve([
+      summary({ has_unread: false, mention_count: 0 }),
+      summary({ channel_id: 11, mention_count: 0 }),
+    ]);
+
+    await waitFor(() => expect(screen.getByText("mentions 1")).toBeInTheDocument());
+    expect(screen.getByText("channel eleven mentions 4")).toBeInTheDocument();
+    expect(screen.getByText("unread yes")).toBeInTheDocument();
   });
 
-  test("refetches snapshots after message lifecycle events can affect badges", async () => {
+  test("a reconnect invalidates a pending preconnection snapshot", async () => {
     vi.stubGlobal("EventSource", FakeEventSource);
-    authUser.mockReturnValue(USER);
+    const beforeConnection = deferred<ReadStateSummary[]>();
+    const afterConnection = deferred<ReadStateSummary[]>();
     listReadStatesMock
-      .mockResolvedValueOnce([
-        {
-          channel_id: 10,
-          has_unread: true,
-          mention_count: 1,
-          last_read_created_at: 100,
-          last_read_message_id: 20,
-          updated_at: 200,
-        },
-      ])
-      .mockResolvedValue([
-        {
-          channel_id: 10,
-          has_unread: false,
-          mention_count: 0,
-          last_read_created_at: 100,
-          last_read_message_id: 20,
-          updated_at: 300,
-        },
-      ]);
+      .mockReturnValueOnce(beforeConnection.promise)
+      .mockReturnValueOnce(afterConnection.promise);
+    render(<Harness events />);
+    await waitFor(() => expect(listReadStatesMock).toHaveBeenCalledTimes(1));
 
-    render(() => (
-      <EventsProvider>
-        <ReadStatesProvider>
-          <Probe />
-        </ReadStatesProvider>
-      </EventsProvider>
-    ));
-
-    await waitFor(() => expect(screen.getByText("unread yes")).toBeInTheDocument());
-    latestFakeEventSource()?.pushMessageUpdated({
-      id: 20,
-      user_id: 2,
-      channel_id: 10,
-      parent_id: null,
-      text: "edited away",
-      username: "bob",
-      display_name: null,
-      avatar_url: null,
-      suppress_embeds: false,
-      mentions: [],
-      attachments: [],
-      embeds: [],
-    });
-
-    await waitFor(() => expect(screen.getByText("unread no")).toBeInTheDocument());
-    expect(screen.getByText("mentions 0")).toBeInTheDocument();
-
-    latestFakeEventSource()?.pushMessageDeleted({ id: 20, channel_id: 10 });
-    await waitFor(() => expect(listReadStatesMock).toHaveBeenCalledTimes(3));
+    latestFakeEventSource()?.pushConnected();
+    await waitFor(() => expect(listReadStatesMock).toHaveBeenCalledTimes(2));
+    expect(listReadStatesMock.mock.calls[0]?.[0]?.aborted).toBe(true);
+    beforeConnection.resolve([summary({ mention_count: 1 })]);
+    afterConnection.resolve([summary({ mention_count: 9, updated_at: 500 })]);
+    await waitFor(() => expect(screen.getByText("mentions 9")).toBeInTheDocument());
   });
 
-  test("clears local state when unauthenticated", async () => {
-    authUser.mockReturnValue(null);
+  test("clears on logout/account change and rejects the old account completion", async () => {
+    const oldAccount = deferred<ReadStateSummary[]>();
+    listReadStatesMock
+      .mockReturnValueOnce(oldAccount.promise)
+      .mockResolvedValueOnce([summary({ mention_count: 7, updated_at: 700 })]);
+    const view = render(<Harness />);
 
-    render(() => (
-      <ReadStatesProvider>
-        <Probe />
-      </ReadStatesProvider>
-    ));
+    authState.user = OTHER_USER;
+    view.rerender(<Harness />);
+    await waitFor(() => expect(screen.getByText("mentions 7")).toBeInTheDocument());
+    oldAccount.resolve([summary({ mention_count: 2 })]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByText("mentions 7")).toBeInTheDocument();
 
-    expect(screen.getByText("unread no")).toBeInTheDocument();
+    authState.user = null;
+    authState.status = "anonymous";
+    view.rerender(<Harness />);
+    await waitFor(() => expect(screen.getByText("status idle")).toBeInTheDocument());
     expect(screen.getByText("mentions 0")).toBeInTheDocument();
-    expect(listReadStatesMock).not.toHaveBeenCalled();
+  });
+
+  test("markRead returns null on failure and a stale response cannot regress a newer summary", async () => {
+    listReadStatesMock.mockResolvedValueOnce([summary()]);
+    const staleMark = deferred<ReadStateSummary>();
+    markChannelReadMock
+      .mockReturnValueOnce(staleMark.promise)
+      .mockRejectedValueOnce(new Error("x"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    render(<Harness />);
+    await waitFor(() => expect(screen.getByText("status ready")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "mark read" }));
+    // A newer accepted snapshot arrives while the mark request is pending.
+    listReadStatesMock.mockResolvedValueOnce([
+      summary({ has_unread: true, mention_count: 6, updated_at: 500 }),
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "refresh" }));
+    await waitFor(() => expect(screen.getByText("mentions 6")).toBeInTheDocument());
+    staleMark.resolve(summary({ has_unread: false, mention_count: 0, updated_at: 100 }));
+    await waitFor(() => expect(screen.getByText("mark result ok")).toBeInTheDocument());
+    expect(screen.getByText("unread yes")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "mark read" }));
+    await waitFor(() => expect(screen.getByText("mark result null")).toBeInTheDocument());
+    expect(warn).toHaveBeenCalledWith("failed to mark channel read", expect.any(Error));
+    warn.mockRestore();
+  });
+
+  test("Strict Mode replay aborts obsolete work and commits only the current setup", async () => {
+    const first = deferred<ReadStateSummary[]>();
+    listReadStatesMock.mockReturnValueOnce(first.promise).mockResolvedValue([summary()]);
+    const view = render(
+      <StrictMode>
+        <Harness />
+      </StrictMode>,
+    );
+
+    await waitFor(() => expect(listReadStatesMock.mock.calls.length).toBeGreaterThanOrEqual(2));
+    first.resolve([summary({ mention_count: 99 })]);
+    await waitFor(() => expect(screen.getByText("mentions 3")).toBeInTheDocument());
+    expect(screen.getByText("stable yes")).toBeInTheDocument();
+
+    const pendingAtUnmount = deferred<ReadStateSummary[]>();
+    listReadStatesMock.mockReturnValueOnce(pendingAtUnmount.promise);
+    fireEvent.click(screen.getByRole("button", { name: "refresh" }));
+    await waitFor(() => expect(screen.getByText("status loading")).toBeInTheDocument());
+    const finalSignal = listReadStatesMock.mock.calls.at(-1)?.[0];
+    view.unmount();
+    expect(finalSignal?.aborted).toBe(true);
   });
 });

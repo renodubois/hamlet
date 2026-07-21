@@ -1,15 +1,28 @@
-import { describe, expect, test, vi } from "vitest";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { act, screen } from "@testing-library/react";
+import { http, HttpResponse } from "msw";
 
-import { render, screen } from "./test/testing-library";
+import { assertExists, renderNative } from "./test/render";
+import { captureReactDiagnostics, type ReactDiagnosticsCapture } from "./test/setup";
 import { AuthProvider } from "./contexts/auth";
 import { FakeEventSource } from "./test/msw/sse";
-import { resetMswState } from "./test/msw/server";
+import { resetMswState, server } from "./test/msw/server";
 import { DEV_USER } from "./test/msw/handlers";
 import { makeMessage } from "./test/fixtures";
-import { assertExists } from "./test/render";
 import App from "./App";
 import ChannelView from "./pages/channel";
+
+let diagnostics: ReactDiagnosticsCapture;
+
+beforeEach(() => {
+  diagnostics = captureReactDiagnostics();
+});
+
+afterEach(() => {
+  diagnostics.stop();
+  expect(diagnostics.diagnostics).toEqual([]);
+});
 
 vi.mock("./api", async () => {
   const actual = await vi.importActual<typeof import("./api")>("./api");
@@ -34,7 +47,7 @@ function seedAuthedChannel() {
 }
 
 function renderAppAt(path: string) {
-  return render(() => (
+  return renderNative(
     <AuthProvider>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
@@ -44,11 +57,74 @@ function renderAppAt(path: string) {
           </Route>
         </Routes>
       </MemoryRouter>
-    </AuthProvider>
-  ));
+    </AuthProvider>,
+  );
 }
 
+function CurrentLocation() {
+  const location = useLocation();
+  return <p>Current route: {location.pathname}</p>;
+}
+
+describe("App auth boundary", () => {
+  test("shows no login or authenticated providers until auth resolves", async () => {
+    let resolveMe!: () => void;
+    const pendingMe = new Promise<void>((resolve) => {
+      resolveMe = resolve;
+    });
+    const testServer = import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL ?? "http://127.0.0.1:3030";
+    server.use(
+      http.get(`${testServer}/me`, async () => {
+        await pendingMe;
+        return new HttpResponse(null, { status: 401 });
+      }),
+    );
+
+    renderNative(
+      <AuthProvider>
+        <MemoryRouter initialEntries={["/channel/100"]}>
+          <Routes>
+            <Route element={<App />}>
+              <Route path="login" element={<p>Login route</p>} />
+              <Route path="channel/:id" element={<p>Protected channel</p>} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </AuthProvider>,
+    );
+
+    expect(screen.queryByText("Login route")).toBeNull();
+    expect(screen.queryByText("Protected channel")).toBeNull();
+    expect(FakeEventSource.instances).toHaveLength(0);
+
+    await act(async () => {
+      resolveMe();
+      await pendingMe;
+    });
+    expect(await screen.findByText("Login route")).toBeInTheDocument();
+    expect(FakeEventSource.instances).toHaveLength(0);
+  });
+});
+
 describe("App shell layout", () => {
+  test("the authenticated root selects the first text channel", async () => {
+    seedAuthedChannel();
+    renderNative(
+      <AuthProvider>
+        <MemoryRouter initialEntries={["/"]}>
+          <Routes>
+            <Route element={<App />}>
+              <Route index element={<CurrentLocation />} />
+              <Route path="channel/:id" element={<CurrentLocation />} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByText("Current route: /channel/100")).toBeInTheDocument();
+  });
+
   test("constrains channel routes so messages scroll above the pinned composer", async () => {
     seedAuthedChannel();
     renderAppAt("/channel/100");

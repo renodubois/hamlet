@@ -342,7 +342,7 @@ export default function MessageText(props: {
   const customEmojis = useOptionalCustomEmojis();
   const optionalChannels = useOptionalChannels();
   const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
-  const channels = props.channels ?? optionalChannels?.channels() ?? [];
+  const channels = props.channels ?? optionalChannels?.channels ?? [];
   const previewId = useId();
   const [preview, setPreview] = useState<MentionPreviewState | null>(null);
   const previewRef = useRef<MentionPreviewState | null>(preview);

@@ -1,16 +1,27 @@
 import { http, HttpResponse } from "msw";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { act, screen, fireEvent, waitFor } from "@testing-library/react";
 import { AuthProvider, useAuth } from "../contexts/auth";
 import { resetMswState, server } from "../test/msw/server";
 import { assertExists, renderNative } from "../test/render";
+import { captureReactDiagnostics, type ReactDiagnosticsCapture } from "../test/setup";
 import LoginScreen from "./login";
 
 const TEST_SERVER = import.meta.env.VITE_HAMLET_DEFAULT_SERVER_URL ?? "http://127.0.0.1:3030";
+let diagnostics: ReactDiagnosticsCapture;
+
+beforeEach(() => {
+  diagnostics = captureReactDiagnostics();
+});
+
+afterEach(() => {
+  diagnostics.stop();
+  expect(diagnostics.diagnostics).toEqual([]);
+});
 
 function Harness() {
   const auth = useAuth();
-  const user = auth.user();
+  const user = auth.user;
   return user ? <div data-testid="welcome">welcome {user.username}</div> : <LoginScreen />;
 }
 
@@ -23,18 +34,26 @@ function mount() {
 }
 
 async function fillAndSubmit(username: string, password: string) {
-  fireEvent.input(screen.getByPlaceholderText("Username"), { target: { value: username } });
-  fireEvent.input(screen.getByPlaceholderText("Password"), { target: { value: password } });
+  fireEvent.input(screen.getByLabelText("Username"), { target: { value: username } });
+  fireEvent.input(screen.getByLabelText("Password"), { target: { value: password } });
   const form = assertExists(screen.getByRole("button", { name: /sign in/i }).closest("form"));
   fireEvent.submit(form);
 }
 
 describe("Login flow", () => {
+  test("exposes persistent accessible field labels", () => {
+    mount();
+
+    expect(screen.getByLabelText("Server URL")).toBeInTheDocument();
+    expect(screen.getByLabelText("Username")).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toBeInTheDocument();
+  });
+
   test("rejects wrong credentials with an inline error", async () => {
     mount();
     await fillAndSubmit("baipas", "wrong");
     await waitFor(() => {
-      expect(screen.getByText(/invalid username or password/i)).toBeInTheDocument();
+      expect(screen.getByRole("alert")).toHaveTextContent("Invalid username or password");
     });
     expect(screen.queryByTestId("welcome")).toBeNull();
   });
@@ -75,9 +94,9 @@ describe("Login flow", () => {
     await waitFor(() => expect(configRequests).toHaveBeenCalled());
     const requestsAfterMount = configRequests.mock.calls.length;
 
-    fireEvent.input(screen.getByPlaceholderText("Password"), { target: { value: "secret" } });
+    fireEvent.input(screen.getByLabelText("Password"), { target: { value: "secret" } });
 
-    await waitFor(() => expect(screen.getByPlaceholderText("Password")).toHaveValue("secret"));
+    await waitFor(() => expect(screen.getByLabelText("Password")).toHaveValue("secret"));
     expect(configRequests).toHaveBeenCalledTimes(requestsAfterMount);
   });
 

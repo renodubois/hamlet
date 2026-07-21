@@ -51,6 +51,7 @@ export class FakeEventSource {
   onerror: ((ev: Event) => void) | null = null;
   onopen: ((ev: Event) => void) | null = null;
   closed = false;
+  closeCallCount = 0;
   readonly url: string;
 
   constructor(url: string) {
@@ -65,20 +66,26 @@ export class FakeEventSource {
     });
   }
 
+  failConnection() {
+    if (this.closed || !this.onerror) return;
+    act(() => {
+      this.onerror?.(new Event("error"));
+    });
+  }
+
   pushConnected() {
+    this.pushRaw("connected");
+  }
+
+  pushRaw(data: string) {
     if (this.closed || !this.onmessage) return;
     act(() => {
-      this.onmessage?.(new MessageEvent("message", { data: "connected" }));
+      this.onmessage?.(new MessageEvent("message", { data }));
     });
   }
 
   push(event: SSEEvent) {
-    if (this.closed || !this.onmessage) return;
-    act(() => {
-      this.onmessage?.(
-        new MessageEvent("message", { data: JSON.stringify(withMessageDefaultsForEvent(event)) }),
-      );
-    });
+    this.pushRaw(JSON.stringify(withMessageDefaultsForEvent(event)));
   }
 
   pushMessage(msg: Message) {
@@ -138,6 +145,7 @@ export class FakeEventSource {
   }
 
   close() {
+    this.closeCallCount += 1;
     this.closed = true;
   }
 }

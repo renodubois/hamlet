@@ -290,10 +290,10 @@ export default function ThreadPanel(props: {
   mentionSearchLimit?: number;
 }) {
   const customEmojis = useOptionalCustomEmojis();
-  const activeCustomEmojis = () => customEmojis?.activeEmojis?.() ?? [];
+  const activeCustomEmojis = customEmojis?.activeEmojis ?? [];
   const reactionEmojiEntries = () => [
     ...CONSERVATIVE_EMOJIS,
-    ...customEmojisToEntries(activeCustomEmojis()),
+    ...customEmojisToEntries(activeCustomEmojis),
   ];
   const customEmojiById = (id: number) => customEmojis?.byId(id) ?? null;
   const [thread, { mutate }] = useCallableResource(

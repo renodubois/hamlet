@@ -2,6 +2,10 @@ import type { Message, ReadStateSummary } from "../api";
 
 export type ReadStateByChannel = Record<number, ReadStateSummary>;
 
+export type ReadStateJournalEntry =
+  | { kind: "summary"; summary: ReadStateSummary }
+  | { kind: "message"; message: Message; currentUserId: number };
+
 export function applyReadStateSnapshot(snapshot: readonly ReadStateSummary[]): ReadStateByChannel {
   const next: ReadStateByChannel = {};
   for (const summary of snapshot) {
@@ -10,10 +14,28 @@ export function applyReadStateSnapshot(snapshot: readonly ReadStateSummary[]): R
   return next;
 }
 
+function compareCursor(left: ReadStateSummary, right: ReadStateSummary): number {
+  if (left.last_read_created_at !== right.last_read_created_at) {
+    return left.last_read_created_at - right.last_read_created_at;
+  }
+  return left.last_read_message_id - right.last_read_message_id;
+}
+
+/** True when an authoritative summary may replace the currently accepted one. */
+export function isReadStateSummaryCurrent(
+  current: ReadStateSummary | undefined,
+  incoming: ReadStateSummary,
+): boolean {
+  if (!current) return true;
+  if (incoming.updated_at !== current.updated_at) return incoming.updated_at > current.updated_at;
+  return compareCursor(incoming, current) >= 0;
+}
+
 export function applyReadStateUpdate(
   states: ReadStateByChannel,
   summary: ReadStateSummary,
 ): ReadStateByChannel {
+  if (!isReadStateSummaryCurrent(states[summary.channel_id], summary)) return states;
   return { ...states, [summary.channel_id]: { ...summary } };
 }
 
@@ -53,6 +75,17 @@ export function applyIncomingTopLevelMessage(
       mention_count: current.mention_count + (mentionsUser(message, currentUserId) ? 1 : 0),
     },
   };
+}
+
+/** Replays realtime changes observed after a snapshot began over that snapshot. */
+export function mergeReadStateSnapshot(
+  snapshot: readonly ReadStateSummary[],
+  journal: readonly ReadStateJournalEntry[],
+): ReadStateByChannel {
+  return journal.reduce((states, entry) => {
+    if (entry.kind === "summary") return applyReadStateUpdate(states, entry.summary);
+    return applyIncomingTopLevelMessage(states, entry.message, entry.currentUserId);
+  }, applyReadStateSnapshot(snapshot));
 }
 
 export function readStateForChannel(

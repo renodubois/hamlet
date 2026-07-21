@@ -1,5 +1,5 @@
-import React, { Suspense, type ReactNode } from "react";
-import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import React, { Suspense, useEffect, type ReactNode } from "react";
+import { Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 import ChannelSidebar from "./components/channel-sidebar";
 import { Button } from "./components/ui/button";
 import { useAuth } from "./contexts/auth";
@@ -9,7 +9,6 @@ import { EventsProvider } from "./contexts/events";
 import { ReadStatesProvider } from "./contexts/read-states";
 import { type User } from "./api";
 import { VoiceChatProvider } from "./contexts/voice-chat";
-import { useAfterRenderEffect } from "./hooks/react-state";
 
 function ErrorPanel(props: { error: unknown; reset?: () => void; title?: string }) {
   const message = props.error instanceof Error ? props.error.message : String(props.error);
@@ -53,13 +52,11 @@ function AppShell(props: { user: User }) {
   const location = useLocation();
   const { channels } = useChannels();
 
-  useAfterRenderEffect(() => {
-    const ch = channels();
-    if (location.pathname === "/" && ch && ch.length > 0) {
-      const first = ch.find((c) => c.type === "text");
-      if (first) void navigate(`/channel/${first.id}`, { replace: true });
-    }
-  });
+  useEffect(() => {
+    if (location.pathname !== "/") return;
+    const first = channels.find((channel) => channel.type === "text");
+    if (first) void navigate(`/channel/${first.id}`, { replace: true });
+  }, [channels, location.pathname, navigate]);
 
   return (
     <div className="flex h-screen min-h-0 overflow-hidden">
@@ -79,26 +76,22 @@ function AppShell(props: { user: User }) {
 
 export default function App() {
   const auth = useAuth();
-  const navigate = useNavigate();
   const location = useLocation();
 
-  useAfterRenderEffect(() => {
-    const u = auth.user();
-    if (u === undefined) return;
-    const onLogin = location.pathname === "/login";
-    if (!u && !onLogin) void navigate("/login", { replace: true });
-    else if (u && onLogin) void navigate("/", { replace: true });
-  });
-
-  const currentUser = auth.user();
-  if (currentUser === undefined) return null;
-  if (!currentUser) {
+  if (auth.status === "loading") return null;
+  if (auth.status === "anonymous") {
     return location.pathname === "/login" ? (
       <Suspense fallback={null}>
         <Outlet />
       </Suspense>
-    ) : null;
+    ) : (
+      <Navigate to="/login" replace />
+    );
   }
+
+  const currentUser = auth.user;
+  if (!currentUser) return null;
+  if (location.pathname === "/login") return <Navigate to="/" replace />;
 
   return (
     <EventsProvider>

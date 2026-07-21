@@ -97,7 +97,7 @@ function ReplyPreview(props: { reply: Message; currentUserId: number | null }) {
 
 export default function ThreadsView() {
   const { user } = useAuth();
-  const currentUserId = () => user()?.id ?? null;
+  const currentUserId = () => user?.id ?? null;
   const [threads] = useCallableResource(listParticipatedThreads);
 
   const previewMentionsCurrentUser = (thread: {

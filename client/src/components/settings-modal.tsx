@@ -260,8 +260,8 @@ function CustomEmojiRow(props: {
 
 function CustomEmojiSettings() {
   const registry = useCustomEmojis();
-  const all = registry.allEmojis() ?? [];
-  const active = registry.activeEmojis();
+  const all = registry.allEmojis;
+  const active = registry.activeEmojis;
   const deleted = all.filter((emoji) => emoji.deleted_at !== null);
   const deletedCount = deleted.length;
   const [name, setName] = useState("");
@@ -465,11 +465,11 @@ function CustomEmojiSettings() {
         </Button>
       </form>
 
-      {registry.allEmojis.loading ? (
+      {registry.status === "idle" || registry.status === "loading" ? (
         <p className="text-muted-foreground">Loading custom emojis...</p>
       ) : null}
 
-      {registry.error() ? (
+      {registry.error ? (
         <div
           role="alert"
           className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-destructive"
@@ -485,7 +485,7 @@ function CustomEmojiSettings() {
         </div>
       ) : null}
 
-      {!registry.allEmojis.loading && !registry.error() ? (
+      {registry.status === "ready" && !registry.error ? (
         all.length > 0 ? (
           <div className="flex flex-col gap-4">
             <section className="rounded-md border border-border divide-y divide-border">

@@ -67,8 +67,11 @@ export async function getVoiceToken(channelId: number): Promise<VoiceToken> {
   return res.json() as Promise<VoiceToken>;
 }
 
-export async function listVoiceParticipants(channelId: number): Promise<VoiceParticipant[]> {
-  const res = await apiFetch(`/voice/participants/${channelId}`);
+export async function listVoiceParticipants(
+  channelId: number,
+  signal?: AbortSignal,
+): Promise<VoiceParticipant[]> {
+  const res = await apiFetch(`/voice/participants/${channelId}`, { signal });
   if (!res.ok) throw new Error(`Voice participants fetch failed (${res.status})`);
   return res.json() as Promise<VoiceParticipant[]>;
 }
@@ -77,14 +80,20 @@ function channelFilterQuery(channelId?: number): string {
   return channelId == null ? "" : `?channel_id=${encodeURIComponent(String(channelId))}`;
 }
 
-export async function listScreenShareStreams(channelId?: number): Promise<ScreenShareStream[]> {
-  const res = await apiFetch(`/voice/screen-shares${channelFilterQuery(channelId)}`);
+export async function listScreenShareStreams(
+  channelId?: number,
+  signal?: AbortSignal,
+): Promise<ScreenShareStream[]> {
+  const res = await apiFetch(`/voice/screen-shares${channelFilterQuery(channelId)}`, { signal });
   if (!res.ok) throw new Error(`Screen share streams fetch failed (${res.status})`);
   return res.json() as Promise<ScreenShareStream[]>;
 }
 
-export async function listCameraStreams(channelId?: number): Promise<CameraStream[]> {
-  const res = await apiFetch(`/voice/cameras${channelFilterQuery(channelId)}`);
+export async function listCameraStreams(
+  channelId?: number,
+  signal?: AbortSignal,
+): Promise<CameraStream[]> {
+  const res = await apiFetch(`/voice/cameras${channelFilterQuery(channelId)}`, { signal });
   if (!res.ok) throw new Error(`Camera streams fetch failed (${res.status})`);
   return res.json() as Promise<CameraStream[]>;
 }

@@ -1,4 +1,12 @@
-import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  type ReactNode,
+} from "react";
 import {
   messagesEventSource,
   type Channel,
@@ -66,47 +74,89 @@ export function EventsProvider(props: { children: ReactNode }) {
   const listenersRef = useRef(new Map<EventKind, Set<Listener<unknown>>>());
   const eventSourceRef = useRef<EventSource | null>(null);
 
-  function subscribe<K extends EventKind>(kind: K, cb: Listener<DataFor<K>>): () => void {
-    const listeners = listenersRef.current;
-    let set = listeners.get(kind);
-    if (!set) {
-      set = new Set();
-      listeners.set(kind, set);
-    }
-    const captured = set;
-    captured.add(cb as Listener<unknown>);
-    return () => captured.delete(cb as Listener<unknown>);
-  }
+  const subscribe = useCallback(
+    <K extends EventKind>(kind: K, cb: Listener<DataFor<K>>): (() => void) => {
+      const listeners = listenersRef.current;
+      let set = listeners.get(kind);
+      if (!set) {
+        set = new Set();
+        listeners.set(kind, set);
+      }
+      const captured = set;
+      const listener = cb as Listener<unknown>;
+      captured.add(listener);
+      return () => {
+        captured.delete(listener);
+      };
+    },
+    [],
+  );
 
   useEffect(() => {
     const listeners = listenersRef.current;
     const es = messagesEventSource();
-    es.onmessage = (m) => {
-      if (m.data === "connected") {
-        listeners.get("connected")?.forEach((cb) => cb(undefined));
-        return;
+    let connected = false;
+
+    const emit = (kind: EventKind, data: unknown) => {
+      // Snapshot the Set so one listener can unsubscribe without changing which
+      // listeners receive the event currently being dispatched.
+      for (const listener of Array.from(listeners.get(kind) ?? [])) {
+        try {
+          listener(data);
+        } catch (error) {
+          console.error(`SSE listener for ${kind} threw`, error);
+        }
       }
-      let parsed: SSEEvent;
-      try {
-        parsed = JSON.parse(m.data) as SSEEvent;
-      } catch (e) {
-        console.warn("bad SSE payload", e, m.data);
-        return;
-      }
-      const set = listeners.get(parsed.kind);
-      if (!set) return;
-      // Safe: `subscribe` only feeds each Set with callbacks whose data type
-      // matches the key, so for any given Set every callback can accept
-      // `parsed.data` when `parsed.kind === key`.
-      set.forEach((cb) => cb(parsed.data));
     };
-    es.onopen = () => {
-      listeners.get("connected")?.forEach((cb) => cb(undefined));
+    const reportConnectionEvidence = () => {
+      // EventSource reports an error before reconnecting. The first onopen or
+      // server sentinel after that error starts a new logical connection; the
+      // other signal is duplicate evidence for the same connection.
+      if (connected) return;
+      connected = true;
+      emit("connected", undefined);
+    };
+
+    es.onmessage = (message) => {
+      if (message.data === "connected") {
+        reportConnectionEvidence();
+        return;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(message.data) as unknown;
+      } catch (error) {
+        console.warn("bad SSE payload", error, message.data);
+        return;
+      }
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        typeof (parsed as { kind?: unknown }).kind !== "string" ||
+        !("data" in parsed)
+      ) {
+        console.warn("bad SSE payload", parsed, message.data);
+        return;
+      }
+
+      const event = parsed as SSEEvent;
+      // Safe: `subscribe` only feeds each Set with callbacks whose data type
+      // matches the key, so callbacks for this discriminant accept its data.
+      emit(event.kind, event.data);
+    };
+    es.onopen = reportConnectionEvidence;
+    es.onerror = () => {
+      connected = false;
     };
     eventSourceRef.current = es;
+
     return () => {
-      eventSourceRef.current?.close();
-      eventSourceRef.current = null;
+      es.onmessage = null;
+      es.onopen = null;
+      es.onerror = null;
+      es.close();
+      if (eventSourceRef.current === es) eventSourceRef.current = null;
       listeners.clear();
     };
   }, []);
@@ -138,7 +188,7 @@ export function EventsProvider(props: { children: ReactNode }) {
       onReadStateUpdated: (cb) => subscribe("read_state_updated", cb),
       onConnected: (cb) => subscribe("connected", cb),
     }),
-    [],
+    [subscribe],
   );
 
   return <EventsContext.Provider value={value}>{props.children}</EventsContext.Provider>;

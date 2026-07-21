@@ -9,8 +9,8 @@ export interface ReadStateSummary {
   updated_at: number;
 }
 
-export async function listReadStates(): Promise<ReadStateSummary[]> {
-  const res = await apiFetch("/read-states");
+export async function listReadStates(signal?: AbortSignal): Promise<ReadStateSummary[]> {
+  const res = await apiFetch("/read-states", { signal });
   if (!res.ok) throw new Error(`Read-state snapshot failed (${res.status})`);
   return res.json() as Promise<ReadStateSummary[]>;
 }

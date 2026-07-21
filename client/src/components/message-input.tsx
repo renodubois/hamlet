@@ -764,10 +764,10 @@ export default function MessageInput(props: MessageInputProps) {
   const channelListboxId = useId();
   const customEmojis = useOptionalCustomEmojis();
   const optionalChannels = useOptionalChannels();
-  const contextChannels = optionalChannels?.channels();
+  const contextChannels = optionalChannels?.channels;
   const channels = props.channels ?? contextChannels ?? [];
-  const allCustomEmojis = customEmojis?.allEmojis?.() ?? [];
-  const activeCustomEmojis = customEmojis?.activeEmojis?.() ?? [];
+  const allCustomEmojis = customEmojis?.allEmojis ?? [];
+  const activeCustomEmojis = customEmojis?.activeEmojis ?? [];
   const emojiEntries = useMemo(
     () => [...CONSERVATIVE_EMOJIS, ...customEmojisToEntries(activeCustomEmojis)],
     [activeCustomEmojis],

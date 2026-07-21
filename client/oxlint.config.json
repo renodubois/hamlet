@@ -34,13 +34,6 @@
       // Phase 6 migrates these compatibility-hook tests and removes this override.
     },
     {
-      "files": ["src/contexts/read-states.tsx"],
-      "rules": {
-        "react/exhaustive-deps": "off"
-      }
-      // Phase 4 migrates this provider and removes this override.
-    },
-    {
       "files": ["src/pages/channel.tsx"],
       "rules": {
         "react/exhaustive-deps": "off"

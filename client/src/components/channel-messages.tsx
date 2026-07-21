@@ -96,10 +96,10 @@ interface ChannelMessagesProps {
 }
 function ChannelMessages(props: ChannelMessagesProps) {
   const customEmojis = useOptionalCustomEmojis();
-  const activeCustomEmojis = () => customEmojis?.activeEmojis?.() ?? [];
+  const activeCustomEmojis = customEmojis?.activeEmojis ?? [];
   const reactionEmojiEntries = () => [
     ...CONSERVATIVE_EMOJIS,
-    ...customEmojisToEntries(activeCustomEmojis()),
+    ...customEmojisToEntries(activeCustomEmojis),
   ];
   const visibleMessageIds = useComputedValue(
     () => new Set(props.messages.map((message) => message.id)),

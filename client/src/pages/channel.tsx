@@ -63,7 +63,7 @@ export default function ChannelView() {
   const events = useEvents();
   const { user } = useAuth();
   const readStates = useReadStates();
-  const channel = () => channels()?.find((c) => String(c.id) === params.id);
+  const channel = channels.find((candidate) => String(candidate.id) === params.id);
   const [message, setMessage] = useSignalState("");
   const [submitting, setSubmitting] = useSignalState(false);
   const [replyTarget, setReplyTarget] = useSignalState<Message | null>(null);
@@ -95,8 +95,8 @@ export default function ChannelView() {
   replyTargetRef.current = replyTarget();
   const draftVersionRef = useRef(0);
   const replyTargetVersionRef = useRef(0);
-  const userIdRef = useRef(user()?.id ?? null);
-  userIdRef.current = user()?.id ?? null;
+  const userIdRef = useRef(user?.id ?? null);
+  userIdRef.current = user?.id ?? null;
   const hasSeenInitialUserProfileRef = useRef(false);
   const pendingScrollToBottomRef = useRef<{ afterScroll?: () => void } | null>(null);
 
@@ -118,7 +118,8 @@ export default function ChannelView() {
     if (lastMarkReadKeyRef.current === markReadKey) return;
     if (markReadTimerRef.current) clearTimeout(markReadTimerRef.current);
     markReadTimerRef.current = setTimeout(() => {
-      if (!messagesScrollRef.current) return;
+      markReadTimerRef.current = null;
+      if (!messagesScrollRef.current || paramsIdRef.current !== String(channelId)) return;
       const current = getViewportReadMarkerState(messagesScrollRef.current);
       if (
         !current.rendererEligible ||
@@ -127,9 +128,17 @@ export default function ChannelView() {
       ) {
         return;
       }
-      const currentKey = `${channelId}:${current.lastVisibleTopLevelMessageId}`;
-      lastMarkReadKeyRef.current = currentKey;
-      void readStates.markRead(channelId, current.lastVisibleTopLevelMessageId);
+      const messageId = current.lastVisibleTopLevelMessageId;
+      const currentKey = `${channelId}:${messageId}`;
+      void readStates.markRead(channelId, messageId).then((accepted) => {
+        if (
+          accepted &&
+          paramsIdRef.current === String(channelId) &&
+          accepted.channel_id === channelId
+        ) {
+          lastMarkReadKeyRef.current = currentKey;
+        }
+      });
     }, 120);
   };
 
@@ -217,7 +226,7 @@ export default function ChannelView() {
   // every message of theirs in place so the rendered list reflects the new
   // values without a refetch.
   useEffect(() => {
-    const u = user();
+    const u = user;
     if (!u) return;
     if (!hasSeenInitialUserProfileRef.current) {
       hasSeenInitialUserProfileRef.current = true;
@@ -232,7 +241,7 @@ export default function ChannelView() {
         avatar_url: u.avatar_url,
       }),
     );
-  }, [user()?.avatar_url, user()?.display_name, user()?.id, user()?.username]);
+  }, [user?.avatar_url, user?.display_name, user?.id, user?.username]);
 
   const channelPath = () => `/channel/${params.id}`;
 
@@ -266,6 +275,10 @@ export default function ChannelView() {
       replyTargetVersionRef.current += 1;
       setReplyTarget(null);
       setHasNewMessagesBelow(false);
+      if (markReadTimerRef.current) {
+        clearTimeout(markReadTimerRef.current);
+        markReadTimerRef.current = null;
+      }
       lastMarkReadKeyRef.current = null;
     }
   }, [params.id]);
@@ -439,7 +452,7 @@ export default function ChannelView() {
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-background text-foreground">
       <section className="flex-shrink-0 border-b border-border bg-background px-4 py-3 shadow-sm">
-        <h1 className="text-lg font-semibold tracking-tight"># {channel()?.name ?? params.id}</h1>
+        <h1 className="text-lg font-semibold tracking-tight"># {channel?.name ?? params.id}</h1>
       </section>
 
       <ScreenShareViewer />
@@ -460,7 +473,7 @@ export default function ChannelView() {
             messages={displayedMessages()}
             loading={resource.loading}
             error={resource.error}
-            currentUserId={user()?.id ?? null}
+            currentUserId={user?.id ?? null}
             onOpenThread={openThread}
             onReplyToMessage={selectInlineReplyTarget}
             onMessageUpdated={applyMessageUpdate}
@@ -489,8 +502,8 @@ export default function ChannelView() {
             key={`${params.id}:${openThreadRootId() as number}`}
             rootMessageId={openThreadRootId() as number}
             channelId={Number(params.id)}
-            currentUserId={user()?.id ?? null}
-            currentUserName={user()?.username ?? null}
+            currentUserId={user?.id ?? null}
+            currentUserName={user?.username ?? null}
             focusComposer={focusComposerRootId() === openThreadRootId()}
             onComposerFocusConsumed={() => setFocusComposerRootId(null)}
             onClose={closeThread}
@@ -504,7 +517,7 @@ export default function ChannelView() {
       <section className="flex-shrink-0 p-4 border-t border-border">
         <TypingIndicator
           channelId={Number(params.id)}
-          currentUserId={user()?.id ?? null}
+          currentUserId={user?.id ?? null}
           events={events}
         />
         <form

@@ -3,6 +3,7 @@ import {
   applyIncomingTopLevelMessage,
   applyReadStateSnapshot,
   applyReadStateUpdate,
+  mergeReadStateSnapshot,
   channelHasUnread,
   channelMentionCount,
   readStateForChannel,
@@ -56,6 +57,35 @@ describe("read-state transitions", () => {
     expect(channelHasUnread(updated, 10)).toBe(false);
     expect(channelMentionCount(updated, 10)).toBe(0);
     expect(channelHasUnread(states, 10)).toBe(true);
+  });
+
+  test("rejects an older authoritative summary", () => {
+    const states = applyReadStateSnapshot([summary]);
+    const updated = applyReadStateUpdate(states, {
+      ...summary,
+      has_unread: false,
+      mention_count: 0,
+      updated_at: summary.updated_at - 1,
+    });
+
+    expect(updated).toBe(states);
+    expect(channelMentionCount(updated, 10)).toBe(2);
+  });
+
+  test("replays snapshot-time message and summary journal entries", () => {
+    const merged = mergeReadStateSnapshot(
+      [{ ...summary, has_unread: false, mention_count: 0 }],
+      [
+        { kind: "message", message: message(), currentUserId: 1 },
+        {
+          kind: "summary",
+          summary: { ...summary, channel_id: 20, mention_count: 4, updated_at: 400 },
+        },
+      ],
+    );
+
+    expect(channelHasUnread(merged, 10)).toBe(true);
+    expect(channelMentionCount(merged, 20)).toBe(4);
   });
 
   test("optimistically marks unread top-level messages after the read cursor", () => {

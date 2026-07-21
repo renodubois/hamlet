@@ -324,6 +324,39 @@ describe("Channel view integration", () => {
     focusSpy.mockRestore();
   });
 
+  test("a failed mark-read remains retryable on the next visibility trigger", async () => {
+    const focusSpy = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    seedAuthed();
+    let attempts = 0;
+    server.use(
+      http.put(`${TEST_SERVER}/channels/100/read-state`, async ({ request }) => {
+        attempts += 1;
+        const body = (await request.json()) as { last_visible_message_id: number };
+        if (attempts === 1) return new HttpResponse(null, { status: 500 });
+        return HttpResponse.json({
+          channel_id: 100,
+          has_unread: false,
+          mention_count: 0,
+          last_read_created_at: body.last_visible_message_id,
+          last_read_message_id: body.last_visible_message_id,
+          updated_at: Date.now(),
+        });
+      }),
+    );
+    mountAt("/channel/100");
+
+    await waitFor(() => expect(screen.getByText("world")).toBeInTheDocument());
+    setScrollMetrics(messagesRegion(), { scrollHeight: 1000, clientHeight: 100, scrollTop: 920 });
+    fireEvent.scroll(messagesRegion());
+    await waitFor(() => expect(attempts).toBe(1));
+
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(attempts).toBe(2));
+    focusSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
   test("incoming messages while scrolled up show a jump affordance without forcing scroll", async () => {
     const focusSpy = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const state = seedAuthed();

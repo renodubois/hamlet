@@ -12,12 +12,15 @@ export interface SearchUsersOptions {
   limit?: number;
 }
 
-export async function searchUsers(options: SearchUsersOptions = {}): Promise<PublicUser[]> {
+export async function searchUsers(
+  options: SearchUsersOptions = {},
+  signal?: AbortSignal,
+): Promise<PublicUser[]> {
   const params = new URLSearchParams();
   if (options.query !== undefined) params.set("q", options.query);
   if (options.limit !== undefined) params.set("limit", String(options.limit));
   const query = params.toString();
-  const res = await apiFetch(`/users${query ? `?${query}` : ""}`);
+  const res = await apiFetch(`/users${query ? `?${query}` : ""}`, { signal });
   if (!res.ok) throw new Error(`User search failed (${res.status})`);
   return res.json() as Promise<PublicUser[]>;
 }

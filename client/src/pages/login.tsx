@@ -4,6 +4,7 @@ import { getPublicServerConfig, getServerUrl } from "../api";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader } from "../components/ui/card";
 import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
 import { Separator } from "../components/ui/separator";
 
 export default function LoginScreen() {
@@ -87,36 +88,64 @@ export default function LoginScreen() {
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-            <Input
-              type="text"
-              placeholder="Server URL"
-              value={server}
-              onChange={(e) => setServer(e.currentTarget.value)}
-            />
-            <Input
-              type="text"
-              placeholder="Username"
-              autoComplete="username"
-              value={username}
-              onChange={(e) => setUsername(e.currentTarget.value)}
-            />
-            <Input
-              type="password"
-              placeholder="Password"
-              autoComplete={mode === "login" ? "current-password" : "new-password"}
-              value={password}
-              onChange={(e) => setPassword(e.currentTarget.value)}
-            />
-            {mode === "register" && accountRegistrationEnabled ? (
+            <div>
+              <Label className="sr-only" htmlFor="login-server">
+                Server URL
+              </Label>
               <Input
-                type="email"
-                placeholder="Email (optional)"
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.currentTarget.value)}
+                id="login-server"
+                type="url"
+                placeholder="Server URL"
+                value={server}
+                onChange={(e) => setServer(e.currentTarget.value)}
               />
+            </div>
+            <div>
+              <Label className="sr-only" htmlFor="login-username">
+                Username
+              </Label>
+              <Input
+                id="login-username"
+                type="text"
+                placeholder="Username"
+                autoComplete="username"
+                value={username}
+                onChange={(e) => setUsername(e.currentTarget.value)}
+              />
+            </div>
+            <div>
+              <Label className="sr-only" htmlFor="login-password">
+                Password
+              </Label>
+              <Input
+                id="login-password"
+                type="password"
+                placeholder="Password"
+                autoComplete={mode === "login" ? "current-password" : "new-password"}
+                value={password}
+                onChange={(e) => setPassword(e.currentTarget.value)}
+              />
+            </div>
+            {mode === "register" && accountRegistrationEnabled ? (
+              <div>
+                <Label className="sr-only" htmlFor="login-email">
+                  Email (optional)
+                </Label>
+                <Input
+                  id="login-email"
+                  type="email"
+                  placeholder="Email (optional)"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.currentTarget.value)}
+                />
+              </div>
             ) : null}
-            {error ? <p className="text-destructive text-sm">{error}</p> : null}
+            {error ? (
+              <p className="text-destructive text-sm" role="alert" aria-live="assertive">
+                {error}
+              </p>
+            ) : null}
             <Button type="submit" size="lg" disabled={submitting}>
               {submitting ? "Please wait..." : mode === "login" ? "Sign in" : "Create account"}
             </Button>

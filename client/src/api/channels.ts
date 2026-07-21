@@ -9,8 +9,9 @@ export interface Channel {
   type: ChannelType;
 }
 
-export async function listChannels(): Promise<Channel[]> {
-  const res = await apiFetch("/channels");
+export async function listChannels(signal?: AbortSignal): Promise<Channel[]> {
+  const res = await apiFetch("/channels", { signal });
+  if (!res.ok) throw new Error(`Channel list failed (${res.status})`);
   return res.json() as Promise<Channel[]>;
 }
 
