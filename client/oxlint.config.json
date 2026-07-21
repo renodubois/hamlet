@@ -1,13 +1,99 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["typescript", "unicorn", "oxc"],
+  "plugins": ["typescript", "unicorn", "oxc", "react"],
   "categories": {
     "correctness": "error"
   },
   "rules": {
+    "react/rules-of-hooks": "error",
+    "react/exhaustive-deps": "error",
+    "react/jsx-key": "error",
     "typescript/no-explicit-any": "off",
     "typescript/no-non-null-assertion": "error"
   },
+  "overrides": [
+    {
+      "files": ["src/hooks/react-state.tsx"],
+      "rules": {
+        "react/rules-of-hooks": "off",
+        "react/exhaustive-deps": "off"
+      }
+      // Phase 7 removes the compatibility implementation and this override.
+    },
+    {
+      "files": ["src/components/composer-photo-selection.tsx"],
+      "rules": {
+        "react/rules-of-hooks": "off"
+      }
+      // Phase 3 renames and migrates this hook, then removes this override.
+    },
+    {
+      "files": ["src/components/channel-sidebar.test.tsx"],
+      "rules": {
+        "react/rules-of-hooks": "off"
+      }
+      // Phase 2 migrates this compatibility-hook test and removes this override.
+    },
+    {
+      "files": ["src/components/modal.test.tsx"],
+      "rules": {
+        "react/rules-of-hooks": "off"
+      }
+      // Phase 3 migrates this compatibility-hook test and removes this override.
+    },
+    {
+      "files": [
+        "src/components/local-camera-tile.test.tsx",
+        "src/components/remote-camera-tiles.test.tsx",
+        "src/components/screen-share-viewer.test.tsx",
+        "src/components/voice-channel.test.tsx",
+        "src/components/voice-status-controls.test.tsx"
+      ],
+      "rules": {
+        "react/rules-of-hooks": "off"
+      }
+      // Phase 6 migrates these compatibility-hook tests and removes this override.
+    },
+    {
+      "files": [
+        "src/components/emoji-picker.tsx",
+        "src/components/message-text.tsx",
+        "src/components/modal.tsx"
+      ],
+      "rules": {
+        "react/exhaustive-deps": "off"
+      }
+      // Phase 3 gives these effects complete dependencies and removes this override.
+    },
+    {
+      "files": ["src/contexts/read-states.tsx"],
+      "rules": {
+        "react/exhaustive-deps": "off"
+      }
+      // Phase 4 migrates this provider and removes this override.
+    },
+    {
+      "files": ["src/pages/channel.tsx"],
+      "rules": {
+        "react/exhaustive-deps": "off"
+      }
+      // Phase 5 migrates channel lifecycle ownership and removes this override.
+    },
+    {
+      "files": ["src/components/message-input.tsx"],
+      "rules": {
+        "react/exhaustive-deps": "off"
+      }
+      // Phase 7 modernizes the editor effects and removes this override.
+    },
+    {
+      "files": ["e2e/electron-smoke.electron.spec.ts"],
+      "rules": {
+        "react/rules-of-hooks": "off"
+      }
+      // Phase 7 removes this override and replaces the Playwright fixture `use` false positive with a narrow final exception.
+    }
+  ],
   "env": {
     "builtin": true
   },

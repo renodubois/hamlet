@@ -9,11 +9,32 @@ import { resetFakeEventSources } from "./msw/sse";
 
 expect.extend(axeMatchers);
 
-// React 19 emits noisy act diagnostics for async provider/SSE updates that these
-// integration tests observe with Testing Library's async assertions. Keep stderr
-// focused on actionable application warnings and errors.
+export interface ReactDiagnosticsCapture {
+  readonly diagnostics: readonly (readonly unknown[])[];
+  stop(): void;
+}
+
+const diagnosticObservers = new Set<(args: readonly unknown[]) => void>();
+
+/**
+ * Observe console diagnostics before the temporary legacy act-warning filter.
+ * Focused native-React tests use this to keep warnings visible during migration.
+ */
+export function captureReactDiagnostics(): ReactDiagnosticsCapture {
+  const diagnostics: (readonly unknown[])[] = [];
+  const observer = (args: readonly unknown[]) => diagnostics.push(args);
+  diagnosticObservers.add(observer);
+  return {
+    diagnostics,
+    stop: () => diagnosticObservers.delete(observer),
+  };
+}
+
+// Phase 7 removes this broad suppression after the legacy static-signal tests
+// migrate. Captures above still observe every diagnostic in focused tests.
 const originalConsoleError = console.error.bind(console);
 console.error = (...args: unknown[]) => {
+  for (const observer of diagnosticObservers) observer(args);
   if (typeof args[0] === "string" && args[0].includes("not wrapped in act")) return;
   originalConsoleError(...args);
 };
