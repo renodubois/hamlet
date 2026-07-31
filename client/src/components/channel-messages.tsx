@@ -28,47 +28,50 @@ import MessageText from "./message-text";
 import Modal from "./modal";
 import ReactionRow from "./reaction-row";
 import { Button } from "./ui/button";
+
 interface ContextMenuState {
   messageId: number;
   x: number;
   y: number;
 }
+
 interface ReactionPickerState {
   messageId: number;
   anchor: HTMLElement;
 }
+
 function formatThreadTimestamp(timestampMicros: number): string {
   const date = new Date(Math.trunc(timestampMicros / 1000));
   if (Number.isNaN(date.getTime())) return "unknown time";
   return `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
+
 function formatThreadTimestampTitle(timestampMicros: number): string {
   const date = new Date(Math.trunc(timestampMicros / 1000));
   if (Number.isNaN(date.getTime())) return "unknown time";
   return `${date.toISOString().slice(0, 19).replace("T", " ")} UTC`;
 }
+
 function replyCountLabel(count: number): string {
   return count === 1 ? "1 reply" : `${count} replies`;
 }
+
 function referencedMessageLabel(message: Message): string {
   return `message by ${messageDisplayName(message)}: ${messageReferencePreviewText(message)}`;
 }
-function messageRowClass(authoredByCurrentUser: boolean, mentionedCurrentUser: boolean): string {
-  const borderClass = authoredByCurrentUser
-    ? "border-primary"
-    : mentionedCurrentUser
-      ? "border-primary/50"
-      : "border-transparent";
+
+function messageRowClass(mentionedCurrentUser: boolean): string {
+  const borderClass = mentionedCurrentUser ? "border-primary/50" : "border-transparent";
   const stateClass = mentionedCurrentUser
     ? "bg-primary/10 ring-1 ring-inset ring-primary/20 hover:bg-primary/15 focus-within:bg-primary/15"
-    : authoredByCurrentUser
-      ? "bg-primary/5 hover:bg-primary/10 focus-within:bg-primary/10"
-      : "hover:bg-accent focus-within:bg-accent";
+    : "hover:bg-accent focus-within:bg-accent";
   return `group relative flex items-start gap-3 px-2 py-1 -mx-2 rounded-md border-l-4 transition-colors ${borderClass} ${stateClass}`;
 }
+
 export function channelMessageElementId(messageId: number): string {
   return `channel-message-${messageId}`;
 }
+
 interface ChannelMessagesProps {
   channelId?: number;
   generation?: number;
@@ -337,7 +340,7 @@ function ChannelMessages(props: ChannelMessagesProps) {
               data-message-id={String(message.id)}
               data-authored-by-current-user={isOwnMessage(message) ? "true" : undefined}
               data-mentioned-current-user={isMentionedCurrentUser(message) ? "true" : undefined}
-              className={messageRowClass(isOwnMessage(message), isMentionedCurrentUser(message))}
+              className={messageRowClass(isMentionedCurrentUser(message))}
               onContextMenu={(e) => handleContextMenu(e, message)}
             >
               <Avatar

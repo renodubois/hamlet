@@ -1,4 +1,4 @@
-import type { PublicUser } from "../api";
+import type { Message, PublicUser } from "../api";
 
 export interface MentionMarkerToken {
   type: "mention";
@@ -136,13 +136,14 @@ export function hydratedMentionsIncludeUser(
 }
 
 export function messageMentionsCurrentUser(
-  message: {
-    deleted_at?: number | null;
-    mentions?: readonly Pick<PublicUser, "id">[] | null;
-  },
+  message: Message,
   currentUserId: number | null | undefined,
 ): boolean {
-  return message.deleted_at == null && hydratedMentionsIncludeUser(message.mentions, currentUserId);
+  return (
+    message.deleted_at == null &&
+    (hydratedMentionsIncludeUser(message.mentions, currentUserId) ||
+      (!!message.reply_to && message.reply_to.user_id === currentUserId))
+  );
 }
 
 export function parseMentionMarkers(text: string): MentionTextToken[] {
