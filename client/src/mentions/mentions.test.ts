@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { PublicUser } from "../api";
+import type { MentionUser, Message, PublicUser } from "../api";
 import {
   findActiveMentionToken,
   hydratedMentionsIncludeUser,
@@ -16,6 +16,23 @@ const BOB: PublicUser = {
   username: "bob",
   display_name: "Bobby",
   avatar_url: null,
+};
+
+const createTestMessage = (mentions: MentionUser[], deleted: boolean = false): Message => {
+  return {
+    id: 1,
+    user_id: 2345,
+    channel_id: 1234,
+    text: "test message",
+    username: "test_user",
+    display_name: null,
+    avatar_url: null,
+    suppress_embeds: false,
+    mentions,
+    attachments: [],
+    embeds: [],
+    deleted_at: deleted ? 1234256 : undefined,
+  };
 };
 
 describe("mention helpers", () => {
@@ -88,8 +105,8 @@ describe("mention helpers", () => {
     expect(hydratedMentionsIncludeUser([BOB], BOB.id)).toBe(true);
     expect(hydratedMentionsIncludeUser([BOB], 99)).toBe(false);
     expect(hydratedMentionsIncludeUser([BOB], null)).toBe(false);
-    expect(messageMentionsCurrentUser({ mentions: [BOB], deleted_at: null }, BOB.id)).toBe(true);
-    expect(messageMentionsCurrentUser({ mentions: [BOB], deleted_at: 1 }, BOB.id)).toBe(false);
+    expect(messageMentionsCurrentUser(createTestMessage([BOB]), BOB.id)).toBe(true);
+    expect(messageMentionsCurrentUser(createTestMessage([BOB], true), BOB.id)).toBe(false);
   });
 
   test("ranks users deterministically by match quality, field, username, and id", () => {

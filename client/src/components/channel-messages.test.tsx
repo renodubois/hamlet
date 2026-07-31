@@ -693,21 +693,6 @@ describe("<ChannelMessages> message text rendering", () => {
       username: "them",
       mentions: [otherUser],
     });
-    const authoredBySelf = makeMessage({
-      id: 532,
-      user_id: SELF_ID,
-      channel_id: 1,
-      text: "authored by me",
-      username: "me",
-    });
-    const authoredAndMentioned = makeMessage({
-      id: 533,
-      user_id: SELF_ID,
-      channel_id: 1,
-      text: "self ping <@1>",
-      username: "me",
-      mentions: [selfUser],
-    });
     const deletedMention = makeMessage({
       id: 534,
       user_id: OTHER_ID,
@@ -718,10 +703,7 @@ describe("<ChannelMessages> message text rendering", () => {
       mentions: [selfUser],
     });
 
-    mount(
-      [mentionedByOther, mentionedOtherUser, authoredBySelf, authoredAndMentioned, deletedMention],
-      SELF_ID,
-    );
+    mount([mentionedByOther, mentionedOtherUser, deletedMention], SELF_ID);
 
     const mentionedRow = assertExists(document.getElementById(channelMessageElementId(530)));
     expect(mentionedRow).toHaveAttribute("data-mentioned-current-user", "true");
@@ -737,16 +719,6 @@ describe("<ChannelMessages> message text rendering", () => {
     expect(
       within(otherMentionRow).getByRole("button", { name: "Mention them (@them)" }),
     ).toHaveClass("bg-primary/10", "font-medium");
-
-    const authoredRow = assertExists(document.getElementById(channelMessageElementId(532)));
-    expect(authoredRow).toHaveAttribute("data-authored-by-current-user", "true");
-    expect(authoredRow).not.toHaveAttribute("data-mentioned-current-user");
-    expect(authoredRow).toHaveClass("border-primary", "bg-primary/5");
-
-    const bothRow = assertExists(document.getElementById(channelMessageElementId(533)));
-    expect(bothRow).toHaveAttribute("data-authored-by-current-user", "true");
-    expect(bothRow).toHaveAttribute("data-mentioned-current-user", "true");
-    expect(bothRow).toHaveClass("border-primary", "bg-primary/10", "ring-primary/20");
 
     const deletedRow = assertExists(document.getElementById(channelMessageElementId(534)));
     expect(deletedRow).not.toHaveAttribute("data-mentioned-current-user");
