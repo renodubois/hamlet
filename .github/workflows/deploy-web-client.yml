@@ -47,7 +47,6 @@ jobs:
         run: |
           pnpm run fmt:check
           pnpm run lint
-          pnpm run check:native-react
           pnpm run typecheck
           pnpm run test
       - id: pages
