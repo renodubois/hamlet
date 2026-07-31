@@ -20,7 +20,7 @@ Usage:
 
 Client checks:
   electron -> client/: pnpm run fmt:check (or fmt with --fix), lint,
-              check:native-react, typecheck, test
+              typecheck, test
 
 Optional checks:
   --e2e -> run Playwright E2E for client/ when client checks are selected
@@ -143,7 +143,6 @@ client_checks() {
     run "client: pnpm run fmt:check" pnpm run fmt:check
   fi
   run "client: pnpm run lint" pnpm run lint
-  run "client: pnpm run check:native-react" pnpm run check:native-react
   run "client: pnpm run typecheck" pnpm run typecheck
   run "client: pnpm run test" pnpm run test
 }

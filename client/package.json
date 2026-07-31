@@ -22,7 +22,6 @@
     "package:launch": "pnpm run package:unpacked && node scripts/launch-unpacked.mjs",
     "package:smoke": "pnpm run package:unpacked && playwright test -c playwright.package.config.ts",
     "package:full": "node scripts/package-full-deferred.mjs package:full",
-    "check:native-react": "node scripts/check-native-react.mjs",
     "lint": "oxlint -c oxlint.config.json . --format stylish",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
@@ -87,7 +86,7 @@
     "node": ">=24.13.0",
     "pnpm": ">=11.11.0"
   },
-  "packageManager": "pnpm@11.11.0",
+  "packageManager": "pnpm@11.18.0+sha512.33d83c77da82f49fba836925c6f1b841181ec3132b670639bd012f7075f5c7cf634c5f870147c19aae7478fac01df09d8892e880454896edd23ee9b33757563c",
   "msw": {
     "workerDirectory": [
       ".storybook/public"

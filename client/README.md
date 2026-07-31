@@ -1,5 +1,7 @@
 # Hamlet Electron Alpha
 
+**TODO(reno): This is all LLM-generated, and needs to be pruned for useful information.**
+
 Electron/React desktop client for Hamlet. By default it keeps the renderer on
 `http://127.0.0.1:1422`; worktrees can override the loopback renderer port with
 `HAMLET_RENDERER_PORT` so multiple app instances can run side by side.
