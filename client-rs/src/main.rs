@@ -1,7 +1,12 @@
-use iced::{
-    Background, Border, Color, Element, Shadow, Task, color,
-    widget::{button, column, text},
+use iced::{Element, Task};
+
+use crate::views::{
+    app::App,
+    login_form::{LoginForm, Message::SuccesfulLogin},
 };
+
+mod api;
+mod views;
 
 fn main() -> iced::Result {
     iced::application(Hamlet::new, Hamlet::update, Hamlet::view)
@@ -10,8 +15,8 @@ fn main() -> iced::Result {
 }
 
 struct Hamlet {
-    channels: Vec<Channel>,
-    active_channel: String,
+    login: LoginForm,
+    app: Option<App>,
 }
 
 struct Channel {
@@ -21,52 +26,43 @@ struct Channel {
 
 #[derive(Debug, Clone)]
 enum Message {
-    ActiveChannel(String),
-}
-
-fn test_channels() -> Vec<Channel> {
-    vec![
-        Channel {
-            name: "general".to_string(),
-            id: "1".to_string(),
-        },
-        Channel {
-            name: "cool_channel".to_string(),
-            id: "2".to_string(),
-        },
-    ]
+    App(views::app::Message),
+    Login(views::login_form::Message),
 }
 
 impl Hamlet {
     fn new() -> Self {
         Hamlet {
-            channels: test_channels(),
-            active_channel: String::new(),
+            login: LoginForm::new(),
+            app: None,
         }
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::ActiveChannel(channel_id) => {
-                self.active_channel = channel_id.clone();
-                Task::none()
-            }
+            Message::Login(message) => match message {
+                SuccesfulLogin(res) => {
+                    let (app, task) = App::new(res.user, res.server_url, res.cookies);
+                    self.app = Some(app);
+
+                    task.map(Message::App)
+                }
+                _ => self.login.update(message).map(Message::Login),
+            },
+            Message::App(msg) => self
+                .app
+                .as_mut()
+                .expect("App should be initialized if user is logged in")
+                .update(msg)
+                .map(Message::App),
         }
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let channel_buttons = column(self.channels.iter().map(|channel| {
-            let button_label = text(if self.active_channel == channel.id {
-                channel.name.clone() + " (active)"
-            } else {
-                channel.name.clone()
-            });
-            button(button_label)
-                .on_press(Message::ActiveChannel(channel.id.clone()))
-                .into()
-        }));
-
-        channel_buttons.padding(20).spacing(10).into()
+        match &self.app {
+            Some(app) => app.view().map(Message::App),
+            None => self.login.view().map(Message::Login),
+        }
     }
 
     fn theme(&self) -> iced::Theme {
