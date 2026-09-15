@@ -41,9 +41,8 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Channels(msg) => self.channels.update(msg),
-        };
-        Task::none()
+            Channels(msg) => self.channels.update(msg).map(Message::Channels),
+        }
     }
 
     pub fn view(&self) -> Element<'_, Message> {

@@ -87,4 +87,6 @@ impl ApiClient {
             Err(err) => Err(err),
         }
     }
+
+    pub async fn get_messages_for_channel(&self) -> Result<Vec, reqwest::Error> {}
 }
