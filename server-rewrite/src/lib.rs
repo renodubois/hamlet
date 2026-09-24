@@ -13,6 +13,7 @@ use sea_orm::{
 };
 mod auth;
 mod channels;
+pub mod contract;
 mod messages;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -144,7 +145,7 @@ fn valid_password(password: &str) -> bool {
 #[utoipa::path(post, path = "/api/v1/auth/signup", request_body = Credentials,
     responses((status = 201, body = AuthResponse), (status = 400, body = ErrorBody),
         (status = 409, body = ErrorBody), (status = 500, body = ErrorBody)))]
-async fn signup(
+pub(crate) async fn signup(
     db: web::Data<AppState>,
     input: Result<web::Json<Credentials>, Error>,
 ) -> impl Responder {
@@ -164,7 +165,7 @@ async fn signup(
 #[utoipa::path(post, path = "/api/v1/auth/login", request_body = Credentials,
     responses((status = 200, body = AuthResponse), (status = 400, body = ErrorBody),
         (status = 401, body = ErrorBody), (status = 500, body = ErrorBody)))]
-async fn login(
+pub(crate) async fn login(
     db: web::Data<AppState>,
     input: Result<web::Json<Credentials>, Error>,
 ) -> impl Responder {
@@ -180,7 +181,7 @@ async fn login(
 
 #[utoipa::path(post, path = "/api/v1/auth/logout", security(("bearer_auth" = [])),
     responses((status = 204), (status = 401, body = ErrorBody), (status = 500, body = ErrorBody)))]
-async fn logout(db: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {
+pub(crate) async fn logout(db: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {
     let identity = req
         .extensions()
         .get::<Identity>()
@@ -263,7 +264,7 @@ async fn request_id(
 #[utoipa::path(get, path = "/api/v1/me", security(("bearer_auth" = [])),
     responses((status = 200, body = User), (status = 401, body = ErrorBody),
         (status = 500, body = ErrorBody)))]
-async fn me(req: actix_web::HttpRequest) -> impl Responder {
+pub(crate) async fn me(req: actix_web::HttpRequest) -> impl Responder {
     let identity = req
         .extensions()
         .get::<Identity>()

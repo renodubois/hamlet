@@ -35,6 +35,7 @@ pub struct History {
 #[into_params(parameter_in = Query)]
 pub struct HistoryQuery {
     /// Number of messages per page (1–100, default 50).
+    #[param(minimum = 1, maximum = 100)]
     pub limit: Option<u16>,
     /// Opaque cursor from a previous response.
     pub before: Option<String>,
@@ -216,7 +217,7 @@ pub async fn history(
     params(("channel_id" = String, Path, description = "Decimal-string channel ID")), request_body = CreateMessage,
     responses((status = 201, body = Message), (status = 400, body = crate::ErrorBody),
         (status = 401, body = crate::ErrorBody), (status = 404, body = crate::ErrorBody), (status = 500, body = crate::ErrorBody)))]
-async fn post_route(
+pub(crate) async fn post_route(
     db: web::Data<AppState>,
     req: HttpRequest,
     path: web::Path<String>,
@@ -245,7 +246,7 @@ async fn post_route(
     params(("channel_id" = String, Path, description = "Decimal-string channel ID"), HistoryQuery),
     responses((status = 200, body = History), (status = 400, body = crate::ErrorBody),
         (status = 401, body = crate::ErrorBody), (status = 404, body = crate::ErrorBody), (status = 500, body = crate::ErrorBody)))]
-async fn history_route(
+pub(crate) async fn history_route(
     db: web::Data<AppState>,
     path: web::Path<String>,
     query: Result<web::Query<HistoryQuery>, Error>,

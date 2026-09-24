@@ -137,7 +137,7 @@ pub async fn list(db: &DatabaseConnection) -> Result<ChannelList, DbErr> {
 #[utoipa::path(post, path = "/api/v1/channels", security(("bearer_auth" = [])), request_body = CreateChannel,
     responses((status = 201, body = Channel), (status = 400, body = crate::ErrorBody),
         (status = 401, body = crate::ErrorBody), (status = 409, body = crate::ErrorBody), (status = 500, body = crate::ErrorBody)))]
-async fn create_route(
+pub(crate) async fn create_route(
     db: web::Data<AppState>,
     input: Result<web::Json<CreateChannel>, Error>,
 ) -> impl Responder {
@@ -156,7 +156,7 @@ async fn create_route(
 
 #[utoipa::path(get, path = "/api/v1/channels", security(("bearer_auth" = [])),
     responses((status = 200, body = ChannelList), (status = 401, body = crate::ErrorBody), (status = 500, body = crate::ErrorBody)))]
-async fn list_route(db: web::Data<AppState>) -> impl Responder {
+pub(crate) async fn list_route(db: web::Data<AppState>) -> impl Responder {
     match list(&db.db).await {
         Ok(channels) => HttpResponse::Ok().json(channels),
         Err(_) => internal(),
