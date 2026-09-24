@@ -169,6 +169,37 @@ async fn signup(
     }
 }
 
+#[utoipa::path(post, path = "/api/v1/auth/login", request_body = Credentials,
+    responses((status = 200, body = AuthResponse), (status = 400, body = ErrorBody),
+        (status = 401, body = ErrorBody), (status = 500, body = ErrorBody)))]
+async fn login(
+    db: web::Data<AppState>,
+    input: Result<web::Json<Credentials>, Error>,
+) -> impl Responder {
+    let Ok(input) = input else {
+        return bad_request();
+    };
+    match auth::login(&db.db, &input.username, &input.password).await {
+        Ok(response) => HttpResponse::Ok().json(response),
+        Err(auth::LoginError::Invalid) => unauthorized(),
+        Err(auth::LoginError::Internal) => internal(),
+    }
+}
+
+#[utoipa::path(post, path = "/api/v1/auth/logout", security(("bearer_auth" = [])),
+    responses((status = 204), (status = 401, body = ErrorBody), (status = 500, body = ErrorBody)))]
+async fn logout(db: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {
+    let identity = req
+        .extensions()
+        .get::<Identity>()
+        .cloned()
+        .expect("protected scope");
+    match auth::logout(&db.db, &identity.token_digest).await {
+        Ok(()) => HttpResponse::NoContent().finish(),
+        Err(_) => internal(),
+    }
+}
+
 #[derive(Clone)]
 pub struct Identity {
     pub user: UserIdentity,
@@ -273,17 +304,41 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
                             })),
                     )
                     .service(
-                        web::scope("").wrap(from_fn(bearer)).service(
-                            web::resource("/me")
-                                .route(web::get().to(me))
-                                .default_service(web::to(|| async {
-                                    problem(
-                                        StatusCode::METHOD_NOT_ALLOWED,
-                                        "method_not_allowed",
-                                        "Method not allowed",
-                                    )
-                                })),
-                        ),
+                        web::resource("/auth/login")
+                            .route(web::post().to(login))
+                            .default_service(web::to(|| async {
+                                problem(
+                                    StatusCode::METHOD_NOT_ALLOWED,
+                                    "method_not_allowed",
+                                    "Method not allowed",
+                                )
+                            })),
+                    )
+                    .service(
+                        web::scope("")
+                            .wrap(from_fn(bearer))
+                            .service(
+                                web::resource("/auth/logout")
+                                    .route(web::post().to(logout))
+                                    .default_service(web::to(|| async {
+                                        problem(
+                                            StatusCode::METHOD_NOT_ALLOWED,
+                                            "method_not_allowed",
+                                            "Method not allowed",
+                                        )
+                                    })),
+                            )
+                            .service(
+                                web::resource("/me")
+                                    .route(web::get().to(me))
+                                    .default_service(web::to(|| async {
+                                        problem(
+                                            StatusCode::METHOD_NOT_ALLOWED,
+                                            "method_not_allowed",
+                                            "Method not allowed",
+                                        )
+                                    })),
+                            ),
                     )
                     .default_service(web::to(|| async {
                         problem(StatusCode::NOT_FOUND, "not_found", "Not found")
