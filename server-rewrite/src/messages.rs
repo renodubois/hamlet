@@ -1,8 +1,11 @@
 use crate::{AppState, Identity, bad_request, internal, new_id, problem};
 use actix_web::{Error, HttpMessage, HttpRequest, HttpResponse, Responder, http::StatusCode, web};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, SecondsFormat, Utc};
+use hmac::{Hmac, Mac};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, QueryResult, Statement};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct Author {
@@ -26,6 +29,67 @@ pub struct CreateMessage {
 pub struct History {
     pub items: Vec<Message>,
     pub next_cursor: Option<String>,
+}
+#[derive(Deserialize, utoipa::IntoParams)]
+#[serde(deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
+pub struct HistoryQuery {
+    /// Number of messages per page (1–100, default 50).
+    pub limit: Option<u16>,
+    /// Opaque cursor from a previous response.
+    pub before: Option<String>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Cursor {
+    version: u8,
+    channel_id: i64,
+    created_at: String,
+    id: i64,
+}
+impl Cursor {
+    fn encode(message: &Message, key: &str) -> String {
+        let payload = serde_json::to_vec(&Self {
+            version: 1,
+            channel_id: message.channel_id.parse().expect("issued channel ID"),
+            created_at: message
+                .created_at
+                .to_rfc3339_opts(SecondsFormat::Nanos, true),
+            id: message.id.parse().expect("issued message ID"),
+        })
+        .expect("cursor serialization");
+        let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes()).expect("HMAC key");
+        mac.update(&payload);
+        format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(payload),
+            URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+        )
+    }
+    fn decode(value: &str, channel_id: i64, key: &str) -> Option<Self> {
+        if value.len() > 512 || value.is_empty() {
+            return None;
+        }
+        let (payload, signature) = value.split_once('.')?;
+        let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
+        let signature = URL_SAFE_NO_PAD.decode(signature).ok()?;
+        let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes()).ok()?;
+        mac.update(&bytes);
+        mac.verify_slice(&signature).ok()?;
+        let cursor: Self = serde_json::from_slice(&bytes).ok()?;
+        if cursor.version != 1
+            || cursor.channel_id != channel_id
+            || !(100_000_000_000_000..=999_999_999_999_999).contains(&cursor.id)
+            || DateTime::parse_from_rfc3339(&cursor.created_at)
+                .ok()?
+                .with_timezone(&Utc)
+                .to_rfc3339_opts(SecondsFormat::Nanos, true)
+                != cursor.created_at
+        {
+            return None;
+        }
+        Some(cursor)
+    }
 }
 
 fn parse_channel(id: &str) -> Option<i64> {
@@ -99,20 +163,53 @@ pub async fn post(
     Err(PostError::Internal)
 }
 
-pub async fn history(db: &DatabaseConnection, channel_id: i64) -> Result<Option<History>, DbErr> {
-    if !channel_exists(db, channel_id).await? {
-        return Ok(None);
+pub enum HistoryError {
+    Invalid,
+    Missing,
+    Internal,
+}
+pub async fn history(
+    db: &DatabaseConnection,
+    channel_id: i64,
+    limit: u16,
+    before: Option<&str>,
+    key: &str,
+) -> Result<History, HistoryError> {
+    if !(1..=100).contains(&limit) {
+        return Err(HistoryError::Invalid);
     }
-    let rows = db.query_all_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
-        "SELECT m.id, m.channel_id, m.author_id, m.text, m.created_at, u.username FROM messages m JOIN users u ON u.id = m.author_id WHERE m.channel_id = ? ORDER BY m.created_at DESC, m.id DESC",
-        [channel_id.into()])).await?;
-    Ok(Some(History {
-        items: rows
-            .into_iter()
-            .map(decode)
-            .collect::<Result<Vec<_>, _>>()?,
-        next_cursor: None,
-    }))
+    // Missing channels take precedence over bad cursors.
+    if !channel_exists(db, channel_id)
+        .await
+        .map_err(|_| HistoryError::Internal)?
+    {
+        return Err(HistoryError::Missing);
+    }
+    let cursor = before
+        .map(|value| Cursor::decode(value, channel_id, key).ok_or(HistoryError::Invalid))
+        .transpose()?;
+    let rows = if let Some(cursor) = cursor {
+        db.query_all_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
+            "SELECT m.id, m.channel_id, m.author_id, m.text, m.created_at, u.username FROM messages m JOIN users u ON u.id = m.author_id WHERE m.channel_id = ? AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
+            [channel_id.into(), cursor.created_at.clone().into(), cursor.created_at.into(), cursor.id.into(), (i64::from(limit) + 1).into()])).await
+    } else {
+        db.query_all_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
+            "SELECT m.id, m.channel_id, m.author_id, m.text, m.created_at, u.username FROM messages m JOIN users u ON u.id = m.author_id WHERE m.channel_id = ? ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
+            [channel_id.into(), (i64::from(limit) + 1).into()])).await
+    }.map_err(|_| HistoryError::Internal)?;
+    let has_more = rows.len() > usize::from(limit);
+    let items = rows
+        .into_iter()
+        .take(usize::from(limit))
+        .map(decode)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| HistoryError::Internal)?;
+    let next_cursor = if has_more {
+        items.last().map(|message| Cursor::encode(message, key))
+    } else {
+        None
+    };
+    Ok(History { items, next_cursor })
 }
 
 #[utoipa::path(post, path = "/api/v1/channels/{channel_id}/messages", security(("bearer_auth" = [])),
@@ -145,17 +242,35 @@ async fn post_route(
 }
 
 #[utoipa::path(get, path = "/api/v1/channels/{channel_id}/messages", security(("bearer_auth" = [])),
-    params(("channel_id" = String, Path, description = "Decimal-string channel ID")),
+    params(("channel_id" = String, Path, description = "Decimal-string channel ID"), HistoryQuery),
     responses((status = 200, body = History), (status = 400, body = crate::ErrorBody),
         (status = 401, body = crate::ErrorBody), (status = 404, body = crate::ErrorBody), (status = 500, body = crate::ErrorBody)))]
-async fn history_route(db: web::Data<AppState>, path: web::Path<String>) -> impl Responder {
+async fn history_route(
+    db: web::Data<AppState>,
+    path: web::Path<String>,
+    query: Result<web::Query<HistoryQuery>, Error>,
+) -> impl Responder {
     let Some(channel_id) = parse_channel(&path) else {
         return bad_request();
     };
-    match history(&db.db, channel_id).await {
-        Ok(Some(history)) => HttpResponse::Ok().json(history),
-        Ok(None) => problem(StatusCode::NOT_FOUND, "not_found", "Channel not found"),
-        Err(_) => internal(),
+    let Ok(query) = query else {
+        return bad_request();
+    };
+    match history(
+        &db.db,
+        channel_id,
+        query.limit.unwrap_or(50),
+        query.before.as_deref(),
+        &db.cursor_key,
+    )
+    .await
+    {
+        Ok(history) => HttpResponse::Ok().json(history),
+        Err(HistoryError::Invalid) => bad_request(),
+        Err(HistoryError::Missing) => {
+            problem(StatusCode::NOT_FOUND, "not_found", "Channel not found")
+        }
+        Err(HistoryError::Internal) => internal(),
     }
 }
 

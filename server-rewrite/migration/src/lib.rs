@@ -4,7 +4,12 @@ pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(Initial), Box::new(Channels), Box::new(Messages)]
+        vec![
+            Box::new(Initial),
+            Box::new(Channels),
+            Box::new(Messages),
+            Box::new(CursorKey),
+        ]
     }
 }
 
@@ -76,6 +81,29 @@ impl MigrationTrait for Messages {
         manager
             .get_connection()
             .execute_unprepared("DROP TABLE messages")
+            .await?;
+        Ok(())
+    }
+}
+
+struct CursorKey;
+impl MigrationName for CursorKey {
+    fn name(&self) -> &str {
+        "m20260923_000004_cursor_key"
+    }
+}
+#[async_trait::async_trait]
+impl MigrationTrait for CursorKey {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager.get_connection().execute_unprepared(
+            "CREATE TABLE cursor_keys (id INTEGER PRIMARY KEY CHECK (id = 1), secret TEXT NOT NULL)"
+        ).await?;
+        Ok(())
+    }
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .get_connection()
+            .execute_unprepared("DROP TABLE cursor_keys")
             .await?;
         Ok(())
     }

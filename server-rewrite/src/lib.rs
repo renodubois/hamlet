@@ -21,6 +21,7 @@ use std::time::Duration as StdDuration;
 #[derive(Clone)]
 pub struct AppState {
     pub db: DatabaseConnection,
+    cursor_key: String,
 }
 
 pub async fn connect(url: &str) -> Result<AppState, String> {
@@ -53,7 +54,25 @@ pub async fn connect(url: &str) -> Result<AppState, String> {
     channels::bootstrap(&db)
         .await
         .map_err(|e| format!("channel bootstrap failed: {e}"))?;
-    Ok(AppState { db })
+    db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Sqlite,
+        "INSERT OR IGNORE INTO cursor_keys (id, secret) VALUES (1, ?)",
+        [new_token().into()],
+    ))
+    .await
+    .map_err(|e| format!("cursor key initialization failed: {e}"))?;
+    let row = db
+        .query_one_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT secret FROM cursor_keys WHERE id = 1",
+        ))
+        .await
+        .map_err(|e| format!("cursor key lookup failed: {e}"))?
+        .ok_or("cursor key missing")?;
+    let cursor_key = row
+        .try_get("", "secret")
+        .map_err(|e| format!("cursor key malformed: {e}"))?;
+    Ok(AppState { db, cursor_key })
 }
 
 #[derive(Serialize, utoipa::ToSchema)]

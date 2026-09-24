@@ -145,14 +145,26 @@ async fn messages_keep_author_identity_and_preserve_text() {
             .to_request(),
     )
     .await;
-    let all: Value = test::read_body_json(response).await;
-    assert_eq!(all["items"].as_array().unwrap().len(), 54);
-    assert!(all["next_cursor"].is_null());
+    let first_page: Value = test::read_body_json(response).await;
+    assert_eq!(first_page["items"].as_array().unwrap().len(), 50);
+    let cursor = first_page["next_cursor"].as_str().unwrap();
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!("{path}?before={cursor}"))
+            .insert_header(("Authorization", format!("Bearer {token}")))
+            .to_request(),
+    )
+    .await;
+    let last_page: Value = test::read_body_json(response).await;
+    assert_eq!(last_page["items"].as_array().unwrap().len(), 4);
+    assert!(last_page["next_cursor"].is_null());
     assert!(
-        all["items"]
+        first_page["items"]
             .as_array()
             .unwrap()
             .iter()
+            .chain(last_page["items"].as_array().unwrap().iter())
             .all(|item| item["author"]["display_name"] == "NewAlice")
     );
     let missing = "/api/v1/channels/999999999999999/messages";
