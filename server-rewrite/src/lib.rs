@@ -12,6 +12,7 @@ use sea_orm::{
     ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement,
 };
 mod auth;
+mod channels;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::Duration as StdDuration;
@@ -45,42 +46,13 @@ pub async fn connect(url: &str) -> Result<AppState, String> {
         .await
         .map_err(|e| format!("rewrite database connection failed: {e}"))?;
     use sea_orm_migration::MigratorTrait;
-    migration::Migrator::up(&db, None)
+    hamlet_rewrite_migration::Migrator::up(&db, None)
         .await
         .map_err(|e| format!("rewrite migration failed: {e}"))?;
+    channels::bootstrap(&db)
+        .await
+        .map_err(|e| format!("channel bootstrap failed: {e}"))?;
     Ok(AppState { db })
-}
-
-mod migration {
-    use sea_orm_migration::prelude::*;
-    pub struct Migrator;
-    #[async_trait::async_trait]
-    impl MigratorTrait for Migrator {
-        fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-            vec![Box::new(Initial)]
-        }
-    }
-    #[derive(DeriveMigrationName)]
-    struct Initial;
-    #[async_trait::async_trait]
-    impl MigrationTrait for Initial {
-        async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-            for sql in [
-                "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL, username_key TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL)",
-                "CREATE TABLE sessions (token_digest TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), expires_at TEXT NOT NULL)",
-            ] {
-                manager.get_connection().execute_unprepared(sql).await?;
-            }
-            Ok(())
-        }
-        async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-            manager
-                .get_connection()
-                .execute_unprepared("DROP TABLE sessions; DROP TABLE users")
-                .await?;
-            Ok(())
-        }
-    }
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -338,7 +310,8 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
                                             "Method not allowed",
                                         )
                                     })),
-                            ),
+                            )
+                            .configure(channels::routes),
                     )
                     .default_service(web::to(|| async {
                         problem(StatusCode::NOT_FOUND, "not_found", "Not found")

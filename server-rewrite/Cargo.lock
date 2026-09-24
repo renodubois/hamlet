@@ -1205,6 +1205,7 @@ dependencies = [
  "argon2",
  "base64",
  "chrono",
+ "hamlet-rewrite-migration",
  "rand 0.9.5",
  "sea-orm",
  "sea-orm-migration",
@@ -1216,6 +1217,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "utoipa",
+]
+
+[[package]]
+name = "hamlet-rewrite-migration"
+version = "0.1.0"
+dependencies = [
+ "sea-orm-migration",
 ]
 
 [[package]]
