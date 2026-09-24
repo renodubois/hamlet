@@ -25,9 +25,9 @@ pub struct AppState {
     cursor_key: String,
 }
 
-pub async fn connect(url: &str) -> Result<AppState, String> {
+pub async fn connect_to_database(url: &str) -> Result<AppState, String> {
     if !url.starts_with("sqlite:") {
-        return Err("rewrite requires a SQLite URL".into());
+        return Err("server requires a SQLite URL".into());
     }
     let mut opts = ConnectOptions::new(url);
     let file_backed = !url.contains(":memory:");
@@ -47,11 +47,11 @@ pub async fn connect(url: &str) -> Result<AppState, String> {
         });
     let db = Database::connect(opts)
         .await
-        .map_err(|e| format!("rewrite database connection failed: {e}"))?;
+        .map_err(|e| format!("database connection failed: {e}"))?;
     use sea_orm_migration::MigratorTrait;
-    hamlet_rewrite_migration::Migrator::up(&db, None)
+    hamlet_migration::Migrator::up(&db, None)
         .await
-        .map_err(|e| format!("rewrite migration failed: {e}"))?;
+        .map_err(|e| format!("migration failed: {e}"))?;
     channels::bootstrap(&db)
         .await
         .map_err(|e| format!("channel bootstrap failed: {e}"))?;

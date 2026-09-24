@@ -1,4 +1,4 @@
-use hamlet_rewrite::connect;
+use hamlet::connect_to_database;
 use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionTrait};
 
 #[actix_web::test]
@@ -6,9 +6,9 @@ async fn migrations_and_pool_configuration_survive_restarts() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!(
         "sqlite://{}?mode=rwc",
-        dir.path().join("rewrite.db").display()
+        dir.path().join("hamlet.db").display()
     );
-    let app = connect(&url).await.unwrap();
+    let app = connect_to_database(&url).await.unwrap();
     let mut connections = Vec::new();
     for _ in 0..5 {
         connections.push(app.db.begin().await.unwrap());
@@ -50,5 +50,5 @@ async fn migrations_and_pool_configuration_survive_restarts() {
         journal.try_get::<String>("", "journal_mode").unwrap(),
         "wal"
     );
-    connect(&url).await.unwrap();
+    connect_to_database(&url).await.unwrap();
 }

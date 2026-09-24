@@ -1198,14 +1198,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "hamlet-rewrite"
+name = "hamlet"
 version = "0.1.0"
 dependencies = [
  "actix-web",
  "argon2",
  "base64",
  "chrono",
- "hamlet-rewrite-migration",
+ "hamlet-migration",
  "hmac 0.12.1",
  "rand 0.9.5",
  "sea-orm",
@@ -1221,7 +1221,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "hamlet-rewrite-migration"
+name = "hamlet-migration"
 version = "0.1.0"
 dependencies = [
  "sea-orm-migration",

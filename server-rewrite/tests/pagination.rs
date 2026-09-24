@@ -1,6 +1,6 @@
 use actix_web::{App, http::StatusCode, test, web};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use hamlet_rewrite::{connect, routes};
+use hamlet::{connect_to_database, routes};
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -12,7 +12,7 @@ async fn cursor_pages_are_bounded_channel_scoped_and_stable_on_ties() {
         "sqlite://{}?mode=rwc",
         dir.path().join("pagination.db").display()
     );
-    let db = connect(&url).await.unwrap();
+    let db = connect_to_database(&url).await.unwrap();
     let app = test::init_service(
         App::new()
             .app_data(web::Data::new(db.clone()))
@@ -130,7 +130,7 @@ async fn cursor_pages_are_bounded_channel_scoped_and_stable_on_ties() {
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     // Keys survive a restart/reconnect; existing cursors remain usable.
-    let restarted = connect(&url).await.unwrap();
+    let restarted = connect_to_database(&url).await.unwrap();
     let app_after_restart = test::init_service(
         App::new()
             .app_data(web::Data::new(restarted))

@@ -1,3 +1,3 @@
 fn main() {
-    print!("{}", hamlet_rewrite::contract::generated_json());
+    print!("{}", hamlet::contract::generated_json());
 }

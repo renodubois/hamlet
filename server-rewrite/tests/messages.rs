@@ -1,5 +1,5 @@
 use actix_web::{App, http::StatusCode, test, web};
-use hamlet_rewrite::{connect, routes};
+use hamlet::{connect_to_database, routes};
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
 use serde_json::{Value, json};
 
@@ -10,7 +10,7 @@ async fn messages_keep_author_identity_and_preserve_text() {
         "sqlite://{}?mode=rwc",
         dir.path().join("messages.db").display()
     );
-    let db = connect(&url).await.unwrap();
+    let db = connect_to_database(&url).await.unwrap();
     let app = test::init_service(
         App::new()
             .app_data(web::Data::new(db.clone()))

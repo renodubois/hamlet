@@ -1,5 +1,5 @@
 use actix_web::{App, http::StatusCode, test, web};
-use hamlet_rewrite::{connect, contract, routes};
+use hamlet::{connect_to_database, contract, routes};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -163,7 +163,7 @@ async fn documented_security_and_error_shapes_match_http() {
         "sqlite://{}?mode=rwc",
         dir.path().join("contract.db").display()
     );
-    let db = connect(&url).await.unwrap();
+    let db = connect_to_database(&url).await.unwrap();
     let app = test::init_service(App::new().app_data(web::Data::new(db)).configure(routes)).await;
     let signup = test::call_service(
         &app,

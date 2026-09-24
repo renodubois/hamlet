@@ -1,5 +1,5 @@
 use actix_web::{App, http::StatusCode, test, web};
-use hamlet_rewrite::{connect, routes};
+use hamlet::{connect_to_database, routes};
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
 use serde_json::{Value, json};
 
@@ -8,9 +8,9 @@ async fn signup_and_identity_are_isolated_and_sessions_are_digest_only() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!(
         "sqlite://{}?mode=rwc",
-        dir.path().join("rewrite.db").display()
+        dir.path().join("hamlet.db").display()
     );
-    let db = connect(&url).await.unwrap();
+    let db = connect_to_database(&url).await.unwrap();
     let app = test::init_service(
         App::new()
             .app_data(web::Data::new(db.clone()))
@@ -157,5 +157,5 @@ async fn signup_and_identity_are_isolated_and_sessions_are_digest_only() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    connect(&url).await.unwrap();
+    connect_to_database(&url).await.unwrap();
 }

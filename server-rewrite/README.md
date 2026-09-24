@@ -1,14 +1,14 @@
-# Independent Hamlet HTTP rewrite prototype
+# Hamlet HTTP server prototype
 
 This is a **prototype**, not a migration or a production-ready replacement for `server/`. It has open signup and every authenticated user can access every channel. Do not expose it to the network without revisiting admission, TLS termination, and rate limiting.
 
 Run from **`server-rewrite/`** (paths below are relative to this directory):
 
 ```sh
-cargo run --bin hamlet-rewrite
+cargo run --bin hamlet
 ```
 
-The default database is `data/hamlet.db` (created on startup, Git-ignored); the default bind is `127.0.0.1:8081`. Override with `HAMLET_REWRITE_DATABASE_URL=sqlite:///absolute/path?mode=rwc` and `HAMLET_REWRITE_BIND=127.0.0.1:9000`. Migrations and empty-channel bootstrap run at startup and fail startup on errors. A file database uses WAL, foreign keys, a five-connection pool, and a five-second busy timeout; HTTPS is expected at an external reverse proxy. No legacy storage or data is read.
+The default database is `data/hamlet.db` (created on startup, Git-ignored); the default bind is `127.0.0.1:8081`. Override with `HAMLET_DATABASE_URL=sqlite:///absolute/path?mode=rwc` and `HAMLET_BIND=127.0.0.1:9000`. Migrations and empty-channel bootstrap run at startup and fail startup on errors. A file database uses WAL, foreign keys, a five-connection pool, and a five-second busy timeout; HTTPS is expected at an external reverse proxy. No legacy storage or data is read.
 
 Verification:
 
@@ -25,4 +25,4 @@ The full `cargo test` suite also checks contract drift. CI can use the same comm
 
 The `utoipa-actix-web` integration was evaluated: its automatic path collection currently supports annotated `.service(handler)` registration, not the explicit `web::resource(...).route(web::method().to(handler))` configuration used here for protected scope and uniform 405 handling. We use `utoipa` directly plus the explicit inventory test rather than silently omitting routes. If route registration changes, update both the OpenAPI path assembly and inventory test. Do not add a docs-serving route.
 
-Cursor tokens are signed with a high-entropy key persisted in the rewrite database; keep that database/private key private. Tokens and passwords are never logged. Request tracing records request ID, method, path, and status, not Authorization or payloads. See [ARCHITECTURE.md](ARCHITECTURE.md) for extension-cost review and remaining seams.
+Cursor tokens are signed with a high-entropy key persisted in the database; keep that database/private key private. Tokens and passwords are never logged. Request tracing records request ID, method, path, and status, not Authorization or payloads. See [ARCHITECTURE.md](ARCHITECTURE.md) for extension-cost review and remaining seams.

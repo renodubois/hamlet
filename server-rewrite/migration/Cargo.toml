@@ -1,5 +1,5 @@
 [package]
-name = "hamlet-rewrite-migration"
+name = "hamlet-migration"
 version = "0.1.0"
 edition = "2024"
 

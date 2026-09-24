@@ -1,5 +1,5 @@
 use actix_web::{App, http::StatusCode, test, web};
-use hamlet_rewrite::{connect, routes};
+use hamlet::{connect_to_database, routes};
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
 use serde_json::{Value, json};
 
@@ -10,7 +10,7 @@ async fn bootstrap_create_shared_listing_validation_and_order() {
         "sqlite://{}?mode=rwc",
         dir.path().join("channels.db").display()
     );
-    let db = connect(&url).await.unwrap();
+    let db = connect_to_database(&url).await.unwrap();
     let users = db
         .db
         .query_one_raw(Statement::from_string(
@@ -123,7 +123,7 @@ async fn bootstrap_create_shared_listing_validation_and_order() {
         ))
         .await
         .unwrap();
-    connect(&url).await.unwrap();
+    connect_to_database(&url).await.unwrap();
     let count = db
         .db
         .query_one_raw(Statement::from_string(
@@ -151,7 +151,7 @@ async fn bootstrap_create_shared_listing_validation_and_order() {
         ))
         .await
         .unwrap();
-    connect(&url).await.unwrap();
+    connect_to_database(&url).await.unwrap();
     let row = db
         .db
         .query_one_raw(Statement::from_string(

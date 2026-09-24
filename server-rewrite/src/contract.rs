@@ -15,7 +15,7 @@ use utoipa::{
         crate::messages::post_route, crate::messages::history_route
     ),
     modifiers(&BearerSecurity, &ErrorCodes),
-    info(title = "Hamlet rewrite HTTP API", version = "1.0.0")
+    info(title = "Hamlet HTTP API", version = "1.0.0")
 )]
 pub struct ApiDoc;
 
