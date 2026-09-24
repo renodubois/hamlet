@@ -13,6 +13,7 @@ use sea_orm::{
 };
 mod auth;
 mod channels;
+mod messages;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::Duration as StdDuration;
@@ -311,7 +312,8 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
                                         )
                                     })),
                             )
-                            .configure(channels::routes),
+                            .configure(channels::routes)
+                            .configure(messages::routes),
                     )
                     .default_service(web::to(|| async {
                         problem(StatusCode::NOT_FOUND, "not_found", "Not found")
