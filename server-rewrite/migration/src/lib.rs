@@ -8,7 +8,6 @@ impl MigratorTrait for Migrator {
             Box::new(Initial),
             Box::new(Channels),
             Box::new(Messages),
-            Box::new(CursorKey),
         ]
     }
 }
@@ -86,25 +85,3 @@ impl MigrationTrait for Messages {
     }
 }
 
-struct CursorKey;
-impl MigrationName for CursorKey {
-    fn name(&self) -> &str {
-        "m20260923_000004_cursor_key"
-    }
-}
-#[async_trait::async_trait]
-impl MigrationTrait for CursorKey {
-    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager.get_connection().execute_unprepared(
-            "CREATE TABLE cursor_keys (id INTEGER PRIMARY KEY CHECK (id = 1), secret TEXT NOT NULL)"
-        ).await?;
-        Ok(())
-    }
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared("DROP TABLE cursor_keys")
-            .await?;
-        Ok(())
-    }
-}

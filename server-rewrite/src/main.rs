@@ -13,7 +13,7 @@ async fn main() -> std::io::Result<()> {
             "sqlite://data/hamlet.db?mode=rwc".into()
         }
     };
-    let bind = std::env::var("HAMLET_BIND").unwrap_or_else(|_| "127.0.0.1:8081".into());
+    let bind = std::env::var("HAMLET_BIND").unwrap_or_else(|_| "127.0.0.1:3001".into());
     let state = connect_to_database(&url)
         .await
         .map_err(std::io::Error::other)?;

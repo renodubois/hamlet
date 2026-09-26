@@ -22,7 +22,6 @@ use std::time::Duration as StdDuration;
 #[derive(Clone)]
 pub struct AppState {
     pub db: DatabaseConnection,
-    cursor_key: String,
 }
 
 pub async fn connect_to_database(url: &str) -> Result<AppState, String> {
@@ -34,6 +33,8 @@ pub async fn connect_to_database(url: &str) -> Result<AppState, String> {
     opts.max_connections(if file_backed { 5 } else { 1 })
         .min_connections(1)
         .connect_timeout(StdDuration::from_secs(5))
+        // TODO(reno): Maybe have this be toggled via env var?
+        // I believe this is letting us see every query ran, which can be noisy but useful
         .sqlx_logging(false)
         .map_sqlx_sqlite_opts(move |options| {
             let options = options
@@ -48,32 +49,18 @@ pub async fn connect_to_database(url: &str) -> Result<AppState, String> {
     let db = Database::connect(opts)
         .await
         .map_err(|e| format!("database connection failed: {e}"))?;
+
+    // Run SeaORM migrations
     use sea_orm_migration::MigratorTrait;
     hamlet_migration::Migrator::up(&db, None)
         .await
         .map_err(|e| format!("migration failed: {e}"))?;
+
     channels::bootstrap(&db)
         .await
         .map_err(|e| format!("channel bootstrap failed: {e}"))?;
-    db.execute_raw(Statement::from_sql_and_values(
-        DbBackend::Sqlite,
-        "INSERT OR IGNORE INTO cursor_keys (id, secret) VALUES (1, ?)",
-        [new_token().into()],
-    ))
-    .await
-    .map_err(|e| format!("cursor key initialization failed: {e}"))?;
-    let row = db
-        .query_one_raw(Statement::from_string(
-            DbBackend::Sqlite,
-            "SELECT secret FROM cursor_keys WHERE id = 1",
-        ))
-        .await
-        .map_err(|e| format!("cursor key lookup failed: {e}"))?
-        .ok_or("cursor key missing")?;
-    let cursor_key = row
-        .try_get("", "secret")
-        .map_err(|e| format!("cursor key malformed: {e}"))?;
-    Ok(AppState { db, cursor_key })
+
+    Ok(AppState { db })
 }
 
 #[derive(Serialize, utoipa::ToSchema)]

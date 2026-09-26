@@ -2,10 +2,8 @@ use crate::{AppState, Identity, bad_request, internal, new_id, problem};
 use actix_web::{Error, HttpMessage, HttpRequest, HttpResponse, Responder, http::StatusCode, web};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, SecondsFormat, Utc};
-use hmac::{Hmac, Mac};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, QueryResult, Statement};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct Author {
@@ -43,44 +41,27 @@ pub struct HistoryQuery {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Cursor {
-    version: u8,
-    channel_id: i64,
     created_at: String,
     id: i64,
 }
 impl Cursor {
-    fn encode(message: &Message, key: &str) -> String {
+    fn encode(message: &Message) -> String {
         let payload = serde_json::to_vec(&Self {
-            version: 1,
-            channel_id: message.channel_id.parse().expect("issued channel ID"),
             created_at: message
                 .created_at
                 .to_rfc3339_opts(SecondsFormat::Nanos, true),
             id: message.id.parse().expect("issued message ID"),
         })
         .expect("cursor serialization");
-        let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes()).expect("HMAC key");
-        mac.update(&payload);
-        format!(
-            "{}.{}",
-            URL_SAFE_NO_PAD.encode(payload),
-            URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
-        )
+        URL_SAFE_NO_PAD.encode(payload)
     }
-    fn decode(value: &str, channel_id: i64, key: &str) -> Option<Self> {
+    fn decode(value: &str) -> Option<Self> {
         if value.len() > 512 || value.is_empty() {
             return None;
         }
-        let (payload, signature) = value.split_once('.')?;
-        let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
-        let signature = URL_SAFE_NO_PAD.decode(signature).ok()?;
-        let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes()).ok()?;
-        mac.update(&bytes);
-        mac.verify_slice(&signature).ok()?;
+        let bytes = URL_SAFE_NO_PAD.decode(value).ok()?;
         let cursor: Self = serde_json::from_slice(&bytes).ok()?;
-        if cursor.version != 1
-            || cursor.channel_id != channel_id
-            || !(100_000_000_000_000..=999_999_999_999_999).contains(&cursor.id)
+        if !(100_000_000_000_000..=999_999_999_999_999).contains(&cursor.id)
             || DateTime::parse_from_rfc3339(&cursor.created_at)
                 .ok()?
                 .with_timezone(&Utc)
@@ -174,7 +155,6 @@ pub async fn history(
     channel_id: i64,
     limit: u16,
     before: Option<&str>,
-    key: &str,
 ) -> Result<History, HistoryError> {
     if !(1..=100).contains(&limit) {
         return Err(HistoryError::Invalid);
@@ -187,7 +167,7 @@ pub async fn history(
         return Err(HistoryError::Missing);
     }
     let cursor = before
-        .map(|value| Cursor::decode(value, channel_id, key).ok_or(HistoryError::Invalid))
+        .map(|value| Cursor::decode(value).ok_or(HistoryError::Invalid))
         .transpose()?;
     let rows = if let Some(cursor) = cursor {
         db.query_all_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
@@ -206,7 +186,7 @@ pub async fn history(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| HistoryError::Internal)?;
     let next_cursor = if has_more {
-        items.last().map(|message| Cursor::encode(message, key))
+        items.last().map(Cursor::encode)
     } else {
         None
     };
@@ -262,7 +242,6 @@ pub(crate) async fn history_route(
         channel_id,
         query.limit.unwrap_or(50),
         query.before.as_deref(),
-        &db.cursor_key,
     )
     .await
     {

@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 
 #[actix_web::test]
-async fn cursor_pages_are_bounded_channel_scoped_and_stable_on_ties() {
+async fn cursor_pages_are_bounded_and_stable_on_ties_and_cross_channel_positions() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!(
         "sqlite://{}?mode=rwc",
@@ -108,28 +108,33 @@ async fn cursor_pages_are_bounded_channel_scoped_and_stable_on_ties() {
     .await;
     let page: Value = test::read_body_json(response).await;
     let cursor = page["next_cursor"].as_str().unwrap();
-    // A well-formed client-constructed tuple is not a server-issued cursor.
-    let forged = format!(
-        "{}.{}",
-        URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(&json!({
-                "version":1, "channel_id":id.parse::<i64>().unwrap(),
-                "created_at":"2026-01-01T00:00:00.000000000Z", "id":ordered_ids[0]
-            }))
-            .unwrap()
-        ),
-        URL_SAFE_NO_PAD.encode([0u8; 32])
+    let position: Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(cursor).unwrap()).unwrap();
+    assert_eq!(
+        position,
+        json!({
+            "created_at":"2026-01-01T00:00:00.000000000Z",
+            "id":page["items"][0]["id"].as_str().unwrap().parse::<i64>().unwrap()
+        })
+    );
+    // A position need not reference an existing message.
+    let arbitrary = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&json!({
+            "created_at":"2026-01-01T00:00:00.000000000Z", "id":999999999999999_i64
+        }))
+        .unwrap(),
     );
     let response = test::call_service(
         &app,
         test::TestRequest::get()
-            .uri(&format!("{path}?before={forged}"))
+            .uri(&format!("{path}?limit=5&before={arbitrary}"))
             .insert_header(("Authorization", format!("Bearer {token}")))
             .to_request(),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    // Keys survive a restart/reconnect; existing cursors remain usable.
+    assert_eq!(response.status(), StatusCode::OK);
+    let arbitrary_page: Value = test::read_body_json(response).await;
+    assert_eq!(arbitrary_page["items"].as_array().unwrap().len(), 5);
+    // Returned cursors survive a restart/reconnect without a persisted key.
     let restarted = connect_to_database(&url).await.unwrap();
     let app_after_restart = test::init_service(
         App::new()
@@ -157,13 +162,42 @@ async fn cursor_pages_are_bounded_channel_scoped_and_stable_on_ties() {
     .await;
     let other: Value = test::read_body_json(response).await;
     let other_id = other["id"].as_str().unwrap();
+    // A cursor from another channel is just a position in this channel's history.
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/api/v1/channels/{other_id}/messages?before={cursor}"
+            ))
+            .insert_header(("Authorization", format!("Bearer {token}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let other_page: Value = test::read_body_json(response).await;
+    assert_eq!(other_page, json!({"items":[], "next_cursor":null}));
+    let invalid_timestamp = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&json!({
+            "created_at":"not-a-date", "id":ordered_ids[0]
+        }))
+        .unwrap(),
+    );
+    let invalid_id = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&json!({
+            "created_at":"2026-01-01T00:00:00.000000000Z", "id":0
+        }))
+        .unwrap(),
+    );
     for uri in [
         format!("{path}?limit=0"),
         format!("{path}?limit=101"),
         format!("{path}?limit=abc"),
         format!("{path}?before=garbage"),
         format!("{path}?before="),
-        format!("/api/v1/channels/{other_id}/messages?before={cursor}"),
+        format!("{path}?before={invalid_timestamp}"),
+        format!("{path}?before={invalid_id}"),
+        format!("{path}?before={}.signature", cursor),
+        format!("{path}?before={}", "a".repeat(513)),
     ] {
         let response = test::call_service(
             &app,

@@ -47,6 +47,7 @@ fn valid(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b' ' || b == b'-' || b == b'_')
 }
 
+/// Adds a default general text channel to a database if it doesn't exist.
 pub async fn bootstrap(db: &DatabaseConnection) -> Result<(), DbErr> {
     for _ in 0..5 {
         let result = db.execute_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
