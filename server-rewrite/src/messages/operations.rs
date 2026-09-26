@@ -1,43 +1,10 @@
-use crate::{AppState, Identity, bad_request, internal, new_id, problem};
-use actix_web::{Error, HttpMessage, HttpRequest, HttpResponse, Responder, http::StatusCode, web};
+use super::types::{Author, History, Message};
+use crate::new_id;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, SecondsFormat, Utc};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, QueryResult, Statement};
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, utoipa::ToSchema)]
-pub struct Author {
-    pub id: String,
-    pub display_name: String,
-}
-#[derive(Serialize, utoipa::ToSchema)]
-pub struct Message {
-    pub id: String,
-    pub channel_id: String,
-    pub author: Author,
-    pub text: String,
-    pub created_at: DateTime<Utc>,
-}
-#[derive(Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CreateMessage {
-    pub text: String,
-}
-#[derive(Serialize, utoipa::ToSchema)]
-pub struct History {
-    pub items: Vec<Message>,
-    pub next_cursor: Option<String>,
-}
-#[derive(Deserialize, utoipa::IntoParams)]
-#[serde(deny_unknown_fields)]
-#[into_params(parameter_in = Query)]
-pub struct HistoryQuery {
-    /// Number of messages per page (1–100, default 50).
-    #[param(minimum = 1, maximum = 100)]
-    pub limit: Option<u16>,
-    /// Opaque cursor from a previous response.
-    pub before: Option<String>,
-}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Cursor {
@@ -74,12 +41,6 @@ impl Cursor {
     }
 }
 
-fn parse_channel(id: &str) -> Option<i64> {
-    if id.len() != 15 || !id.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    id.parse().ok()
-}
 async fn channel_exists(db: &DatabaseConnection, id: i64) -> Result<bool, DbErr> {
     Ok(db
         .query_one_raw(Statement::from_sql_and_values(
@@ -106,12 +67,12 @@ fn decode(row: QueryResult) -> Result<Message, DbErr> {
     })
 }
 
-pub enum PostError {
+pub(super) enum PostError {
     Invalid,
     Missing,
     Internal,
 }
-pub async fn post(
+pub(super) async fn post(
     db: &DatabaseConnection,
     channel_id: i64,
     author_id: i64,
@@ -145,12 +106,12 @@ pub async fn post(
     Err(PostError::Internal)
 }
 
-pub enum HistoryError {
+pub(super) enum HistoryError {
     Invalid,
     Missing,
     Internal,
 }
-pub async fn history(
+pub(super) async fn history(
     db: &DatabaseConnection,
     channel_id: i64,
     limit: u16,
@@ -191,80 +152,4 @@ pub async fn history(
         None
     };
     Ok(History { items, next_cursor })
-}
-
-#[utoipa::path(post, path = "/api/v1/channels/{channel_id}/messages", security(("bearer_auth" = [])),
-    params(("channel_id" = String, Path, description = "Decimal-string channel ID")), request_body = CreateMessage,
-    responses((status = 201, body = Message), (status = 400, body = crate::ErrorBody),
-        (status = 401, body = crate::ErrorBody), (status = 404, body = crate::ErrorBody), (status = 500, body = crate::ErrorBody)))]
-pub(crate) async fn post_route(
-    db: web::Data<AppState>,
-    req: HttpRequest,
-    path: web::Path<String>,
-    input: Result<web::Json<CreateMessage>, Error>,
-) -> impl Responder {
-    let Some(channel_id) = parse_channel(&path) else {
-        return bad_request();
-    };
-    let Ok(input) = input else {
-        return bad_request();
-    };
-    let identity = req
-        .extensions()
-        .get::<Identity>()
-        .cloned()
-        .expect("protected scope");
-    match post(&db.db, channel_id, identity.user.id, &input.text).await {
-        Ok(message) => HttpResponse::Created().json(message),
-        Err(PostError::Invalid) => bad_request(),
-        Err(PostError::Missing) => problem(StatusCode::NOT_FOUND, "not_found", "Channel not found"),
-        Err(PostError::Internal) => internal(),
-    }
-}
-
-#[utoipa::path(get, path = "/api/v1/channels/{channel_id}/messages", security(("bearer_auth" = [])),
-    params(("channel_id" = String, Path, description = "Decimal-string channel ID"), HistoryQuery),
-    responses((status = 200, body = History), (status = 400, body = crate::ErrorBody),
-        (status = 401, body = crate::ErrorBody), (status = 404, body = crate::ErrorBody), (status = 500, body = crate::ErrorBody)))]
-pub(crate) async fn history_route(
-    db: web::Data<AppState>,
-    path: web::Path<String>,
-    query: Result<web::Query<HistoryQuery>, Error>,
-) -> impl Responder {
-    let Some(channel_id) = parse_channel(&path) else {
-        return bad_request();
-    };
-    let Ok(query) = query else {
-        return bad_request();
-    };
-    match history(
-        &db.db,
-        channel_id,
-        query.limit.unwrap_or(50),
-        query.before.as_deref(),
-    )
-    .await
-    {
-        Ok(history) => HttpResponse::Ok().json(history),
-        Err(HistoryError::Invalid) => bad_request(),
-        Err(HistoryError::Missing) => {
-            problem(StatusCode::NOT_FOUND, "not_found", "Channel not found")
-        }
-        Err(HistoryError::Internal) => internal(),
-    }
-}
-
-pub fn routes(cfg: &mut web::ServiceConfig) {
-    cfg.service(
-        web::resource("/channels/{channel_id}/messages")
-            .route(web::post().to(post_route))
-            .route(web::get().to(history_route))
-            .default_service(web::to(|| async {
-                problem(
-                    StatusCode::METHOD_NOT_ALLOWED,
-                    "method_not_allowed",
-                    "Method not allowed",
-                )
-            })),
-    );
 }

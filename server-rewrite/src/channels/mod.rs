@@ -1,0 +1,23 @@
+pub(crate) mod handlers;
+mod operations;
+mod types;
+
+use crate::http::error::problem;
+use actix_web::{http::StatusCode, web};
+
+pub(crate) use handlers::{create_route, list_route};
+
+pub(crate) fn routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::resource("/channels")
+            .route(web::post().to(create_route))
+            .route(web::get().to(list_route))
+            .default_service(web::to(|| async {
+                problem(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "method_not_allowed",
+                    "Method not allowed",
+                )
+            })),
+    );
+}

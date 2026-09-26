@@ -2,6 +2,8 @@
 
 This is a **prototype**, not a migration or a production-ready replacement for `server/`. It has open signup and every authenticated user can access every channel. Do not expose it to the network without revisiting admission, TLS termination, and rate limiting.
 
+Code layout: `src/main.rs` handles process startup; `src/lib.rs` owns reusable app state, database initialization, and top-level route wiring. Each feature (`auth/`, `channels/`, `messages/`) keeps HTTP handlers, request/response types, and database-backed operations in `handlers.rs`, `types.rs`, and `operations.rs`. Feature `mod.rs` files register routes where appropriate. Shared bearer middleware, request logging, and error responses live in `http/`; `bootstrap.rs` seeds the starter channel. `contract.rs` assembles OpenAPI. The feature operations still use raw SQL; entity mappings are a separate future change.
+
 Run from **`server-rewrite/`** (paths below are relative to this directory):
 
 ```sh
@@ -21,7 +23,7 @@ cargo run --quiet --bin generate-openapi > openapi.json  # regenerate after rout
 cargo test --test contract                         # checks artifact drift and inventory
 ```
 
-The full `cargo test` suite also checks contract drift. CI can use the same commands. The generated `openapi.json` is a checked-in artifact, **not** a runtime endpoint. The `#[utoipa::path]` annotations beside handlers and the DTO `ToSchema` derives feed `contract::ApiDoc`; `tests/contract.rs` inventories Actix registrations against documented methods/paths, status/code pairs, bearer scopes, and representative HTTP behavior. A snapshot alone cannot prove annotations reflect actual responses: feature HTTP tests separately exercise success and error paths.
+The full `cargo test` suite also checks contract drift. CI can use the same commands. The generated `openapi.json` is a checked-in artifact, **not** a runtime endpoint. The `#[utoipa::path]` annotations beside handlers and the `ToSchema` derives on request/response types feed `contract::ApiDoc`; `tests/contract.rs` inventories Actix registrations against documented methods/paths, status/code pairs, bearer scopes, and representative HTTP behavior. A snapshot alone cannot prove annotations reflect actual responses: feature HTTP tests separately exercise success and error paths.
 
 The `utoipa-actix-web` integration was evaluated: its automatic path collection currently supports annotated `.service(handler)` registration, not the explicit `web::resource(...).route(web::method().to(handler))` configuration used here for protected scope and uniform 405 handling. We use `utoipa` directly plus the explicit inventory test rather than silently omitting routes. If route registration changes, update both the OpenAPI path assembly and inventory test. Do not add a docs-serving route.
 

@@ -1,23 +1,21 @@
-use actix_web::{
-    Error, HttpMessage, HttpResponse, Responder,
-    dev::ServiceRequest,
-    http::StatusCode,
-    middleware::{Next, from_fn},
-    web,
-};
+use actix_web::{http::StatusCode, middleware::from_fn, web};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::{DateTime, Utc};
-use rand::RngCore;
-use sea_orm::{
-    ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement,
+use http::{
+    auth::bearer,
+    error::{bad_request, problem},
+    request_id::request_id,
 };
-mod auth;
-mod channels;
-pub mod contract;
-mod messages;
-use serde::{Deserialize, Serialize};
+use rand::RngCore;
+use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use sha2::{Digest, Sha256};
 use std::time::Duration as StdDuration;
+
+mod auth;
+mod bootstrap;
+mod channels;
+pub mod contract;
+mod http;
+mod messages;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -56,58 +54,13 @@ pub async fn connect_to_database(url: &str) -> Result<AppState, String> {
         .await
         .map_err(|e| format!("migration failed: {e}"))?;
 
-    channels::bootstrap(&db)
+    bootstrap::bootstrap(&db)
         .await
         .map_err(|e| format!("channel bootstrap failed: {e}"))?;
 
     Ok(AppState { db })
 }
 
-#[derive(Serialize, utoipa::ToSchema)]
-pub struct User {
-    pub id: String,
-    pub username: String,
-}
-#[derive(Serialize, utoipa::ToSchema)]
-pub struct AuthResponse {
-    pub user: User,
-    pub access_token: String,
-    pub expires_at: DateTime<Utc>,
-}
-#[derive(Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Credentials {
-    pub username: String,
-    pub password: String,
-}
-#[derive(Serialize, utoipa::ToSchema)]
-struct ErrorBody {
-    error: ErrorInfo,
-}
-#[derive(Serialize, utoipa::ToSchema)]
-struct ErrorInfo {
-    code: &'static str,
-    message: &'static str,
-}
-
-fn problem(status: StatusCode, code: &'static str, message: &'static str) -> HttpResponse {
-    HttpResponse::build(status).json(ErrorBody {
-        error: ErrorInfo { code, message },
-    })
-}
-fn bad_request() -> HttpResponse {
-    problem(StatusCode::BAD_REQUEST, "bad_request", "Invalid request")
-}
-fn internal() -> HttpResponse {
-    problem(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "internal_error",
-        "Internal server error",
-    )
-}
-fn unauthorized() -> HttpResponse {
-    problem(StatusCode::UNAUTHORIZED, "unauthorized", "Unauthorized")
-}
 fn digest(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
 }
@@ -119,150 +72,6 @@ fn new_token() -> String {
     rand::rng().fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }
-fn valid_username(name: &str) -> bool {
-    (3..=32).contains(&name.len())
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.')
-}
-fn valid_password(password: &str) -> bool {
-    (8..=256).contains(&password.len())
-}
-
-#[utoipa::path(post, path = "/api/v1/auth/signup", request_body = Credentials,
-    responses((status = 201, body = AuthResponse), (status = 400, body = ErrorBody),
-        (status = 409, body = ErrorBody), (status = 500, body = ErrorBody)))]
-pub(crate) async fn signup(
-    db: web::Data<AppState>,
-    input: Result<web::Json<Credentials>, Error>,
-) -> impl Responder {
-    let Ok(input) = input else {
-        return bad_request();
-    };
-    match auth::register(&db.db, &input.username, &input.password).await {
-        Ok(response) => HttpResponse::Created().json(response),
-        Err(auth::SignupError::Invalid) => bad_request(),
-        Err(auth::SignupError::Duplicate) => {
-            problem(StatusCode::CONFLICT, "conflict", "Username already exists")
-        }
-        Err(auth::SignupError::Internal) => internal(),
-    }
-}
-
-#[utoipa::path(post, path = "/api/v1/auth/login", request_body = Credentials,
-    responses((status = 200, body = AuthResponse), (status = 400, body = ErrorBody),
-        (status = 401, body = ErrorBody), (status = 500, body = ErrorBody)))]
-pub(crate) async fn login(
-    db: web::Data<AppState>,
-    input: Result<web::Json<Credentials>, Error>,
-) -> impl Responder {
-    let Ok(input) = input else {
-        return bad_request();
-    };
-    match auth::login(&db.db, &input.username, &input.password).await {
-        Ok(response) => HttpResponse::Ok().json(response),
-        Err(auth::LoginError::Invalid) => unauthorized(),
-        Err(auth::LoginError::Internal) => internal(),
-    }
-}
-
-#[utoipa::path(post, path = "/api/v1/auth/logout", security(("bearer_auth" = [])),
-    responses((status = 204), (status = 401, body = ErrorBody), (status = 500, body = ErrorBody)))]
-pub(crate) async fn logout(db: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {
-    let identity = req
-        .extensions()
-        .get::<Identity>()
-        .cloned()
-        .expect("protected scope");
-    match auth::logout(&db.db, &identity.token_digest).await {
-        Ok(()) => HttpResponse::NoContent().finish(),
-        Err(_) => internal(),
-    }
-}
-
-#[derive(Clone)]
-pub struct Identity {
-    pub user: UserIdentity,
-    pub token_digest: String,
-}
-#[derive(Clone)]
-pub struct UserIdentity {
-    pub id: i64,
-    pub username: String,
-}
-
-async fn bearer(
-    req: ServiceRequest,
-    next: Next<impl actix_web::body::MessageBody + 'static>,
-) -> Result<actix_web::dev::ServiceResponse<actix_web::body::BoxBody>, Error> {
-    let token = req
-        .headers()
-        .get("Authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .filter(|t| !t.is_empty() && !t.contains(' '));
-    let identity = if let (Some(token), Some(db)) = (token, req.app_data::<web::Data<AppState>>()) {
-        match db.db.query_one_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
-            "SELECT u.id, u.username, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_digest = ?",
-            [digest(token).into()])).await {
-            Ok(Some(row)) => {
-                let fields = (|| -> Option<(i64, String, DateTime<chrono::FixedOffset>)> {
-                    Some((row.try_get("", "id").ok()?, row.try_get("", "username").ok()?,
-                        DateTime::parse_from_rfc3339(&row.try_get::<String>("", "expires_at").ok()?).ok()?))
-                })();
-                match fields {
-                    Some((id, username, expiry)) if expiry > Utc::now() => Some(Identity {
-                        user: UserIdentity { id, username }, token_digest: digest(token),
-                    }),
-                    Some(_) => None,
-                    None => return Ok(req.into_response(internal())),
-                }
-            }
-            Ok(None) => None,
-            Err(_) => return Ok(req.into_response(internal())),
-        }
-    } else {
-        None
-    };
-    match identity {
-        Some(identity) => {
-            req.extensions_mut().insert(identity);
-            Ok(next.call(req).await?.map_into_boxed_body())
-        }
-        None => Ok(req.into_response(unauthorized())),
-    }
-}
-async fn request_id(
-    req: ServiceRequest,
-    next: Next<impl actix_web::body::MessageBody>,
-) -> Result<actix_web::dev::ServiceResponse<impl actix_web::body::MessageBody>, Error> {
-    let id = new_token();
-    let method = req.method().clone();
-    let path = req.path().to_owned();
-    let mut response = next.call(req).await?;
-    response.headers_mut().insert(
-        actix_web::http::header::HeaderName::from_static("x-request-id"),
-        actix_web::http::header::HeaderValue::from_str(&id).expect("generated ASCII token"),
-    );
-    tracing::info!(request_id = %id, %method, %path, status = %response.status(), "HTTP request");
-    Ok(response)
-}
-
-#[utoipa::path(get, path = "/api/v1/me", security(("bearer_auth" = [])),
-    responses((status = 200, body = User), (status = 401, body = ErrorBody),
-        (status = 500, body = ErrorBody)))]
-pub(crate) async fn me(req: actix_web::HttpRequest) -> impl Responder {
-    let identity = req
-        .extensions()
-        .get::<Identity>()
-        .cloned()
-        .expect("protected scope");
-    HttpResponse::Ok().json(User {
-        id: identity.user.id.to_string(),
-        username: identity.user.username,
-    })
-}
-
 pub fn routes(cfg: &mut web::ServiceConfig) {
     cfg.app_data(web::JsonConfig::default().error_handler(|_, _| {
         actix_web::error::InternalError::from_response("json", bad_request()).into()
@@ -274,7 +83,7 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
                 web::scope("/api/v1")
                     .service(
                         web::resource("/auth/signup")
-                            .route(web::post().to(signup))
+                            .route(web::post().to(auth::handlers::signup))
                             .default_service(web::to(|| async {
                                 problem(
                                     StatusCode::METHOD_NOT_ALLOWED,
@@ -285,7 +94,7 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
                     )
                     .service(
                         web::resource("/auth/login")
-                            .route(web::post().to(login))
+                            .route(web::post().to(auth::handlers::login))
                             .default_service(web::to(|| async {
                                 problem(
                                     StatusCode::METHOD_NOT_ALLOWED,
@@ -299,7 +108,7 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
                             .wrap(from_fn(bearer))
                             .service(
                                 web::resource("/auth/logout")
-                                    .route(web::post().to(logout))
+                                    .route(web::post().to(auth::handlers::logout))
                                     .default_service(web::to(|| async {
                                         problem(
                                             StatusCode::METHOD_NOT_ALLOWED,
@@ -310,7 +119,7 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
                             )
                             .service(
                                 web::resource("/me")
-                                    .route(web::get().to(me))
+                                    .route(web::get().to(auth::handlers::me))
                                     .default_service(web::to(|| async {
                                         problem(
                                             StatusCode::METHOD_NOT_ALLOWED,

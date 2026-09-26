@@ -1,4 +1,5 @@
-use crate::{AuthResponse, User, digest, new_id, new_token, valid_password, valid_username};
+use super::types::{AuthResponse, User};
+use crate::{digest, new_id, new_token};
 use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
@@ -7,14 +8,24 @@ use chrono::{Duration, Utc};
 use rand::RngCore;
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement, TransactionTrait};
 
-pub enum SignupError {
+fn valid_username(name: &str) -> bool {
+    (3..=32).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.')
+}
+fn valid_password(password: &str) -> bool {
+    (8..=256).contains(&password.len())
+}
+
+pub(super) enum SignupError {
     Invalid,
     Duplicate,
     Internal,
 }
 
 /// Complete the user and first session atomically; only a random ID conflict is retryable.
-pub async fn register(
+pub(super) async fn register(
     db: &DatabaseConnection,
     username: &str,
     password: &str,
@@ -85,12 +96,12 @@ pub async fn register(
     Err(SignupError::Internal)
 }
 
-pub enum LoginError {
+pub(super) enum LoginError {
     Invalid,
     Internal,
 }
 
-pub async fn login(
+pub(super) async fn login(
     db: &DatabaseConnection,
     username: &str,
     password: &str,
@@ -157,7 +168,10 @@ pub async fn login(
     })
 }
 
-pub async fn logout(db: &DatabaseConnection, token_digest: &str) -> Result<(), sea_orm::DbErr> {
+pub(super) async fn logout(
+    db: &DatabaseConnection,
+    token_digest: &str,
+) -> Result<(), sea_orm::DbErr> {
     db.execute_raw(Statement::from_sql_and_values(
         DbBackend::Sqlite,
         "DELETE FROM sessions WHERE token_digest = ?",

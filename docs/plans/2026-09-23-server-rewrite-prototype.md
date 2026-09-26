@@ -2,6 +2,8 @@
 
 Date: 2026-09-23
 
+> Historical prototype plan. For the current implemented file layout and contributor guidance, see [`server-rewrite/README.md`](../../server-rewrite/README.md) and [`server-rewrite/AGENTS.md`](../../server-rewrite/AGENTS.md). The layout below was illustrative, not a description of the present tree.
+
 ## Goal and boundaries
 
 Build a **new**, HTTP-only Actix API under `server-rewrite/`. It does not need API, schema, or data compatibility with `server/`. This is a small, working prototype to validate module boundaries, testability, human readability, extension costs, and adequate performance for a **small self-hosted community**. Do not move existing clients to it as part of this phase. Treat this as a replacement candidate, not a committed migration: preserve awareness of domain differences from the current server without requiring compatibility in the prototype.

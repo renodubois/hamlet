@@ -10,9 +10,10 @@ use utoipa::{
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        crate::signup, crate::login, crate::logout, crate::me,
-        crate::channels::create_route, crate::channels::list_route,
-        crate::messages::post_route, crate::messages::history_route
+        crate::auth::handlers::signup, crate::auth::handlers::login,
+        crate::auth::handlers::logout, crate::auth::handlers::me,
+        crate::channels::handlers::create_route, crate::channels::handlers::list_route,
+        crate::messages::handlers::post_route, crate::messages::handlers::history_route
     ),
     modifiers(&BearerSecurity, &ErrorCodes),
     info(title = "Hamlet HTTP API", version = "1.0.0")

@@ -56,8 +56,8 @@ async fn generated_contract_is_current_and_covers_every_registered_handler() {
     assert_eq!(documented, expected);
     let sources = [
         include_str!("../src/lib.rs"),
-        include_str!("../src/channels.rs"),
-        include_str!("../src/messages.rs"),
+        include_str!("../src/channels/mod.rs"),
+        include_str!("../src/messages/mod.rs"),
     ];
     assert!(sources[0].contains("web::scope(\"/api/v1\")"));
     let mut registered = Vec::new();
@@ -81,7 +81,7 @@ async fn generated_contract_is_current_and_covers_every_registered_handler() {
             registered.push((
                 method.to_owned(),
                 format!("/api/v1{resource}"),
-                handler.to_owned(),
+                handler.rsplit("::").next().unwrap().to_owned(),
             ));
         }
     }
