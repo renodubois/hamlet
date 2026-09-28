@@ -47,6 +47,12 @@ pub trait AuthApi: Send + Sync {
     fn logout(&self, server: String, token: String) -> ApiFuture<Result<(), AuthError>>;
     fn channels(&self, server: String, token: String)
     -> ApiFuture<Result<Vec<Channel>, AuthError>>;
+    fn create_channel(
+        &self,
+        server: String,
+        token: String,
+        name: String,
+    ) -> ApiFuture<Result<Channel, AuthError>>;
     fn history(
         &self,
         server: String,
@@ -334,6 +340,14 @@ mod tests {
             Box::pin(async { Ok(()) })
         }
         fn channels(&self, _: String, _: String) -> ApiFuture<Result<Vec<Channel>, AuthError>> {
+            Box::pin(async { unreachable!() })
+        }
+        fn create_channel(
+            &self,
+            _: String,
+            _: String,
+            _: String,
+        ) -> ApiFuture<Result<Channel, AuthError>> {
             Box::pin(async { unreachable!() })
         }
         fn history(

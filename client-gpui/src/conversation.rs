@@ -32,16 +32,111 @@ pub struct ReadRequest {
     pub channel_id: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct CreateRequest {
+    pub generation: u64,
+    pub server: String,
+    pub token: String,
+    pub name: String,
+    serial: u64,
+}
+
 #[derive(Default)]
 pub struct Conversation {
     pub channels: Option<Load<Vec<Channel>>>,
     pub selected: Option<String>,
     pub history: HashMap<String, Load<Vec<Message>>>,
+    pub create_pending: bool,
+    pub create_feedback: Option<String>,
+    create_serial: u64,
 }
 
 impl Conversation {
     pub fn clear(&mut self) {
+        // Keep serials distinct even when the same session remains active after a reset.
+        let next = self.create_serial.wrapping_add(1);
         *self = Self::default();
+        self.create_serial = next;
+    }
+
+    pub fn create(&mut self, session: &AppSession, name: &str) -> Option<CreateRequest> {
+        if self.create_pending || !matches!(self.channels, Some(Load::Ready(_))) {
+            return None;
+        }
+        let normalized = name.trim();
+        if !(1..=64).contains(&normalized.len())
+            || !normalized
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b' ' || b == b'-' || b == b'_')
+        {
+            self.create_feedback = Some("Channel name must be 1–64 bytes after trimming, using ASCII letters, digits, spaces, hyphens or underscores.".into());
+            return None;
+        }
+        let active = session.active.as_ref()?;
+        self.create_serial = self.create_serial.wrapping_add(1);
+        self.create_pending = true;
+        self.create_feedback = None;
+        Some(CreateRequest {
+            generation: session.session_generation()?,
+            server: active.server.clone(),
+            token: active.token().to_owned(),
+            name: normalized.into(),
+            serial: self.create_serial,
+        })
+    }
+
+    pub fn complete_create(
+        &mut self,
+        session: &mut AppSession,
+        request: &CreateRequest,
+        result: Result<Channel, AuthError>,
+        now: i64,
+    ) -> (bool, Option<ReadRequest>) {
+        if !self.create_pending
+            || self.create_serial != request.serial
+            || session.session_generation() != Some(request.generation)
+            || session.active.as_ref().is_none_or(|active| {
+                active.server != request.server || active.token() != request.token
+            })
+        {
+            return (false, None);
+        }
+        session.expire(now);
+        if session.active.is_none() {
+            self.clear();
+            return (false, None);
+        }
+        self.create_pending = false;
+        match result {
+            Ok(channel) => {
+                let Some(Load::Ready(channels)) = &mut self.channels else {
+                    return (false, None);
+                };
+                // Match the server's ORDER BY name_key ASC, id ASC; do not sort by display case.
+                let key = (channel.name.to_ascii_lowercase(), channel.id.clone());
+                let position = channels.partition_point(|item| {
+                    (item.name.to_ascii_lowercase(), item.id.clone()) < key
+                });
+                let id = channel.id.clone();
+                channels.insert(position, channel);
+                self.create_feedback = None;
+                (true, self.select(session, &id))
+            }
+            Err(AuthError::AlreadyInvalid) => {
+                session.protected_rejected(request.generation);
+                self.clear();
+                (false, None)
+            }
+            Err(error) => {
+                self.create_feedback = Some(match error {
+                    AuthError::Conflict => "Channel name already exists. Choose another name.".into(),
+                    AuthError::InvalidInput => "The server rejected this channel name. Check the name and try again.".into(),
+                    AuthError::Unavailable | AuthError::InvalidResponse | AuthError::ServerFailure => "Could not confirm channel creation; it may have succeeded. Check the channel list before submitting again.".into(),
+                    _ => error.description().into(),
+                });
+                (false, None)
+            }
+        }
     }
 
     pub fn start(&mut self, session: &AppSession) -> Option<ReadRequest> {
@@ -160,6 +255,14 @@ mod tests {
             Box::pin(async { Ok(()) })
         }
         fn channels(&self, _: String, _: String) -> ApiFuture<Result<Vec<Channel>, AuthError>> {
+            Box::pin(async { unreachable!() })
+        }
+        fn create_channel(
+            &self,
+            _: String,
+            _: String,
+            _: String,
+        ) -> ApiFuture<Result<Channel, AuthError>> {
             Box::pin(async { unreachable!() })
         }
         fn history(
@@ -331,6 +434,81 @@ mod tests {
             conversation.select(&session, "a").is_none(),
             "successful history is cached"
         );
+    }
+
+    #[test]
+    fn late_create_cannot_navigate_after_logout_or_server_switch() {
+        let mut session = logged_in();
+        let mut conversation = Conversation::default();
+        let list = conversation.start(&session).unwrap();
+        conversation.complete_channels(&mut session, &list, Ok(vec![]));
+        let old = conversation.create(&session, "New").unwrap();
+        assert!(conversation.create(&session, "New").is_none());
+        session.logout();
+        conversation.clear();
+        assert!(
+            !conversation
+                .complete_create(
+                    &mut session,
+                    &old,
+                    Ok(Channel {
+                        id: "3".into(),
+                        name: "New".into()
+                    }),
+                    0
+                )
+                .0
+        );
+        assert!(conversation.channels.is_none());
+        session.change_server("https://other.example".into());
+        session.username = "other".into();
+        session.password = "password".into();
+        let login_request = session.submit().unwrap();
+        session.complete_login(
+            login_request,
+            Ok(Login {
+                user: User {
+                    id: "other".into(),
+                    username: "other".into(),
+                },
+                token: "new-token".into(),
+                expires_at: 100,
+            }),
+            0,
+        );
+        let list = conversation.start(&session).unwrap();
+        conversation.complete_channels(&mut session, &list, Ok(channels()));
+        let selection = conversation.selected.clone();
+        assert!(
+            !conversation
+                .complete_create(&mut session, &old, Err(AuthError::AlreadyInvalid), 0)
+                .0
+        );
+        assert_eq!(conversation.selected, selection);
+        assert!(session.active.is_some());
+    }
+
+    #[test]
+    fn an_expired_session_cannot_accept_late_channel_creation() {
+        let mut session = logged_in();
+        let mut conversation = Conversation::default();
+        let list = conversation.start(&session).unwrap();
+        conversation.complete_channels(&mut session, &list, Ok(vec![]));
+        let create = conversation.create(&session, "New").unwrap();
+        let (confirmed, history) = conversation.complete_create(
+            &mut session,
+            &create,
+            Ok(Channel {
+                id: "3".into(),
+                name: "New".into(),
+            }),
+            100,
+        );
+        assert!(!confirmed);
+        assert!(history.is_none());
+        assert!(session.active.is_none());
+        assert!(conversation.channels.is_none());
+        assert!(conversation.selected.is_none());
     }
 
     #[test]

@@ -119,6 +119,39 @@ async fn protected_response<T: serde::de::DeserializeOwned>(
     }
 }
 
+async fn decode_created_channel(response: reqwest::Response) -> Result<Channel, AuthError> {
+    match response.status() {
+        StatusCode::CREATED => {
+            let wire: WireChannel = response
+                .json()
+                .await
+                .map_err(|_| AuthError::InvalidResponse)?;
+            if wire.id.is_empty() || wire.name.is_empty() || wire.kind != "text" {
+                return Err(AuthError::InvalidResponse);
+            }
+            Ok(Channel {
+                id: wire.id,
+                name: wire.name,
+            })
+        }
+        StatusCode::UNAUTHORIZED => Err(AuthError::AlreadyInvalid),
+        StatusCode::BAD_REQUEST | StatusCode::CONFLICT => {
+            let status = response.status();
+            let body: WireError = response
+                .json()
+                .await
+                .map_err(|_| AuthError::InvalidResponse)?;
+            match (status, body.error.code.as_str()) {
+                (StatusCode::BAD_REQUEST, "bad_request") => Err(AuthError::InvalidInput),
+                (StatusCode::CONFLICT, "conflict") => Err(AuthError::Conflict),
+                _ => Err(AuthError::InvalidResponse),
+            }
+        }
+        StatusCode::INTERNAL_SERVER_ERROR => Err(AuthError::ServerFailure),
+        _ => Err(AuthError::Unavailable),
+    }
+}
+
 async fn decode_auth(response: reqwest::Response, success: StatusCode) -> Result<Login, AuthError> {
     if response.status() == success {
         let wire: WireLogin = response
@@ -234,6 +267,30 @@ impl AuthApi for HttpAuth {
                     })
                 })
                 .collect()
+        })
+    }
+
+    fn create_channel(
+        &self,
+        server: String,
+        token: String,
+        name: String,
+    ) -> ApiFuture<Result<Channel, AuthError>> {
+        let client = self.client.clone();
+        Box::pin(async move {
+            let url = validate_server(&server)?
+                .join("api/v1/channels")
+                .map_err(|_| AuthError::InvalidResponse)?;
+            decode_created_channel(
+                client
+                    .post(url)
+                    .bearer_auth(token)
+                    .json(&serde_json::json!({"name": name, "type": "text"}))
+                    .send()
+                    .await
+                    .map_err(|_| AuthError::Unavailable)?,
+            )
+            .await
         })
     }
 
@@ -720,6 +777,109 @@ mod tests {
             Err(AuthError::InvalidInput)
         ));
         handle.stop(true).await;
+    }
+
+    #[actix_web::test]
+    async fn create_channel_against_unchanged_rewrite_routes() {
+        use actix_web::{App, HttpServer, web};
+        use hamlet::{connect_to_database, routes};
+        let dir = tempfile::tempdir().unwrap();
+        let db = connect_to_database(&format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("channels.db").display()
+        ))
+        .await
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = HttpServer::new(move || {
+            App::new()
+                .app_data(web::Data::new(db.clone()))
+                .configure(routes)
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+        let handle = server.handle();
+        actix_web::rt::spawn(server);
+        let auth: &dyn AuthApi = &HttpAuth::new();
+        let login = auth
+            .signup(url.clone(), "Alice".into(), "long password".into())
+            .await
+            .unwrap();
+        let channel = auth
+            .create_channel(url.clone(), login.token.clone(), "  New Room  ".into())
+            .await
+            .unwrap();
+        assert_eq!(channel.name, "New Room");
+        assert!(!channel.id.is_empty());
+        assert!(
+            auth.channels(url.clone(), login.token.clone())
+                .await
+                .unwrap()
+                .contains(&channel)
+        );
+        assert!(matches!(
+            auth.create_channel(url.clone(), login.token.clone(), "new room".into())
+                .await,
+            Err(AuthError::Conflict)
+        ));
+        assert!(matches!(
+            auth.create_channel(url.clone(), login.token.clone(), "bad!".into())
+                .await,
+            Err(AuthError::InvalidInput)
+        ));
+        assert!(matches!(
+            auth.create_channel(url.clone(), "bad".into(), "Other".into())
+                .await,
+            Err(AuthError::AlreadyInvalid)
+        ));
+        handle.stop(true).await;
+    }
+
+    #[tokio::test]
+    async fn create_decodes_response_and_sends_text_type_without_redirect() {
+        let (url, captured) = server(response(
+            "201 Created",
+            r#"{"id":"123","name":"Trimmed","type":"text"}"#,
+        ));
+        assert_eq!(
+            HttpAuth::new()
+                .create_channel(url, "secret".into(), "  Trimmed  ".into())
+                .await
+                .unwrap(),
+            Channel {
+                id: "123".into(),
+                name: "Trimmed".into()
+            }
+        );
+        let request = captured.join().unwrap();
+        assert!(request.starts_with("POST /api/v1/channels "));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer secret")
+        );
+        assert!(request.contains("\"type\":\"text\""));
+        let (url, captured) = server(response(
+            "201 Created",
+            r#"{"id":"123","name":"A","type":"voice"}"#,
+        ));
+        assert!(matches!(
+            HttpAuth::new()
+                .create_channel(url, "secret".into(), "A".into())
+                .await,
+            Err(AuthError::InvalidResponse)
+        ));
+        captured.join().unwrap();
+        let (url, captured) = server(response("409 Conflict", r#"{"error":{"code":"conflict"}}"#));
+        assert!(matches!(
+            HttpAuth::new()
+                .create_channel(url, "secret".into(), "A".into())
+                .await,
+            Err(AuthError::Conflict)
+        ));
+        captured.join().unwrap();
     }
 
     #[tokio::test]

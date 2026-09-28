@@ -49,6 +49,7 @@ struct Hamlet {
     server: Entity<InputBaseState<InputMode>>,
     username: Entity<InputBaseState<InputMode>>,
     password: Entity<InputBaseState<InputMode>>,
+    channel_name: Entity<InputBaseState<InputMode>>,
     _server_subscription: Subscription,
     clear_password: bool,
     signup: bool,
@@ -59,6 +60,7 @@ impl Hamlet {
         let server = cx.new(|cx| InputState::new(window, cx).default_value(DEFAULT_SERVER_URL));
         let username = cx.new(|cx| InputState::new(window, cx));
         let password = cx.new(|cx| InputState::new(window, cx).masked(true));
+        let channel_name = cx.new(|cx| InputState::new(window, cx));
         let subscription = cx.subscribe(&server, |view: &mut Self, field, event, cx| {
             if matches!(event, InputEvent::Change) {
                 let value = field.read(cx).text().to_string();
@@ -77,6 +79,7 @@ impl Hamlet {
             server,
             username,
             password,
+            channel_name,
             _server_subscription: subscription,
             clear_password: false,
             signup: false,
@@ -225,6 +228,45 @@ impl Hamlet {
             }
         })
         .detach();
+    }
+
+    fn create_channel(&mut self, cx: &mut Context<Self>) {
+        let name = self.channel_name.read(cx).text().to_string();
+        let Some(request) = self.conversation.create(&self.session, &name) else {
+            cx.notify();
+            return;
+        };
+        let api = self.session.api.clone();
+        let (send, receive) = async_channel::bounded(1);
+        let work = request.clone();
+        runtime().spawn(async move {
+            let result = api.create_channel(work.server, work.token, work.name).await;
+            let _ = send.send(result).await;
+        });
+        cx.spawn(async move |weak, cx| {
+            if let Ok(result) = receive.recv().await {
+                let _ = weak.update_in(cx, |view, window, cx| {
+                    let (confirmed, history) = view.conversation.complete_create(
+                        &mut view.session,
+                        &request,
+                        result,
+                        now(),
+                    );
+                    if confirmed
+                        && view.channel_name.read(cx).text().to_string().trim() == request.name
+                    {
+                        view.channel_name
+                            .update(cx, |input, cx| input.set_value("", window, cx));
+                    }
+                    if let Some(history) = history {
+                        view.load_history(history, cx);
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+        cx.notify();
     }
 
     fn select_channel(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -378,6 +420,7 @@ impl Render for Hamlet {
 impl Hamlet {
     fn conversation_panes(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity().downgrade();
+        let create_view = view.clone();
         let mut sidebar = div()
             .id("channels")
             .test_support()
@@ -389,7 +432,38 @@ impl Hamlet {
             .flex_col()
             .gap_2()
             .overflow_y_scroll()
-            .child(div().font_weight(FontWeight::BOLD).child("Text channels"));
+            .child(div().font_weight(FontWeight::BOLD).child("Text channels"))
+            .child(
+                div().child("Channel name").child(
+                    Input::new(&self.channel_name)
+                        .id("channel-name")
+                        .aria_label("Channel name"),
+                ),
+            )
+            .child(
+                Button::new("create-channel")
+                    .disabled(
+                        self.conversation.create_pending
+                            || !matches!(self.conversation.channels, Some(Load::Ready(_))),
+                    )
+                    .label(if self.conversation.create_pending {
+                        "Creating channel…"
+                    } else {
+                        "Create text channel"
+                    })
+                    .on_click(move |_, _, cx| {
+                        let _ = create_view.update(cx, |view, cx| view.create_channel(cx));
+                    }),
+            );
+        if let Some(feedback) = &self.conversation.create_feedback {
+            sidebar = sidebar.child(
+                div()
+                    .id("channel-feedback")
+                    .aria_label(feedback.clone())
+                    .test_support()
+                    .child(feedback.clone()),
+            );
+        }
         match &self.conversation.channels {
             None | Some(Load::Loading) => sidebar = sidebar.child("Loading channels…"),
             Some(Load::Failed(error)) => sidebar = sidebar.child(format!("Channels: {error}")),
@@ -729,6 +803,14 @@ mod tests {
                 ])
             })
         }
+        fn create_channel(
+            &self,
+            _: String,
+            _: String,
+            _: String,
+        ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
+            Box::pin(async { unreachable!() })
+        }
         fn history(
             &self,
             _: String,
@@ -772,6 +854,14 @@ mod tests {
             _: String,
         ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
             Box::pin(async { Ok(vec![]) })
+        }
+        fn create_channel(
+            &self,
+            _: String,
+            _: String,
+            _: String,
+        ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
+            Box::pin(async { unreachable!() })
         }
         fn history(
             &self,
@@ -855,6 +945,14 @@ mod tests {
             _: String,
             _: String,
         ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
+            Box::pin(async { unreachable!() })
+        }
+        fn create_channel(
+            &self,
+            _: String,
+            _: String,
+            _: String,
+        ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
             Box::pin(async { unreachable!() })
         }
         fn history(
@@ -1080,6 +1178,310 @@ mod tests {
             window.click("logout", cx);
             window.render_frame(cx);
             assert_eq!(window.find("login").label(), Some("Log in"));
+        });
+    }
+
+    struct CreateAuth {
+        results: Arc<
+            std::sync::Mutex<
+                std::collections::VecDeque<Result<crate::conversation::Channel, AuthError>>,
+            >,
+        >,
+        calls: Arc<AtomicUsize>,
+        empty: bool,
+    }
+    impl AuthApi for CreateAuth {
+        fn signup(
+            &self,
+            _: String,
+            username: String,
+            _: String,
+        ) -> ApiFuture<Result<Login, AuthError>> {
+            TestAuth.login(String::new(), username, String::new())
+        }
+        fn login(
+            &self,
+            _: String,
+            username: String,
+            _: String,
+        ) -> ApiFuture<Result<Login, AuthError>> {
+            TestAuth.login(String::new(), username, String::new())
+        }
+        fn logout(&self, _: String, _: String) -> ApiFuture<Result<(), AuthError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn channels(
+            &self,
+            _: String,
+            _: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
+            let empty = self.empty;
+            Box::pin(async move {
+                if empty {
+                    Ok(vec![])
+                } else {
+                    Ok(vec![
+                        crate::conversation::Channel {
+                            id: "1".into(),
+                            name: "alpha".into(),
+                        },
+                        crate::conversation::Channel {
+                            id: "2".into(),
+                            name: "zebra".into(),
+                        },
+                    ])
+                }
+            })
+        }
+        fn create_channel(
+            &self,
+            _: String,
+            _: String,
+            _: String,
+        ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let result = self.results.lock().unwrap().pop_front().unwrap();
+            Box::pin(async move { result })
+        }
+        fn history(
+            &self,
+            _: String,
+            _: String,
+            _: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
+            Box::pin(async { Ok(vec![]) })
+        }
+    }
+
+    #[gpui_kit::test]
+    fn create_controls_confirm_order_selection_and_empty_history(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        for empty in [false, true] {
+            let results = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from([
+                Ok(crate::conversation::Channel {
+                    id: "3".into(),
+                    name: "Middle".into(),
+                }),
+            ])));
+            let calls = Arc::new(AtomicUsize::new(0));
+            let probe = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let stored = probe.clone();
+            let (_, cx) = cx.add_window_view(|window, cx| {
+                let view = cx.new(|cx| {
+                    Hamlet::new(
+                        window,
+                        cx,
+                        Arc::new(CreateAuth {
+                            results: results.clone(),
+                            calls: calls.clone(),
+                            empty,
+                        }),
+                    )
+                });
+                *stored.borrow_mut() = Some(view.clone());
+                Root::new(view, window, cx)
+            });
+            let view: gpui_kit::Entity<Hamlet> = probe.borrow().as_ref().unwrap().clone();
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                window.click("username", cx);
+                window.input("Ada", cx);
+                window.click("password", cx);
+                window.input("pass", cx);
+                window.click("login", cx);
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                window.click("channel-name", cx);
+                window.input("  Middle  ", cx);
+                window.click("create-channel", cx);
+                window.render_frame(cx);
+                assert_eq!(
+                    window.find("create-channel").label(),
+                    Some("Creating channel…")
+                );
+                assert_eq!(window.find("channel-name").value(), Some("  Middle  "));
+                assert_eq!(
+                    view.read(cx).conversation.selected.as_deref(),
+                    if empty { None } else { Some("1") }
+                );
+                window.click("create-channel", cx);
+                assert_eq!(
+                    view.read(cx).conversation.selected.as_deref(),
+                    if empty { None } else { Some("1") }
+                );
+            });
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                assert_eq!(window.find("channel-name").value(), Some(""));
+                assert_eq!(view.read(cx).conversation.selected.as_deref(), Some("3"));
+                assert_eq!(window.find("channel-3").label(), Some("# Middle"));
+                assert_eq!(
+                    view.read(cx)
+                        .conversation
+                        .channels
+                        .as_ref()
+                        .and_then(|list| match list {
+                            crate::conversation::Load::Ready(items) =>
+                                Some(items.iter().map(|c| c.id.as_str()).collect::<Vec<_>>()),
+                            _ => None,
+                        }),
+                    Some(if empty {
+                        vec!["3"]
+                    } else {
+                        vec!["1", "3", "2"]
+                    })
+                );
+                assert!(
+                    view.read(cx).conversation.history.get("3")
+                        == Some(&crate::conversation::Load::Ready(vec![]))
+                );
+            });
+        }
+    }
+
+    #[gpui_kit::test]
+    fn create_controls_keep_input_on_errors_without_replay(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let results = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from([
+            Err(AuthError::Conflict),
+            Err(AuthError::Unavailable),
+        ])));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let probe = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let stored = probe.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Hamlet::new(
+                    window,
+                    cx,
+                    Arc::new(CreateAuth {
+                        results: results.clone(),
+                        calls: calls.clone(),
+                        empty: true,
+                    }),
+                )
+            });
+            *stored.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view: gpui_kit::Entity<Hamlet> = probe.borrow().as_ref().unwrap().clone();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("channel-name", cx);
+            window.input("bad!", cx);
+            window.click("create-channel", cx);
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find("channel-feedback")
+                    .label()
+                    .unwrap()
+                    .contains("1–64")
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            window.click("channel-name", cx);
+            window.press("ctrl-a", cx);
+            window.input("Duplicate", cx);
+            window.click("create-channel", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find("channel-feedback")
+                    .label()
+                    .unwrap()
+                    .contains("already exists")
+            );
+            assert_eq!(window.find("channel-name").value(), Some("Duplicate"));
+            window.click("create-channel", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find("channel-feedback")
+                    .label()
+                    .unwrap()
+                    .contains("may have succeeded")
+            );
+            assert_eq!(window.find("channel-name").value(), Some("Duplicate"));
+            assert_eq!(calls.load(Ordering::SeqCst), 2); // no automatic replay
+            window.click("logout", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(view.read(cx).conversation.channels.is_none());
+            assert!(view.read(cx).conversation.selected.is_none());
+            assert_eq!(window.find("login").label(), Some("Log in"));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn create_completion_after_logout_cannot_navigate(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let results = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from([
+            Ok(crate::conversation::Channel {
+                id: "3".into(),
+                name: "Late".into(),
+            }),
+        ])));
+        let probe = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let stored = probe.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Hamlet::new(
+                    window,
+                    cx,
+                    Arc::new(CreateAuth {
+                        results,
+                        calls: Arc::new(AtomicUsize::new(0)),
+                        empty: true,
+                    }),
+                )
+            });
+            *stored.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view: gpui_kit::Entity<Hamlet> = probe.borrow().as_ref().unwrap().clone();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("channel-name", cx);
+            window.input("Late", cx);
+            window.click("create-channel", cx);
+            window.click("logout", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("login").label(), Some("Log in"));
+            assert!(view.read(cx).conversation.channels.is_none());
+            assert!(view.read(cx).conversation.selected.is_none());
         });
     }
 

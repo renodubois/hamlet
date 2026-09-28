@@ -1,4 +1,4 @@
-# GPUI client — Linux feasibility gate (#36), login/logout (#37), reading (#38), signup (#39)
+# GPUI client — Linux feasibility gate (#36), login/logout (#37), reading (#38), signup (#39), channel creation (#40)
 
 ## #36 Linux feasibility gate (recorded before #37)
 
@@ -33,6 +33,12 @@ On this machine `cargo build --locked`, `cargo fmt --check`, `cargo clippy --loc
 After login, the client loads protected text channels in server order, selects the first, and displays that channel's newest history page. Select another channel in the left pane to read it. Empty lists, empty histories, loading, and errors are shown explicitly. Message text is plain and line breaks are retained; author and timestamp are shown. Already loaded pages are kept only in memory until logout, expiry, server change, or a protected 401. Sending, older-page traversal, and refresh are not part of this slice. See `PRESENTATION.md` for presentation-editing locations and manual selection/copy status.
 
 For this slice use the same build/fmt/clippy/test commands below. The HTTP tests cover protected channels and newest history against unchanged rewrite routes. Real-control headless tests cover selection and text display. Manual native Linux text selection/copy has **not** been verified; headless clipboard testing in the #36 feasibility probe is not a native desktop confirmation.
+
+## #40 Create a text channel
+
+Start the unchanged `server-rewrite` (see its README), then run `cargo run --locked` from `client-gpui/` and log in or sign up. In the left pane, enter a name under **Channel name** and select **Create text channel**. The server trims surrounding whitespace; names after trimming must be 1–64 bytes of ASCII letters, digits, spaces, hyphens or underscores. Names are unique ignoring ASCII letter case. Duplicate/invalid names display feedback without clearing the field; a pending write disables another submission and does not navigate. On confirmed creation the returned channel is inserted in server list order, selected, and its newest conversation loaded. An uncertain failure keeps the name and warns that the write may have succeeded: check the channel list before deliberately trying again (no automatic replay). Logout, expiry or server change prevents late responses from navigating. Requests use the existing eight-second HTTP timeout, no redirects, and memory-only session.
+
+Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`, and `cargo build --locked` from `client-gpui/`. Headless tests exercise actual Kit creation controls and selection; targeted HTTP tests exercise the public adapter against unchanged rewrite routes (normalized name, duplicate, invalid name, bearer rejection, decoded response). **#38 physical desktop native selection/copy verification remains open**; headless clipboard coverage does not resolve it.
 
 ## #39 Signup and immediate session
 
