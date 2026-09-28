@@ -1,5 +1,5 @@
 use crate::session::{AppSession, AuthError};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Channel {
@@ -18,6 +18,21 @@ pub struct Message {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Page {
+    // Server order: newest first, with the server's tie breaker intact.
+    pub items: Vec<Message>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Older {
+    Available,
+    Loading,
+    Failed(String),
+    Exhausted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Load<T> {
     Loading,
     Ready(T),
@@ -30,6 +45,8 @@ pub struct ReadRequest {
     pub server: String,
     pub token: String,
     pub channel_id: Option<String>,
+    pub before: Option<String>,
+    pub serial: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +63,9 @@ pub struct Conversation {
     pub channels: Option<Load<Vec<Channel>>>,
     pub selected: Option<String>,
     pub history: HashMap<String, Load<Vec<Message>>>,
+    pub older: HashMap<String, Older>,
+    cursors: HashMap<String, String>,
+    read_serial: u64,
     pub create_pending: bool,
     pub create_feedback: Option<String>,
     create_serial: u64,
@@ -55,8 +75,10 @@ impl Conversation {
     pub fn clear(&mut self) {
         // Keep serials distinct even when the same session remains active after a reset.
         let next = self.create_serial.wrapping_add(1);
+        let read_next = self.read_serial.wrapping_add(1);
         *self = Self::default();
         self.create_serial = next;
+        self.read_serial = read_next;
     }
 
     pub fn create(&mut self, session: &AppSession, name: &str) -> Option<CreateRequest> {
@@ -150,6 +172,8 @@ impl Conversation {
             server: active.server.clone(),
             token: active.token().to_owned(),
             channel_id: None,
+            before: None,
+            serial: self.read_serial,
         })
     }
 
@@ -192,46 +216,146 @@ impl Conversation {
         if !channels.iter().any(|channel| channel.id == id) {
             return None;
         }
+        if self.selected.as_deref() != Some(id)
+            && let Some(old) = &self.selected
+        {
+            // A selected-channel change cancels the old in-flight read, whether it
+            // came from a sidebar click or successful channel creation.
+            if matches!(self.history.get(old), Some(Load::Loading)) {
+                self.history.remove(old);
+            }
+            if matches!(self.older.get(old), Some(Older::Loading)) {
+                self.older.insert(old.clone(), Older::Available);
+            }
+        }
         self.selected = Some(id.into());
         if matches!(self.history.get(id), Some(Load::Loading | Load::Ready(_))) {
             return None;
         }
         let active = session.active.as_ref()?;
         self.history.insert(id.into(), Load::Loading);
+        self.read_serial = self.read_serial.wrapping_add(1);
         Some(ReadRequest {
             generation: session.session_generation()?,
             server: active.server.clone(),
             token: active.token().to_owned(),
             channel_id: Some(id.into()),
+            before: None,
+            serial: self.read_serial,
         })
+    }
+
+    /// Begin one deliberate older-page read for the currently selected channel.
+    pub fn request_older(&mut self, session: &AppSession) -> Option<ReadRequest> {
+        let id = self.selected.as_ref()?;
+        if !matches!(self.older.get(id), Some(Older::Available)) {
+            return None;
+        }
+        let active = session.active.as_ref()?;
+        let before = self.cursors.get(id)?.clone();
+        self.older.insert(id.clone(), Older::Loading);
+        self.read_serial = self.read_serial.wrapping_add(1);
+        Some(ReadRequest {
+            generation: session.session_generation()?,
+            server: active.server.clone(),
+            token: active.token().to_owned(),
+            channel_id: Some(id.clone()),
+            before: Some(before),
+            serial: self.read_serial,
+        })
+    }
+
+    pub fn retry_older(&mut self, session: &AppSession) -> Option<ReadRequest> {
+        let id = self.selected.as_ref()?;
+        if !matches!(self.older.get(id), Some(Older::Failed(_))) {
+            return None;
+        }
+        self.older.insert(id.clone(), Older::Available);
+        self.request_older(session)
     }
 
     pub fn complete_history(
         &mut self,
         session: &mut AppSession,
         request: &ReadRequest,
-        result: Result<Vec<Message>, AuthError>,
-    ) {
+        result: Result<Page, AuthError>,
+    ) -> usize {
         let Some(id) = &request.channel_id else {
-            return;
+            return 0;
         };
         if session.session_generation() != Some(request.generation)
-            || !matches!(self.history.get(id), Some(Load::Loading))
+            || session.active.as_ref().is_none_or(|active| {
+                active.server != request.server || active.token() != request.token
+            })
         {
-            return;
+            return 0;
+        }
+        let older = request.before.is_some();
+        if older {
+            if self.selected.as_deref() != Some(id)
+                || self.read_serial != request.serial
+                || self.cursors.get(id) != request.before.as_ref()
+                || !matches!(self.older.get(id), Some(Older::Loading))
+            {
+                return 0;
+            }
+        } else if !matches!(self.history.get(id), Some(Load::Loading))
+            || (self.selected.as_deref() == Some(id) && self.read_serial != request.serial)
+        {
+            return 0;
         }
         match result {
-            Ok(messages) => {
-                // The server returns newest first, with ID as the tie breaker. Never sort here.
+            Ok(page) => {
+                let existing = if older {
+                    match self.history.remove(id) {
+                        Some(Load::Ready(items)) => items,
+                        _ => return 0,
+                    }
+                } else {
+                    Vec::new()
+                };
+                let seen: HashSet<_> = existing.iter().map(|item| item.id.as_str()).collect();
+                let mut page_ids = HashSet::new();
+                let additions: Vec<_> = page
+                    .items
+                    .into_iter()
+                    .filter(|item| {
+                        !seen.contains(item.id.as_str()) && page_ids.insert(item.id.clone())
+                    })
+                    .collect();
+                let count = additions.len();
+                let mut messages = existing;
+                messages.extend(additions);
                 self.history.insert(id.clone(), Load::Ready(messages));
+                match page
+                    .next_cursor
+                    .filter(|cursor| !cursor.is_empty() && request.before.as_ref() != Some(cursor))
+                {
+                    Some(cursor) => {
+                        self.cursors.insert(id.clone(), cursor);
+                        self.older.insert(id.clone(), Older::Available);
+                    }
+                    None => {
+                        self.cursors.remove(id);
+                        self.older.insert(id.clone(), Older::Exhausted);
+                    }
+                }
+                count
             }
             Err(AuthError::AlreadyInvalid) => {
                 session.protected_rejected(request.generation);
                 self.clear();
+                0
             }
             Err(error) => {
-                self.history
-                    .insert(id.clone(), Load::Failed(error.description().into()));
+                if older {
+                    self.older
+                        .insert(id.clone(), Older::Failed(error.description().into()));
+                } else {
+                    self.history
+                        .insert(id.clone(), Load::Failed(error.description().into()));
+                }
+                0
             }
         }
     }
@@ -352,7 +476,14 @@ mod tests {
                 created_at: "same".into(),
             })
             .to_vec();
-        view.complete_history(&mut session, &request, Ok(messages.clone()));
+        view.complete_history(
+            &mut session,
+            &request,
+            Ok(Page {
+                items: messages.clone(),
+                next_cursor: None,
+            }),
+        );
         assert_eq!(view.history.get("z"), Some(&Load::Ready(messages)));
     }
     #[test]
@@ -366,8 +497,18 @@ mod tests {
         let current = view.select(&session, "a").unwrap();
         view.complete_history(&mut session, &old, Err(AuthError::Unavailable));
         assert_eq!(view.selected.as_deref(), Some("a"));
-        assert!(matches!(view.history.get("z"), Some(Load::Failed(_))));
-        view.complete_history(&mut session, &current, Ok(vec![]));
+        assert!(
+            !view.history.contains_key("z"),
+            "canceled reads do not cache stale failures"
+        );
+        view.complete_history(
+            &mut session,
+            &current,
+            Ok(Page {
+                items: vec![],
+                next_cursor: None,
+            }),
+        );
         assert_eq!(view.history.get("a"), Some(&Load::Ready(vec![])));
         session.logout();
         view.clear();
@@ -423,12 +564,26 @@ mod tests {
             .unwrap();
         conversation.complete_history(&mut session, &first, Err(AuthError::Unavailable));
         let other = conversation.select(&session, "a").unwrap();
-        conversation.complete_history(&mut session, &other, Ok(vec![]));
+        conversation.complete_history(
+            &mut session,
+            &other,
+            Ok(Page {
+                items: vec![],
+                next_cursor: None,
+            }),
+        );
         let retry = conversation
             .select(&session, "z")
             .expect("failed channel must retry");
         assert!(matches!(conversation.history.get("z"), Some(Load::Loading)));
-        conversation.complete_history(&mut session, &retry, Ok(vec![]));
+        conversation.complete_history(
+            &mut session,
+            &retry,
+            Ok(Page {
+                items: vec![],
+                next_cursor: None,
+            }),
+        );
         assert_eq!(conversation.history.get("z"), Some(&Load::Ready(vec![])));
         assert!(
             conversation.select(&session, "a").is_none(),
@@ -509,6 +664,197 @@ mod tests {
         assert!(session.active.is_none());
         assert!(conversation.channels.is_none());
         assert!(conversation.selected.is_none());
+    }
+
+    #[test]
+    fn older_pages_merge_identity_in_server_order_retry_and_stop_at_exhaustion() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let channels = view.start(&session).unwrap();
+        let first = view
+            .complete_channels(&mut session, &channels, Ok(super::tests::channels()))
+            .unwrap();
+        let message = |id: &str| Message {
+            id: id.into(),
+            channel_id: "z".into(),
+            author_id: "u".into(),
+            author_name: "Ada".into(),
+            text: id.into(),
+            created_at: "same".into(),
+        };
+        view.complete_history(
+            &mut session,
+            &first,
+            Ok(Page {
+                items: vec![message("5"), message("4"), message("3")],
+                next_cursor: Some("opaque one".into()),
+            }),
+        );
+        let older = view.request_older(&session).unwrap();
+        assert_eq!(older.before.as_deref(), Some("opaque one"));
+        assert!(view.request_older(&session).is_none());
+        view.complete_history(&mut session, &older, Err(AuthError::Unavailable));
+        assert_eq!(
+            view.history.get("z").as_ref().unwrap(),
+            &&Load::Ready(vec![message("5"), message("4"), message("3")])
+        );
+        assert!(matches!(view.older.get("z"), Some(Older::Failed(_))));
+        assert!(view.request_older(&session).is_none());
+        let retry = view.retry_older(&session).unwrap();
+        assert_eq!(retry.before, older.before);
+        assert_eq!(
+            view.complete_history(
+                &mut session,
+                &older,
+                Ok(Page {
+                    items: vec![message("2")],
+                    next_cursor: None
+                })
+            ),
+            0
+        );
+        assert_eq!(
+            view.complete_history(
+                &mut session,
+                &retry,
+                Ok(Page {
+                    items: vec![message("3"), message("2"), message("1"), message("2")],
+                    next_cursor: Some("opaque two".into()),
+                })
+            ),
+            2
+        );
+        let final_read = view.request_older(&session).unwrap();
+        assert_eq!(final_read.before.as_deref(), Some("opaque two"));
+        assert_eq!(
+            view.complete_history(
+                &mut session,
+                &final_read,
+                Ok(Page {
+                    items: vec![message("1"), message("0")],
+                    next_cursor: None,
+                })
+            ),
+            1
+        );
+        assert_eq!(
+            view.history.get("z"),
+            Some(&Load::Ready(
+                ["5", "4", "3", "2", "1", "0"].map(message).to_vec()
+            ))
+        );
+        assert_eq!(view.older.get("z"), Some(&Older::Exhausted));
+        assert!(view.request_older(&session).is_none());
+    }
+
+    #[test]
+    fn switching_or_invalidating_session_discards_older_completions() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let channels = view.start(&session).unwrap();
+        let first = view
+            .complete_channels(&mut session, &channels, Ok(super::tests::channels()))
+            .unwrap();
+        view.complete_history(
+            &mut session,
+            &first,
+            Ok(Page {
+                items: vec![],
+                next_cursor: Some("cursor".into()),
+            }),
+        );
+        let old = view.request_older(&session).unwrap();
+        let other = view.select(&session, "a").unwrap();
+        view.complete_history(&mut session, &old, Err(AuthError::AlreadyInvalid));
+        assert!(session.active.is_some());
+        assert_eq!(view.selected.as_deref(), Some("a"));
+        view.complete_history(
+            &mut session,
+            &other,
+            Ok(Page {
+                items: vec![],
+                next_cursor: Some("other cursor".into()),
+            }),
+        );
+        let pending = view.request_older(&session).unwrap();
+        session.logout();
+        view.clear();
+        view.complete_history(
+            &mut session,
+            &pending,
+            Ok(Page {
+                items: vec![],
+                next_cursor: None,
+            }),
+        );
+        assert!(view.history.is_empty());
+        assert!(view.older.is_empty());
+    }
+
+    #[test]
+    fn creating_a_channel_cancels_the_old_selected_page_and_allows_reselection() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let channels = view.start(&session).unwrap();
+        let first = view
+            .complete_channels(&mut session, &channels, Ok(super::tests::channels()))
+            .unwrap();
+        view.complete_history(
+            &mut session,
+            &first,
+            Ok(Page {
+                items: vec![],
+                next_cursor: Some("opaque server cursor".into()),
+            }),
+        );
+        let pending = view.request_older(&session).unwrap();
+        let create = view.create(&session, "New").unwrap();
+        let (confirmed, next) = view.complete_create(
+            &mut session,
+            &create,
+            Ok(Channel {
+                id: "new".into(),
+                name: "New".into(),
+            }),
+            0,
+        );
+        assert!(confirmed);
+        assert_eq!(next.unwrap().channel_id.as_deref(), Some("new"));
+        assert_eq!(view.older.get("z"), Some(&Older::Available));
+        view.select(&session, "z");
+        let retry = view
+            .request_older(&session)
+            .expect("canceled traversal is retryable");
+        assert_eq!(retry.before.as_deref(), Some("opaque server cursor"));
+        assert_eq!(
+            view.complete_history(&mut session, &pending, Err(AuthError::AlreadyInvalid)),
+            0
+        );
+        assert!(session.active.is_some());
+    }
+
+    #[test]
+    fn selected_older_page_rejection_invalidates_session_and_clears_history() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let channels = view.start(&session).unwrap();
+        let first = view
+            .complete_channels(&mut session, &channels, Ok(super::tests::channels()))
+            .unwrap();
+        view.complete_history(
+            &mut session,
+            &first,
+            Ok(Page {
+                items: vec![],
+                next_cursor: Some("opaque".into()),
+            }),
+        );
+        let older = view.request_older(&session).unwrap();
+        view.complete_history(&mut session, &older, Err(AuthError::AlreadyInvalid));
+        assert!(session.active.is_none());
+        assert!(view.history.is_empty());
+        assert!(view.older.is_empty());
+        assert!(view.selected.is_none());
     }
 
     #[test]

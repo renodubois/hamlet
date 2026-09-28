@@ -1,4 +1,4 @@
-use crate::conversation::{Channel, Message};
+use crate::conversation::{Channel, Message, Page};
 use crate::session::{ApiFuture, AuthApi, AuthError, Login, User};
 use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
@@ -300,6 +300,17 @@ impl AuthApi for HttpAuth {
         token: String,
         channel_id: String,
     ) -> ApiFuture<Result<Vec<Message>, AuthError>> {
+        let page = self.history_page(server, token, channel_id, None);
+        Box::pin(async move { page.await.map(|page| page.items) })
+    }
+
+    fn history_page(
+        &self,
+        server: String,
+        token: String,
+        channel_id: String,
+        before: Option<String>,
+    ) -> ApiFuture<Result<Page, AuthError>> {
         let client = self.client.clone();
         Box::pin(async move {
             // The server supplies channel IDs. Encode them as one path segment rather than
@@ -315,6 +326,11 @@ impl AuthApi for HttpAuth {
             url.path_segments_mut()
                 .map_err(|_| AuthError::InvalidResponse)?
                 .extend(["api", "v1", "channels", &channel_id, "messages"]);
+            if let Some(cursor) = before.as_ref() {
+                // Query serialization treats the server-issued cursor as opaque, even if it
+                // contains reserved URL characters. Never decode or synthesize one.
+                url.query_pairs_mut().append_pair("before", cursor);
+            }
             let wire: WireHistory = protected_response(
                 client
                     .get(url)
@@ -324,8 +340,8 @@ impl AuthApi for HttpAuth {
                     .map_err(|_| AuthError::Unavailable)?,
             )
             .await?;
-            let _ = wire.next_cursor; // Older-page traversal is a later slice.
-            wire.items
+            let items = wire
+                .items
                 .into_iter()
                 .map(|item| {
                     if item.id.is_empty()
@@ -344,7 +360,11 @@ impl AuthApi for HttpAuth {
                         created_at: item.created_at.to_rfc3339(),
                     })
                 })
-                .collect()
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Page {
+                items,
+                next_cursor: wire.next_cursor,
+            })
         })
     }
 
@@ -834,6 +854,104 @@ mod tests {
                 .await,
             Err(AuthError::AlreadyInvalid)
         ));
+        handle.stop(true).await;
+    }
+
+    #[actix_web::test]
+    async fn rewrite_history_traverses_multiple_pages_with_timestamp_ties() {
+        use actix_web::{App, HttpServer, web};
+        use hamlet::{connect_to_database, routes};
+        use sea_orm::{ConnectionTrait, DbBackend, Statement};
+        let dir = tempfile::tempdir().unwrap();
+        let db = connect_to_database(&format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("pages.db").display()
+        ))
+        .await
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = HttpServer::new({
+            let db = db.clone();
+            move || {
+                App::new()
+                    .app_data(web::Data::new(db.clone()))
+                    .configure(routes)
+            }
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+        let handle = server.handle();
+        actix_web::rt::spawn(server);
+        let auth: &dyn AuthApi = &HttpAuth::new();
+        let login = auth
+            .signup(url.clone(), "Alice".into(), "long password".into())
+            .await
+            .unwrap();
+        let channel = auth
+            .channels(url.clone(), login.token.clone())
+            .await
+            .unwrap()[0]
+            .id
+            .clone();
+        let client = Client::new();
+        for ix in 0..53 {
+            assert_eq!(
+                client
+                    .post(format!("{url}/api/v1/channels/{channel}/messages"))
+                    .bearer_auth(&login.token)
+                    .json(&serde_json::json!({"text": format!("line {ix}")}))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::CREATED
+            );
+        }
+        db.db
+            .execute_raw(Statement::from_string(
+                DbBackend::Sqlite,
+                "UPDATE messages SET created_at = '2026-01-01T00:00:00.000000000Z'",
+            ))
+            .await
+            .unwrap();
+        let first = auth
+            .history_page(url.clone(), login.token.clone(), channel.clone(), None)
+            .await
+            .unwrap();
+        assert_eq!(first.items.len(), 50);
+        let cursor = first
+            .next_cursor
+            .clone()
+            .expect("a server-issued next cursor");
+        let last = auth
+            .history_page(url, login.token, channel, Some(cursor))
+            .await
+            .unwrap();
+        assert_eq!(last.items.len(), 3);
+        assert_eq!(last.next_cursor, None);
+        let ids: Vec<_> = first
+            .items
+            .iter()
+            .chain(&last.items)
+            .map(|m| m.id.parse::<i64>().unwrap())
+            .collect();
+        assert!(
+            ids.windows(2).all(|pair| pair[0] > pair[1]),
+            "server tie order must survive decoding"
+        );
+        assert_eq!(
+            ids.iter().collect::<std::collections::HashSet<_>>().len(),
+            53
+        );
+        assert!(
+            first
+                .items
+                .iter()
+                .chain(&last.items)
+                .all(|m| m.created_at.starts_with("2026-01-01"))
+        );
         handle.stop(true).await;
     }
 

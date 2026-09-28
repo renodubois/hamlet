@@ -2,7 +2,7 @@ mod conversation;
 mod http;
 mod session;
 
-use conversation::{Conversation, Load, ReadRequest};
+use conversation::{Conversation, Load, Older, ReadRequest};
 use gpui_kit::base::SelectableText;
 use gpui_kit::prelude::FluentBuilder as _;
 
@@ -37,6 +37,11 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
+fn hint_history_row_heights(list: &ListState) {
+    // GPUI replaces these estimates as variable-height rows are measured.
+    list.clone().with_uniform_item_height(px(64.));
+}
+
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| tokio::runtime::Runtime::new().expect("network runtime"))
@@ -46,6 +51,9 @@ struct Hamlet {
     session: AppSession,
     conversation: Conversation,
     history_focus: FocusHandle,
+    history_list: ListState,
+    history_task: Option<tokio::task::JoinHandle<()>>,
+    history_serial: u64,
     server: Entity<InputBaseState<InputMode>>,
     username: Entity<InputBaseState<InputMode>>,
     password: Entity<InputBaseState<InputMode>>,
@@ -66,16 +74,28 @@ impl Hamlet {
                 let value = field.read(cx).text().to_string();
                 if view.session.server != value {
                     view.session.change_server(value);
+                    view.cancel_history();
                     view.conversation.clear();
+                    view.history_list.reset(0);
                     view.clear_password = true;
                     cx.notify();
                 }
+            }
+        });
+        let history_list = ListState::new(0, ListAlignment::Top, px(0.));
+        let weak = cx.entity().downgrade();
+        history_list.set_scroll_handler(move |event, _, cx| {
+            if event.count > 0 && event.is_scrolled && event.visible_range.start <= 1 {
+                let _ = weak.update(cx, |view, cx| view.request_older(cx));
             }
         });
         Self {
             session: AppSession::new(api),
             conversation: Conversation::default(),
             history_focus: cx.focus_handle(),
+            history_list,
+            history_task: None,
+            history_serial: 0,
             server,
             username,
             password,
@@ -168,7 +188,9 @@ impl Hamlet {
                         if view.session.session_generation() == Some(generation) {
                             view.session.expire(now());
                             if view.session.active.is_none() {
+                                view.cancel_history();
                                 view.conversation.clear();
+                                view.history_list.reset(0);
                             }
                             cx.notify();
                         }
@@ -208,26 +230,110 @@ impl Hamlet {
         }
     }
 
+    fn cancel_history(&mut self) {
+        self.history_serial = self.history_serial.wrapping_add(1);
+        if let Some(task) = self.history_task.take() {
+            task.abort();
+        }
+    }
+
+    fn request_older(&mut self, cx: &mut Context<Self>) {
+        if let Some(request) = self.conversation.request_older(&self.session) {
+            self.load_history(request, cx);
+            cx.notify();
+        }
+    }
+
+    fn retry_older(&mut self, cx: &mut Context<Self>) {
+        if let Some(request) = self.conversation.retry_older(&self.session) {
+            self.load_history(request, cx);
+            cx.notify();
+        }
+    }
+
     fn load_history(&mut self, request: ReadRequest, cx: &mut Context<Self>) {
+        self.history_serial = self.history_serial.wrapping_add(1);
+        let serial = self.history_serial;
         let api = self.session.api.clone();
-        let (send, receive) = async_channel::bounded(1);
         let work = request.clone();
-        runtime().spawn(async move {
-            let result = api
-                .history(work.server, work.token, work.channel_id.unwrap())
-                .await;
-            let _ = send.send(result).await;
-        });
+        // The headless scheduler is single-threaded: deliver controlled fixture outcomes on
+        // its own executor, without a foreign thread waking it during a GPUI frame.
+        #[cfg(test)]
         cx.spawn(async move |weak, cx| {
-            if let Ok(result) = receive.recv().await {
-                let _ = weak.update(cx, |view, cx| {
-                    view.conversation
-                        .complete_history(&mut view.session, &request, result);
-                    cx.notify();
-                });
-            }
+            let result = api
+                .history_page(
+                    work.server,
+                    work.token,
+                    work.channel_id.unwrap(),
+                    work.before,
+                )
+                .await;
+            let _ = weak.update(cx, |view, cx| {
+                view.finish_history(serial, request, result, cx)
+            });
         })
         .detach();
+        #[cfg(not(test))]
+        {
+            let (send, receive) = async_channel::bounded(1);
+            self.history_task = Some(runtime().spawn(async move {
+                let result = api
+                    .history_page(
+                        work.server,
+                        work.token,
+                        work.channel_id.unwrap(),
+                        work.before,
+                    )
+                    .await;
+                let _ = send.send(result).await;
+            }));
+            cx.spawn(async move |weak, cx| {
+                if let Ok(result) = receive.recv().await {
+                    let _ = weak.update(cx, |view, cx| {
+                        view.finish_history(serial, request, result, cx)
+                    });
+                }
+            })
+            .detach();
+        }
+    }
+
+    fn finish_history(
+        &mut self,
+        serial: u64,
+        request: ReadRequest,
+        result: Result<conversation::Page, session::AuthError>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.history_serial != serial {
+            return;
+        }
+        let selected = self.conversation.selected == request.channel_id;
+        let older = request.before.is_some();
+        let added = self
+            .conversation
+            .complete_history(&mut self.session, &request, result);
+        if selected && self.session.active.is_some() {
+            if older {
+                if added > 0 {
+                    self.history_list.splice(0..0, added);
+                    hint_history_row_heights(&self.history_list);
+                }
+            } else if let Some(Load::Ready(messages)) = self
+                .conversation
+                .history
+                .get(request.channel_id.as_ref().unwrap())
+            {
+                self.history_list
+                    .splice(0..self.history_list.item_count(), messages.len());
+                hint_history_row_heights(&self.history_list);
+                self.history_list.scroll_to_end();
+            }
+        } else if self.session.active.is_none() {
+            self.history_list.reset(0);
+        }
+        self.history_task = None;
+        cx.notify();
     }
 
     fn create_channel(&mut self, cx: &mut Context<Self>) {
@@ -259,6 +365,8 @@ impl Hamlet {
                             .update(cx, |input, cx| input.set_value("", window, cx));
                     }
                     if let Some(history) = history {
+                        view.cancel_history();
+                        view.history_list.reset(0);
                         view.load_history(history, cx);
                     }
                     cx.notify();
@@ -270,13 +378,25 @@ impl Hamlet {
     }
 
     fn select_channel(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.conversation.selected.as_deref() != Some(id) {
+            self.cancel_history();
+            self.history_list.reset(0);
+        }
         if let Some(request) = self.conversation.select(&self.session, id) {
             self.load_history(request, cx);
+        } else if let Some(Load::Ready(messages)) = self.conversation.history.get(id)
+            && self.history_list.item_count() == 0
+        {
+            self.history_list.splice(0..0, messages.len());
+            hint_history_row_heights(&self.history_list);
+            self.history_list.scroll_to_end();
         }
         cx.notify();
     }
 
     fn logout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_history();
+        self.history_list.reset(0);
         self.conversation.clear();
         if let Some(revocation) = self.session.logout() {
             let api = self.session.api.clone();
@@ -490,12 +610,20 @@ impl Hamlet {
         }
         let selected = self.conversation.selected.as_deref();
         let focus = self.history_focus.clone();
+        let list_for_wheel = self.history_list.clone();
         let mut history = div()
-            .id("history")
+            .id("history-pane")
             .test_support()
             .track_focus(&self.history_focus)
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 window.focus(&focus, cx)
+            })
+            .on_scroll_wheel(move |_, _, _| {
+                // GPUI invalidates all height hints when the list first learns its width.
+                // Re-seed offscreen estimates after that layout, without measuring all rows.
+                if list_for_wheel.is_scrolled_to_end().is_none() {
+                    hint_history_row_heights(&list_for_wheel);
+                }
             })
             .flex_1()
             .h_full()
@@ -503,8 +631,7 @@ impl Hamlet {
             .p_4()
             .flex()
             .flex_col()
-            .gap_2()
-            .overflow_y_scroll();
+            .gap_2();
         if let Some(id) = selected {
             let name = match &self.conversation.channels {
                 Some(Load::Ready(channels)) => channels
@@ -529,32 +656,57 @@ impl Hamlet {
                     history = history.child("No messages in this channel yet.")
                 }
                 Some(Load::Ready(messages)) => {
-                    for message in messages {
-                        // A stable semantic row ID plus selectable plain text preserves line breaks.
-                        history = history.child(
-                            div()
-                                .id(format!("message-{}", message.id))
-                                .aria_label(message.text.clone())
-                                .test_support()
-                                .w_full()
-                                .p_2()
-                                .flex()
-                                .flex_col()
-                                .child(div().text_color(rgb(theme::MUTED)).child(format!(
-                                    "{} · {}",
-                                    message.author_name, message.created_at
-                                )))
-                                .child(
-                                    div()
-                                        .id(format!("message-text-{}", message.id))
-                                        .test_support()
-                                        .child(SelectableText::new(
-                                            format!("text-{}", message.id),
-                                            message.text.clone(),
-                                        )),
+                    match self.conversation.older.get(id) {
+                        Some(Older::Loading) => history = history.child("Loading older messages…"),
+                        Some(Older::Failed(error)) => {
+                            let target = view.clone();
+                            history = history.child(
+                                div().child(format!("Older messages: {error}")).child(
+                                    Button::new("retry-older")
+                                        .label("Retry older messages")
+                                        .on_click(move |_, _, cx| {
+                                            let _ =
+                                                target.update(cx, |view, cx| view.retry_older(cx));
+                                        }),
                                 ),
-                        );
+                            );
+                        }
+                        Some(Older::Exhausted) => history = history.child("Start of conversation."),
+                        _ => {}
                     }
+                    // Server order is newest-first. Reverse for a chronological scroll surface;
+                    // ListState::splice preserves the reader's anchor across variable heights.
+                    let rows = messages.iter().rev().cloned().collect::<Vec<_>>();
+                    history = history.child(
+                        div().id("history").test_support().flex_1().min_h_0().child(
+                            list(self.history_list.clone(), move |ix, _, _| {
+                                let message = &rows[ix];
+                                div()
+                                    .id(format!("message-{}", message.id))
+                                    .aria_label(message.text.clone())
+                                    .test_support()
+                                    .w_full()
+                                    .p_2()
+                                    .flex()
+                                    .flex_col()
+                                    .child(div().text_color(rgb(theme::MUTED)).child(format!(
+                                        "{} · {}",
+                                        message.author_name, message.created_at
+                                    )))
+                                    .child(
+                                        div()
+                                            .id(format!("message-text-{}", message.id))
+                                            .test_support()
+                                            .child(SelectableText::new(
+                                                format!("text-{}", message.id),
+                                                message.text.clone(),
+                                            )),
+                                    )
+                                    .into_any_element()
+                            })
+                            .size_full(),
+                        ),
+                    );
                 }
             }
         } else if !matches!(self.conversation.channels, Some(Load::Ready(ref items)) if items.is_empty())
@@ -1482,6 +1634,211 @@ mod tests {
             assert_eq!(window.find("login").label(), Some("Log in"));
             assert!(view.read(cx).conversation.channels.is_none());
             assert!(view.read(cx).conversation.selected.is_none());
+        });
+    }
+
+    type PageReply = async_channel::Sender<Result<crate::conversation::Page, AuthError>>;
+    struct PagedAuth(std::sync::mpsc::Sender<(Option<String>, PageReply)>);
+    impl AuthApi for PagedAuth {
+        fn signup(
+            &self,
+            server: String,
+            user: String,
+            password: String,
+        ) -> ApiFuture<Result<Login, AuthError>> {
+            TestAuth.signup(server, user, password)
+        }
+        fn login(
+            &self,
+            server: String,
+            user: String,
+            password: String,
+        ) -> ApiFuture<Result<Login, AuthError>> {
+            TestAuth.login(server, user, password)
+        }
+        fn logout(&self, server: String, token: String) -> ApiFuture<Result<(), AuthError>> {
+            TestAuth.logout(server, token)
+        }
+        fn channels(
+            &self,
+            server: String,
+            token: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
+            TestAuth.channels(server, token)
+        }
+        fn create_channel(
+            &self,
+            server: String,
+            token: String,
+            name: String,
+        ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
+            TestAuth.create_channel(server, token, name)
+        }
+        fn history(
+            &self,
+            _: String,
+            _: String,
+            _: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
+            Box::pin(async { unreachable!() })
+        }
+        fn history_page(
+            &self,
+            _: String,
+            _: String,
+            _: String,
+            before: Option<String>,
+        ) -> ApiFuture<Result<crate::conversation::Page, AuthError>> {
+            let tx = self.0.clone();
+            Box::pin(async move {
+                let (reply, rx) = async_channel::bounded(1);
+                tx.send((before, reply)).unwrap();
+                rx.recv().await.unwrap()
+            })
+        }
+    }
+
+    #[gpui_kit::test]
+    fn production_wheel_requests_older_and_keeps_reader_at_same_viewport_y(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let (tx, requests) = std::sync::mpsc::channel();
+        let stored = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let saved = stored.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(PagedAuth(tx))));
+            *saved.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view: gpui_kit::Entity<Hamlet> = stored.borrow().as_ref().unwrap().clone();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        let (cursor, reply) = requests
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(cursor, None);
+        let message = |ix: i32| crate::conversation::Message {
+            id: ix.to_string(),
+            channel_id: "000000000000001".into(),
+            author_id: "42".into(),
+            author_name: "Ada".into(),
+            text: if ix % 2 == 0 {
+                "a long line that wraps at narrow widths\nwith another line".into()
+            } else {
+                "short".into()
+            },
+            created_at: "same".into(),
+        };
+        reply
+            .send_blocking(Ok(crate::conversation::Page {
+                items: (1..=40).rev().map(message).collect(),
+                next_cursor: Some("server cursor only".into()),
+            }))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(view.read(cx).history_list.logical_scroll_top().item_ix > 1);
+            // Find the threshold by scrolling the actual list, not by fixing screen coordinates.
+            for _ in 0..100 {
+                if view.read(cx).history_list.logical_scroll_top().item_ix <= 1 {
+                    break;
+                }
+                window.scroll(
+                    "history",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(90.))),
+                    cx,
+                );
+                window.render_frame(cx);
+            }
+            assert!(
+                view.read(cx).history_list.logical_scroll_top().item_ix <= 1,
+                "offset={:?} end={:?}",
+                view.read(cx).history_list.logical_scroll_top(),
+                view.read(cx).history_list.is_scrolled_to_end()
+            );
+            window.scroll(
+                "history",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(90.))),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let (cursor, reply) = requests
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(cursor.as_deref(), Some("server cursor only"));
+        let anchor = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let saved_anchor = anchor.clone();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            // Repeated wheel input cannot start a second in-flight request.
+            window.scroll(
+                "history",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(90.))),
+                cx,
+            );
+            window.render_frame(cx);
+            assert!(requests.try_recv().is_err());
+            let ix = view.read(cx).history_list.logical_scroll_top().item_ix;
+            let id = format!("message-{}", ix + 1);
+            *saved_anchor.borrow_mut() = Some((id.clone(), window.find(id).bounds().origin.y, ix));
+        });
+        reply.send_blocking(Err(AuthError::Unavailable)).unwrap();
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("retry-older").label(),
+                Some("Retry older messages")
+            );
+            window.scroll(
+                "history",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(90.))),
+                cx,
+            );
+            window.render_frame(cx);
+            assert!(
+                requests.try_recv().is_err(),
+                "failed pages must not retry on wheel input"
+            );
+            window.click("retry-older", cx);
+        });
+        cx.run_until_parked();
+        let (cursor, retry) = requests
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(cursor.as_deref(), Some("server cursor only"));
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            let ix = view.read(cx).history_list.logical_scroll_top().item_ix;
+            let id = format!("message-{}", ix + 1);
+            *anchor.borrow_mut() = Some((id.clone(), window.find(id).bounds().origin.y, ix));
+        });
+        retry
+            .send_blocking(Ok(crate::conversation::Page {
+                items: vec![message(1), message(0), message(-1)],
+                next_cursor: None,
+            }))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            let (id, y, ix) = anchor.borrow().clone().unwrap();
+            assert_eq!(
+                view.read(cx).history_list.logical_scroll_top().item_ix,
+                ix + 2
+            );
+            assert_eq!(window.find(id).bounds().origin.y, y);
+            assert!(requests.try_recv().is_err());
         });
     }
 

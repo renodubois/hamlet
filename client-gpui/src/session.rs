@@ -1,4 +1,4 @@
-use crate::conversation::{Channel, Message};
+use crate::conversation::{Channel, Message, Page};
 use std::sync::Arc;
 
 pub const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8081";
@@ -59,6 +59,22 @@ pub trait AuthApi: Send + Sync {
         token: String,
         channel_id: String,
     ) -> ApiFuture<Result<Vec<Message>, AuthError>>;
+    fn history_page(
+        &self,
+        server: String,
+        token: String,
+        channel_id: String,
+        before: Option<String>,
+    ) -> ApiFuture<Result<Page, AuthError>> {
+        let _ = before;
+        let history = self.history(server, token, channel_id);
+        Box::pin(async move {
+            history.await.map(|items| Page {
+                items,
+                next_cursor: None,
+            })
+        })
+    }
 }
 
 impl AuthError {
