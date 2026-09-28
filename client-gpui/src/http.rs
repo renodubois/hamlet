@@ -119,7 +119,68 @@ async fn protected_response<T: serde::de::DeserializeOwned>(
     }
 }
 
+async fn decode_auth(response: reqwest::Response, success: StatusCode) -> Result<Login, AuthError> {
+    if response.status() == success {
+        let wire: WireLogin = response
+            .json()
+            .await
+            .map_err(|_| AuthError::InvalidResponse)?;
+        if wire.access_token.is_empty() || wire.user.id.is_empty() || wire.user.username.is_empty()
+        {
+            return Err(AuthError::InvalidResponse);
+        }
+        return Ok(Login {
+            user: User {
+                id: wire.user.id,
+                username: wire.user.username,
+            },
+            token: wire.access_token,
+            expires_at: wire.expires_at.timestamp(),
+        });
+    }
+    let status = response.status();
+    if status == StatusCode::UNAUTHORIZED
+        || status == StatusCode::BAD_REQUEST
+        || status == StatusCode::CONFLICT
+    {
+        let body: WireError = response
+            .json()
+            .await
+            .map_err(|_| AuthError::InvalidResponse)?;
+        return match (status, body.error.code.as_str()) {
+            (StatusCode::UNAUTHORIZED, "unauthorized") => Err(AuthError::InvalidCredentials),
+            (StatusCode::BAD_REQUEST, "bad_request") => Err(AuthError::InvalidInput),
+            (StatusCode::CONFLICT, "conflict") if success == StatusCode::CREATED => {
+                Err(AuthError::Conflict)
+            }
+            _ => Err(AuthError::InvalidResponse),
+        };
+    }
+    Err(AuthError::Unavailable)
+}
+
 impl AuthApi for HttpAuth {
+    fn signup(
+        &self,
+        server: String,
+        username: String,
+        password: String,
+    ) -> ApiFuture<Result<Login, AuthError>> {
+        let client = self.client.clone();
+        Box::pin(async move {
+            let url = validate_server(&server)?
+                .join("api/v1/auth/signup")
+                .map_err(|_| AuthError::InvalidResponse)?;
+            let response = client
+                .post(url)
+                .json(&serde_json::json!({"username": username, "password": password}))
+                .send()
+                .await
+                .map_err(|_| AuthError::Unavailable)?;
+            decode_auth(response, StatusCode::CREATED).await
+        })
+    }
+
     fn login(
         &self,
         server: String,
@@ -138,43 +199,7 @@ impl AuthApi for HttpAuth {
                 .send()
                 .await
                 .map_err(|_| AuthError::Unavailable)?;
-            if response.status() == StatusCode::OK {
-                let wire: WireLogin = response
-                    .json()
-                    .await
-                    .map_err(|_| AuthError::InvalidResponse)?;
-                if wire.access_token.is_empty()
-                    || wire.user.id.is_empty()
-                    || wire.user.username.is_empty()
-                {
-                    return Err(AuthError::InvalidResponse);
-                }
-                return Ok(Login {
-                    user: User {
-                        id: wire.user.id,
-                        username: wire.user.username,
-                    },
-                    token: wire.access_token,
-                    expires_at: wire.expires_at.timestamp(),
-                });
-            }
-            if response.status() == StatusCode::UNAUTHORIZED
-                || response.status() == StatusCode::BAD_REQUEST
-            {
-                let status = response.status();
-                let body: WireError = response
-                    .json()
-                    .await
-                    .map_err(|_| AuthError::InvalidResponse)?;
-                return match (status, body.error.code.as_str()) {
-                    (StatusCode::UNAUTHORIZED, "unauthorized") => {
-                        Err(AuthError::InvalidCredentials)
-                    }
-                    (StatusCode::BAD_REQUEST, "bad_request") => Err(AuthError::InvalidInput),
-                    _ => Err(AuthError::InvalidResponse),
-                };
-            }
-            Err(AuthError::Unavailable)
+            decode_auth(response, StatusCode::OK).await
         })
     }
 
@@ -366,6 +391,21 @@ mod tests {
         ));
         captured.join().unwrap();
     }
+    #[tokio::test]
+    async fn unexpected_conflict_on_login_is_not_a_signup_error() {
+        let (url, captured) = server(response(
+            "409 Conflict",
+            r#"{"error":{"code":"conflict","message":"Already exists"}}"#,
+        ));
+        assert!(matches!(
+            HttpAuth::new()
+                .login(url, "ada".into(), "pass".into())
+                .await,
+            Err(AuthError::InvalidResponse)
+        ));
+        captured.join().unwrap();
+    }
+
     #[tokio::test]
     async fn logout_sends_bearer_and_redirects_are_not_followed() {
         let (url, captured) =
@@ -622,6 +662,105 @@ mod tests {
             Err(AuthError::AlreadyInvalid)
         ));
         server_handle.stop(true).await;
+    }
+
+    #[actix_web::test]
+    async fn signup_against_rewrite_routes_returns_usable_session_and_rejections() {
+        use actix_web::{App, HttpServer, web};
+        use hamlet::{connect_to_database, routes};
+        let dir = tempfile::tempdir().unwrap();
+        let db = connect_to_database(&format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("signup.db").display()
+        ))
+        .await
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = HttpServer::new(move || {
+            App::new()
+                .app_data(web::Data::new(db.clone()))
+                .configure(routes)
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+        let handle = server.handle();
+        actix_web::rt::spawn(server);
+        let auth: &dyn AuthApi = &HttpAuth::new();
+        let created = auth
+            .signup(url.clone(), "Alice_1".into(), "long password".into())
+            .await
+            .unwrap();
+        assert_eq!(created.user.username, "Alice_1");
+        assert!(!created.user.id.is_empty());
+        assert!(created.expires_at > chrono::Utc::now().timestamp());
+        let me = Client::new()
+            .get(format!("{url}/api/v1/me"))
+            .bearer_auth(&created.token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(me.status(), StatusCode::OK);
+        let user: serde_json::Value = me.json().await.unwrap();
+        assert_eq!(user["id"], created.user.id);
+        assert!(matches!(
+            auth.signup(url.clone(), "aLiCe_1".into(), "another password".into())
+                .await,
+            Err(AuthError::Conflict)
+        ));
+        assert!(matches!(
+            auth.signup(url.clone(), "bad!".into(), "long password".into())
+                .await,
+            Err(AuthError::InvalidInput)
+        ));
+        assert!(matches!(
+            auth.signup(url.clone(), "NewUser".into(), "short".into())
+                .await,
+            Err(AuthError::InvalidInput)
+        ));
+        handle.stop(true).await;
+    }
+
+    #[tokio::test]
+    async fn signup_redirect_does_not_forward_password() {
+        let destination = TcpListener::bind("127.0.0.1:0").unwrap();
+        destination.set_nonblocking(true).unwrap();
+        let reply = format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{}/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            destination.local_addr().unwrap()
+        );
+        let (url, captured) = server(reply);
+        assert!(matches!(
+            HttpAuth::new()
+                .signup(url, "Alice".into(), "long password".into())
+                .await,
+            Err(AuthError::Unavailable)
+        ));
+        let request = captured.join().unwrap();
+        assert!(request.starts_with("POST /api/v1/auth/signup "));
+        assert!(destination.accept().is_err());
+        assert!(matches!(
+            HttpAuth::new()
+                .signup(
+                    "http://example.com".into(),
+                    "Alice".into(),
+                    "long password".into()
+                )
+                .await,
+            Err(AuthError::InvalidResponse)
+        ));
+        let (url, captured) = server(response(
+            "200 OK",
+            r#"{"user":{"id":"42","username":"Alice"},"access_token":"abc","expires_at":"2099-01-01T00:00:00Z"}"#,
+        ));
+        assert!(matches!(
+            HttpAuth::new()
+                .signup(url, "Alice".into(), "long password".into())
+                .await,
+            Err(AuthError::Unavailable)
+        ));
+        captured.join().unwrap();
     }
 
     #[test]

@@ -1,6 +1,6 @@
-# Conversation presentation (#38)
+# Presentation (#38 conversation, #39 signup)
 
-The pane layout and semantic IDs are in `src/main.rs`, `Hamlet::conversation_panes`; theme colors and bundled icon mapping are in its `theme` module. The independent channel and conversation decisions are in `src/conversation.rs`; wire decoding and protected HTTP calls are in `src/http.rs`.
+The pane layout and semantic IDs are in `src/main.rs`, `Hamlet::conversation_panes`; theme colors and bundled icon mapping are in its `theme` module. The #39 signup/login form layout and semantic control IDs (`auth-mode`, `signup`, `login`, `auth-feedback`) are in `Hamlet::render`; signup validation and session decisions are in `src/session.rs` and the wire contract is in `src/http.rs`. The headless tests interact with Kit controls by these IDs and observable labels/feedback, not with colors, spacing, or form layout. Redesign presentation without changing those behaviors. The independent channel and conversation decisions are in `src/conversation.rs`; wire decoding and protected HTTP calls are in `src/http.rs`.
 
 The channel list is in server order, initially selects its first channel, and only requests the newest page for the selected channel. Selecting another channel retains already loaded data for re-selection. There is no send, refresh, or older-page navigation yet. Message rows use Kit `SelectableText` with plain text and line breaks. Sessions and conversations remain memory-only.
 

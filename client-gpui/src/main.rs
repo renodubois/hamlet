@@ -51,6 +51,7 @@ struct Hamlet {
     password: Entity<InputBaseState<InputMode>>,
     _server_subscription: Subscription,
     clear_password: bool,
+    signup: bool,
 }
 
 impl Hamlet {
@@ -78,11 +79,20 @@ impl Hamlet {
             password,
             _server_subscription: subscription,
             clear_password: false,
+            signup: false,
         }
     }
 
     fn login_disabled(&self) -> bool {
         self.session.pending
+    }
+
+    fn set_signup(&mut self, signup: bool, cx: &mut Context<Self>) {
+        if !self.session.pending && self.signup != signup {
+            self.session.cancel_pending();
+            self.signup = signup;
+            cx.notify();
+        }
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
@@ -98,7 +108,12 @@ impl Hamlet {
         }
         self.session.username = self.username.read(cx).text().to_string();
         self.session.password = self.password.read(cx).text().to_string();
-        let Some(request) = self.session.submit() else {
+        let signup = self.signup;
+        let Some(request) = (if signup {
+            self.session.submit_signup()
+        } else {
+            self.session.submit()
+        }) else {
             cx.notify();
             return;
         };
@@ -108,41 +123,23 @@ impl Hamlet {
         let username = request.username.clone();
         let password = request.password.clone();
         runtime().spawn(async move {
-            let result = api.login(server, username, password).await;
+            let result = if signup {
+                api.signup(server, username, password).await
+            } else {
+                api.login(server, username, password).await
+            };
             let _ = send.send(result).await;
         });
         cx.spawn(async move |weak, cx| {
             if let Ok(result) = receive.recv().await {
                 let _ = weak.update_in(cx, |view, window, cx| {
-                    let accepted = view.session.complete_login(request, result, now());
-                    if let Some(session) = view.session.active.as_ref().filter(|_| accepted) {
-                        let generation = view.session.session_generation().unwrap();
-                        let expires_at = session.expires_at;
-                        let (send, receive) = async_channel::bounded(1);
-                        runtime().spawn(async move {
-                            tokio::time::sleep(Duration::from_secs(
-                                expires_at.saturating_sub(now()) as u64,
-                            ))
-                            .await;
-                            let _ = send.send(()).await;
-                        });
-                        cx.spawn(async move |weak, cx| {
-                            if receive.recv().await.is_ok() {
-                                let _ = weak.update(cx, |view, cx| {
-                                    if view.session.session_generation() == Some(generation) {
-                                        view.session.expire(now());
-                                        if view.session.active.is_none() {
-                                            view.conversation.clear();
-                                        }
-                                        cx.notify();
-                                    }
-                                });
-                            }
-                        })
-                        .detach();
-                        view.password
-                            .update(cx, |input, cx| input.set_value("", window, cx));
-                        view.load_channels(cx);
+                    let accepted = if signup {
+                        view.session.complete_signup(request, result, now())
+                    } else {
+                        view.session.complete_login(request, result, now())
+                    };
+                    if accepted && view.session.active.is_some() {
+                        view.enter_authenticated(window, cx);
                     }
                     cx.notify();
                 });
@@ -150,6 +147,36 @@ impl Hamlet {
         })
         .detach();
         cx.notify();
+    }
+
+    fn enter_authenticated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(session) = self.session.active.as_ref() {
+            let generation = self.session.session_generation().unwrap();
+            let expires_at = session.expires_at;
+            let (send, receive) = async_channel::bounded(1);
+            runtime().spawn(async move {
+                tokio::time::sleep(Duration::from_secs(expires_at.saturating_sub(now()) as u64))
+                    .await;
+                let _ = send.send(()).await;
+            });
+            cx.spawn(async move |weak, cx| {
+                if receive.recv().await.is_ok() {
+                    let _ = weak.update(cx, |view, cx| {
+                        if view.session.session_generation() == Some(generation) {
+                            view.session.expire(now());
+                            if view.session.active.is_none() {
+                                view.conversation.clear();
+                            }
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+            .detach();
+            self.password
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            self.load_channels(cx);
+        }
     }
 
     fn load_channels(&mut self, cx: &mut Context<Self>) {
@@ -270,10 +297,15 @@ impl Render for Hamlet {
                 .child(self.conversation_panes(cx));
         } else {
             let login_view = view.clone();
+            let toggle_view = view.clone();
             surface = surface
                 .justify_center()
                 .items_center()
-                .child(div().text_xl().child("Log in to Hamlet"))
+                .child(div().text_xl().child(if self.signup {
+                    "Sign up for Hamlet"
+                } else {
+                    "Log in to Hamlet"
+                }))
                 .child(
                     div().w(px(360.)).child("Server URL").child(
                         Input::new(&self.server)
@@ -296,15 +328,34 @@ impl Render for Hamlet {
                     ),
                 )
                 .child(
-                    Button::new("login")
+                    Button::new(if self.signup { "signup" } else { "login" })
                         .disabled(self.login_disabled())
                         .label(if self.session.pending {
-                            "Signing in…"
+                            if self.signup {
+                                "Creating user…"
+                            } else {
+                                "Signing in…"
+                            }
+                        } else if self.signup {
+                            "Create user"
                         } else {
                             "Log in"
                         })
                         .on_click(move |_, _, cx| {
                             let _ = login_view.update(cx, |view, cx| view.submit(cx));
+                        }),
+                )
+                .child(
+                    Button::new("auth-mode")
+                        .disabled(self.session.pending)
+                        .label(if self.signup {
+                            "Have a user? Log in"
+                        } else {
+                            "New user? Sign up"
+                        })
+                        .on_click(move |_, _, cx| {
+                            let _ = toggle_view
+                                .update(cx, |view, cx| view.set_signup(!view.signup, cx));
                         }),
                 )
                 .child(div().child(
@@ -632,6 +683,14 @@ mod tests {
 
     struct TestAuth;
     impl AuthApi for TestAuth {
+        fn signup(
+            &self,
+            _: String,
+            username: String,
+            _: String,
+        ) -> ApiFuture<Result<Login, AuthError>> {
+            self.login(String::new(), username, String::new())
+        }
         fn login(
             &self,
             _: String,
@@ -696,6 +755,10 @@ mod tests {
 
     struct PendingAuth(Arc<AtomicUsize>);
     impl AuthApi for PendingAuth {
+        fn signup(&self, _: String, _: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(std::future::pending())
+        }
         fn login(&self, _: String, _: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Box::pin(std::future::pending())
@@ -764,6 +827,219 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    struct SignupReject {
+        error: AuthError,
+        submissions: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    }
+    impl AuthApi for SignupReject {
+        fn signup(
+            &self,
+            _: String,
+            username: String,
+            password: String,
+        ) -> ApiFuture<Result<Login, AuthError>> {
+            self.submissions.lock().unwrap().push((username, password));
+            let error = self.error.clone();
+            Box::pin(async move { Err(error) })
+        }
+        fn login(&self, _: String, _: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
+            Box::pin(async { unreachable!() })
+        }
+        fn logout(&self, _: String, _: String) -> ApiFuture<Result<(), AuthError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn channels(
+            &self,
+            _: String,
+            _: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
+            Box::pin(async { unreachable!() })
+        }
+        fn history(
+            &self,
+            _: String,
+            _: String,
+            _: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
+            Box::pin(async { unreachable!() })
+        }
+    }
+
+    #[gpui_kit::test]
+    fn signup_rejection_keeps_form_and_reports_uncertainty(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        for (error, expected) in [
+            (AuthError::Conflict, "already exists"),
+            (AuthError::Unavailable, "may have succeeded"),
+        ] {
+            let submissions = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let captured = submissions.clone();
+            let (_, cx) = cx.add_window_view(|window, cx| {
+                let view = cx.new(|cx| {
+                    Hamlet::new(
+                        window,
+                        cx,
+                        Arc::new(SignupReject {
+                            error,
+                            submissions: captured,
+                        }),
+                    )
+                });
+                Root::new(view, window, cx)
+            });
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                window.click("auth-mode", cx);
+                window.click("username", cx);
+                window.input("Alice_1", cx);
+                window.click("password", cx);
+                window.input("long password", cx);
+                window.click("signup", cx);
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                assert!(
+                    window
+                        .find("auth-feedback")
+                        .label()
+                        .unwrap()
+                        .contains(expected)
+                );
+                assert_eq!(window.find("username").value(), Some("Alice_1"));
+                assert_eq!(window.find("signup").label(), Some("Create user"));
+                // A deliberate correction submits through the same controls without retyping
+                // the password; the outward request proves recoverable input survived.
+                window.click("username", cx);
+                window.press("ctrl-a", cx);
+                window.input("Alice_2", cx);
+                window.click("signup", cx);
+            });
+            cx.run_until_parked();
+            assert_eq!(
+                submissions.lock().unwrap().as_slice(),
+                &[
+                    ("Alice_1".into(), "long password".into()),
+                    ("Alice_2".into(), "long password".into())
+                ]
+            );
+        }
+    }
+
+    #[gpui_kit::test]
+    fn signup_form_supports_keyboard_focus(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(TestAuth)));
+            Root::new(view, window, cx)
+        });
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("auth-mode", cx);
+            window.click("server-url", cx);
+            assert_eq!(window.find("server-url").focused(), Some(true));
+            window.press("tab", cx);
+            assert_eq!(window.find("username").focused(), Some(true));
+            window.input("Alice", cx);
+            assert_eq!(window.find("username").value(), Some("Alice"));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn signup_controls_validate_and_enter_conversation(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(|window, cx| Hamlet::new(window, cx, Arc::new(TestAuth)));
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("auth-mode", cx);
+            window.render_frame(cx);
+            assert_eq!(window.find("signup").label(), Some("Create user"));
+            window.click("username", cx);
+            window.input("bad!", cx);
+            window.click("password", cx);
+            window.input("short", cx);
+            window.click("signup", cx);
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find("auth-feedback")
+                    .label()
+                    .unwrap()
+                    .contains("3–32")
+            );
+            window.click("username", cx);
+            window.press("ctrl-a", cx);
+            window.input("Alice_1", cx);
+            window.click("signup", cx);
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find("auth-feedback")
+                    .label()
+                    .unwrap()
+                    .contains("8–256")
+            );
+            window.click("password", cx);
+            window.press("ctrl-a", cx);
+            window.input("long password", cx);
+            window.click("signup", cx);
+            window.render_frame(cx);
+            assert_eq!(window.find("signup").label(), Some("Creating user…"));
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find("session-status")
+                    .label()
+                    .unwrap()
+                    .contains("Alice_1")
+            );
+            assert_eq!(
+                window.find("message-000000000000001").label(),
+                Some("first line\nsecond line")
+            );
+            window.click("logout", cx);
+            window.render_frame(cx);
+            assert!(window.find("password").value().is_none_or(str::is_empty));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn pending_signup_is_inert_and_preserves_editable_inputs(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(PendingAuth(calls.clone()))));
+            Root::new(view, window, cx)
+        });
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("auth-mode", cx);
+            window.click("username", cx);
+            window.input("Alice", cx);
+            window.click("password", cx);
+            window.input("long password", cx);
+            window.click("signup", cx);
+            window.render_frame(cx);
+            window.click("signup", cx);
+            window.render_frame(cx);
+            assert_eq!(window.find("signup").label(), Some("Creating user…"));
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while calls.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        cx.update(|window, cx| {
+            window.click("auth-mode", cx);
+            window.render_frame(cx);
+            assert_eq!(window.find("signup").label(), Some("Creating user…"));
+            assert_eq!(window.find("username").value(), Some("Alice"));
+        });
     }
 
     #[gpui_kit::test]

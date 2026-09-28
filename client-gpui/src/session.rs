@@ -20,6 +20,7 @@ pub struct Login {
 pub enum AuthError {
     InvalidCredentials,
     InvalidInput,
+    Conflict,
     Unavailable,
     InvalidResponse,
     AlreadyInvalid,
@@ -32,6 +33,12 @@ pub type ApiFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 
 // This is the view's behavior boundary. Only the HTTP adapter knows bearer headers or JSON.
 pub trait AuthApi: Send + Sync {
     fn login(
+        &self,
+        server: String,
+        username: String,
+        password: String,
+    ) -> ApiFuture<Result<Login, AuthError>>;
+    fn signup(
         &self,
         server: String,
         username: String,
@@ -53,6 +60,7 @@ impl AuthError {
         match self {
             Self::AlreadyInvalid => "Session rejected. Please log in again.",
             Self::InvalidInput => "The server rejected the request.",
+            Self::Conflict => "Username already exists.",
             Self::InvalidCredentials => "Credentials were rejected.",
             Self::InvalidResponse => "The server returned an invalid response.",
             Self::Unavailable => "Could not reach the server. Check the address and try again.",
@@ -125,27 +133,75 @@ impl AppSession {
     }
 
     pub fn submit(&mut self) -> Option<LoginRequest> {
-        if self.pending || self.active.is_some() {
-            return None;
-        }
-        if crate::http::validate_server(&self.server).is_err() {
-            self.feedback =
-                Some("Use an HTTPS server URL (HTTP is allowed only for loopback).".into());
+        if !self.validate_submission() {
             return None;
         }
         if self.username.trim().is_empty() || self.password.is_empty() {
             self.feedback = Some("Enter a username and password.".into());
             return None;
         }
+        Some(self.begin_submission())
+    }
+
+    pub fn submit_signup(&mut self) -> Option<LoginRequest> {
+        if !self.validate_submission() {
+            return None;
+        }
+        // Mirror the rewrite server's byte-based limits; the server remains authoritative.
+        if !(3..=32).contains(&self.username.len())
+            || !self
+                .username
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.')
+        {
+            self.feedback =
+                Some("Username must be 3–32 ASCII letters, digits, underscores or dots.".into());
+            return None;
+        }
+        if !(8..=256).contains(&self.password.len()) {
+            self.feedback = Some("Password must be 8–256 bytes long.".into());
+            return None;
+        }
+        Some(self.begin_submission())
+    }
+
+    fn validate_submission(&mut self) -> bool {
+        if self.pending || self.active.is_some() {
+            return false;
+        }
+        if crate::http::validate_server(&self.server).is_err() {
+            self.feedback =
+                Some("Use an HTTPS server URL (HTTP is allowed only for loopback).".into());
+            return false;
+        }
+        true
+    }
+
+    fn begin_submission(&mut self) -> LoginRequest {
         self.generation = self.generation.wrapping_add(1);
         self.pending = true;
         self.feedback = None;
-        Some(LoginRequest {
+        LoginRequest {
             generation: self.generation,
             server: self.server.clone(),
             username: self.username.clone(),
             password: self.password.clone(),
-        })
+        }
+    }
+
+    pub fn cancel_pending(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.pending = false;
+        self.feedback = None;
+    }
+
+    pub fn complete_signup(
+        &mut self,
+        request: LoginRequest,
+        result: Result<Login, AuthError>,
+        now: i64,
+    ) -> bool {
+        self.complete_auth(request, result, now, true)
     }
 
     pub fn complete_login(
@@ -153,6 +209,16 @@ impl AppSession {
         request: LoginRequest,
         result: Result<Login, AuthError>,
         now: i64,
+    ) -> bool {
+        self.complete_auth(request, result, now, false)
+    }
+
+    fn complete_auth(
+        &mut self,
+        request: LoginRequest,
+        result: Result<Login, AuthError>,
+        now: i64,
+        signup: bool,
     ) -> bool {
         if request.generation != self.generation || request.server != self.server || !self.pending {
             return false;
@@ -170,26 +236,34 @@ impl AppSession {
                 self.feedback = None;
             }
             Ok(_) | Err(AuthError::InvalidResponse) => {
-                self.feedback = Some("The server returned an invalid login response.".into())
+                self.feedback = Some(if signup {
+                    "Could not confirm signup from the server response; it may have succeeded. Check before resubmitting.".into()
+                } else {
+                    "The server returned an invalid login response.".into()
+                })
+            }
+            Err(AuthError::Conflict) => {
+                self.feedback = Some("Username already exists. Choose another username or log in.".into())
             }
             Err(AuthError::InvalidCredentials) => {
                 self.feedback = Some("Incorrect username or password.".into())
             }
             Err(AuthError::InvalidInput) => {
-                self.feedback = Some(
-                    "The server rejected the login input. Check your username and password.".into(),
-                )
+                self.feedback = Some(format!("The server rejected the {} input. Check your username and password.", if signup { "signup" } else { "login" }))
             }
             Err(AuthError::Unavailable) => {
-                self.feedback =
-                    Some("Could not reach the server. Check the address and try again.".into())
+                self.feedback = Some(if signup {
+                    "Could not confirm signup; it may have succeeded. Check the server before submitting again."
+                } else {
+                    "Could not reach the server. Check the address and try again."
+                }.into())
             }
             Err(AuthError::AlreadyInvalid) => {
                 self.feedback =
                     Some("The server rejected this session. Please log in again.".into())
             }
             Err(AuthError::NotFound | AuthError::ServerFailure) => {
-                self.feedback = Some("The server could not complete login.".into())
+                self.feedback = Some(if signup { "The server could not confirm signup; it may have succeeded. Check before retrying." } else { "The server could not complete login." }.into())
             }
         }
         true
@@ -250,6 +324,9 @@ mod tests {
     use super::*;
     struct Controlled;
     impl AuthApi for Controlled {
+        fn signup(&self, _: String, _: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
+            Box::pin(async { Err(AuthError::Unavailable) })
+        }
         fn login(&self, _: String, _: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
             Box::pin(async { Err(AuthError::Unavailable) })
         }
@@ -299,6 +376,46 @@ mod tests {
         app.complete_login(request, Ok(login("alice")), 0);
         assert_eq!(app.active.as_ref().unwrap().user.username, "alice");
         assert!(app.password.is_empty());
+    }
+    #[test]
+    fn signup_enters_session_and_preserves_inputs_on_rejection() {
+        let mut app = app();
+        app.username = "bad!".into();
+        app.password = "short".into();
+        assert!(app.submit_signup().is_none());
+        assert!(app.feedback.as_deref().unwrap().contains("3–32"));
+        app.username = "Alice_1".into();
+        app.password = "long password".into();
+        let request = app.submit_signup().unwrap();
+        assert!(app.submit_signup().is_none());
+        assert!(app.complete_signup(request, Err(AuthError::Conflict), 0));
+        assert!(app.feedback.as_deref().unwrap().contains("already exists"));
+        assert_eq!(app.password, "long password");
+        let request = app.submit_signup().unwrap();
+        assert!(app.complete_signup(request, Err(AuthError::Unavailable), 0));
+        assert!(
+            app.feedback
+                .as_deref()
+                .unwrap()
+                .contains("may have succeeded")
+        );
+        let request = app.submit_signup().unwrap();
+        assert!(app.complete_signup(request, Ok(login("Alice_1")), 0));
+        assert_eq!(app.active.as_ref().unwrap().user.username, "Alice_1");
+        assert!(app.password.is_empty());
+    }
+    #[test]
+    fn stale_signup_cannot_replace_new_session_or_feedback() {
+        let mut app = app();
+        app.username = "Alice".into();
+        app.password = "password".into();
+        let old = app.submit_signup().unwrap();
+        app.cancel_pending();
+        let newer = app.submit().unwrap();
+        app.complete_login(newer, Ok(login("new")), 0);
+        assert!(!app.complete_signup(old, Err(AuthError::Conflict), 0));
+        assert_eq!(app.active.as_ref().unwrap().user.username, "new");
+        assert!(app.feedback.is_none());
     }
     #[test]
     fn stale_outcomes_cannot_replace_or_invalidate_newer_session() {

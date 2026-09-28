@@ -150,6 +150,9 @@ mod tests {
 
     struct Stub;
     impl AuthApi for Stub {
+        fn signup(&self, _: String, _: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
+            Box::pin(async { unreachable!() })
+        }
         fn login(&self, _: String, _: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
             Box::pin(async { unreachable!() })
         }

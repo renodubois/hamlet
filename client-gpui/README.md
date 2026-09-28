@@ -1,4 +1,4 @@
-# GPUI client — Linux feasibility gate (#36), login/logout (#37), reading (#38)
+# GPUI client — Linux feasibility gate (#36), login/logout (#37), reading (#38), signup (#39)
 
 ## #36 Linux feasibility gate (recorded before #37)
 
@@ -34,11 +34,17 @@ After login, the client loads protected text channels in server order, selects t
 
 For this slice use the same build/fmt/clippy/test commands below. The HTTP tests cover protected channels and newest history against unchanged rewrite routes. Real-control headless tests cover selection and text display. Manual native Linux text selection/copy has **not** been verified; headless clipboard testing in the #36 feasibility probe is not a native desktop confirmation.
 
+## #39 Signup and immediate session
+
+Start `server-rewrite` following its README, then from `client-gpui/` run `cargo run --locked`. With the default loopback server URL (`http://127.0.0.1:8081`), select **New user? Sign up**, enter a username (3–32 ASCII letters, digits, `_` or `.`) and password (8–256 bytes), then select **Create user**. The returned session immediately opens the channel/conversation view; no second login is needed. Select **Log out** to leave it. To demonstrate rejection, try the same username with different letter case, or an invalid username/password; inputs remain editable. A network failure does not automatically replay signup: it may have succeeded, so check before resubmitting. Remote servers require HTTPS; redirects are never followed and the eight-second transport timeout applies. Credentials and sessions remain memory-only.
+
+From `client-gpui/`, run `cargo build --locked`, `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked`. Headless tests operate the real signup Kit controls; targeted HTTP tests call the unchanged rewrite-server routes and check the returned bearer token through `/api/v1/me`. Manual native desktop/assistive-technology behavior still requires verification.
+
 ## #37 Login/logout slice
 
 This client starter now has real login/logout controls. Sessions are **memory-only**: closing the app requires logging in again. No password, token, or message data is persisted by the client. The authenticated shell shows the user and server; the #38 reading slice below adds channels and messages.
 
-Start `server-rewrite` following its README, create a user through its `/api/v1/auth/signup` endpoint (this client does not yet offer signup), then from `client-gpui/` run `cargo run --locked`. The login form defaults to `http://127.0.0.1:8081`; change this to the rewrite server's base URL if needed. Enter the existing user's username and password and select **Log in**. The button is disabled while the login request is pending. Select **Log out** to immediately leave the authenticated shell. A failed server revocation leaves you logged out locally and shows a warning; a 401 means the token was already invalid and does **not** confirm a fresh revocation. A known expiry also returns to login. Invalid credentials remain editable for retry.
+Start `server-rewrite` following its README, create a user through its `/api/v1/auth/signup` endpoint (or the #39 signup form above), then from `client-gpui/` run `cargo run --locked`. The login form defaults to `http://127.0.0.1:8081`; change this to the rewrite server's base URL if needed. Enter the existing user's username and password and select **Log in**. The button is disabled while the login request is pending. Select **Log out** to immediately leave the authenticated shell. A failed server revocation leaves you logged out locally and shows a warning; a 401 means the token was already invalid and does **not** confirm a fresh revocation. A known expiry also returns to login. Invalid credentials remain editable for retry.
 
 Only HTTPS is permitted for remote servers; HTTP is limited to localhost or loopback IPs. Certificates are checked normally. Redirects are never followed, so passwords and tokens are not forwarded by a redirect. Login and logout have eight-second request timeouts and run off the UI thread. No automatic request retries occur. Do not use loopback HTTP over untrusted networks.
 
