@@ -1,5 +1,10 @@
+mod conversation;
 mod http;
 mod session;
+
+use conversation::{Conversation, Load, ReadRequest};
+use gpui_kit::base::SelectableText;
+use gpui_kit::prelude::FluentBuilder as _;
 
 use gpui_kit::base::Disableable;
 use gpui_kit::base::input::{InputBaseState, InputEvent, InputMode, InputState};
@@ -12,6 +17,18 @@ use std::{
     sync::{Arc, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+// Presentation tokens and bundled icon mapping live here; pane layout is in render().
+mod theme {
+    pub const BACKGROUND: u32 = 0xf6f7fb;
+    pub const SIDEBAR: u32 = 0xe9edf5;
+    pub const SELECTED: u32 = 0xcddbf5;
+    pub const TEXT: u32 = 0x182338;
+    pub const MUTED: u32 = 0x586477;
+    pub fn channel_icon() -> gpui_kit::assets::IconName {
+        gpui_kit::assets::IconName::Hash
+    }
+}
 
 fn now() -> i64 {
     SystemTime::now()
@@ -27,6 +44,8 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 
 struct Hamlet {
     session: AppSession,
+    conversation: Conversation,
+    history_focus: FocusHandle,
     server: Entity<InputBaseState<InputMode>>,
     username: Entity<InputBaseState<InputMode>>,
     password: Entity<InputBaseState<InputMode>>,
@@ -44,6 +63,7 @@ impl Hamlet {
                 let value = field.read(cx).text().to_string();
                 if view.session.server != value {
                     view.session.change_server(value);
+                    view.conversation.clear();
                     view.clear_password = true;
                     cx.notify();
                 }
@@ -51,6 +71,8 @@ impl Hamlet {
         });
         Self {
             session: AppSession::new(api),
+            conversation: Conversation::default(),
+            history_focus: cx.focus_handle(),
             server,
             username,
             password,
@@ -109,6 +131,9 @@ impl Hamlet {
                                 let _ = weak.update(cx, |view, cx| {
                                     if view.session.session_generation() == Some(generation) {
                                         view.session.expire(now());
+                                        if view.session.active.is_none() {
+                                            view.conversation.clear();
+                                        }
                                         cx.notify();
                                     }
                                 });
@@ -117,6 +142,7 @@ impl Hamlet {
                         .detach();
                         view.password
                             .update(cx, |input, cx| input.set_value("", window, cx));
+                        view.load_channels(cx);
                     }
                     cx.notify();
                 });
@@ -126,7 +152,63 @@ impl Hamlet {
         cx.notify();
     }
 
+    fn load_channels(&mut self, cx: &mut Context<Self>) {
+        if let Some(request) = self.conversation.start(&self.session) {
+            let api = self.session.api.clone();
+            let (send, receive) = async_channel::bounded(1);
+            let work = request.clone();
+            runtime().spawn(async move {
+                let result = api.channels(work.server, work.token).await;
+                let _ = send.send(result).await;
+            });
+            cx.spawn(async move |weak, cx| {
+                if let Ok(result) = receive.recv().await {
+                    let _ = weak.update(cx, |view, cx| {
+                        if let Some(next) =
+                            view.conversation
+                                .complete_channels(&mut view.session, &request, result)
+                        {
+                            view.load_history(next, cx);
+                        }
+                        cx.notify();
+                    });
+                }
+            })
+            .detach();
+        }
+    }
+
+    fn load_history(&mut self, request: ReadRequest, cx: &mut Context<Self>) {
+        let api = self.session.api.clone();
+        let (send, receive) = async_channel::bounded(1);
+        let work = request.clone();
+        runtime().spawn(async move {
+            let result = api
+                .history(work.server, work.token, work.channel_id.unwrap())
+                .await;
+            let _ = send.send(result).await;
+        });
+        cx.spawn(async move |weak, cx| {
+            if let Ok(result) = receive.recv().await {
+                let _ = weak.update(cx, |view, cx| {
+                    view.conversation
+                        .complete_history(&mut view.session, &request, result);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn select_channel(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(request) = self.conversation.select(&self.session, id) {
+            self.load_history(request, cx);
+        }
+        cx.notify();
+    }
+
     fn logout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.conversation.clear();
         if let Some(revocation) = self.session.logout() {
             let api = self.session.api.clone();
             let (send, receive) = async_channel::bounded(1);
@@ -160,35 +242,37 @@ impl Render for Hamlet {
         let view = cx.entity().downgrade();
         let mut surface = div()
             .size_full()
-            .bg(rgb(0xffffff))
+            .bg(rgb(theme::BACKGROUND))
             .flex()
             .flex_col()
-            .justify_center()
-            .items_center()
             .gap_3()
-            .text_color(rgb(0x111111));
+            .text_color(rgb(theme::TEXT));
         if let Some(session) = &self.session.active {
             let label = format!(
                 "Logged in as {} at {}",
                 session.user.username, session.server
             );
-            surface =
-                surface
-                    .child(
-                        div()
-                            .id("session-status")
-                            .aria_label(label.clone())
-                            .test_support()
-                            .child(label),
-                    )
-                    .child(Button::new("logout").label("Log out").on_click(
-                        move |_, window, cx| {
+            surface = surface
+                .child(
+                    div()
+                        .id("session-status")
+                        .aria_label(label.clone())
+                        .test_support()
+                        .child(label),
+                )
+                .child(
+                    Button::new("logout")
+                        .label("Log out")
+                        .on_click(move |_, window, cx| {
                             let _ = view.update(cx, |view, cx| view.logout(window, cx));
-                        },
-                    ));
+                        }),
+                )
+                .child(self.conversation_panes(cx));
         } else {
             let login_view = view.clone();
             surface = surface
+                .justify_center()
+                .items_center()
                 .child(div().text_xl().child("Log in to Hamlet"))
                 .child(
                     div().w(px(360.)).child("Server URL").child(
@@ -237,6 +321,128 @@ impl Render for Hamlet {
             );
         }
         surface
+    }
+}
+
+impl Hamlet {
+    fn conversation_panes(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        let mut sidebar = div()
+            .id("channels")
+            .test_support()
+            .w(px(220.))
+            .h_full()
+            .bg(rgb(theme::SIDEBAR))
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .overflow_y_scroll()
+            .child(div().font_weight(FontWeight::BOLD).child("Text channels"));
+        match &self.conversation.channels {
+            None | Some(Load::Loading) => sidebar = sidebar.child("Loading channels…"),
+            Some(Load::Failed(error)) => sidebar = sidebar.child(format!("Channels: {error}")),
+            Some(Load::Ready(channels)) if channels.is_empty() => {
+                sidebar = sidebar.child("No text channels yet.")
+            }
+            Some(Load::Ready(channels)) => {
+                for channel in channels {
+                    let id = channel.id.clone();
+                    let selected = self.conversation.selected.as_deref() == Some(&id);
+                    let label = format!("# {}", channel.name);
+                    let target = view.clone();
+                    sidebar = sidebar.child(
+                        Button::new(format!("channel-{id}"))
+                            .label(label)
+                            .icon(theme::channel_icon())
+                            .on_click(move |_, _, cx| {
+                                let _ = target.update(cx, |view, cx| view.select_channel(&id, cx));
+                            })
+                            .when(selected, |button| button.bg(rgb(theme::SELECTED))),
+                    );
+                }
+            }
+        }
+        let selected = self.conversation.selected.as_deref();
+        let focus = self.history_focus.clone();
+        let mut history = div()
+            .id("history")
+            .test_support()
+            .track_focus(&self.history_focus)
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                window.focus(&focus, cx)
+            })
+            .flex_1()
+            .h_full()
+            .min_w_0()
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .overflow_y_scroll();
+        if let Some(id) = selected {
+            let name = match &self.conversation.channels {
+                Some(Load::Ready(channels)) => channels
+                    .iter()
+                    .find(|channel| channel.id == id)
+                    .map(|channel| channel.name.as_str())
+                    .unwrap_or("Channel"),
+                _ => "Channel",
+            };
+            history = history.child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::BOLD)
+                    .child(format!("# {name}")),
+            );
+            match self.conversation.history.get(id) {
+                None | Some(Load::Loading) => history = history.child("Loading conversation…"),
+                Some(Load::Failed(error)) => {
+                    history = history.child(format!("Conversation: {error}"))
+                }
+                Some(Load::Ready(messages)) if messages.is_empty() => {
+                    history = history.child("No messages in this channel yet.")
+                }
+                Some(Load::Ready(messages)) => {
+                    for message in messages {
+                        // A stable semantic row ID plus selectable plain text preserves line breaks.
+                        history = history.child(
+                            div()
+                                .id(format!("message-{}", message.id))
+                                .aria_label(message.text.clone())
+                                .test_support()
+                                .w_full()
+                                .p_2()
+                                .flex()
+                                .flex_col()
+                                .child(div().text_color(rgb(theme::MUTED)).child(format!(
+                                    "{} · {}",
+                                    message.author_name, message.created_at
+                                )))
+                                .child(
+                                    div()
+                                        .id(format!("message-text-{}", message.id))
+                                        .test_support()
+                                        .child(SelectableText::new(
+                                            format!("text-{}", message.id),
+                                            message.text.clone(),
+                                        )),
+                                ),
+                        );
+                    }
+                }
+            }
+        } else if !matches!(self.conversation.channels, Some(Load::Ready(ref items)) if items.is_empty())
+        {
+            history = history.child("Select a text channel to read its conversation.");
+        }
+        div()
+            .flex()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .child(sidebar)
+            .child(history)
     }
 }
 
@@ -446,6 +652,46 @@ mod tests {
         fn logout(&self, _: String, _: String) -> ApiFuture<Result<(), AuthError>> {
             Box::pin(async { Ok(()) })
         }
+        fn channels(
+            &self,
+            _: String,
+            _: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
+            Box::pin(async {
+                Ok(vec![
+                    crate::conversation::Channel {
+                        id: "000000000000001".into(),
+                        name: "alpha".into(),
+                    },
+                    crate::conversation::Channel {
+                        id: "000000000000002".into(),
+                        name: "general".into(),
+                    },
+                ])
+            })
+        }
+        fn history(
+            &self,
+            _: String,
+            _: String,
+            id: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
+            Box::pin(async move {
+                Ok(vec![crate::conversation::Message {
+                    id: id.clone(),
+                    channel_id: id.clone(),
+                    author_id: "42".into(),
+                    author_name: "Ada".into(),
+                    text: if id.ends_with('1') {
+                        "first line\nsecond line"
+                    } else {
+                        "other channel"
+                    }
+                    .into(),
+                    created_at: "2026-01-01T00:00:00Z".into(),
+                }])
+            })
+        }
     }
 
     struct PendingAuth(Arc<AtomicUsize>);
@@ -456,6 +702,21 @@ mod tests {
         }
         fn logout(&self, _: String, _: String) -> ApiFuture<Result<(), AuthError>> {
             Box::pin(async { Ok(()) })
+        }
+        fn channels(
+            &self,
+            _: String,
+            _: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
+            Box::pin(async { Ok(vec![]) })
+        }
+        fn history(
+            &self,
+            _: String,
+            _: String,
+            _: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
+            Box::pin(async { Ok(vec![]) })
         }
     }
 
@@ -503,6 +764,86 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[gpui_kit::test]
+    fn real_controls_read_selected_conversation(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(|window, cx| Hamlet::new(window, cx, Arc::new(TestAuth)));
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find("channel-000000000000001")
+                    .label()
+                    .unwrap()
+                    .contains("alpha")
+            );
+            assert_eq!(
+                window.find("message-000000000000001").label(),
+                Some("first line\nsecond line")
+            );
+        });
+        cx.update(|window, cx| {
+            window.click("channel-000000000000002", cx);
+            window.render_frame(cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("message-000000000000002").bounds().size.height > px(0.));
+            window.click("logout", cx);
+            window.render_frame(cx);
+            assert_eq!(window.find("login").label(), Some("Log in"));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn production_message_is_selectable_and_copyable(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(TestAuth)));
+            Root::new(view, window, cx)
+        });
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            let bounds = window.find("message-text-000000000000001").bounds();
+            window.drag(
+                bounds.origin + gpui_kit::point(px(2.), px(2.)),
+                bounds.origin
+                    + gpui_kit::point(bounds.size.width - px(2.), bounds.size.height - px(2.)),
+                cx,
+            );
+            assert_eq!(
+                gpui_kit::base::TextSelection::selected_text(window, cx),
+                "first line\nsecond line"
+            );
+            window.press("ctrl-c", cx);
+        });
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("first line\nsecond line")
+        );
     }
 
     #[gpui_kit::test]

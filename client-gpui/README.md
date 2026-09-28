@@ -1,4 +1,4 @@
-# GPUI client — Linux feasibility gate (#36) and login/logout slice (#37)
+# GPUI client — Linux feasibility gate (#36), login/logout (#37), reading (#38)
 
 ## #36 Linux feasibility gate (recorded before #37)
 
@@ -28,9 +28,15 @@ On this machine `cargo build --locked`, `cargo fmt --check`, `cargo clippy --loc
 
 **Not yet manually verified on a physical desktop:** actual mouse selection/clipboard, IME behavior, screen-reader behavior, and native variable-height scrolling. Headless GPUI events and Xvfb rendering do not prove these integrations. This gate established feasibility of the framework and headless seams, not the complete client or manual smoke test required at prototype exit (#46).
 
+## #38 Read newest conversations
+
+After login, the client loads protected text channels in server order, selects the first, and displays that channel's newest history page. Select another channel in the left pane to read it. Empty lists, empty histories, loading, and errors are shown explicitly. Message text is plain and line breaks are retained; author and timestamp are shown. Already loaded pages are kept only in memory until logout, expiry, server change, or a protected 401. Sending, older-page traversal, and refresh are not part of this slice. See `PRESENTATION.md` for presentation-editing locations and manual selection/copy status.
+
+For this slice use the same build/fmt/clippy/test commands below. The HTTP tests cover protected channels and newest history against unchanged rewrite routes. Real-control headless tests cover selection and text display. Manual native Linux text selection/copy has **not** been verified; headless clipboard testing in the #36 feasibility probe is not a native desktop confirmation.
+
 ## #37 Login/logout slice
 
-This client starter now has real login/logout controls. Sessions are **memory-only**: closing the app requires logging in again. No password, token, or message data is persisted by the client. The authenticated shell shows the user and server; channels and messages are later slices.
+This client starter now has real login/logout controls. Sessions are **memory-only**: closing the app requires logging in again. No password, token, or message data is persisted by the client. The authenticated shell shows the user and server; the #38 reading slice below adds channels and messages.
 
 Start `server-rewrite` following its README, create a user through its `/api/v1/auth/signup` endpoint (this client does not yet offer signup), then from `client-gpui/` run `cargo run --locked`. The login form defaults to `http://127.0.0.1:8081`; change this to the rewrite server's base URL if needed. Enter the existing user's username and password and select **Log in**. The button is disabled while the login request is pending. Select **Log out** to immediately leave the authenticated shell. A failed server revocation leaves you logged out locally and shows a warning; a 401 means the token was already invalid and does **not** confirm a fresh revocation. A known expiry also returns to login. Invalid credentials remain editable for retry.
 

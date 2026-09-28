@@ -1,3 +1,4 @@
+use crate::conversation::{Channel, Message};
 use std::sync::Arc;
 
 pub const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8081";
@@ -22,6 +23,8 @@ pub enum AuthError {
     Unavailable,
     InvalidResponse,
     AlreadyInvalid,
+    NotFound,
+    ServerFailure,
 }
 
 pub type ApiFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
@@ -35,6 +38,28 @@ pub trait AuthApi: Send + Sync {
         password: String,
     ) -> ApiFuture<Result<Login, AuthError>>;
     fn logout(&self, server: String, token: String) -> ApiFuture<Result<(), AuthError>>;
+    fn channels(&self, server: String, token: String)
+    -> ApiFuture<Result<Vec<Channel>, AuthError>>;
+    fn history(
+        &self,
+        server: String,
+        token: String,
+        channel_id: String,
+    ) -> ApiFuture<Result<Vec<Message>, AuthError>>;
+}
+
+impl AuthError {
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::AlreadyInvalid => "Session rejected. Please log in again.",
+            Self::InvalidInput => "The server rejected the request.",
+            Self::InvalidCredentials => "Credentials were rejected.",
+            Self::InvalidResponse => "The server returned an invalid response.",
+            Self::Unavailable => "Could not reach the server. Check the address and try again.",
+            Self::NotFound => "The channel no longer exists on the server.",
+            Self::ServerFailure => "The server could not complete the request. Try again later.",
+        }
+    }
 }
 
 pub struct LoginRequest {
@@ -55,6 +80,12 @@ pub struct Session {
     pub user: User,
     token: String,
     pub expires_at: i64,
+}
+
+impl Session {
+    pub fn token(&self) -> &str {
+        &self.token
+    }
 }
 
 pub struct AppSession {
@@ -157,6 +188,9 @@ impl AppSession {
                 self.feedback =
                     Some("The server rejected this session. Please log in again.".into())
             }
+            Err(AuthError::NotFound | AuthError::ServerFailure) => {
+                self.feedback = Some("The server could not complete login.".into())
+            }
         }
         true
     }
@@ -199,7 +233,6 @@ impl AppSession {
         self.active.as_ref().map(|_| self.generation)
     }
 
-    #[allow(dead_code)] // Entry point for future protected work; no protected resource exists in this slice.
     pub fn protected_rejected(&mut self, generation: u64) {
         if self.session_generation() == Some(generation) {
             self.invalidate();
@@ -222,6 +255,17 @@ mod tests {
         }
         fn logout(&self, _: String, _: String) -> ApiFuture<Result<(), AuthError>> {
             Box::pin(async { Ok(()) })
+        }
+        fn channels(&self, _: String, _: String) -> ApiFuture<Result<Vec<Channel>, AuthError>> {
+            Box::pin(async { unreachable!() })
+        }
+        fn history(
+            &self,
+            _: String,
+            _: String,
+            _: String,
+        ) -> ApiFuture<Result<Vec<Message>, AuthError>> {
+            Box::pin(async { unreachable!() })
         }
     }
     fn app() -> AppSession {

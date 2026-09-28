@@ -1,3 +1,4 @@
+use crate::conversation::{Channel, Message};
 use crate::session::{ApiFuture, AuthApi, AuthError, Login, User};
 use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
@@ -72,6 +73,52 @@ struct WireErrorInfo {
     code: String,
 }
 
+#[derive(Deserialize)]
+struct WireChannels {
+    items: Vec<WireChannel>,
+}
+#[derive(Deserialize)]
+struct WireChannel {
+    id: String,
+    name: String,
+    #[serde(rename = "type")]
+    kind: String,
+}
+#[derive(Deserialize)]
+struct WireHistory {
+    items: Vec<WireMessage>,
+    next_cursor: Option<String>,
+}
+#[derive(Deserialize)]
+struct WireMessage {
+    id: String,
+    channel_id: String,
+    author: WireAuthor,
+    text: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+#[derive(Deserialize)]
+struct WireAuthor {
+    id: String,
+    display_name: String,
+}
+
+async fn protected_response<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+) -> Result<T, AuthError> {
+    match response.status() {
+        StatusCode::OK => response
+            .json()
+            .await
+            .map_err(|_| AuthError::InvalidResponse),
+        StatusCode::UNAUTHORIZED => Err(AuthError::AlreadyInvalid),
+        StatusCode::BAD_REQUEST => Err(AuthError::InvalidInput),
+        StatusCode::NOT_FOUND => Err(AuthError::NotFound),
+        StatusCode::INTERNAL_SERVER_ERROR => Err(AuthError::ServerFailure),
+        _ => Err(AuthError::Unavailable),
+    }
+}
+
 impl AuthApi for HttpAuth {
     fn login(
         &self,
@@ -128,6 +175,94 @@ impl AuthApi for HttpAuth {
                 };
             }
             Err(AuthError::Unavailable)
+        })
+    }
+
+    fn channels(
+        &self,
+        server: String,
+        token: String,
+    ) -> ApiFuture<Result<Vec<Channel>, AuthError>> {
+        let client = self.client.clone();
+        Box::pin(async move {
+            let url = validate_server(&server)?
+                .join("api/v1/channels")
+                .map_err(|_| AuthError::InvalidResponse)?;
+            let wire: WireChannels = protected_response(
+                client
+                    .get(url)
+                    .bearer_auth(token)
+                    .send()
+                    .await
+                    .map_err(|_| AuthError::Unavailable)?,
+            )
+            .await?;
+            wire.items
+                .into_iter()
+                .map(|item| {
+                    if item.id.is_empty() || item.name.is_empty() || item.kind != "text" {
+                        return Err(AuthError::InvalidResponse);
+                    }
+                    Ok(Channel {
+                        id: item.id,
+                        name: item.name,
+                    })
+                })
+                .collect()
+        })
+    }
+
+    fn history(
+        &self,
+        server: String,
+        token: String,
+        channel_id: String,
+    ) -> ApiFuture<Result<Vec<Message>, AuthError>> {
+        let client = self.client.clone();
+        Box::pin(async move {
+            // The server supplies channel IDs. Encode them as one path segment rather than
+            // assuming their format or allowing an ID to escape the history route.
+            if channel_id.is_empty()
+                || channel_id.contains(['/', '\\'])
+                || channel_id == "."
+                || channel_id == ".."
+            {
+                return Err(AuthError::InvalidResponse);
+            }
+            let mut url = validate_server(&server)?;
+            url.path_segments_mut()
+                .map_err(|_| AuthError::InvalidResponse)?
+                .extend(["api", "v1", "channels", &channel_id, "messages"]);
+            let wire: WireHistory = protected_response(
+                client
+                    .get(url)
+                    .bearer_auth(token)
+                    .send()
+                    .await
+                    .map_err(|_| AuthError::Unavailable)?,
+            )
+            .await?;
+            let _ = wire.next_cursor; // Older-page traversal is a later slice.
+            wire.items
+                .into_iter()
+                .map(|item| {
+                    if item.id.is_empty()
+                        || item.channel_id != channel_id
+                        || item.author.id.is_empty()
+                        || item.author.display_name.is_empty()
+                    {
+                        return Err(AuthError::InvalidResponse);
+                    }
+                    Ok(Message {
+                        id: item.id,
+                        channel_id: item.channel_id,
+                        author_id: item.author.id,
+                        author_name: item.author.display_name,
+                        text: item.text,
+                        created_at: item.created_at.to_rfc3339(),
+                    })
+                })
+                .collect()
         })
     }
 
@@ -367,6 +502,72 @@ mod tests {
         assert_eq!(login.user.id, bootstrap["user"]["id"].as_str().unwrap());
         assert_ne!(login.token, bootstrap_token);
         assert!(login.expires_at > chrono::Utc::now().timestamp());
+
+        let channel = client
+            .post(format!("{url}/api/v1/channels"))
+            .bearer_auth(&login.token)
+            .json(&serde_json::json!({"name":"alpha", "type":"text"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(channel.status(), StatusCode::CREATED);
+        let channel: serde_json::Value = channel.json().await.unwrap();
+        let channel_id = channel["id"].as_str().unwrap();
+        let list = auth
+            .channels(url.clone(), login.token.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            list.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["alpha", "general"]
+        );
+        assert_eq!(list[0].id, channel_id);
+        assert!(matches!(
+            auth.channels(url.clone(), "bad".into()).await,
+            Err(AuthError::AlreadyInvalid)
+        ));
+        assert!(matches!(
+            auth.history(url.clone(), "bad".into(), channel_id.into())
+                .await,
+            Err(AuthError::AlreadyInvalid)
+        ));
+        let empty = auth
+            .history(url.clone(), login.token.clone(), channel_id.into())
+            .await
+            .unwrap();
+        assert!(empty.is_empty());
+        for text in ["first\nline", "second"] {
+            let posted = client
+                .post(format!("{url}/api/v1/channels/{channel_id}/messages"))
+                .bearer_auth(&login.token)
+                .json(&serde_json::json!({"text":text}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(posted.status(), StatusCode::CREATED);
+        }
+        let newest = auth
+            .history(url.clone(), login.token.clone(), channel_id.into())
+            .await
+            .unwrap();
+        assert_eq!(newest.len(), 2);
+        assert_eq!(newest[0].text, "second");
+        assert_eq!(newest[1].text, "first\nline");
+        assert_eq!(newest[0].author_id, login.user.id);
+        assert_eq!(newest[0].author_name, "Alice");
+        assert_eq!(newest[0].channel_id, channel_id);
+        assert_ne!(newest[0].id, newest[1].id);
+        assert!(newest[0].created_at.contains('T'));
+        assert!(matches!(
+            auth.history(url.clone(), login.token.clone(), "999999999999999".into())
+                .await,
+            Err(AuthError::NotFound)
+        ));
+        assert!(matches!(
+            auth.history(url.clone(), login.token.clone(), "../bad".into())
+                .await,
+            Err(AuthError::InvalidResponse)
+        ));
         assert!(matches!(
             auth.login(url.clone(), "Alice".into(), "bad password".into())
                 .await,
