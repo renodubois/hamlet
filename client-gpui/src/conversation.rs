@@ -39,6 +39,25 @@ pub enum Load<T> {
     Failed(String),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refresh {
+    Running,
+    Incomplete(String),
+}
+
+#[derive(Clone, Debug)]
+struct Catchup {
+    id: String,
+    items: Vec<Message>,
+    cursors: HashSet<String>,
+}
+
+pub struct HistoryOutcome {
+    pub added: usize,
+    pub next: Option<ReadRequest>,
+    pub prepend: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct ReadRequest {
     pub generation: u64,
@@ -47,6 +66,7 @@ pub struct ReadRequest {
     pub channel_id: Option<String>,
     pub before: Option<String>,
     pub serial: u64,
+    refresh: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -65,6 +85,11 @@ pub struct Conversation {
     pub history: HashMap<String, Load<Vec<Message>>>,
     pub older: HashMap<String, Older>,
     cursors: HashMap<String, String>,
+    pub refreshing: HashMap<String, Refresh>,
+    catchup: Option<Catchup>,
+    channel_pending: bool,
+    channel_serial: u64,
+    pub channel_error: Option<String>,
     read_serial: u64,
     pub create_pending: bool,
     pub create_feedback: Option<String>,
@@ -72,13 +97,19 @@ pub struct Conversation {
 }
 
 impl Conversation {
+    pub fn channel_refreshing(&self) -> bool {
+        self.channel_pending
+    }
+
     pub fn clear(&mut self) {
         // Keep serials distinct even when the same session remains active after a reset.
         let next = self.create_serial.wrapping_add(1);
         let read_next = self.read_serial.wrapping_add(1);
+        let channel_next = self.channel_serial.wrapping_add(1);
         *self = Self::default();
         self.create_serial = next;
         self.read_serial = read_next;
+        self.channel_serial = channel_next;
     }
 
     pub fn create(&mut self, session: &AppSession, name: &str) -> Option<CreateRequest> {
@@ -162,18 +193,37 @@ impl Conversation {
     }
 
     pub fn start(&mut self, session: &AppSession) -> Option<ReadRequest> {
-        let active = session.active.as_ref()?;
+        session.active.as_ref()?;
         if self.channels.is_some() {
             return None;
         }
         self.channels = Some(Load::Loading);
+        self.read_channels(session)
+    }
+
+    pub fn refresh_channels(&mut self, session: &AppSession) -> Option<ReadRequest> {
+        if self.channel_pending {
+            return None;
+        }
+        if !matches!(self.channels, Some(Load::Ready(_))) {
+            self.channels = Some(Load::Loading);
+        }
+        self.read_channels(session)
+    }
+
+    fn read_channels(&mut self, session: &AppSession) -> Option<ReadRequest> {
+        let active = session.active.as_ref()?;
+        self.channel_pending = true;
+        self.channel_error = None;
+        self.channel_serial = self.channel_serial.wrapping_add(1);
         Some(ReadRequest {
             generation: session.session_generation()?,
             server: active.server.clone(),
             token: active.token().to_owned(),
             channel_id: None,
             before: None,
-            serial: self.read_serial,
+            serial: self.channel_serial,
+            refresh: false,
         })
     }
 
@@ -185,17 +235,29 @@ impl Conversation {
     ) -> Option<ReadRequest> {
         if request.channel_id.is_some()
             || session.session_generation() != Some(request.generation)
-            || !matches!(self.channels, Some(Load::Loading))
+            || !self.channel_pending
+            || self.channel_serial != request.serial
+            || session.active.as_ref().is_none_or(|active| {
+                active.server != request.server || active.token() != request.token
+            })
         {
             return None;
         }
+        self.channel_pending = false;
         match result {
             Ok(channels) => {
-                self.selected = channels.first().map(|channel| channel.id.clone());
+                let selected = self
+                    .selected
+                    .as_ref()
+                    .filter(|id| channels.iter().any(|c| &c.id == *id))
+                    .cloned();
+                let next = selected.or_else(|| channels.first().map(|c| c.id.clone()));
+                if self.selected != next {
+                    self.cancel_selected();
+                    self.selected = None;
+                }
                 self.channels = Some(Load::Ready(channels));
-                self.selected
-                    .clone()
-                    .and_then(|id| self.select(session, &id))
+                next.and_then(|id| self.select(session, &id))
             }
             Err(AuthError::AlreadyInvalid) => {
                 session.protected_rejected(request.generation);
@@ -203,10 +265,30 @@ impl Conversation {
                 None
             }
             Err(error) => {
-                self.channels = Some(Load::Failed(error.description().into()));
+                if matches!(self.channels, Some(Load::Ready(_))) {
+                    self.channel_error = Some(error.description().into());
+                } else {
+                    self.channels = Some(Load::Failed(error.description().into()));
+                }
                 None
             }
         }
+    }
+
+    fn cancel_selected(&mut self) {
+        if let Some(old) = &self.selected {
+            if matches!(self.history.get(old), Some(Load::Loading)) {
+                self.history.remove(old);
+            }
+            if matches!(self.older.get(old), Some(Older::Loading)) {
+                self.older.insert(old.clone(), Older::Available);
+            }
+            if matches!(self.refreshing.get(old), Some(Refresh::Running)) {
+                self.refreshing.remove(old);
+            }
+        }
+        self.catchup = None;
+        self.read_serial = self.read_serial.wrapping_add(1);
     }
 
     pub fn select(&mut self, session: &AppSession, id: &str) -> Option<ReadRequest> {
@@ -216,17 +298,8 @@ impl Conversation {
         if !channels.iter().any(|channel| channel.id == id) {
             return None;
         }
-        if self.selected.as_deref() != Some(id)
-            && let Some(old) = &self.selected
-        {
-            // A selected-channel change cancels the old in-flight read, whether it
-            // came from a sidebar click or successful channel creation.
-            if matches!(self.history.get(old), Some(Load::Loading)) {
-                self.history.remove(old);
-            }
-            if matches!(self.older.get(old), Some(Older::Loading)) {
-                self.older.insert(old.clone(), Older::Available);
-            }
+        if self.selected.as_deref() != Some(id) {
+            self.cancel_selected();
         }
         self.selected = Some(id.into());
         if matches!(self.history.get(id), Some(Load::Loading | Load::Ready(_))) {
@@ -242,13 +315,50 @@ impl Conversation {
             channel_id: Some(id.into()),
             before: None,
             serial: self.read_serial,
+            refresh: false,
+        })
+    }
+
+    /// Begin a newest-first reconciliation; only commit when overlap or exhaustion proves continuity.
+    pub fn refresh_history(&mut self, session: &AppSession) -> Option<ReadRequest> {
+        let id = self.selected.clone()?;
+        if matches!(self.history.get(&id), Some(Load::Loading))
+            || matches!(self.refreshing.get(&id), Some(Refresh::Running))
+        {
+            return None;
+        }
+        if !matches!(self.history.get(&id), Some(Load::Ready(_))) {
+            return self.select(session, &id);
+        }
+        let active = session.active.as_ref()?;
+        // Cancel an older read before starting reconciliation; its late completion is ignored.
+        if matches!(self.older.get(&id), Some(Older::Loading)) {
+            self.older.insert(id.clone(), Older::Available);
+        }
+        self.read_serial = self.read_serial.wrapping_add(1);
+        self.catchup = Some(Catchup {
+            id: id.clone(),
+            items: Vec::new(),
+            cursors: HashSet::new(),
+        });
+        self.refreshing.insert(id.clone(), Refresh::Running);
+        Some(ReadRequest {
+            generation: session.session_generation()?,
+            server: active.server.clone(),
+            token: active.token().into(),
+            channel_id: Some(id),
+            before: None,
+            serial: self.read_serial,
+            refresh: true,
         })
     }
 
     /// Begin one deliberate older-page read for the currently selected channel.
     pub fn request_older(&mut self, session: &AppSession) -> Option<ReadRequest> {
         let id = self.selected.as_ref()?;
-        if !matches!(self.older.get(id), Some(Older::Available)) {
+        if matches!(self.refreshing.get(id), Some(Refresh::Running))
+            || !matches!(self.older.get(id), Some(Older::Available))
+        {
             return None;
         }
         let active = session.active.as_ref()?;
@@ -262,12 +372,15 @@ impl Conversation {
             channel_id: Some(id.clone()),
             before: Some(before),
             serial: self.read_serial,
+            refresh: false,
         })
     }
 
     pub fn retry_older(&mut self, session: &AppSession) -> Option<ReadRequest> {
         let id = self.selected.as_ref()?;
-        if !matches!(self.older.get(id), Some(Older::Failed(_))) {
+        if matches!(self.refreshing.get(id), Some(Refresh::Running))
+            || !matches!(self.older.get(id), Some(Older::Failed(_)))
+        {
             return None;
         }
         self.older.insert(id.clone(), Older::Available);
@@ -279,37 +392,111 @@ impl Conversation {
         session: &mut AppSession,
         request: &ReadRequest,
         result: Result<Page, AuthError>,
-    ) -> usize {
+    ) -> HistoryOutcome {
+        let mut outcome = HistoryOutcome {
+            added: 0,
+            next: None,
+            prepend: false,
+        };
         let Some(id) = &request.channel_id else {
-            return 0;
+            return outcome;
         };
         if session.session_generation() != Some(request.generation)
             || session.active.as_ref().is_none_or(|active| {
                 active.server != request.server || active.token() != request.token
             })
         {
-            return 0;
+            return outcome;
         }
-        let older = request.before.is_some();
-        if older {
-            if self.selected.as_deref() != Some(id)
-                || self.read_serial != request.serial
-                || self.cursors.get(id) != request.before.as_ref()
+        let older = request.before.is_some() && !request.refresh;
+        if self.selected.as_deref() != Some(id) || self.read_serial != request.serial {
+            return outcome;
+        }
+        if request.refresh {
+            if !matches!(self.refreshing.get(id), Some(Refresh::Running))
+                || self.catchup.as_ref().is_none_or(|c| c.id != *id)
+            {
+                return outcome;
+            }
+        } else if older {
+            if self.cursors.get(id) != request.before.as_ref()
                 || !matches!(self.older.get(id), Some(Older::Loading))
             {
-                return 0;
+                return outcome;
             }
-        } else if !matches!(self.history.get(id), Some(Load::Loading))
-            || (self.selected.as_deref() == Some(id) && self.read_serial != request.serial)
-        {
-            return 0;
+        } else if !matches!(self.history.get(id), Some(Load::Loading)) {
+            return outcome;
         }
         match result {
             Ok(page) => {
+                if request.refresh {
+                    let catchup = self.catchup.as_mut().unwrap();
+                    let existing = match self.history.get(id) {
+                        Some(Load::Ready(items)) => items,
+                        _ => return outcome,
+                    };
+                    // The newest previously loaded ID is the continuity boundary. Meeting
+                    // an older ID alone could skip an intervening message that disappeared.
+                    let overlap = existing
+                        .first()
+                        .is_some_and(|head| page.items.iter().any(|m| m.id == head.id));
+                    let mut staged_ids: HashSet<_> =
+                        catchup.items.iter().map(|m| m.id.clone()).collect();
+                    for item in page.items {
+                        if staged_ids.insert(item.id.clone()) {
+                            catchup.items.push(item);
+                        }
+                    }
+                    let cursor = page
+                        .next_cursor
+                        .filter(|c| !c.is_empty() && request.before.as_ref() != Some(c));
+                    if overlap || cursor.is_none() {
+                        if overlap || existing.is_empty() {
+                            let staged = std::mem::take(&mut catchup.items);
+                            let mut ids: HashSet<_> = staged.iter().map(|m| m.id.clone()).collect();
+                            let mut merged = staged;
+                            merged.extend(
+                                existing
+                                    .iter()
+                                    .filter(|m| ids.insert(m.id.clone()))
+                                    .cloned(),
+                            );
+                            outcome.added = merged.len() - existing.len();
+                            self.history.insert(id.clone(), Load::Ready(merged));
+                            self.refreshing.remove(id);
+                        } else {
+                            self.refreshing.insert(id.clone(), Refresh::Incomplete("Could not establish continuity with loaded messages. Refresh again to retry.".into()));
+                        }
+                        self.catchup = None;
+                    } else if let Some(cursor) = cursor {
+                        if !catchup.cursors.insert(cursor.clone()) {
+                            self.refreshing.insert(
+                                id.clone(),
+                                Refresh::Incomplete(
+                                    "Server repeated a history cursor. Refresh again to retry."
+                                        .into(),
+                                ),
+                            );
+                            self.catchup = None;
+                        } else {
+                            self.read_serial = self.read_serial.wrapping_add(1);
+                            outcome.next = Some(ReadRequest {
+                                generation: request.generation,
+                                server: request.server.clone(),
+                                token: request.token.clone(),
+                                channel_id: Some(id.clone()),
+                                before: Some(cursor),
+                                serial: self.read_serial,
+                                refresh: true,
+                            });
+                        }
+                    }
+                    return outcome;
+                }
                 let existing = if older {
                     match self.history.remove(id) {
                         Some(Load::Ready(items)) => items,
-                        _ => return 0,
+                        _ => return outcome,
                     }
                 } else {
                     Vec::new()
@@ -323,7 +510,8 @@ impl Conversation {
                         !seen.contains(item.id.as_str()) && page_ids.insert(item.id.clone())
                     })
                     .collect();
-                let count = additions.len();
+                outcome.added = additions.len();
+                outcome.prepend = older;
                 let mut messages = existing;
                 messages.extend(additions);
                 self.history.insert(id.clone(), Load::Ready(messages));
@@ -340,22 +528,26 @@ impl Conversation {
                         self.older.insert(id.clone(), Older::Exhausted);
                     }
                 }
-                count
+                outcome
             }
             Err(AuthError::AlreadyInvalid) => {
                 session.protected_rejected(request.generation);
                 self.clear();
-                0
+                outcome
             }
             Err(error) => {
-                if older {
+                if request.refresh {
+                    self.catchup = None;
+                    self.refreshing
+                        .insert(id.clone(), Refresh::Incomplete(error.description().into()));
+                } else if older {
                     self.older
                         .insert(id.clone(), Older::Failed(error.description().into()));
                 } else {
                     self.history
                         .insert(id.clone(), Load::Failed(error.description().into()));
                 }
-                0
+                outcome
             }
         }
     }
@@ -710,7 +902,8 @@ mod tests {
                     items: vec![message("2")],
                     next_cursor: None
                 })
-            ),
+            )
+            .added,
             0
         );
         assert_eq!(
@@ -721,7 +914,8 @@ mod tests {
                     items: vec![message("3"), message("2"), message("1"), message("2")],
                     next_cursor: Some("opaque two".into()),
                 })
-            ),
+            )
+            .added,
             2
         );
         let final_read = view.request_older(&session).unwrap();
@@ -734,7 +928,8 @@ mod tests {
                     items: vec![message("1"), message("0")],
                     next_cursor: None,
                 })
-            ),
+            )
+            .added,
             1
         );
         assert_eq!(
@@ -827,7 +1022,8 @@ mod tests {
             .expect("canceled traversal is retryable");
         assert_eq!(retry.before.as_deref(), Some("opaque server cursor"));
         assert_eq!(
-            view.complete_history(&mut session, &pending, Err(AuthError::AlreadyInvalid)),
+            view.complete_history(&mut session, &pending, Err(AuthError::AlreadyInvalid))
+                .added,
             0
         );
         assert!(session.active.is_some());
@@ -855,6 +1051,303 @@ mod tests {
         assert!(view.history.is_empty());
         assert!(view.older.is_empty());
         assert!(view.selected.is_none());
+    }
+
+    #[test]
+    fn catchup_waits_for_overlap_across_opaque_pages_and_recovers_after_failure() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let list = view.start(&session).unwrap();
+        let initial = view
+            .complete_channels(&mut session, &list, Ok(channels()))
+            .unwrap();
+        let message = |id: &str| Message {
+            id: id.into(),
+            channel_id: "z".into(),
+            author_id: "u".into(),
+            author_name: "Ada".into(),
+            text: id.into(),
+            created_at: "same".into(),
+        };
+        let page = |ids: &[&str], cursor: Option<&str>| Page {
+            items: ids.iter().map(|id| message(id)).collect(),
+            next_cursor: cursor.map(str::to_owned),
+        };
+        view.complete_history(
+            &mut session,
+            &initial,
+            Ok(page(&["3", "2", "1"], Some("older"))),
+        );
+        let refresh = view.refresh_history(&session).unwrap();
+        assert!(view.refresh_history(&session).is_none());
+        assert!(view.request_older(&session).is_none());
+        let pending = view
+            .complete_history(
+                &mut session,
+                &refresh,
+                Ok(page(&["9", "8"], Some("opaque /?+"))),
+            )
+            .next
+            .unwrap();
+        assert_eq!(pending.before.as_deref(), Some("opaque /?+"));
+        assert_eq!(
+            view.history.get("z"),
+            Some(&Load::Ready(page(&["3", "2", "1"], None).items))
+        );
+        assert_eq!(view.refreshing.get("z"), Some(&Refresh::Running));
+        view.complete_history(&mut session, &pending, Err(AuthError::Unavailable));
+        assert!(matches!(
+            view.refreshing.get("z"),
+            Some(Refresh::Incomplete(_))
+        ));
+        assert_eq!(
+            view.history.get("z"),
+            Some(&Load::Ready(page(&["3", "2", "1"], None).items))
+        );
+        let retry = view.refresh_history(&session).unwrap();
+        assert_eq!(
+            view.complete_history(&mut session, &pending, Ok(page(&["7"], None)))
+                .added,
+            0
+        );
+        let middle = view
+            .complete_history(
+                &mut session,
+                &retry,
+                Ok(page(&["9", "8"], Some("opaque /?+"))),
+            )
+            .next
+            .unwrap();
+        let last = view
+            .complete_history(
+                &mut session,
+                &middle,
+                Ok(page(&["8", "7", "6"], Some("next"))),
+            )
+            .next
+            .unwrap();
+        assert_eq!(last.before.as_deref(), Some("next"));
+        let outcome = view.complete_history(
+            &mut session,
+            &last,
+            Ok(page(&["6", "3", "2"], Some("unused"))),
+        );
+        assert!(outcome.next.is_none());
+        assert_eq!(outcome.added, 4);
+        assert_eq!(
+            view.history.get("z"),
+            Some(&Load::Ready(
+                page(&["9", "8", "7", "6", "3", "2", "1"], None).items
+            ))
+        );
+        assert!(!view.refreshing.contains_key("z"));
+        assert_eq!(view.older.get("z"), Some(&Older::Available));
+    }
+
+    #[test]
+    fn catchup_from_an_empty_loaded_conversation_waits_until_exhaustion() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let list = view.start(&session).unwrap();
+        let initial = view
+            .complete_channels(&mut session, &list, Ok(channels()))
+            .unwrap();
+        view.complete_history(
+            &mut session,
+            &initial,
+            Ok(Page {
+                items: vec![],
+                next_cursor: None,
+            }),
+        );
+        let message = |id: &str| Message {
+            id: id.into(),
+            channel_id: "z".into(),
+            author_id: "u".into(),
+            author_name: "Ada".into(),
+            text: id.into(),
+            created_at: "same".into(),
+        };
+        let refresh = view.refresh_history(&session).unwrap();
+        let next = view.complete_history(
+            &mut session,
+            &refresh,
+            Ok(Page {
+                items: vec![message("4"), message("3")],
+                next_cursor: Some("server cursor".into()),
+            }),
+        );
+        assert_eq!(next.added, 0);
+        assert_eq!(view.history.get("z"), Some(&Load::Ready(vec![])));
+        let continuation = next.next.unwrap();
+        view.complete_history(&mut session, &continuation, Err(AuthError::Unavailable));
+        assert_eq!(view.history.get("z"), Some(&Load::Ready(vec![])));
+        assert!(matches!(
+            view.refreshing.get("z"),
+            Some(Refresh::Incomplete(_))
+        ));
+        let retry = view.refresh_history(&session).unwrap();
+        let continuation = view
+            .complete_history(
+                &mut session,
+                &retry,
+                Ok(Page {
+                    items: vec![message("4"), message("3")],
+                    next_cursor: Some("server cursor".into()),
+                }),
+            )
+            .next
+            .unwrap();
+        let outcome = view.complete_history(
+            &mut session,
+            &continuation,
+            Ok(Page {
+                items: vec![message("3"), message("2"), message("1")],
+                next_cursor: None,
+            }),
+        );
+        assert_eq!(outcome.added, 4);
+        assert!(outcome.next.is_none());
+        assert_eq!(
+            view.history.get("z"),
+            Some(&Load::Ready(vec![
+                message("4"),
+                message("3"),
+                message("2"),
+                message("1"),
+            ]))
+        );
+        assert!(!view.refreshing.contains_key("z"));
+    }
+
+    #[test]
+    fn refresh_supersedes_an_older_read_without_losing_its_cursor() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let list = view.start(&session).unwrap();
+        let first = view
+            .complete_channels(&mut session, &list, Ok(channels()))
+            .unwrap();
+        let message = Message {
+            id: "1".into(),
+            channel_id: "z".into(),
+            author_id: "u".into(),
+            author_name: "Ada".into(),
+            text: "one".into(),
+            created_at: "same".into(),
+        };
+        view.complete_history(
+            &mut session,
+            &first,
+            Ok(Page {
+                items: vec![message.clone()],
+                next_cursor: Some("opaque older".into()),
+            }),
+        );
+        let older = view.request_older(&session).unwrap();
+        let refresh = view.refresh_history(&session).unwrap();
+        assert_eq!(view.older.get("z"), Some(&Older::Available));
+        assert_eq!(
+            view.complete_history(&mut session, &older, Err(AuthError::AlreadyInvalid))
+                .added,
+            0
+        );
+        assert!(session.active.is_some());
+        view.complete_history(
+            &mut session,
+            &refresh,
+            Ok(Page {
+                items: vec![message.clone()],
+                next_cursor: Some("opaque newer".into()),
+            }),
+        );
+        assert_eq!(view.history.get("z"), Some(&Load::Ready(vec![message])));
+        assert_eq!(
+            view.request_older(&session).unwrap().before.as_deref(),
+            Some("opaque older")
+        );
+    }
+
+    #[test]
+    fn disconnected_exhaustion_keeps_contiguous_old_history_and_switch_cancels() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let list = view.start(&session).unwrap();
+        let first = view
+            .complete_channels(&mut session, &list, Ok(channels()))
+            .unwrap();
+        let m = |id: &str| Message {
+            id: id.into(),
+            channel_id: "z".into(),
+            author_id: "u".into(),
+            author_name: "Ada".into(),
+            text: id.into(),
+            created_at: "same".into(),
+        };
+        view.complete_history(
+            &mut session,
+            &first,
+            Ok(Page {
+                items: vec![m("2"), m("1")],
+                next_cursor: None,
+            }),
+        );
+        let refresh = view.refresh_history(&session).unwrap();
+        view.complete_history(
+            &mut session,
+            &refresh,
+            Ok(Page {
+                items: vec![m("9"), m("1")],
+                next_cursor: None,
+            }),
+        );
+        assert_eq!(
+            view.history.get("z"),
+            Some(&Load::Ready(vec![m("2"), m("1")]))
+        );
+        assert!(matches!(
+            view.refreshing.get("z"),
+            Some(Refresh::Incomplete(_))
+        ));
+        let pending = view.refresh_history(&session).unwrap();
+        view.select(&session, "a");
+        view.complete_history(&mut session, &pending, Err(AuthError::AlreadyInvalid));
+        assert!(session.active.is_some());
+        assert!(!view.refreshing.contains_key("z"));
+    }
+
+    #[test]
+    fn discovery_preserves_selection_handles_empty_and_rejects_stale_results() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let first = view.start(&session).unwrap();
+        view.complete_channels(&mut session, &first, Ok(channels()));
+        view.select(&session, "a");
+        let refresh = view.refresh_channels(&session).unwrap();
+        assert!(view.refresh_channels(&session).is_none());
+        view.complete_channels(&mut session, &refresh, Err(AuthError::Unavailable));
+        assert_eq!(view.selected.as_deref(), Some("a"));
+        assert!(matches!(view.channels, Some(Load::Ready(_))));
+        assert!(view.channel_error.is_some());
+        let refresh = view.refresh_channels(&session).unwrap();
+        view.complete_channels(
+            &mut session,
+            &refresh,
+            Ok(vec![
+                Channel {
+                    id: "new".into(),
+                    name: "New".into(),
+                },
+                channels()[1].clone(),
+            ]),
+        );
+        assert_eq!(view.selected.as_deref(), Some("a"));
+        let empty = view.refresh_channels(&session).unwrap();
+        view.complete_channels(&mut session, &empty, Ok(vec![]));
+        assert_eq!(view.selected, None);
+        assert_eq!(view.channels, Some(Load::Ready(vec![])));
+        view.complete_channels(&mut session, &refresh, Err(AuthError::AlreadyInvalid));
+        assert!(session.active.is_some());
     }
 
     #[test]

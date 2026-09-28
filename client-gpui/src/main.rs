@@ -85,8 +85,13 @@ impl Hamlet {
         let history_list = ListState::new(0, ListAlignment::Top, px(0.));
         let weak = cx.entity().downgrade();
         history_list.set_scroll_handler(move |event, _, cx| {
-            if event.count > 0 && event.is_scrolled && event.visible_range.start <= 1 {
-                let _ = weak.update(cx, |view, cx| view.request_older(cx));
+            if event.is_scrolled {
+                let _ = weak.update(cx, |view, cx| {
+                    if event.count > 0 && event.visible_range.start <= 1 {
+                        view.request_older(cx);
+                    }
+                    cx.notify(); // re-evaluate the jump button as the reader moves
+                });
             }
         });
         Self {
@@ -206,28 +211,46 @@ impl Hamlet {
 
     fn load_channels(&mut self, cx: &mut Context<Self>) {
         if let Some(request) = self.conversation.start(&self.session) {
-            let api = self.session.api.clone();
-            let (send, receive) = async_channel::bounded(1);
-            let work = request.clone();
-            runtime().spawn(async move {
-                let result = api.channels(work.server, work.token).await;
-                let _ = send.send(result).await;
-            });
-            cx.spawn(async move |weak, cx| {
-                if let Ok(result) = receive.recv().await {
-                    let _ = weak.update(cx, |view, cx| {
-                        if let Some(next) =
-                            view.conversation
-                                .complete_channels(&mut view.session, &request, result)
-                        {
-                            view.load_history(next, cx);
-                        }
-                        cx.notify();
-                    });
-                }
-            })
-            .detach();
+            self.dispatch_channels(request, cx);
         }
+    }
+
+    fn refresh_channels(&mut self, cx: &mut Context<Self>) {
+        if let Some(request) = self.conversation.refresh_channels(&self.session) {
+            self.dispatch_channels(request, cx);
+            cx.notify();
+        }
+    }
+
+    fn dispatch_channels(&mut self, request: ReadRequest, cx: &mut Context<Self>) {
+        let api = self.session.api.clone();
+        let (send, receive) = async_channel::bounded(1);
+        let work = request.clone();
+        runtime().spawn(async move {
+            let result = api.channels(work.server, work.token).await;
+            let _ = send.send(result).await;
+        });
+        cx.spawn(async move |weak, cx| {
+            if let Ok(result) = receive.recv().await {
+                let _ = weak.update(cx, |view, cx| {
+                    let previous = view.conversation.selected.clone();
+                    let next =
+                        view.conversation
+                            .complete_channels(&mut view.session, &request, result);
+                    if previous != view.conversation.selected {
+                        view.cancel_history();
+                        view.history_list.reset(0);
+                    }
+                    if let Some(next) = next {
+                        view.load_history(next, cx);
+                    } else if previous != view.conversation.selected {
+                        view.restore_cached_history();
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     fn cancel_history(&mut self) {
@@ -242,6 +265,19 @@ impl Hamlet {
             self.load_history(request, cx);
             cx.notify();
         }
+    }
+
+    fn refresh_history(&mut self, cx: &mut Context<Self>) {
+        if let Some(request) = self.conversation.refresh_history(&self.session) {
+            self.cancel_history();
+            self.load_history(request, cx);
+            cx.notify();
+        }
+    }
+
+    fn jump_latest(&mut self, cx: &mut Context<Self>) {
+        self.history_list.scroll_to_end();
+        cx.notify();
     }
 
     fn retry_older(&mut self, cx: &mut Context<Self>) {
@@ -309,14 +345,29 @@ impl Hamlet {
             return;
         }
         let selected = self.conversation.selected == request.channel_id;
-        let older = request.before.is_some();
-        let added = self
+        let was_ready = selected
+            && matches!(
+                self.conversation
+                    .history
+                    .get(request.channel_id.as_ref().unwrap()),
+                Some(Load::Ready(_))
+            );
+        let follow = self.history_list.is_scrolled_to_end() != Some(false);
+        let outcome = self
             .conversation
             .complete_history(&mut self.session, &request, result);
         if selected && self.session.active.is_some() {
-            if older {
-                if added > 0 {
-                    self.history_list.splice(0..0, added);
+            if was_ready {
+                if outcome.added > 0 {
+                    if outcome.prepend {
+                        self.history_list.splice(0..0, outcome.added);
+                    } else {
+                        let end = self.history_list.item_count();
+                        self.history_list.splice(end..end, outcome.added);
+                        if follow {
+                            self.history_list.scroll_to_end();
+                        }
+                    }
                     hint_history_row_heights(&self.history_list);
                 }
             } else if let Some(Load::Ready(messages)) = self
@@ -333,6 +384,9 @@ impl Hamlet {
             self.history_list.reset(0);
         }
         self.history_task = None;
+        if let Some(next) = outcome.next {
+            self.load_history(next, cx);
+        }
         cx.notify();
     }
 
@@ -377,6 +431,20 @@ impl Hamlet {
         cx.notify();
     }
 
+    fn restore_cached_history(&mut self) {
+        if self.history_list.item_count() != 0 {
+            return;
+        }
+        let Some(id) = self.conversation.selected.as_deref() else {
+            return;
+        };
+        if let Some(Load::Ready(messages)) = self.conversation.history.get(id) {
+            self.history_list.splice(0..0, messages.len());
+            hint_history_row_heights(&self.history_list);
+            self.history_list.scroll_to_end();
+        }
+    }
+
     fn select_channel(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.conversation.selected.as_deref() != Some(id) {
             self.cancel_history();
@@ -384,12 +452,8 @@ impl Hamlet {
         }
         if let Some(request) = self.conversation.select(&self.session, id) {
             self.load_history(request, cx);
-        } else if let Some(Load::Ready(messages)) = self.conversation.history.get(id)
-            && self.history_list.item_count() == 0
-        {
-            self.history_list.splice(0..0, messages.len());
-            hint_history_row_heights(&self.history_list);
-            self.history_list.scroll_to_end();
+        } else {
+            self.restore_cached_history();
         }
         cx.notify();
     }
@@ -541,6 +605,7 @@ impl Hamlet {
     fn conversation_panes(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity().downgrade();
         let create_view = view.clone();
+        let refresh_channels_view = view.clone();
         let mut sidebar = div()
             .id("channels")
             .test_support()
@@ -553,6 +618,23 @@ impl Hamlet {
             .gap_2()
             .overflow_y_scroll()
             .child(div().font_weight(FontWeight::BOLD).child("Text channels"))
+            .child(
+                Button::new("refresh-channels")
+                    .label(
+                        if self.conversation.channels.is_some()
+                            && self.conversation.channel_refreshing()
+                        {
+                            "Refreshing channels…"
+                        } else {
+                            "Refresh channels"
+                        },
+                    )
+                    .disabled(self.conversation.channel_refreshing())
+                    .on_click(move |_, _, cx| {
+                        let _ =
+                            refresh_channels_view.update(cx, |view, cx| view.refresh_channels(cx));
+                    }),
+            )
             .child(
                 div().child("Channel name").child(
                     Input::new(&self.channel_name)
@@ -582,6 +664,15 @@ impl Hamlet {
                     .aria_label(feedback.clone())
                     .test_support()
                     .child(feedback.clone()),
+            );
+        }
+        if let Some(error) = &self.conversation.channel_error {
+            sidebar = sidebar.child(
+                div()
+                    .id("channels-refresh-error")
+                    .aria_label(error.clone())
+                    .test_support()
+                    .child(format!("Channel refresh: {error}")),
             );
         }
         match &self.conversation.channels {
@@ -647,6 +738,37 @@ impl Hamlet {
                     .font_weight(FontWeight::BOLD)
                     .child(format!("# {name}")),
             );
+            let refreshing = matches!(
+                self.conversation.refreshing.get(id),
+                Some(conversation::Refresh::Running)
+            );
+            let refresh_view = view.clone();
+            history = history.child(
+                Button::new("refresh-history")
+                    .label(if refreshing {
+                        "Refreshing conversation…"
+                    } else {
+                        "Refresh conversation"
+                    })
+                    .disabled(
+                        refreshing
+                            || matches!(self.conversation.history.get(id), Some(Load::Loading)),
+                    )
+                    .on_click(move |_, _, cx| {
+                        let _ = refresh_view.update(cx, |view, cx| view.refresh_history(cx));
+                    }),
+            );
+            if let Some(conversation::Refresh::Incomplete(error)) =
+                self.conversation.refreshing.get(id)
+            {
+                history = history.child(
+                    div()
+                        .id("catchup-incomplete")
+                        .aria_label(error.clone())
+                        .test_support()
+                        .child(format!("Catch-up incomplete: {error}")),
+                );
+            }
             match self.conversation.history.get(id) {
                 None | Some(Load::Loading) => history = history.child("Loading conversation…"),
                 Some(Load::Failed(error)) => {
@@ -674,6 +796,15 @@ impl Hamlet {
                         Some(Older::Exhausted) => history = history.child("Start of conversation."),
                         _ => {}
                     }
+                    let jump = view.clone();
+                    history = history.child(
+                        Button::new("jump-latest")
+                            .label("Jump to latest")
+                            .disabled(self.history_list.is_scrolled_to_end() != Some(false))
+                            .on_click(move |_, _, cx| {
+                                let _ = jump.update(cx, |view, cx| view.jump_latest(cx));
+                            }),
+                    );
                     // Server order is newest-first. Reverse for a chronological scroll surface;
                     // ListState::splice preserves the reader's anchor across variable heights.
                     let rows = messages.iter().rev().cloned().collect::<Vec<_>>();
@@ -763,7 +894,7 @@ mod tests {
     };
     use std::sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
 
     // This is a real Kit/GPUI history surface, not a simulated scrolling model.
@@ -1839,6 +1970,293 @@ mod tests {
             );
             assert_eq!(window.find(id).bounds().origin.y, y);
             assert!(requests.try_recv().is_err());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn refresh_channels_control_keeps_selected_conversation(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(|window, cx| Hamlet::new(window, cx, Arc::new(TestAuth)));
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("channel-000000000000002", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("message-000000000000002").label(),
+                Some("other channel")
+            );
+            window.click("refresh-channels", cx);
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("refresh-channels").label(),
+                Some("Refreshing channels…")
+            );
+            window.click("refresh-channels", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("refresh-channels").label(),
+                Some("Refresh channels")
+            );
+            assert_eq!(
+                window.find("message-000000000000002").label(),
+                Some("other channel")
+            );
+            window.click("refresh-history", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("message-000000000000002").label(),
+                Some("other channel")
+            );
+        });
+    }
+
+    struct RemovingChannel(Arc<AtomicBool>);
+    impl AuthApi for RemovingChannel {
+        fn signup(
+            &self,
+            server: String,
+            user: String,
+            password: String,
+        ) -> ApiFuture<Result<Login, AuthError>> {
+            TestAuth.signup(server, user, password)
+        }
+        fn login(
+            &self,
+            server: String,
+            user: String,
+            password: String,
+        ) -> ApiFuture<Result<Login, AuthError>> {
+            TestAuth.login(server, user, password)
+        }
+        fn logout(&self, server: String, token: String) -> ApiFuture<Result<(), AuthError>> {
+            TestAuth.logout(server, token)
+        }
+        fn channels(
+            &self,
+            server: String,
+            token: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
+            let removed = self.0.load(Ordering::SeqCst);
+            Box::pin(async move {
+                let mut list = TestAuth.channels(server, token).await?;
+                if removed {
+                    list.remove(0);
+                }
+                Ok(list)
+            })
+        }
+        fn create_channel(
+            &self,
+            server: String,
+            token: String,
+            name: String,
+        ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
+            TestAuth.create_channel(server, token, name)
+        }
+        fn history(
+            &self,
+            server: String,
+            token: String,
+            id: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
+            TestAuth.history(server, token, id)
+        }
+    }
+
+    #[gpui_kit::test]
+    fn channel_discovery_shows_cached_fallback_after_selected_channel_disappears(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let remove = Arc::new(AtomicBool::new(false));
+        let removed = remove.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(RemovingChannel(removed))));
+            Root::new(view, window, cx)
+        });
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("channel-000000000000002", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("message-000000000000002").label(),
+                Some("other channel")
+            );
+            window.click("channel-000000000000001", cx);
+        });
+        cx.run_until_parked();
+        remove.store(true, Ordering::SeqCst);
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("refresh-channels", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("message-000000000000002").label(),
+                Some("other channel")
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn refresh_controls_preserve_reader_and_jump_follows_later_messages(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (tx, requests) = std::sync::mpsc::channel();
+        let stored = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let saved = stored.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(PagedAuth(tx))));
+            *saved.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view: gpui_kit::Entity<Hamlet> = stored.borrow().as_ref().unwrap().clone();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        let (_, reply) = requests
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        let m = |ix: i32| crate::conversation::Message {
+            id: ix.to_string(),
+            channel_id: "000000000000001".into(),
+            author_id: "42".into(),
+            author_name: "Ada".into(),
+            text: if ix % 2 == 0 {
+                "multi-line\nwith wrapped content that varies height"
+            } else {
+                "short"
+            }
+            .into(),
+            created_at: "same".into(),
+        };
+        reply
+            .send_blocking(Ok(crate::conversation::Page {
+                items: (1..=40).rev().map(m).collect(),
+                next_cursor: Some("older".into()),
+            }))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            for _ in 0..4 {
+                window.scroll(
+                    "history",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(90.))),
+                    cx,
+                );
+                window.render_frame(cx);
+            }
+            assert_eq!(view.read(cx).history_list.is_scrolled_to_end(), Some(false));
+            window.click("refresh-history", cx);
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("refresh-history").label(),
+                Some("Refreshing conversation…")
+            );
+            window.click("refresh-history", cx);
+        });
+        cx.run_until_parked();
+        let (before, first) = requests
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(before, None);
+        assert!(requests.try_recv().is_err());
+        first
+            .send_blocking(Ok(crate::conversation::Page {
+                items: (61..=70).rev().map(m).collect(),
+                next_cursor: Some("server opaque".into()),
+            }))
+            .unwrap();
+        cx.run_until_parked();
+        let (before, second) = requests
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(before.as_deref(), Some("server opaque"));
+        let anchor = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let saved_anchor = anchor.clone();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                view.read(cx)
+                    .conversation
+                    .refreshing
+                    .contains_key("000000000000001")
+            );
+            let ix = view.read(cx).history_list.logical_scroll_top().item_ix;
+            let id = format!("message-{}", ix + 1);
+            *saved_anchor.borrow_mut() = Some((id.clone(), window.find(id).bounds().origin.y));
+        });
+        second
+            .send_blocking(Ok(crate::conversation::Page {
+                items: (39..=60).rev().map(m).collect(),
+                next_cursor: Some("unneeded".into()),
+            }))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            let (id, y) = anchor.borrow().clone().unwrap();
+            assert_eq!(window.find(id).bounds().origin.y, y);
+            assert_eq!(view.read(cx).history_list.is_scrolled_to_end(), Some(false));
+            window.click("jump-latest", cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).history_list.is_scrolled_to_end(), Some(true));
+            assert!(window.find("message-70").bounds().size.height > px(0.));
+            window.click("refresh-history", cx);
+        });
+        cx.run_until_parked();
+        let (_, latest) = requests
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        latest
+            .send_blocking(Ok(crate::conversation::Page {
+                items: [71, 70, 69].map(m).to_vec(),
+                next_cursor: Some("still older".into()),
+            }))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).history_list.is_scrolled_to_end(), Some(true));
+            assert!(window.find("message-71").bounds().size.height > px(0.));
         });
     }
 

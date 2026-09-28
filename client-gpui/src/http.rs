@@ -926,7 +926,12 @@ mod tests {
             .clone()
             .expect("a server-issued next cursor");
         let last = auth
-            .history_page(url, login.token, channel, Some(cursor))
+            .history_page(
+                url.clone(),
+                login.token.clone(),
+                channel.clone(),
+                Some(cursor),
+            )
             .await
             .unwrap();
         assert_eq!(last.items.len(), 3);
@@ -952,6 +957,87 @@ mod tests {
                 .chain(&last.items)
                 .all(|m| m.created_at.starts_with("2026-01-01"))
         );
+        // Catch up through the real route, not just adapter pagination: a burst spans
+        // multiple pages before it can reach the previously loaded 53-message segment.
+        let mut session = crate::session::AppSession::new(std::sync::Arc::new(HttpAuth::new()));
+        session.change_server(url.clone());
+        session.username = "Alice".into();
+        session.password = "long password".into();
+        let login_request = session.submit().unwrap();
+        session.complete_login(login_request, Ok(login), chrono::Utc::now().timestamp());
+        let mut conversation = crate::conversation::Conversation::default();
+        let channels = conversation.start(&session).unwrap();
+        let list = session
+            .api
+            .channels(url.clone(), session.active.as_ref().unwrap().token().into())
+            .await
+            .unwrap();
+        let initial = conversation
+            .complete_channels(&mut session, &channels, Ok(list))
+            .unwrap();
+        let read = |request: &crate::conversation::ReadRequest,
+                    session: &crate::session::AppSession| {
+            session.api.history_page(
+                request.server.clone(),
+                request.token.clone(),
+                request.channel_id.clone().unwrap(),
+                request.before.clone(),
+            )
+        };
+        let first_page = read(&initial, &session).await.unwrap();
+        conversation.complete_history(&mut session, &initial, Ok(first_page));
+        for ix in 53..158 {
+            assert_eq!(
+                client
+                    .post(format!("{url}/api/v1/channels/{channel}/messages"))
+                    .bearer_auth(session.active.as_ref().unwrap().token())
+                    .json(&serde_json::json!({"text": format!("line {ix}")}))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::CREATED
+            );
+        }
+        db.db
+            .execute_raw(Statement::from_string(
+                DbBackend::Sqlite,
+                "UPDATE messages SET created_at = '2027-01-01T00:00:00.000000000Z' WHERE created_at != '2026-01-01T00:00:00.000000000Z'",
+            ))
+            .await
+            .unwrap();
+        let mut request = conversation.refresh_history(&session).unwrap();
+        let mut traversed = 0;
+        loop {
+            let page = read(&request, &session).await.unwrap();
+            let outcome = conversation.complete_history(&mut session, &request, Ok(page));
+            traversed += 1;
+            if let Some(next) = outcome.next {
+                request = next;
+            } else {
+                break;
+            }
+        }
+        assert!(
+            traversed >= 3,
+            "catch-up must traverse beyond two new pages"
+        );
+        let crate::conversation::Load::Ready(messages) =
+            conversation.history.get(&channel).unwrap()
+        else {
+            panic!("history missing");
+        };
+        assert_eq!(messages.len(), 155); // 105 new plus the 50 initially loaded; older 3 remain paged
+        assert!(
+            messages
+                .windows(2)
+                .all(|pair| pair[0].created_at > pair[1].created_at
+                    || (pair[0].created_at == pair[1].created_at
+                        && pair[0].id.parse::<i64>().unwrap()
+                            > pair[1].id.parse::<i64>().unwrap())),
+            "server timestamp and ID tie order must survive catch-up"
+        );
+        assert!(!conversation.refreshing.contains_key(&channel));
         handle.stop(true).await;
     }
 

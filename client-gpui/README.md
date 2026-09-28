@@ -1,4 +1,4 @@
-# GPUI client — Linux feasibility gate (#36), login/logout (#37), reading (#38), signup (#39), channel creation (#40)
+# GPUI client — Linux feasibility gate through manual refresh (#36–#42)
 
 ## #36 Linux feasibility gate (recorded before #37)
 
@@ -27,6 +27,12 @@ The #36-only `cargo test --locked submitting_the_real_input_updates_the_greeting
 On this machine `cargo build --locked`, `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked` succeeded (3/3 tests). With no desktop DISPLAY, `xvfb-run -a -s '-screen 0 1280x800x24' env LIBGL_ALWAYS_SOFTWARE=1 timeout 12s target/debug/client-gpui` kept the app running until timeout (exit 124, expected). A root-window capture at 5 seconds showed the 500×500 starter window, greeting, styled input, and button; no runtime errors were logged. The capture is not an assertion in the test suite.
 
 **Not yet manually verified on a physical desktop:** actual mouse selection/clipboard, IME behavior, screen-reader behavior, and native variable-height scrolling. Headless GPUI events and Xvfb rendering do not prove these integrations. This gate established feasibility of the framework and headless seams, not the complete client or manual smoke test required at prototype exit (#46).
+
+## #42 Manual channel discovery and conversation catch-up
+
+Run the unchanged rewrite server (`server-rewrite/README.md`) with two users and start `cargo run --locked` in `client-gpui/`. In user A's client, select a channel and use **Refresh channels** to discover channels created by user B; the current valid selection is retained. Use **Refresh conversation** to pick up new messages. To demonstrate a burst larger than one history page, have user B publish over 50 messages between refreshes: A follows server-issued opaque cursors until the newest previously loaded message is reached, deduplicates overlaps by message ID, and retains server order for tied timestamps. While reading older messages, refresh keeps the reader's viewport anchored; **Jump to latest** follows new messages when requested. If catch-up fails before continuity is established, loaded history stays visible with a distinct incomplete warning; refresh again after recovery. Channel navigation cancels selected-channel reads; there is no background polling or automatic retry in this slice.
+
+`cargo test --locked` includes controlled multi-page, failure/recovery, empty-history, channel-discovery and duplicate-trigger tests; `refresh_controls_preserve_reader_and_jump_follows_later_messages` drives real Kit refresh/jump controls and GPUI scrolling, and `rewrite_history_traverses_multiple_pages_with_timestamp_ties` exercises unchanged rewrite-server history routes. Use the format/clippy/build commands above. Native physical-desktop mouse/clipboard/scrolling has **not** been verified in this headless tty environment.
 
 ## #41 Read older conversations
 
