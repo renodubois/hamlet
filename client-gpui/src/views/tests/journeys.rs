@@ -204,7 +204,7 @@ fn polling_and_send_confirmation_share_one_headless_history_without_duplicate(
     cx.update(|window, cx| {
         window.render_frame(cx);
         assert_eq!(window.find("message-10").label(), Some("same"));
-        assert_eq!(view.read(cx).composer.read(cx).text().to_string(), "");
+        assert_eq!(composer_text(window, cx), "");
         assert!(
             matches!(view.read(cx).conversation.as_ref().unwrap().read().history.get("000000000000001"),
             Some(crate::conversation::Load::Ready(items)) if items.len() == 3)

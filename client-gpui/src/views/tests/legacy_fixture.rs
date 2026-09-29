@@ -35,9 +35,9 @@ use gpui_kit::base::SelectableText;
 use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-    AppContext as _, Context, FocusHandle, Focusable as _, InteractiveElement as _, IntoElement,
-    ListAlignment, ListState, MouseButton, ParentElement as _, Render, SharedString, Styled as _,
-    TestAppContext, Window, div, list, px,
+    AppContext as _, Context, FocusHandle, InteractiveElement as _, IntoElement, ListAlignment,
+    ListState, MouseButton, ParentElement as _, Render, SharedString, Styled as _, TestAppContext,
+    Window, div, list, px,
 };
 use std::sync::{
     Arc,
@@ -178,6 +178,21 @@ impl RequestAdapter for RaceAuth {
             PagedAuth(self.pages.clone()).execute(request)
         }
     }
+}
+
+// Real textarea observation without exposing the combined layout's private entity.
+fn composer_text(window: &mut Window, cx: &mut gpui_kit::App) -> String {
+    window.render_frame(cx);
+    window.click("composer", cx);
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(String::new()));
+    window.press("ctrl-a", cx);
+    window.press("ctrl-c", cx);
+    let text = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    window.press("right", cx);
+    text
 }
 
 fn advance(cx: &mut gpui_kit::VisualTestContext, seconds: u64) {

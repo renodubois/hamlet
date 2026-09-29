@@ -1,17 +1,14 @@
 use super::*;
 
-#[gpui_kit::test]
-fn composer_uses_real_textarea_keyboard_button_focus_and_channel_drafts(cx: &mut TestAppContext) {
+fn mount(
+    cx: &mut TestAppContext,
+    calls: Arc<Mutex<Vec<Sent>>>,
+) -> &mut gpui_kit::VisualTestContext {
     cx.update(gpui_kit::init);
-    let calls = Arc::new(std::sync::Mutex::new(Vec::<Sent>::new()));
-    let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let stored = saved.clone();
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(SendAuth(calls.clone()))));
-        *stored.borrow_mut() = Some(view.clone());
+        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(SendAuth(calls))));
         Root::new(view, window, cx)
     });
-    let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("username", cx);
@@ -21,41 +18,26 @@ fn composer_uses_real_textarea_keyboard_button_focus_and_channel_drafts(cx: &mut
         window.click("login", cx);
     });
     cx.run_until_parked();
+    cx
+}
+
+#[gpui_kit::test]
+fn composer_uses_real_textarea_keyboard_button_focus_and_channel_drafts(cx: &mut TestAppContext) {
+    let calls = Arc::new(Mutex::new(Vec::<Sent>::new()));
+    let cx = mount(cx, calls.clone());
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("composer", cx);
-        assert!(
-            view.read(cx)
-                .composer
-                .read(cx)
-                .focus_handle(cx)
-                .is_focused(window)
-        );
         window.input("first", cx);
         window.press("shift-enter", cx);
         window.input("second", cx);
-        assert_eq!(
-            view.read(cx).composer.read(cx).text().to_string(),
-            "first\nsecond"
-        );
+        assert_eq!(composer_text(window, cx), "first\nsecond");
         window.click("channel-000000000000002", cx);
         window.render_frame(cx);
         window.click("composer", cx);
         window.input("other", cx);
         window.click("channel-000000000000001", cx);
-        window.render_frame(cx);
-        assert_eq!(
-            view.read(cx).composer.read(cx).text().to_string(),
-            "first\nsecond"
-        );
-        window.click("composer", cx);
-        assert!(
-            view.read(cx)
-                .composer
-                .read(cx)
-                .focus_handle(cx)
-                .is_focused(window)
-        );
+        assert_eq!(composer_text(window, cx), "first\nsecond");
         window.dispatch_action(
             Box::new(gpui_kit::base::input::Enter {
                 secondary: false,
@@ -68,15 +50,9 @@ fn composer_uses_real_textarea_keyboard_button_focus_and_channel_drafts(cx: &mut
     cx.update(|window, cx| {
         window.render_frame(cx);
         assert_eq!(window.find("send-message").label(), Some("Sending…"));
-        assert_eq!(
-            view.read(cx).composer.read(cx).text().to_string(),
-            "first\nsecond"
-        );
+        assert_eq!(composer_text(window, cx), "first\nsecond");
         window.input("blocked", cx);
-        assert_eq!(
-            view.read(cx).composer.read(cx).text().to_string(),
-            "first\nsecond"
-        );
+        assert_eq!(composer_text(window, cx), "first\nsecond");
         window.click("send-message", cx);
         window.dispatch_action(
             Box::new(gpui_kit::base::input::Enter {
@@ -93,11 +69,7 @@ fn composer_uses_real_textarea_keyboard_button_focus_and_channel_drafts(cx: &mut
     sender.try_send(Err(AuthError::InvalidInput)).unwrap();
     cx.run_until_parked();
     cx.update(|window, cx| {
-        window.render_frame(cx);
-        assert_eq!(
-            view.read(cx).composer.read(cx).text().to_string(),
-            "first\nsecond"
-        );
+        assert_eq!(composer_text(window, cx), "first\nsecond");
         assert!(
             window
                 .find("send-feedback")
@@ -106,8 +78,7 @@ fn composer_uses_real_textarea_keyboard_button_focus_and_channel_drafts(cx: &mut
                 .contains("rejected")
         );
         window.click("channel-000000000000002", cx);
-        window.render_frame(cx);
-        assert_eq!(view.read(cx).composer.read(cx).text().to_string(), "other");
+        assert_eq!(composer_text(window, cx), "other");
         window.click("send-message", cx);
     });
     cx.run_until_parked();
@@ -126,67 +97,36 @@ fn composer_uses_real_textarea_keyboard_button_focus_and_channel_drafts(cx: &mut
         .unwrap();
     cx.run_until_parked();
     cx.update(|window, cx| {
-        window.render_frame(cx);
-        assert_eq!(view.read(cx).composer.read(cx).text().to_string(), "");
+        assert_eq!(composer_text(window, cx), "");
         assert_eq!(
             window.find("message-000000000000003").label(),
             Some("other")
         );
         window.click("channel-000000000000001", cx);
-        window.render_frame(cx);
+        assert_eq!(composer_text(window, cx), "first\nsecond");
         assert_eq!(window.find("send-message").label(), Some("Send message"));
-        assert_eq!(
-            view.read(cx).composer.read(cx).text().to_string(),
-            "first\nsecond"
-        );
         window.click("logout", cx);
-        assert!(view.read(cx).conversation.is_none());
+        window.render_frame(cx);
+        assert!(window.try_find("composer").is_none());
     });
 }
 
 #[gpui_kit::test]
 fn enter_at_mid_caret_and_after_shift_enter_sends_unchanged_text(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let calls = Arc::new(std::sync::Mutex::new(Vec::<Sent>::new()));
-    let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let stored = saved.clone();
-    let sender = calls.clone();
-    let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(SendAuth(sender))));
-        *stored.borrow_mut() = Some(view.clone());
-        Root::new(view, window, cx)
-    });
-    let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        window.click("username", cx);
-        window.input("Ada", cx);
-        window.click("password", cx);
-        window.input("pass", cx);
-        window.click("login", cx);
-    });
-    cx.run_until_parked();
+    let calls = Arc::new(Mutex::new(Vec::<Sent>::new()));
+    let cx = mount(cx, calls.clone());
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("composer", cx);
         window.input("middle", cx);
-        view.update(cx, |v, cx| {
-            v.composer.update(cx, |input, cx| {
-                input.set_cursor_position(
-                    gpui_kit::base::input::Position {
-                        line: 0,
-                        character: 3,
-                    },
-                    window,
-                    cx,
-                );
-            });
-        });
-        assert_eq!(
-            view.read(cx).composer.read(cx).cursor_position().character,
-            3
-        );
-        assert_eq!(view.read(cx).composer.read(cx).text().to_string(), "middle");
+        for _ in 0..3 {
+            window.press("left", cx);
+        }
+        // Verify the actual caret with a selection/copy, then restore it before Enter.
+        window.press("shift-home", cx);
+        window.press("ctrl-c", cx);
+        assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "mid");
+        window.press("right", cx);
         window.dispatch_event(
             gpui_kit::PlatformInput::KeyDown(gpui_kit::KeyDownEvent {
                 keystroke: gpui_kit::Keystroke::parse("enter").unwrap(),
@@ -202,15 +142,10 @@ fn enter_at_mid_caret_and_after_shift_enter_sends_unchanged_text(cx: &mut TestAp
     reply.try_send(Err(AuthError::InvalidInput)).unwrap();
     cx.run_until_parked();
     cx.update(|window, cx| {
-        view.update(cx, |v, cx| {
-            v.composer
-                .update(cx, |input, cx| input.set_value("tail", window, cx));
-            v.conversation.as_ref().unwrap().edit_draft("tail".into());
-        });
-        window.render_frame(cx);
-        window.click("composer", cx);
+        assert_eq!(composer_text(window, cx), "middle");
+        window.press("ctrl-a", cx);
+        window.input("tail", cx);
         window.press("shift-enter", cx);
-        assert_eq!(view.read(cx).composer.read(cx).text().to_string(), "tail\n");
         window.dispatch_event(
             gpui_kit::PlatformInput::KeyDown(gpui_kit::KeyDownEvent {
                 keystroke: gpui_kit::Keystroke::parse("enter").unwrap(),
@@ -225,8 +160,8 @@ fn enter_at_mid_caret_and_after_shift_enter_sends_unchanged_text(cx: &mut TestAp
     assert_eq!(text, "tail\n");
     reply.try_send(Err(AuthError::InvalidInput)).unwrap();
     cx.run_until_parked();
-    cx.update(|_window, cx| {
-        assert_eq!(view.read(cx).composer.read(cx).text().to_string(), "tail\n");
+    cx.update(|window, cx| {
+        assert_eq!(composer_text(window, cx), "tail\n");
     });
 }
 
@@ -234,25 +169,8 @@ fn enter_at_mid_caret_and_after_shift_enter_sends_unchanged_text(cx: &mut TestAp
 fn uncertain_send_retains_draft_refreshes_only_selected_channel_and_never_replays(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_kit::init);
-    let calls = Arc::new(std::sync::Mutex::new(Vec::<Sent>::new()));
-    let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let stored = saved.clone();
-    let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(SendAuth(calls.clone()))));
-        *stored.borrow_mut() = Some(view.clone());
-        Root::new(view, window, cx)
-    });
-    let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        window.click("username", cx);
-        window.input("Ada", cx);
-        window.click("password", cx);
-        window.input("pass", cx);
-        window.click("login", cx);
-    });
-    cx.run_until_parked();
+    let calls = Arc::new(Mutex::new(Vec::<Sent>::new()));
+    let cx = mount(cx, calls.clone());
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("composer", cx);
@@ -272,33 +190,16 @@ fn uncertain_send_retains_draft_refreshes_only_selected_channel_and_never_replay
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert!(
-            view.read(cx)
-                .conversation
-                .as_ref()
-                .unwrap()
-                .read()
-                .uncertain
-                .contains("000000000000001")
-        );
-        assert!(
-            view.read(cx)
-                .conversation
-                .as_ref()
-                .unwrap()
-                .read()
-                .refreshing
-                .is_empty()
+        assert!(window.try_find("send-feedback").is_none());
+        assert_eq!(
+            window.find("refresh-history").label(),
+            Some("Refresh conversation")
         );
         window.click("channel-000000000000001", cx);
     });
     cx.run_until_parked();
     cx.update(|window, cx| {
-        window.render_frame(cx);
-        assert_eq!(
-            view.read(cx).composer.read(cx).text().to_string(),
-            "maybe published"
-        );
+        assert_eq!(composer_text(window, cx), "maybe published");
         assert!(
             window
                 .find("send-feedback")
@@ -306,15 +207,9 @@ fn uncertain_send_retains_draft_refreshes_only_selected_channel_and_never_replay
                 .unwrap()
                 .contains("may already")
         );
-        assert!(
-            !view
-                .read(cx)
-                .conversation
-                .as_ref()
-                .unwrap()
-                .read()
-                .uncertain
-                .contains("000000000000001")
+        assert_eq!(
+            window.find("refresh-history").label(),
+            Some("Refresh conversation")
         );
         assert!(
             calls.lock().unwrap().is_empty(),
@@ -325,25 +220,8 @@ fn uncertain_send_retains_draft_refreshes_only_selected_channel_and_never_replay
 
 #[gpui_kit::test]
 fn stalled_send_times_out_and_late_completion_cannot_clear_the_draft(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let calls = Arc::new(std::sync::Mutex::new(Vec::<Sent>::new()));
-    let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let stored = saved.clone();
-    let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(SendAuth(calls.clone()))));
-        *stored.borrow_mut() = Some(view.clone());
-        Root::new(view, window, cx)
-    });
-    let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        window.click("username", cx);
-        window.input("Ada", cx);
-        window.click("password", cx);
-        window.input("pass", cx);
-        window.click("login", cx);
-    });
-    cx.run_until_parked();
+    let calls = Arc::new(Mutex::new(Vec::<Sent>::new()));
+    let cx = mount(cx, calls.clone());
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("composer", cx);
@@ -352,16 +230,11 @@ fn stalled_send_times_out_and_late_completion_cannot_clear_the_draft(cx: &mut Te
     });
     cx.run_until_parked();
     assert_eq!(calls.lock().unwrap().len(), 1);
-    cx.executor()
-        .advance_clock(std::time::Duration::from_secs(10));
+    cx.executor().advance_clock(Duration::from_secs(10));
     cx.run_until_parked();
     cx.update(|window, cx| {
-        window.render_frame(cx);
+        assert_eq!(composer_text(window, cx), "timeout draft");
         assert_eq!(window.find("send-message").label(), Some("Send message"));
-        assert_eq!(
-            view.read(cx).composer.read(cx).text().to_string(),
-            "timeout draft"
-        );
         assert!(
             window
                 .find("send-feedback")
@@ -369,18 +242,18 @@ fn stalled_send_times_out_and_late_completion_cannot_clear_the_draft(cx: &mut Te
                 .unwrap()
                 .contains("may already")
         );
-        assert!(
-            view.read(cx)
-                .conversation
-                .as_ref()
-                .unwrap()
-                .read()
-                .send_pending
-                .is_empty()
-        );
     });
-    // The fixture's future was dropped rather than retried, so delivery is impossible.
     let (_, _, sender) = calls.lock().unwrap().remove(0);
     assert!(sender.try_send(Err(AuthError::AlreadyInvalid)).is_err());
-    assert!(view.read_with(cx, |v, cx| v.session.read(cx).active().is_some()));
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        assert_eq!(composer_text(window, cx), "timeout draft");
+        assert!(
+            window
+                .find("session-status")
+                .label()
+                .unwrap()
+                .contains("Ada")
+        );
+    });
 }

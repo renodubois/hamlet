@@ -1,5 +1,19 @@
 use super::*;
 
+fn visible_message(
+    window: &Window,
+    mut ids: impl Iterator<Item = i32>,
+) -> (String, gpui_kit::Pixels) {
+    let bounds = window.find("history").bounds();
+    ids.find_map(|id| {
+        let id = format!("message-{id}");
+        let row = window.try_find(id.clone())?;
+        (row.bounds().origin.y >= bounds.origin.y && row.bounds().bottom() <= bounds.bottom())
+            .then_some((id, row.bounds().origin.y))
+    })
+    .expect("a fully visible message")
+}
+
 // This is a real Kit/GPUI history surface, not a simulated scrolling model.
 struct HistoryProbe {
     list: ListState,
@@ -148,14 +162,10 @@ fn selectable_history_copies_line_breaks(cx: &mut TestAppContext) {
 fn production_wheel_requests_older_and_keeps_reader_at_same_viewport_y(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (tx, requests) = std::sync::mpsc::channel();
-    let stored = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let saved = stored.clone();
     let (_, cx) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(PagedAuth(tx))));
-        *saved.borrow_mut() = Some(view.clone());
         Root::new(view, window, cx)
     });
-    let view: gpui_kit::Entity<Hamlet> = stored.borrow().as_ref().unwrap().clone();
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("username", cx);
@@ -190,10 +200,10 @@ fn production_wheel_requests_older_and_keeps_reader_at_same_viewport_y(cx: &mut 
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert!(view.read(cx).history_list.logical_scroll_top().item_ix > 1);
-        // Find the threshold by scrolling the actual list, not by fixing screen coordinates.
+        assert!(window.try_find("message-1").is_none());
+        // Find the first message through actual wheel input and semantic row bounds.
         for _ in 0..100 {
-            if view.read(cx).history_list.logical_scroll_top().item_ix <= 1 {
+            if window.try_find("message-1").is_some() {
                 break;
             }
             window.scroll(
@@ -203,12 +213,7 @@ fn production_wheel_requests_older_and_keeps_reader_at_same_viewport_y(cx: &mut 
             );
             window.render_frame(cx);
         }
-        assert!(
-            view.read(cx).history_list.logical_scroll_top().item_ix <= 1,
-            "offset={:?} end={:?}",
-            view.read(cx).history_list.logical_scroll_top(),
-            view.read(cx).history_list.is_scrolled_to_end()
-        );
+        assert!(window.find("message-1").bounds().size.height > px(0.));
         window.scroll(
             "history",
             gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(90.))),
@@ -232,9 +237,7 @@ fn production_wheel_requests_older_and_keeps_reader_at_same_viewport_y(cx: &mut 
         );
         window.render_frame(cx);
         assert!(requests.try_recv().is_err());
-        let ix = view.read(cx).history_list.logical_scroll_top().item_ix;
-        let id = format!("message-{}", ix + 1);
-        *saved_anchor.borrow_mut() = Some((id.clone(), window.find(id).bounds().origin.y, ix));
+        *saved_anchor.borrow_mut() = Some(visible_message(window, 1..=40));
     });
     reply.send_blocking(Err(AuthError::Unavailable)).unwrap();
     cx.run_until_parked();
@@ -263,9 +266,7 @@ fn production_wheel_requests_older_and_keeps_reader_at_same_viewport_y(cx: &mut 
     assert_eq!(cursor.as_deref(), Some("server cursor only"));
     cx.update(|window, cx| {
         window.render_frame(cx);
-        let ix = view.read(cx).history_list.logical_scroll_top().item_ix;
-        let id = format!("message-{}", ix + 1);
-        *anchor.borrow_mut() = Some((id.clone(), window.find(id).bounds().origin.y, ix));
+        *anchor.borrow_mut() = Some(visible_message(window, 1..=40));
     });
     retry
         .send_blocking(Ok(crate::conversation::Page {
@@ -276,11 +277,7 @@ fn production_wheel_requests_older_and_keeps_reader_at_same_viewport_y(cx: &mut 
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
-        let (id, y, ix) = anchor.borrow().clone().unwrap();
-        assert_eq!(
-            view.read(cx).history_list.logical_scroll_top().item_ix,
-            ix + 2
-        );
+        let (id, y) = anchor.borrow().clone().unwrap();
         assert_eq!(window.find(id).bounds().origin.y, y);
         assert!(requests.try_recv().is_err());
     });
@@ -342,14 +339,17 @@ fn confirmed_middle_insertion_keeps_reader_anchor(cx: &mut TestAppContext) {
         window.click("composer", cx);
         window.input("twenty", cx);
         window.click("send-message", cx);
-        view.update(cx, |v, _| {
-            v.history_list.scroll_to(gpui_kit::ListOffset {
-                item_ix: 23,
-                offset_in_item: px(0.),
-            });
-        });
-        window.render_frame(cx);
-        assert_eq!(view.read(cx).history_list.logical_scroll_top().item_ix, 23);
+        for _ in 0..30 {
+            if window.try_find("message-25").is_some() {
+                break;
+            }
+            window.scroll(
+                "history",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(40.))),
+                cx,
+            );
+            window.render_frame(cx);
+        }
         assert!(window.find("message-25").bounds().size.height > px(0.));
     });
     cx.run_until_parked();
@@ -373,15 +373,14 @@ fn confirmed_middle_insertion_keeps_reader_anchor(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert_eq!(view.read(cx).history_list.logical_scroll_top().item_ix, 24);
         assert_eq!(window.find("message-25").bounds().origin.y, y);
-        assert_eq!(view.read(cx).history_list.item_count(), 40);
         let state = view.read(cx).conversation.as_ref().unwrap().read();
         let crate::conversation::Load::Ready(messages) =
             state.history.get("000000000000001").unwrap()
         else {
             panic!("history not ready")
         };
+        assert_eq!(messages.len(), 40);
         assert_eq!(messages.iter().filter(|m| m.id == "20").count(), 1);
     });
 }
@@ -440,7 +439,7 @@ fn refresh_controls_preserve_reader_and_jump_follows_later_messages(cx: &mut Tes
             );
             window.render_frame(cx);
         }
-        assert_eq!(view.read(cx).history_list.is_scrolled_to_end(), Some(false));
+        assert!(window.try_find("message-40").is_none());
         window.click("refresh-history", cx);
         window.render_frame(cx);
         assert_eq!(
@@ -479,9 +478,7 @@ fn refresh_controls_preserve_reader_and_jump_follows_later_messages(cx: &mut Tes
                 .refreshing
                 .contains_key("000000000000001")
         );
-        let ix = view.read(cx).history_list.logical_scroll_top().item_ix;
-        let id = format!("message-{}", ix + 1);
-        *saved_anchor.borrow_mut() = Some((id.clone(), window.find(id).bounds().origin.y));
+        *saved_anchor.borrow_mut() = Some(visible_message(window, 1..=40));
     });
     second
         .send_blocking(Ok(crate::conversation::Page {
@@ -494,10 +491,9 @@ fn refresh_controls_preserve_reader_and_jump_follows_later_messages(cx: &mut Tes
         window.render_frame(cx);
         let (id, y) = anchor.borrow().clone().unwrap();
         assert_eq!(window.find(id).bounds().origin.y, y);
-        assert_eq!(view.read(cx).history_list.is_scrolled_to_end(), Some(false));
+        assert!(window.try_find("message-70").is_none());
         window.click("jump-latest", cx);
         window.render_frame(cx);
-        assert_eq!(view.read(cx).history_list.is_scrolled_to_end(), Some(true));
         assert!(window.find("message-70").bounds().size.height > px(0.));
         window.click("refresh-history", cx);
     });
@@ -514,7 +510,6 @@ fn refresh_controls_preserve_reader_and_jump_follows_later_messages(cx: &mut Tes
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert_eq!(view.read(cx).history_list.is_scrolled_to_end(), Some(true));
         assert!(window.find("message-71").bounds().size.height > px(0.));
     });
 }

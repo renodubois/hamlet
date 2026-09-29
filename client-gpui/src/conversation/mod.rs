@@ -60,6 +60,21 @@ struct Coordinator {
     sends: HashMap<String, Work>,
     created: Option<(u64, String)>,
     create_revision: u64,
+    observers: Vec<async_channel::Sender<()>>,
+}
+
+// Notify after each intention/completion releases its state borrow, including early returns.
+// Each subscriber gets a coalesced invalidation, never a competing executor delivery.
+struct Notify<'a>(&'a ConversationHandle);
+impl Drop for Notify<'_> {
+    fn drop(&mut self) {
+        self.0.0.borrow_mut().observers.retain(|observer| {
+            !matches!(
+                observer.try_send(()),
+                Err(async_channel::TrySendError::Closed(_))
+            )
+        });
+    }
 }
 
 impl ConversationHandle {
@@ -93,6 +108,7 @@ impl ConversationHandle {
             sends: HashMap::new(),
             created: None,
             create_revision: 0,
+            observers: Vec::new(),
         })))
     }
     pub fn read(&self) -> Ref<'_, Conversation> {
@@ -108,7 +124,15 @@ impl ConversationHandle {
     pub fn updates(&self) -> async_channel::Receiver<ConversationUpdate> {
         self.0.borrow().updates.clone()
     }
+    /// Independent, bounded feature invalidations. Hydrate from `read()` on subscription;
+    /// notifications carry no state or request results. Dropped receivers are pruned.
+    pub fn notifications(&self) -> async_channel::Receiver<()> {
+        let (send, receive) = async_channel::bounded(1);
+        self.0.borrow_mut().observers.push(send);
+        receive
+    }
     pub fn start(&self, focused: bool) {
+        let _notify = Notify(self);
         let mut owner = self.0.borrow_mut();
         if owner.started || owner.client.is_none() {
             return;
@@ -125,9 +149,11 @@ impl ConversationHandle {
         owner.arm_timer();
     }
     pub fn close(&self) {
+        let _notify = Notify(self);
         self.0.borrow_mut().close();
     }
     pub fn set_focused(&self, focused: bool) {
+        let _notify = Notify(self);
         let mut owner = self.0.borrow_mut();
         if owner.client.is_none() {
             return;
@@ -138,6 +164,7 @@ impl ConversationHandle {
         }
     }
     pub fn edit_draft(&self, text: String) {
+        let _notify = Notify(self);
         let mut owner = self.0.borrow_mut();
         if owner.client.is_none() {
             return;
@@ -146,7 +173,16 @@ impl ConversationHandle {
             owner.state.set_draft(&id, text);
         }
     }
+    /// An input may deliver its final edit after navigation; retain its originating channel.
+    pub fn edit_channel_draft(&self, channel: &str, text: String) {
+        let _notify = Notify(self);
+        let mut owner = self.0.borrow_mut();
+        if owner.client.is_some() {
+            owner.state.set_draft(channel, text);
+        }
+    }
     pub fn select_channel(&self, id: &str) {
+        let _notify = Notify(self);
         let mut owner = self.0.borrow_mut();
         if owner.client.is_none() {
             return;
@@ -162,6 +198,7 @@ impl ConversationHandle {
         }
     }
     pub fn refresh_channels(&self) {
+        let _notify = Notify(self);
         let mut owner = self.0.borrow_mut();
         if owner.client.is_none() {
             return;
@@ -174,15 +211,19 @@ impl ConversationHandle {
         }
     }
     pub fn refresh_history(&self) {
+        let _notify = Notify(self);
         self.0.borrow_mut().history(HistoryIntent::Refresh);
     }
     pub fn request_older(&self) {
+        let _notify = Notify(self);
         self.0.borrow_mut().history(HistoryIntent::Older);
     }
     pub fn retry_older(&self) {
+        let _notify = Notify(self);
         self.0.borrow_mut().history(HistoryIntent::RetryOlder);
     }
     pub fn create_channel(&self, name: &str) {
+        let _notify = Notify(self);
         let mut owner = self.0.borrow_mut();
         let Some(api) = owner.client.clone() else {
             return;
@@ -204,6 +245,7 @@ impl ConversationHandle {
         owner.create_task = Some(task);
     }
     pub fn send(&self) {
+        let _notify = Notify(self);
         let mut owner = self.0.borrow_mut();
         let Some(api) = owner.client.clone() else {
             return;
@@ -232,6 +274,7 @@ impl ConversationHandle {
     }
     /// Applies only this lifetime's opaque delivery, reporting authoritative loss by identity.
     pub fn apply(&self, update: ConversationUpdate) -> Option<SessionEnd> {
+        let _notify = Notify(self);
         self.0.borrow_mut().apply(update.0)
     }
 }

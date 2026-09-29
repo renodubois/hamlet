@@ -51,6 +51,39 @@ fn drain(cx: &mut TestAppContext, activity: &ConversationHandle) {
     }
 }
 #[gpui_kit::test]
+fn independent_observers_receive_intentions_completions_and_shutdown(cx: &mut TestAppContext) {
+    let (activity, calls) = fixture(cx);
+    let sidebar = activity.notifications();
+    let layout = activity.notifications();
+    activity.start(false);
+    assert!(sidebar.try_recv().is_ok());
+    assert!(layout.try_recv().is_ok());
+    drain(cx, &activity);
+    respond(
+        calls.try_recv().unwrap(),
+        serde_json::json!({"items":[
+        {"id":"1","name":"General","type":"text"},
+        {"id":"2","name":"Other","type":"text"}]}),
+    );
+    drain(cx, &activity);
+    assert!(sidebar.try_recv().is_ok());
+    assert!(layout.try_recv().is_ok());
+    activity.select_channel("2");
+    assert!(sidebar.try_recv().is_ok());
+    assert!(layout.try_recv().is_ok());
+    assert_eq!(activity.read().selected.as_deref(), Some("2"));
+    activity.create_channel("bad!");
+    assert!(sidebar.try_recv().is_ok());
+    assert!(activity.read().create_feedback.is_some());
+    drop(sidebar);
+    let recreated = activity.notifications();
+    activity.close();
+    assert!(layout.try_recv().is_ok());
+    assert!(recreated.try_recv().is_ok());
+    assert!(activity.read().selected.is_none());
+}
+
+#[gpui_kit::test]
 fn channel_navigation_reuses_history_and_drafts_without_a_view(cx: &mut TestAppContext) {
     let (activity, calls) = fixture(cx);
     activity.start(false);

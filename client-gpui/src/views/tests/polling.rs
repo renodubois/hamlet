@@ -95,7 +95,21 @@ fn poll_catches_up_multiple_pages_without_duplicate_work_and_switch_cancels_late
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert_eq!(view.read(cx).history_list.item_count(), 102);
+        assert_eq!(
+            match view
+                .read(cx)
+                .conversation
+                .as_ref()
+                .unwrap()
+                .read()
+                .history
+                .get("000000000000001")
+            {
+                Some(crate::conversation::Load::Ready(messages)) => messages.len(),
+                _ => panic!("history not ready"),
+            },
+            102
+        );
         assert_eq!(window.find("message-102").label(), Some("102"));
     });
     cx.run_until_parked();
