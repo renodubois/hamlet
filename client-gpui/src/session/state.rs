@@ -3,10 +3,10 @@ pub use crate::api::ApiFuture;
 #[cfg(test)]
 use crate::api::{Channel, Message};
 // Temporary import compatibility; API is the authoritative owner.
-pub use crate::api::{
-    ApiError as AuthError, User,
-    legacy::{AuthApi, Login},
-};
+#[cfg(test)]
+pub use crate::api::legacy::Login;
+pub use crate::api::{ApiError as AuthError, User, legacy::AuthApi};
+use crate::api::{AuthenticatedClient, Authentication};
 use std::sync::Arc;
 
 pub const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8081";
@@ -27,7 +27,10 @@ pub enum RestoreDecision {
 }
 
 pub enum RestoreResult {
-    Verified { user: User, token: String },
+    Verified {
+        user: User,
+        client: AuthenticatedClient,
+    },
     Rejected,
     MissingCredential,
     Unavailable,
@@ -35,20 +38,24 @@ pub enum RestoreResult {
 
 pub struct Revocation {
     pub generation: u64,
-    pub server: String,
-    pub token: String,
+    pub client: AuthenticatedClient,
 }
 
 pub struct Session {
     pub server: String,
     pub user: User,
-    token: String,
+    client: AuthenticatedClient,
     pub expires_at: i64,
 }
 
 impl Session {
+    // Compatibility for protected descriptors only, retired by #52. No second credential owner.
     pub fn token(&self) -> &str {
-        &self.token
+        self.client.credential_for_session()
+    }
+
+    pub fn client(&self) -> AuthenticatedClient {
+        self.client.clone()
     }
 }
 
@@ -184,12 +191,16 @@ impl AppSession {
             return RestoreDecision::Delete;
         }
         match result {
-            RestoreResult::Verified { user, token } if user == *expected && !token.is_empty() => {
+            RestoreResult::Verified { user, client }
+                if user == *expected
+                    && crate::api::validate_server(server)
+                        .is_ok_and(|url| &url == client.server_url()) =>
+            {
                 self.username = user.username.clone();
                 self.active = Some(Session {
                     server: server.into(),
                     user,
-                    token,
+                    client,
                     expires_at,
                 });
                 self.feedback = None;
@@ -222,7 +233,7 @@ impl AppSession {
     pub fn complete_signup(
         &mut self,
         request: LoginRequest,
-        result: Result<Login, AuthError>,
+        result: Result<Authentication, AuthError>,
         now: i64,
     ) -> bool {
         self.complete_auth(request, result, now, true)
@@ -231,7 +242,7 @@ impl AppSession {
     pub fn complete_login(
         &mut self,
         request: LoginRequest,
-        result: Result<Login, AuthError>,
+        result: Result<Authentication, AuthError>,
         now: i64,
     ) -> bool {
         self.complete_auth(request, result, now, false)
@@ -240,7 +251,7 @@ impl AppSession {
     fn complete_auth(
         &mut self,
         request: LoginRequest,
-        result: Result<Login, AuthError>,
+        result: Result<Authentication, AuthError>,
         now: i64,
         signup: bool,
     ) -> bool {
@@ -250,12 +261,13 @@ impl AppSession {
         self.pending = false;
         self.restore_pending = false;
         match result {
-            Ok(login) if login.expires_at > now && !login.token.is_empty() => {
+            Ok(login) if login.expires_at > now
+                && crate::api::validate_server(&request.server).is_ok_and(|url| &url == login.client.server_url()) => {
                 self.password.clear();
                 self.active = Some(Session {
                     server: request.server,
                     user: login.user,
-                    token: login.token,
+                    client: login.client,
                     expires_at: login.expires_at,
                 });
                 self.feedback = None;
@@ -300,10 +312,11 @@ impl AppSession {
         self.restore_pending = false;
         self.password.clear();
         self.feedback = None;
-        self.active.take().map(|session| Revocation {
+        let client = self.active_client();
+        self.active.take();
+        client.map(|client| Revocation {
             generation: self.generation,
-            server: session.server,
-            token: session.token,
+            client,
         })
     }
 
@@ -382,7 +395,7 @@ mod tests {
     fn app() -> AppSession {
         AppSession::new(Arc::new(Controlled))
     }
-    fn login(name: &str) -> Login {
+    fn login(name: &str) -> Authentication {
         Login {
             user: User {
                 id: "42".into(),
@@ -391,6 +404,7 @@ mod tests {
             token: "secret".into(),
             expires_at: 100,
         }
+        .bind(DEFAULT_SERVER_URL)
     }
     #[test]
     fn login_feedback_and_recoverable_inputs() {
@@ -539,7 +553,7 @@ mod tests {
                 100,
                 RestoreResult::Verified {
                     user: login("Ada").user,
-                    token: "secret".into()
+                    client: login("Ada").client,
                 },
                 0
             ),
@@ -583,7 +597,7 @@ mod tests {
                 100,
                 RestoreResult::Verified {
                     user: login("Ada").user,
-                    token: "secret".into()
+                    client: login("Ada").client,
                 },
                 0
             ),

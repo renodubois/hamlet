@@ -1,8 +1,11 @@
 //! Temporary forwarding facade; retire after BOTH authentication and protected callers migrate.
 //! No endpoints, HTTP dispatch or decoding belong here. Existing fixture implementations remain
 //! until their owning coordinator migrates; new tests use bound clients and request adapters.
-use super::{ApiError as AuthError, ApiFuture, Channel, HttpTransport, Message, Page, User};
+#[cfg(test)]
+use super::User;
+use super::{ApiError as AuthError, ApiFuture, Channel, HttpTransport, Message, Page};
 
+#[cfg(test)]
 #[derive(Clone)]
 pub struct Login {
     pub user: User,
@@ -10,6 +13,23 @@ pub struct Login {
     pub expires_at: i64,
 }
 
+#[cfg(test)]
+impl Login {
+    // Mechanical pure-state fixture conversion; authentication workflow tests use bound calls.
+    pub(crate) fn bind(self, server: &str) -> super::Authentication {
+        super::Authentication {
+            client: HttpTransport::new()
+                .server(server)
+                .unwrap()
+                .restore_candidate(self.token)
+                .unwrap(),
+            user: self.user,
+            expires_at: self.expires_at,
+        }
+    }
+}
+
+#[cfg(test)]
 impl std::fmt::Debug for Login {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Login")
@@ -19,9 +39,10 @@ impl std::fmt::Debug for Login {
     }
 }
 
+#[cfg(test)]
 fn legacy_login(auth: super::Authentication) -> Login {
-    // The sole compatibility credential export. The old session/storage workflow still
-    // consumes Login; bound clients expose no credential accessor or public conversion.
+    // Only mixed legacy protected-operation tests still consume this representation.
+    // Production authentication/session/storage use the accepted bound context.
     Login {
         user: auth.user,
         token: auth.client.0.token.clone(),
@@ -36,9 +57,11 @@ pub struct HttpAuth {
 
 impl HttpAuth {
     pub fn new() -> Self {
-        Self {
-            transport: HttpTransport::new(),
-        }
+        Self::with_transport(HttpTransport::new())
+    }
+
+    pub fn with_transport(transport: HttpTransport) -> Self {
+        Self { transport }
     }
 
     #[cfg(test)]
@@ -50,6 +73,11 @@ impl HttpAuth {
 }
 
 impl AuthApi for HttpAuth {
+    fn server(self: std::sync::Arc<Self>, origin: &str) -> Result<super::ServerClient, AuthError> {
+        self.transport.server(origin)
+    }
+
+    #[cfg(test)]
     fn login(
         &self,
         server: String,
@@ -65,6 +93,7 @@ impl AuthApi for HttpAuth {
                 .map(legacy_login)
         })
     }
+    #[cfg(test)]
     fn signup(
         &self,
         server: String,
@@ -80,6 +109,7 @@ impl AuthApi for HttpAuth {
                 .map(legacy_login)
         })
     }
+    #[cfg(test)]
     fn current_user(&self, server: String, token: String) -> ApiFuture<Result<User, AuthError>> {
         let transport = self.transport.clone();
         Box::pin(async move {
@@ -90,6 +120,7 @@ impl AuthApi for HttpAuth {
                 .await
         })
     }
+    #[cfg(test)]
     fn logout(&self, server: String, token: String) -> ApiFuture<Result<(), AuthError>> {
         let transport = self.transport.clone();
         Box::pin(async move {
@@ -179,20 +210,37 @@ impl AuthApi for HttpAuth {
 }
 
 // Temporary caller compatibility only; production forwards to bound clients above.
-pub trait AuthApi: Send + Sync {
+pub trait AuthApi: Send + Sync + 'static {
+    #[cfg(not(test))]
+    fn server(self: std::sync::Arc<Self>, origin: &str) -> Result<super::ServerClient, AuthError>;
+
+    // Temporary adapter for protected-operation fixtures pending #52. Bound authentication
+    // still exercises request construction/decoding and the production session workflow.
+    #[cfg(test)]
+    fn server(self: std::sync::Arc<Self>, origin: &str) -> Result<super::ServerClient, AuthError> {
+        HttpTransport::with_adapter(std::sync::Arc::new(
+            super::legacy_fixture::AuthenticationAdapter(self),
+        ))
+        .server(origin)
+    }
+
+    #[cfg(test)]
     fn login(
         &self,
         server: String,
         username: String,
         password: String,
     ) -> ApiFuture<Result<Login, AuthError>>;
+    #[cfg(test)]
     fn signup(
         &self,
         server: String,
         username: String,
         password: String,
     ) -> ApiFuture<Result<Login, AuthError>>;
+    #[cfg(test)]
     fn logout(&self, server: String, token: String) -> ApiFuture<Result<(), AuthError>>;
+    #[cfg(test)]
     fn current_user(&self, _server: String, _token: String) -> ApiFuture<Result<User, AuthError>> {
         Box::pin(async { Err(AuthError::Unavailable) })
     }

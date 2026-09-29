@@ -811,7 +811,8 @@ mod tests {
                 },
                 token: "token".into(),
                 expires_at: 100,
-            }),
+            }
+            .bind(&session.server)),
             0,
         );
         session
@@ -1454,7 +1455,8 @@ mod tests {
                 },
                 token: "new-token".into(),
                 expires_at: 100,
-            }),
+            }
+            .bind(&session.server)),
             0,
         );
         let new_list = view.start(&session).unwrap();
@@ -1580,7 +1582,8 @@ mod tests {
                 },
                 token: "new-token".into(),
                 expires_at: 100,
-            }),
+            }
+            .bind(&session.server)),
             0,
         );
         conversation.complete_history(&mut session, &old_history, Err(AuthError::AlreadyInvalid));
@@ -1668,7 +1671,8 @@ mod tests {
                 },
                 token: "new-token".into(),
                 expires_at: 100,
-            }),
+            }
+            .bind(&session.server)),
             0,
         );
         let list = conversation.start(&session).unwrap();

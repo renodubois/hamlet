@@ -1,40 +1,12 @@
+use super::bound_auth::*;
 use super::*;
 
 struct PendingAuth(Arc<AtomicUsize>);
-impl AuthApi for PendingAuth {
-    fn signup(&self, _: String, _: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
+impl RequestAdapter for PendingAuth {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+        assert!(request.url().path().starts_with("/api/v1/auth/"));
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(std::future::pending())
-    }
-    fn login(&self, _: String, _: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(std::future::pending())
-    }
-    fn logout(&self, _: String, _: String) -> ApiFuture<Result<(), AuthError>> {
-        Box::pin(async { Ok(()) })
-    }
-    fn channels(
-        &self,
-        _: String,
-        _: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
-        Box::pin(async { Ok(vec![]) })
-    }
-    fn create_channel(
-        &self,
-        _: String,
-        _: String,
-        _: String,
-    ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
-        Box::pin(async { unreachable!() })
-    }
-    fn history(
-        &self,
-        _: String,
-        _: String,
-        _: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
-        Box::pin(async { Ok(vec![]) })
     }
 }
 
@@ -45,7 +17,7 @@ fn login_validation_and_pending_button_are_visible_and_inert(cx: &mut TestAppCon
     let probe = std::rc::Rc::new(std::cell::RefCell::new(None));
     let stored = probe.clone();
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(PendingAuth(calls.clone()))));
+        let view = cx.new(|cx| Hamlet::new(window, cx, bound_api(PendingAuth(calls.clone()))));
         *stored.borrow_mut() = Some(view.clone());
         Root::new(view, window, cx)
     });
@@ -85,45 +57,25 @@ struct SignupReject {
     error: AuthError,
     submissions: Arc<std::sync::Mutex<Vec<(String, String)>>>,
 }
-impl AuthApi for SignupReject {
-    fn signup(
-        &self,
-        _: String,
-        username: String,
-        password: String,
-    ) -> ApiFuture<Result<Login, AuthError>> {
-        self.submissions.lock().unwrap().push((username, password));
+impl RequestAdapter for SignupReject {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+        assert_eq!(request.url().path(), "/api/v1/auth/signup");
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        self.submissions.lock().unwrap().push((
+            body["username"].as_str().unwrap().into(),
+            body["password"].as_str().unwrap().into(),
+        ));
         let error = self.error.clone();
-        Box::pin(async move { Err(error) })
-    }
-    fn login(&self, _: String, _: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
-        Box::pin(async { unreachable!() })
-    }
-    fn logout(&self, _: String, _: String) -> ApiFuture<Result<(), AuthError>> {
-        Box::pin(async { Ok(()) })
-    }
-    fn channels(
-        &self,
-        _: String,
-        _: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
-        Box::pin(async { unreachable!() })
-    }
-    fn create_channel(
-        &self,
-        _: String,
-        _: String,
-        _: String,
-    ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
-        Box::pin(async { unreachable!() })
-    }
-    fn history(
-        &self,
-        _: String,
-        _: String,
-        _: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
-        Box::pin(async { unreachable!() })
+        Box::pin(async move {
+            match error {
+                AuthError::Conflict => Ok(Response::controlled(
+                    StatusCode::CONFLICT,
+                    r#"{"error":{"code":"conflict"}}"#,
+                )),
+                error => Err(error),
+            }
+        })
     }
 }
 
@@ -141,7 +93,7 @@ fn signup_rejection_keeps_form_and_reports_uncertainty(cx: &mut TestAppContext) 
                 Hamlet::new(
                     window,
                     cx,
-                    Arc::new(SignupReject {
+                    bound_api(SignupReject {
                         error,
                         submissions: captured,
                     }),
@@ -192,7 +144,7 @@ fn signup_rejection_keeps_form_and_reports_uncertainty(cx: &mut TestAppContext) 
 fn signup_form_supports_keyboard_focus(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(TestAuth)));
+        let view = cx.new(|cx| Hamlet::new(window, cx, bound_api(BoundAuth)));
         Root::new(view, window, cx)
     });
     cx.update(|window, cx| {
@@ -210,7 +162,10 @@ fn signup_form_supports_keyboard_focus(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn signup_controls_validate_and_enter_conversation(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
-    let (_, cx) = cx.add_window_view(|window, cx| Hamlet::new(window, cx, Arc::new(TestAuth)));
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| Hamlet::new(window, cx, bound_api(BoundAuth)));
+        Root::new(view, window, cx)
+    });
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("auth-mode", cx);
@@ -273,7 +228,7 @@ fn pending_signup_is_inert_and_preserves_editable_inputs(cx: &mut TestAppContext
     cx.update(gpui_kit::init);
     let calls = Arc::new(AtomicUsize::new(0));
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(PendingAuth(calls.clone()))));
+        let view = cx.new(|cx| Hamlet::new(window, cx, bound_api(PendingAuth(calls.clone()))));
         Root::new(view, window, cx)
     });
     cx.update(|window, cx| {

@@ -30,4 +30,6 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod binding_tests;
 #[cfg(test)]
+mod legacy_fixture;
+#[cfg(test)]
 mod tests;

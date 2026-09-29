@@ -1,3 +1,4 @@
+use super::bound_auth::*;
 use super::*;
 
 // Exercises the actual signup button -> Hamlet::submit -> enter_authenticated ->
@@ -6,72 +7,47 @@ struct PersistentSignupAuth {
     verified: Arc<AtomicUsize>,
     revoked: Arc<AtomicBool>,
 }
-impl AuthApi for PersistentSignupAuth {
-    fn signup(
-        &self,
-        server: String,
-        username: String,
-        password: String,
-    ) -> ApiFuture<Result<Login, AuthError>> {
-        assert_eq!(server, crate::session::DEFAULT_SERVER_URL);
-        assert_eq!(username, "Alice_1");
-        assert_eq!(password, "long password");
-        Box::pin(async move {
-            Ok(Login {
-                user: User {
-                    id: "42".into(),
-                    username,
-                },
-                token: "controlled-signup-token".into(),
-                expires_at: 4_070_908_800,
-            })
-        })
-    }
-    fn login(&self, _: String, _: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
-        Box::pin(async { panic!("signup must not call login") })
-    }
-    fn current_user(&self, server: String, token: String) -> ApiFuture<Result<User, AuthError>> {
-        assert_eq!(server, crate::session::DEFAULT_SERVER_URL);
-        self.verified.fetch_add(1, Ordering::SeqCst);
-        let valid = token == "controlled-signup-token" && !self.revoked.load(Ordering::SeqCst);
-        Box::pin(async move {
-            if valid {
-                Ok(User {
-                    id: "42".into(),
-                    username: "Alice_1".into(),
-                })
-            } else {
-                Err(AuthError::AlreadyInvalid)
+impl RequestAdapter for PersistentSignupAuth {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+        assert_eq!(
+            request.url().origin().ascii_serialization(),
+            crate::session::DEFAULT_SERVER_URL
+        );
+        let response = match request.url().path() {
+            "/api/v1/auth/signup" => {
+                let body: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(body["username"], "Alice_1");
+                assert_eq!(body["password"], "long password");
+                Response::controlled(
+                    StatusCode::CREATED,
+                    r#"{"user":{"id":"42","username":"Alice_1"},"access_token":"controlled-signup-token","expires_at":"2099-01-01T00:00:00Z"}"#,
+                )
             }
-        })
-    }
-    fn logout(&self, _: String, token: String) -> ApiFuture<Result<(), AuthError>> {
-        assert_eq!(token, "controlled-signup-token");
-        self.revoked.store(true, Ordering::SeqCst);
-        Box::pin(async { Ok(()) })
-    }
-    fn channels(
-        &self,
-        s: String,
-        t: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
-        TestAuth.channels(s, t)
-    }
-    fn create_channel(
-        &self,
-        s: String,
-        t: String,
-        n: String,
-    ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
-        TestAuth.create_channel(s, t, n)
-    }
-    fn history(
-        &self,
-        s: String,
-        t: String,
-        id: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
-        TestAuth.history(s, t, id)
+            "/api/v1/auth/login" => panic!("signup must not call login"),
+            "/api/v1/me" => {
+                self.verified.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(
+                    request.headers()["authorization"],
+                    "Bearer controlled-signup-token"
+                );
+                if self.revoked.load(Ordering::SeqCst) {
+                    Response::controlled(StatusCode::UNAUTHORIZED, "{}")
+                } else {
+                    Response::controlled(StatusCode::OK, r#"{"id":"42","username":"Alice_1"}"#)
+                }
+            }
+            "/api/v1/auth/logout" => {
+                assert_eq!(
+                    request.headers()["authorization"],
+                    "Bearer controlled-signup-token"
+                );
+                self.revoked.store(true, Ordering::SeqCst);
+                Response::controlled(StatusCode::NO_CONTENT, "")
+            }
+            _ => return BoundAuth.execute(request),
+        };
+        Box::pin(async move { Ok(response) })
     }
 }
 
@@ -87,7 +63,7 @@ fn signup_controls_save_and_restore_through_view_and_controlled_worker(cx: &mut 
     ));
     let verified = Arc::new(AtomicUsize::new(0));
     let revoked = Arc::new(AtomicBool::new(false));
-    let api: Arc<dyn AuthApi> = Arc::new(PersistentSignupAuth {
+    let api = bound_api(PersistentSignupAuth {
         verified: verified.clone(),
         revoked: revoked.clone(),
     });
@@ -256,7 +232,7 @@ fn headless_logout_dispatches_deletion_warns_and_retries(cx: &mut TestAppContext
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.json");
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(TestAuth)));
+        let view = cx.new(|cx| Hamlet::new(window, cx, bound_api(BoundAuth)));
         view.update(cx, |view, _| {
             view.persistence = Some(Persistence::start(
                 Controlled(shared.clone()),

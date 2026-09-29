@@ -190,12 +190,14 @@ async fn login_decodes_rewrite_contract_and_unauthorized() {
     let body = r#"{"user":{"id":"42","username":"ada"},"access_token":"abc","expires_at":"2099-01-01T00:00:00Z"}"#;
     let reply = response("200 OK", body);
     let (url, captured) = server(reply);
-    let login = HttpAuth::new()
-        .login(url, "ada".into(), "pass".into())
+    let login = HttpTransport::new()
+        .server(&url)
+        .unwrap()
+        .login("ada".into(), "pass".into())
         .await
         .unwrap();
     assert_eq!(login.user.username, "ada");
-    assert_eq!(login.token, "abc");
+    assert_eq!(login.client.credential_for_session(), "abc");
     let request = captured.join().unwrap();
     assert!(request.starts_with("POST /api/v1/auth/login "));
     assert!(request.contains("\"password\":\"pass\""));
@@ -205,7 +207,11 @@ async fn login_decodes_rewrite_contract_and_unauthorized() {
     );
     let (url, captured) = server(reply);
     assert!(matches!(
-        HttpAuth::new().login(url, "ada".into(), "bad".into()).await,
+        HttpTransport::new()
+            .server(&url)
+            .unwrap()
+            .login("ada".into(), "bad".into())
+            .await,
         Err(AuthError::InvalidCredentials)
     ));
     captured.join().unwrap();
@@ -214,8 +220,12 @@ async fn login_decodes_rewrite_contract_and_unauthorized() {
 async fn current_user_requires_bearer_and_rejects_redirect_or_malformed_identity() {
     let (url, captured) = server(response("200 OK", r#"{"id":"42","username":"Ada"}"#));
     assert_eq!(
-        HttpAuth::new()
-            .current_user(url, "secret".into())
+        HttpTransport::new()
+            .server(&url)
+            .unwrap()
+            .restore_candidate("secret".into())
+            .unwrap()
+            .current_user()
             .await
             .unwrap(),
         User {
@@ -232,13 +242,25 @@ async fn current_user_requires_bearer_and_rejects_redirect_or_malformed_identity
     );
     let (url, captured) = server(response("401 Unauthorized", "{}"));
     assert!(matches!(
-        HttpAuth::new().current_user(url, "bad".into()).await,
+        HttpTransport::new()
+            .server(&url)
+            .unwrap()
+            .restore_candidate("bad".into())
+            .unwrap()
+            .current_user()
+            .await,
         Err(AuthError::AlreadyInvalid)
     ));
     captured.join().unwrap();
     let (url, captured) = server(response("200 OK", r#"{"id":"","username":"Ada"}"#));
     assert!(matches!(
-        HttpAuth::new().current_user(url, "secret".into()).await,
+        HttpTransport::new()
+            .server(&url)
+            .unwrap()
+            .restore_candidate("secret".into())
+            .unwrap()
+            .current_user()
+            .await,
         Err(AuthError::InvalidResponse)
     ));
     captured.join().unwrap();
@@ -250,7 +272,13 @@ async fn current_user_requires_bearer_and_rejects_redirect_or_malformed_identity
     );
     let (url, captured) = server(reply);
     assert!(matches!(
-        HttpAuth::new().current_user(url, "secret".into()).await,
+        HttpTransport::new()
+            .server(&url)
+            .unwrap()
+            .restore_candidate("secret".into())
+            .unwrap()
+            .current_user()
+            .await,
         Err(AuthError::Unavailable)
     ));
     captured.join().unwrap();
@@ -275,7 +303,12 @@ async fn current_user_timeout_is_not_authoritative_invalidity() {
             .unwrap(),
     );
     assert!(matches!(
-        auth.current_user(url, "still-valid-until-verified".into())
+        std::sync::Arc::new(auth)
+            .server(&url)
+            .unwrap()
+            .restore_candidate("still-valid-until-verified".into())
+            .unwrap()
+            .current_user()
             .await,
         Err(AuthError::Unavailable)
     ));
@@ -305,24 +338,22 @@ async fn current_user_against_rewrite_routes_before_and_after_revocation() {
     .run();
     let handle = server.handle();
     actix_web::rt::spawn(server);
-    let api: &dyn AuthApi = &HttpAuth::new();
+    let api = HttpTransport::new().server(&url).unwrap();
     let login = api
-        .signup(url.clone(), "Ada".into(), "long password".into())
+        .signup("Ada".into(), "long password".into())
         .await
         .unwrap();
-    assert_eq!(
-        api.current_user(url.clone(), login.token.clone())
-            .await
-            .unwrap(),
-        login.user
-    );
+    assert_eq!(login.client.current_user().await.unwrap(), login.user);
     assert!(matches!(
-        api.current_user(url.clone(), "bad".into()).await,
+        api.restore_candidate("bad".into())
+            .unwrap()
+            .current_user()
+            .await,
         Err(AuthError::AlreadyInvalid)
     ));
-    api.logout(url.clone(), login.token.clone()).await.unwrap();
+    login.client.logout().await.unwrap();
     assert!(matches!(
-        api.current_user(url, login.token).await,
+        login.client.current_user().await,
         Err(AuthError::AlreadyInvalid)
     ));
     handle.stop(true).await;
@@ -335,8 +366,10 @@ async fn unexpected_conflict_on_login_is_not_a_signup_error() {
         r#"{"error":{"code":"conflict","message":"Already exists"}}"#,
     ));
     assert!(matches!(
-        HttpAuth::new()
-            .login(url, "ada".into(), "pass".into())
+        HttpTransport::new()
+            .server(&url)
+            .unwrap()
+            .login("ada".into(), "pass".into())
             .await,
         Err(AuthError::InvalidResponse)
     ));
@@ -347,7 +380,14 @@ async fn unexpected_conflict_on_login_is_not_a_signup_error() {
 async fn logout_sends_bearer_and_redirects_are_not_followed() {
     let (url, captured) =
         server("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-    HttpAuth::new().logout(url, "secret".into()).await.unwrap();
+    HttpTransport::new()
+        .server(&url)
+        .unwrap()
+        .restore_candidate("secret".into())
+        .unwrap()
+        .logout()
+        .await
+        .unwrap();
     let request = captured.join().unwrap();
     assert!(request.starts_with("POST /api/v1/auth/logout "));
     assert!(
@@ -363,7 +403,13 @@ async fn logout_sends_bearer_and_redirects_are_not_followed() {
     );
     let (url, captured) = server(reply);
     assert!(matches!(
-        HttpAuth::new().logout(url, "secret".into()).await,
+        HttpTransport::new()
+            .server(&url)
+            .unwrap()
+            .restore_candidate("secret".into())
+            .unwrap()
+            .logout()
+            .await,
         Err(AuthError::Unavailable)
     ));
     captured.join().unwrap();
@@ -382,8 +428,10 @@ async fn rejects_login_redirect_without_contacting_destination() {
     );
     let (url, captured) = server(reply);
     assert!(matches!(
-        HttpAuth::new()
-            .login(url, "ada".into(), "pass".into())
+        HttpTransport::new()
+            .server(&url)
+            .unwrap()
+            .login("ada".into(), "pass".into())
             .await,
         Err(AuthError::Unavailable)
     ));
@@ -401,8 +449,10 @@ async fn bounded_revocation_and_error_decoding() {
     );
     let (url, captured) = server(reply);
     assert!(matches!(
-        HttpAuth::new()
-            .login(url, "ada".into(), "pass".into())
+        HttpTransport::new()
+            .server(&url)
+            .unwrap()
+            .login("ada".into(), "pass".into())
             .await,
         Err(AuthError::InvalidInput)
     ));
@@ -423,7 +473,13 @@ async fn bounded_revocation_and_error_decoding() {
     );
     let started = std::time::Instant::now();
     assert!(matches!(
-        auth.logout(url, "secret".into()).await,
+        std::sync::Arc::new(auth)
+            .server(&url)
+            .unwrap()
+            .restore_candidate("secret".into())
+            .unwrap()
+            .logout()
+            .await,
         Err(AuthError::Unavailable)
     ));
     assert!(started.elapsed() < Duration::from_millis(130));
@@ -624,36 +680,27 @@ async fn signup_against_rewrite_routes_returns_usable_session_and_rejections() {
     .run();
     let handle = server.handle();
     actix_web::rt::spawn(server);
-    let auth: &dyn AuthApi = &HttpAuth::new();
+    let auth = HttpTransport::new().server(&url).unwrap();
     let created = auth
-        .signup(url.clone(), "Alice_1".into(), "long password".into())
+        .signup("Alice_1".into(), "long password".into())
         .await
         .unwrap();
     assert_eq!(created.user.username, "Alice_1");
     assert!(!created.user.id.is_empty());
     assert!(created.expires_at > chrono::Utc::now().timestamp());
-    let me = Client::new()
-        .get(format!("{url}/api/v1/me"))
-        .bearer_auth(&created.token)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(me.status(), StatusCode::OK);
-    let user: serde_json::Value = me.json().await.unwrap();
-    assert_eq!(user["id"], created.user.id);
+    let user = created.client.current_user().await.unwrap();
+    assert_eq!(user.id, created.user.id);
     assert!(matches!(
-        auth.signup(url.clone(), "aLiCe_1".into(), "another password".into())
+        auth.signup("aLiCe_1".into(), "another password".into())
             .await,
         Err(AuthError::Conflict)
     ));
     assert!(matches!(
-        auth.signup(url.clone(), "bad!".into(), "long password".into())
-            .await,
+        auth.signup("bad!".into(), "long password".into()).await,
         Err(AuthError::InvalidInput)
     ));
     assert!(matches!(
-        auth.signup(url.clone(), "NewUser".into(), "short".into())
-            .await,
+        auth.signup("NewUser".into(), "short".into()).await,
         Err(AuthError::InvalidInput)
     ));
     handle.stop(true).await;
@@ -662,7 +709,7 @@ async fn signup_against_rewrite_routes_returns_usable_session_and_rejections() {
 #[actix_web::test]
 async fn signup_uses_shared_persistent_session_and_verified_restore_against_rewrite_routes() {
     use crate::persistence::{Outcome, Persistence, Selection, tests::Controlled};
-    use crate::session::{AppSession, RestoreDecision, RestoreResult};
+    use crate::session::{AppSession, RestoreDecision};
     use actix_web::{App, HttpServer, web};
     use std::sync::{Arc, Condvar, Mutex};
     let dir = tempfile::tempdir().unwrap();
@@ -692,11 +739,10 @@ async fn signup_uses_shared_persistent_session_and_verified_restore_against_rewr
     session.password = "long password".into();
     let request = session.submit_signup().unwrap();
     let created = api
-        .signup(
-            request.server.clone(),
-            request.username.clone(),
-            request.password.clone(),
-        )
+        .clone()
+        .server(&request.server)
+        .unwrap()
+        .signup(request.username.clone(), request.password.clone())
         .await
         .unwrap();
     assert!(session.complete_signup(request, Ok(created), chrono::Utc::now().timestamp()));
@@ -717,14 +763,7 @@ async fn signup_uses_shared_persistent_session_and_verified_restore_against_rewr
         store.remember(url.clone()).recv().await.unwrap(),
         Outcome::Remembered
     );
-    assert_eq!(
-        store
-            .save(selected.clone(), token.clone())
-            .recv()
-            .await
-            .unwrap(),
-        Outcome::Saved
-    );
+    assert_eq!(active.save(&store).recv().await.unwrap(), Outcome::Saved);
     let metadata = std::fs::read_to_string(&path).unwrap();
     assert!(!metadata.contains(&token) && !metadata.contains("long password"));
     // This is the same restoration decision path used by the view after reading the store.
@@ -735,17 +774,14 @@ async fn signup_uses_shared_persistent_session_and_verified_restore_against_rewr
         Outcome::Token(Some(token)) => token,
         _ => panic!("saved credential missing"),
     };
-    let user = api.current_user(url.clone(), stored.clone()).await.unwrap();
+    let verified = AppSession::verify_saved(api.clone().server(&url).unwrap(), stored).await;
     assert_eq!(
         restarted.finish_restore(
             generation,
             &url,
             &selected.user,
             selected.expires_at,
-            RestoreResult::Verified {
-                user,
-                token: stored
-            },
+            verified,
             chrono::Utc::now().timestamp()
         ),
         RestoreDecision::Restored
@@ -757,12 +793,10 @@ async fn signup_uses_shared_persistent_session_and_verified_restore_against_rewr
         store.delete(selected.clone()).recv().await.unwrap(),
         Outcome::Deleted
     );
-    api.logout(revocation.server, revocation.token)
-        .await
-        .unwrap();
+    revocation.client.logout().await.unwrap();
     assert_eq!(store.read(selected).recv().await.unwrap(), Outcome::Stale);
     assert!(matches!(
-        api.current_user(url, token).await,
+        revocation.client.current_user().await,
         Err(AuthError::AlreadyInvalid)
     ));
     assert!(shared.0.lock().unwrap().0.is_empty());
@@ -812,7 +846,7 @@ async fn second_user_activity_is_found_by_focused_polling_against_unchanged_rout
     session.username = "Alice".into();
     session.password = "long password".into();
     let login = session.submit().unwrap();
-    session.complete_login(login, Ok(alice), chrono::Utc::now().timestamp());
+    session.complete_login(login, Ok(alice.bind(&url)), chrono::Utc::now().timestamp());
     let mut conversation = crate::conversation::Conversation::default();
     let list = conversation.start(&session).unwrap();
     let channels = api.channels(url.clone(), list.token.clone()).await.unwrap();
@@ -1044,7 +1078,11 @@ async fn rewrite_history_traverses_multiple_pages_with_timestamp_ties() {
     session.username = "Alice".into();
     session.password = "long password".into();
     let login_request = session.submit().unwrap();
-    session.complete_login(login_request, Ok(login), chrono::Utc::now().timestamp());
+    session.complete_login(
+        login_request,
+        Ok(login.bind(&url)),
+        chrono::Utc::now().timestamp(),
+    );
     let mut conversation = crate::conversation::Conversation::default();
     let channels = conversation.start(&session).unwrap();
     let list = session
@@ -1174,8 +1212,10 @@ async fn signup_redirect_does_not_forward_password() {
     );
     let (url, captured) = server(reply);
     assert!(matches!(
-        HttpAuth::new()
-            .signup(url, "Alice".into(), "long password".into())
+        HttpTransport::new()
+            .server(&url)
+            .unwrap()
+            .signup("Alice".into(), "long password".into())
             .await,
         Err(AuthError::Unavailable)
     ));
@@ -1183,13 +1223,7 @@ async fn signup_redirect_does_not_forward_password() {
     assert!(request.starts_with("POST /api/v1/auth/signup "));
     assert!(destination.accept().is_err());
     assert!(matches!(
-        HttpAuth::new()
-            .signup(
-                "http://example.com".into(),
-                "Alice".into(),
-                "long password".into()
-            )
-            .await,
+        HttpTransport::new().server("http://example.com"),
         Err(AuthError::InvalidResponse)
     ));
     let (url, captured) = server(response(
@@ -1197,8 +1231,10 @@ async fn signup_redirect_does_not_forward_password() {
         r#"{"user":{"id":"42","username":"Alice"},"access_token":"abc","expires_at":"2099-01-01T00:00:00Z"}"#,
     ));
     assert!(matches!(
-        HttpAuth::new()
-            .signup(url, "Alice".into(), "long password".into())
+        HttpTransport::new()
+            .server(&url)
+            .unwrap()
+            .signup("Alice".into(), "long password".into())
             .await,
         Err(AuthError::Unavailable)
     ));

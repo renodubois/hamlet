@@ -1,4 +1,5 @@
 //! Common lifecycle tests: injected execution and real Kit controls, no child fields.
+use super::bound_auth::*;
 use super::*;
 use crate::conversation::{Channel, Message};
 use crate::runtime::Execution;
@@ -35,43 +36,24 @@ struct DelayedLogin {
     executor: gpui_kit::BackgroundExecutor,
 }
 
-impl AuthApi for DelayedLogin {
-    fn login(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
-        let delay = self.executor.timer(Duration::from_secs(2));
+impl RequestAdapter for DelayedLogin {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+        let delay = request
+            .url()
+            .path()
+            .starts_with("/api/v1/auth/")
+            .then(|| self.executor.timer(Duration::from_secs(2)));
         Box::pin(async move {
-            delay.await;
-            TestAuth.login(s, u, p).await
+            if let Some(delay) = delay {
+                delay.await;
+            }
+            BoundAuth.execute(request).await
         })
     }
-    fn signup(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
-        self.login(s, u, p)
-    }
-    fn logout(&self, s: String, t: String) -> ApiFuture<Result<(), AuthError>> {
-        TestAuth.logout(s, t)
-    }
-    fn channels(
-        &self,
-        s: String,
-        t: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
-        TestAuth.channels(s, t)
-    }
-    fn create_channel(
-        &self,
-        s: String,
-        t: String,
-        n: String,
-    ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
-        TestAuth.create_channel(s, t, n)
-    }
-    fn history(
-        &self,
-        s: String,
-        t: String,
-        id: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
-        TestAuth.history(s, t, id)
-    }
+}
+
+fn delayed_login(executor: gpui_kit::BackgroundExecutor) -> Arc<dyn AuthApi> {
+    bound_api(DelayedLogin { executor })
 }
 
 #[gpui_kit::test]
@@ -83,7 +65,7 @@ fn controlled_login_remains_pending_until_response_then_enters_workspace(cx: &mu
         let view = crate::views::app_shell::open(
             window,
             cx,
-            Arc::new(DelayedLogin { executor }),
+            delayed_login(executor),
             crate::persistence::Config::default(),
             None,
             execution,
@@ -197,7 +179,7 @@ fn late_login_cannot_replace_a_newer_server_submission(cx: &mut TestAppContext) 
         let view = crate::views::app_shell::open(
             window,
             cx,
-            Arc::new(DelayedLogin { executor }),
+            delayed_login(executor),
             crate::persistence::Config::default(),
             None,
             execution,
@@ -245,14 +227,14 @@ fn late_login_cannot_replace_a_newer_server_submission(cx: &mut TestAppContext) 
 #[gpui_kit::test]
 fn expiry_uses_controlled_wall_time_and_clears_the_workspace(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
-    // TestAuth expires at 4_070_908_800; the accepted response arrives at second 2.
+    // BoundAuth expires at 4_070_908_800; the accepted response arrives at second 2.
     let executor = cx.background_executor.clone();
     let execution = Execution::controlled(executor.clone(), 4_070_908_795);
     let (_, cx) = cx.add_window_view(|window, cx| {
         let view = crate::views::app_shell::open(
             window,
             cx,
-            Arc::new(DelayedLogin { executor }),
+            delayed_login(executor),
             crate::persistence::Config::default(),
             None,
             execution,

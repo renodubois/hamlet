@@ -29,39 +29,21 @@ impl Store for GatedStore {
 }
 
 struct VerifyAuth(std::sync::mpsc::Sender<async_channel::Sender<Result<User, AuthError>>>);
-impl AuthApi for VerifyAuth {
-    fn login(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
-        TestAuth.login(s, u, p)
-    }
-    fn signup(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
-        TestAuth.signup(s, u, p)
-    }
-    fn logout(&self, s: String, t: String) -> ApiFuture<Result<(), AuthError>> {
-        TestAuth.logout(s, t)
-    }
-    fn current_user(&self, _: String, _: String) -> ApiFuture<Result<User, AuthError>> {
+impl RequestAdapter for VerifyAuth {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+        if request.url().path() != "/api/v1/me" {
+            return BoundAuth.execute(request);
+        }
         let (tx, rx) = async_channel::bounded(1);
         self.0.send(tx).unwrap();
-        Box::pin(async move { rx.recv().await.unwrap() })
-    }
-    fn channels(&self, s: String, t: String) -> ApiFuture<Result<Vec<Channel>, AuthError>> {
-        TestAuth.channels(s, t)
-    }
-    fn create_channel(
-        &self,
-        s: String,
-        t: String,
-        n: String,
-    ) -> ApiFuture<Result<Channel, AuthError>> {
-        TestAuth.create_channel(s, t, n)
-    }
-    fn history(
-        &self,
-        s: String,
-        t: String,
-        id: String,
-    ) -> ApiFuture<Result<Vec<Message>, AuthError>> {
-        TestAuth.history(s, t, id)
+        Box::pin(async move {
+            rx.recv().await.unwrap().map(|user| {
+                Response::controlled(
+                    StatusCode::OK,
+                    serde_json::json!({"id":user.id,"username":user.username}).to_string(),
+                )
+            })
+        })
     }
 }
 
@@ -115,7 +97,7 @@ fn restoration_has_one_ten_second_budget_for_storage_and_verification(cx: &mut T
         let view = crate::views::app_shell::open(
             window,
             cx,
-            Arc::new(VerifyAuth(verify)),
+            bound_api(VerifyAuth(verify)),
             config,
             Some(store),
             execution,
@@ -179,6 +161,103 @@ fn restoration_has_one_ten_second_budget_for_storage_and_verification(cx: &mut T
 }
 
 #[gpui_kit::test]
+fn private_restore_candidate_cannot_open_workspace_after_server_change(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    cx.background_executor.allow_parking();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    let selection = Selection {
+        server: crate::session::DEFAULT_SERVER_URL.into(),
+        user: User {
+            id: "42".into(),
+            username: "Ada".into(),
+        },
+        expires_at: 4_070_908_800,
+    };
+    let config = Config {
+        server: Some(selection.server.clone()),
+        saved: Some(selection.clone()),
+        pending_deletions: vec![],
+    };
+    std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let (calls, provider) = std::sync::mpsc::channel();
+    let store = Persistence::start(GatedStore(calls), Some(path));
+    let (verify, requests) = std::sync::mpsc::channel();
+    let execution = Execution::controlled(cx.background_executor.clone(), 1_800_000_000);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = crate::views::app_shell::open(
+            window,
+            cx,
+            bound_api(VerifyAuth(verify)),
+            config,
+            Some(store),
+            execution,
+        );
+        Root::new(view, window, cx)
+    });
+    cx.run_until_parked();
+    let ProviderCall::Read(read) = provider.recv_timeout(Duration::from_secs(5)).unwrap() else {
+        panic!("expected read")
+    };
+    read.try_send(Ok(Some("saved-token".into()))).unwrap();
+    let verification = await_verification(cx, &requests);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("server-url").value(),
+            Some(crate::session::DEFAULT_SERVER_URL)
+        );
+        assert_eq!(window.find("username").value(), Some("Ada"));
+        assert!(window.try_find("session-status").is_none());
+        assert!(window.try_find("channels").is_none());
+        assert!(window.try_find("composer").is_none());
+        window.click("server-url", cx);
+        window.press("ctrl-a", cx);
+        window.input("http://127.0.0.1:8082", cx);
+    });
+    cx.run_until_parked();
+    // Local invalidation is not blocked on deletion or on the old verification response.
+    let ProviderCall::Delete(delete) = provider.recv_timeout(Duration::from_secs(5)).unwrap()
+    else {
+        panic!("expected deletion")
+    };
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("session-status").is_none());
+        assert_eq!(window.find("login").label(), Some("Log in"));
+        window.click("username", cx);
+        window.press("ctrl-a", cx);
+        window.input("Bob", cx);
+        window.click("password", cx);
+        window.input("new password", cx);
+        window.click("login", cx);
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("session-status").label(),
+            Some("Logged in as Bob at http://127.0.0.1:8082")
+        );
+    });
+    verification.try_send(Ok(selection.user)).unwrap();
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("session-status").label(),
+            Some("Logged in as Bob at http://127.0.0.1:8082")
+        );
+        assert!(window.try_find("auth-feedback").is_none());
+    });
+    delete.try_send(Ok(None)).unwrap();
+    let ProviderCall::Write(write) = provider.recv_timeout(Duration::from_secs(5)).unwrap() else {
+        panic!("expected new save")
+    };
+    write.try_send(Ok(None)).unwrap();
+}
+
+#[gpui_kit::test]
 fn delayed_save_and_delete_are_unconfirmed_at_ten_seconds_without_blocking_logout(
     cx: &mut TestAppContext,
 ) {
@@ -192,7 +271,7 @@ fn delayed_save_and_delete_are_unconfirmed_at_ten_seconds_without_blocking_logou
         let view = crate::views::app_shell::open(
             window,
             cx,
-            Arc::new(TestAuth),
+            bound_api(BoundAuth),
             Config::default(),
             Some(store),
             execution,

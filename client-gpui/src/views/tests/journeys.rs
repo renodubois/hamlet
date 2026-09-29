@@ -366,7 +366,7 @@ fn bob_activity_arrives_through_hamlet_poll_at_and_real_rewrite_routes(cx: &mut 
             v.session.password = "long password".into();
             let login = v.session.submit().unwrap();
             v.session
-                .complete_login(login, Ok(alice), chrono::Utc::now().timestamp());
+                .complete_login(login, Ok(alice.bind(&url)), chrono::Utc::now().timestamp());
             v.polling.focus(true, Duration::ZERO);
             v.load_channels(cx);
         })

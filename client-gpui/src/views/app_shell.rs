@@ -380,7 +380,7 @@ impl Hamlet {
         }
         // Remember successful authentication independently of secure-store success.
         let remembered = store.remember(selection.server.clone());
-        let queued = store.save(selection.clone(), session.token().into());
+        let queued = session.save(store);
         let reply = self.execution.bounded(SECURE_STORE_DEADLINE, async move {
             (remembered.recv().await, queued.recv().await)
         });
@@ -447,18 +447,14 @@ impl Hamlet {
             return;
         }
         let reply = store.read(selection.clone());
-        let api = self.session.api.clone();
-        let server = selection.server.clone();
+        let server = self.session.api.clone().server(&selection.server);
         // One budget covers the worker reply AND verification, not a fresh budget per step.
         let result = self.execution.bounded(SECURE_STORE_DEADLINE, async move {
             match reply.recv().await {
-                Ok(Outcome::Token(Some(token))) if !token.is_empty() => {
-                    match api.current_user(server, token.clone()).await {
-                        Ok(user) => RestoreResult::Verified { user, token },
-                        Err(session::AuthError::AlreadyInvalid) => RestoreResult::Rejected,
-                        _ => RestoreResult::Unavailable,
-                    }
-                }
+                Ok(Outcome::Token(Some(token))) => match server {
+                    Ok(server) => AppSession::verify_saved(server, token).await,
+                    Err(_) => RestoreResult::Unavailable,
+                },
                 Ok(Outcome::Token(None)) => RestoreResult::MissingCredential,
                 _ => RestoreResult::Unavailable,
             }
@@ -604,15 +600,15 @@ impl Hamlet {
             cx.notify();
             return;
         };
-        let api = self.session.api.clone();
-        let server = request.server.clone();
+        let server = self.session.api.clone().server(&request.server);
         let username = request.username.clone();
         let password = request.password.clone();
         let receive = self.execution.spawn(async move {
+            let server = server?;
             if signup {
-                api.signup(server, username, password).await
+                server.signup(username, password).await
             } else {
-                api.login(server, username, password).await
+                server.login(username, password).await
             }
         });
         cx.spawn(async move |weak, cx| {
@@ -1042,9 +1038,8 @@ impl Hamlet {
         let revocation = self.session.logout();
         self.invalidate_storage(cx);
         if let Some(revocation) = revocation {
-            let api = self.session.api.clone();
             let receive = self.execution.spawn(async move {
-                let result = api.logout(revocation.server, revocation.token).await;
+                let result = revocation.client.logout().await;
                 (revocation.generation, result)
             });
             cx.spawn(async move |weak, cx| {

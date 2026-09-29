@@ -6,6 +6,8 @@
 
 #[path = "authentication.rs"]
 mod authentication;
+#[path = "bound_auth.rs"]
+mod bound_auth;
 #[path = "channels.rs"]
 mod channels;
 #[path = "composer.rs"]
