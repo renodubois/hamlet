@@ -24,11 +24,9 @@ mod saved_login;
 
 use super::Hamlet;
 use crate::api::{ApiError as AuthError, ApiFuture, HttpTransport};
-use crate::persistence::{
-    Outcome, Persistence,
-    tests::{Controlled, Shared},
-};
+use crate::persistence::{Outcome, Persistence};
 use crate::runtime::runtime;
+use crate::test_support::storage::{Controlled, Shared};
 use bound_auth::{BoundAuth, Request, RequestAdapter, Response, StatusCode};
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::base::SelectableText;

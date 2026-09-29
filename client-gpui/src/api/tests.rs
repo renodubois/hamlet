@@ -716,8 +716,9 @@ async fn signup_against_rewrite_routes_returns_usable_session_and_rejections() {
 
 #[actix_web::test]
 async fn signup_uses_shared_persistent_session_and_verified_restore_against_rewrite_routes() {
-    use crate::persistence::{Outcome, Persistence, Selection, tests::Controlled};
+    use crate::persistence::{Outcome, Persistence, Selection};
     use crate::session::{AppSession, RestoreDecision};
+    use crate::test_support::storage::Controlled;
     use actix_web::{App, HttpServer, web};
     use std::sync::{Arc, Condvar, Mutex};
     let dir = tempfile::tempdir().unwrap();

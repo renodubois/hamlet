@@ -196,8 +196,96 @@ async fn restoration_retry_remains_distinct_from_rejection_identity_expiry_and_m
 }
 
 #[tokio::test]
+async fn pre_rearchitecture_saved_login_restores_only_after_verification() {
+    use crate::storage::{self, Outcome, Persistence};
+    use crate::test_support::storage::Controlled as Store;
+    let baseline: serde_json::Value =
+        serde_json::from_str(include_str!("../../baseline-47/compatibility.json")).unwrap();
+    let config = &baseline["configs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|config| config["name"] == "legacy-omitted-pending-deletions")
+        .unwrap()["value"];
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    std::fs::write(&path, serde_json::to_vec(config).unwrap()).unwrap();
+    let shared = Arc::new((
+        Mutex::new((
+            vec![(
+                "25:https://chat.example.test:synthetic-user-1".into(),
+                "synthetic-existing-secret".into(),
+            )],
+            false,
+            false,
+            false,
+            false,
+            false,
+        )),
+        std::sync::Condvar::new(),
+    ));
+    let store = Persistence::start(Store(shared), Some(path.clone()));
+    let config = storage::load_at(Some(&path));
+    let expected = config.saved.unwrap();
+    let Outcome::Token(Some(token)) = store.read(expected.clone()).recv().await.unwrap() else {
+        panic!("existing credential is inaccessible")
+    };
+    let adapter = Arc::new(Controlled(Mutex::new(vec![])));
+    let transport = HttpTransport::with_adapter(adapter.clone());
+    let mut session = AppSession::new(transport.clone());
+    session.change_server(config.server.unwrap());
+    let generation = session.begin_restore();
+    let verified = tokio::spawn(AppSession::verify_saved(
+        transport.server(&expected.server).unwrap(),
+        token,
+    ));
+    assert!(session.active_client().is_none());
+    respond(
+        &adapter,
+        "/api/v1/me",
+        Some("Bearer synthetic-existing-secret"),
+        "https://chat.example.test",
+        StatusCode::OK,
+        r#"{"id":"synthetic-user-1","username":"SyntheticAda"}"#,
+    )
+    .await;
+    assert_eq!(
+        session.finish_restore(
+            generation,
+            &expected.server,
+            &expected.user,
+            expected.expires_at,
+            verified.await.unwrap(),
+            1_800_000_000
+        ),
+        RestoreDecision::Restored
+    );
+    assert!(session.active_client().is_some());
+    assert_eq!(session.active.as_ref().unwrap().user, expected.user);
+    // A restored context uses the same key when persisted again and then removed.
+    assert_eq!(
+        session
+            .active
+            .as_ref()
+            .unwrap()
+            .save(&store)
+            .recv()
+            .await
+            .unwrap(),
+        Outcome::Saved
+    );
+    session.logout();
+    assert_eq!(
+        store.delete(expected).recv().await.unwrap(),
+        Outcome::Deleted
+    );
+    assert!(storage::load_at(Some(&path)).saved.is_none());
+}
+
+#[tokio::test]
 async fn saving_accepted_context_preserves_stored_identity_without_plaintext_metadata() {
-    use crate::storage::{self, Outcome, Persistence, Selection, tests::Controlled as Store};
+    use crate::storage::{self, Outcome, Persistence, Selection};
+    use crate::test_support::storage::Controlled as Store;
     let adapter = Arc::new(Controlled(Mutex::new(vec![])));
     let transport = HttpTransport::with_adapter(adapter.clone());
     let mut session = AppSession::new(transport.clone());

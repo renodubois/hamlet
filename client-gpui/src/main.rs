@@ -3,6 +3,8 @@ mod conversation;
 mod runtime;
 mod session;
 mod storage;
+#[cfg(test)]
+mod test_support;
 mod theme;
 mod views;
 
