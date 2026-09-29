@@ -1,4 +1,4 @@
-//! Owned screen composition, login and channel sidebar; history/composer remain combined.
+//! Owned screen composition, login, sidebar and history; composer extraction remains.
 
 pub(crate) mod app_shell;
 mod channel_sidebar;
@@ -13,3 +13,7 @@ mod login_tests;
 #[cfg(test)]
 #[path = "tests/workspace.rs"]
 mod workspace_tests;
+
+#[cfg(test)]
+#[path = "tests/history_lifecycle.rs"]
+mod history_lifecycle_tests;
