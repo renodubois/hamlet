@@ -46,7 +46,7 @@ use std::sync::{
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
-// Preserve old fixture startup (no restore or automatic polling); real lifecycle tests use open.
+// Legacy control fixture uses the same constructor and accepted-session activity lifetime.
 impl Hamlet {
     fn new(window: &mut Window, cx: &mut Context<Self>, api: Arc<dyn RequestAdapter>) -> Self {
         let execution =
@@ -164,4 +164,24 @@ impl RequestAdapter for PagedAuth {
             page_response(rx.recv().await.unwrap())
         })
     }
+}
+
+struct RaceAuth {
+    pages: std::sync::mpsc::Sender<(Option<String>, PageReply)>,
+    sends: Arc<Mutex<Vec<Sent>>>,
+}
+impl RequestAdapter for RaceAuth {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+        if request.method() == reqwest::Method::POST {
+            SendAuth(self.sends.clone()).execute(request)
+        } else {
+            PagedAuth(self.pages.clone()).execute(request)
+        }
+    }
+}
+
+fn advance(cx: &mut gpui_kit::VisualTestContext, seconds: u64) {
+    cx.background_executor
+        .advance_clock(Duration::from_secs(seconds));
+    cx.run_until_parked();
 }

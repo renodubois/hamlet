@@ -290,10 +290,21 @@ fn production_wheel_requests_older_and_keeps_reader_at_same_viewport_y(cx: &mut 
 fn confirmed_middle_insertion_keeps_reader_anchor(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (tx, requests) = std::sync::mpsc::channel();
+    let sends = Arc::new(Mutex::new(Vec::<Sent>::new()));
+    let captured = sends.clone();
     let stored = std::rc::Rc::new(std::cell::RefCell::new(None));
     let saved = stored.clone();
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(PagedAuth(tx))));
+        let view = cx.new(|cx| {
+            Hamlet::new(
+                window,
+                cx,
+                Arc::new(RaceAuth {
+                    pages: tx,
+                    sends: captured,
+                }),
+            )
+        });
         *saved.borrow_mut() = Some(view.clone());
         Root::new(view, window, cx)
     });
@@ -327,33 +338,24 @@ fn confirmed_middle_insertion_keeps_reader_anchor(cx: &mut TestAppContext) {
         .unwrap();
     cx.run_until_parked();
     cx.update(|window, cx| {
-        view.update(cx, |v, cx| {
+        window.render_frame(cx);
+        window.click("composer", cx);
+        window.input("twenty", cx);
+        window.click("send-message", cx);
+        view.update(cx, |v, _| {
             v.history_list.scroll_to(gpui_kit::ListOffset {
                 item_ix: 23,
                 offset_in_item: px(0.),
             });
-            v.conversation.set_draft("000000000000001", "twenty".into());
-            let send = v.conversation.send(v.session.read(cx)).unwrap();
-            assert_eq!(
-                v.session
-                    .update(cx, |session, _| v.conversation.complete_send(
-                        session,
-                        &send,
-                        Ok(m(20)),
-                        0
-                    )),
-                crate::conversation::SendOutcome::Confirmed
-            );
-            let read = v
-                .conversation
-                .reconcile_confirmed(v.session.read(cx))
-                .unwrap();
-            v.load_history(read, cx);
         });
         window.render_frame(cx);
         assert_eq!(view.read(cx).history_list.logical_scroll_top().item_ix, 23);
         assert!(window.find("message-25").bounds().size.height > px(0.));
     });
+    cx.run_until_parked();
+    let (_, text, confirmation) = sends.lock().unwrap().remove(0);
+    assert_eq!(text, "twenty");
+    confirmation.try_send(Ok(m(20))).unwrap();
     cx.run_until_parked();
     let (_, refresh) = requests
         .recv_timeout(std::time::Duration::from_secs(3))
@@ -374,12 +376,9 @@ fn confirmed_middle_insertion_keeps_reader_anchor(cx: &mut TestAppContext) {
         assert_eq!(view.read(cx).history_list.logical_scroll_top().item_ix, 24);
         assert_eq!(window.find("message-25").bounds().origin.y, y);
         assert_eq!(view.read(cx).history_list.item_count(), 40);
-        let crate::conversation::Load::Ready(messages) = view
-            .read(cx)
-            .conversation
-            .history
-            .get("000000000000001")
-            .unwrap()
+        let state = view.read(cx).conversation.as_ref().unwrap().read();
+        let crate::conversation::Load::Ready(messages) =
+            state.history.get("000000000000001").unwrap()
         else {
             panic!("history not ready")
         };
@@ -474,6 +473,9 @@ fn refresh_controls_preserve_reader_and_jump_follows_later_messages(cx: &mut Tes
         assert!(
             view.read(cx)
                 .conversation
+                .as_ref()
+                .unwrap()
+                .read()
                 .refreshing
                 .contains_key("000000000000001")
         );

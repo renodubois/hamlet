@@ -129,20 +129,6 @@ fn real_controls_read_selected_conversation(cx: &mut TestAppContext) {
     });
 }
 
-struct RaceAuth {
-    pages: std::sync::mpsc::Sender<(Option<String>, PageReply)>,
-    sends: Arc<Mutex<Vec<Sent>>>,
-}
-impl RequestAdapter for RaceAuth {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
-        if request.method() == reqwest::Method::POST {
-            SendAuth(self.sends.clone()).execute(request)
-        } else {
-            PagedAuth(self.pages.clone()).execute(request)
-        }
-    }
-}
-
 #[gpui_kit::test]
 fn polling_and_send_confirmation_share_one_headless_history_without_duplicate(
     cx: &mut TestAppContext,
@@ -203,7 +189,7 @@ fn polling_and_send_confirmation_share_one_headless_history_without_duplicate(
     });
     cx.run_until_parked();
     assert_eq!(sends.lock().unwrap().len(), 1);
-    cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(4), cx)));
+    advance(cx, 1);
     cx.run_until_parked();
     let (_, poll) = pages.recv_timeout(Duration::from_secs(2)).unwrap();
     poll.send_blocking(Ok(page(&["10", "9", "8"]))).unwrap();
@@ -220,7 +206,7 @@ fn polling_and_send_confirmation_share_one_headless_history_without_duplicate(
         assert_eq!(window.find("message-10").label(), Some("same"));
         assert_eq!(view.read(cx).composer.read(cx).text().to_string(), "");
         assert!(
-            matches!(view.read(cx).conversation.history.get("000000000000001"),
+            matches!(view.read(cx).conversation.as_ref().unwrap().read().history.get("000000000000001"),
             Some(crate::conversation::Load::Ready(items)) if items.len() == 3)
         );
         assert!(sends.lock().unwrap().is_empty());

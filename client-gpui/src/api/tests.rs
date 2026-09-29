@@ -846,8 +846,13 @@ async fn second_user_activity_is_found_by_focused_polling_against_unchanged_rout
     session.change_server(url.clone());
     let login = session.submit("Alice", "long password").unwrap();
     session.complete_login(login, Ok(alice), chrono::Utc::now().timestamp());
+    let mut identity = crate::conversation::ConversationIdentity {
+        generation: session.session_generation(),
+        expires_at: session.active.as_ref().unwrap().expires_at,
+        rejected: None,
+    };
     let mut conversation = crate::conversation::Conversation::default();
-    let list = conversation.start(&session).unwrap();
+    let list = conversation.start(&identity).unwrap();
     let channels = session
         .client_for(list.generation)
         .unwrap()
@@ -855,7 +860,7 @@ async fn second_user_activity_is_found_by_focused_polling_against_unchanged_rout
         .await
         .unwrap();
     let initial = conversation
-        .complete_channels(&mut session, &list, Ok(channels))
+        .complete_channels(&mut identity, &list, Ok(channels))
         .unwrap();
     let page = session
         .client_for(initial.generation)
@@ -863,7 +868,7 @@ async fn second_user_activity_is_found_by_focused_polling_against_unchanged_rout
         .history_page(channel.clone(), None)
         .await
         .unwrap();
-    conversation.complete_history(&mut session, &initial, Ok(page));
+    conversation.complete_history(&mut identity, &initial, Ok(page));
     let mut poll = Polling::default();
     assert!(poll.focus(true, Duration::ZERO));
     poll.started(Resource::History);
@@ -880,7 +885,7 @@ async fn second_user_activity_is_found_by_focused_polling_against_unchanged_rout
         .unwrap();
     let new_channel = bob.client.create_channel("Bob room".into()).await.unwrap();
     assert!(poll.due(Resource::History, Duration::from_secs(3)));
-    let refresh = conversation.refresh_history(&session).unwrap();
+    let refresh = conversation.refresh_history(&identity).unwrap();
     let mut request = refresh;
     loop {
         let page = session
@@ -889,7 +894,7 @@ async fn second_user_activity_is_found_by_focused_polling_against_unchanged_rout
             .history_page(channel.clone(), request.before.clone())
             .await
             .unwrap();
-        let outcome = conversation.complete_history(&mut session, &request, Ok(page));
+        let outcome = conversation.complete_history(&mut identity, &request, Ok(page));
         if let Some(next) = outcome.next {
             request = next;
         } else {
@@ -900,14 +905,14 @@ async fn second_user_activity_is_found_by_focused_polling_against_unchanged_rout
         matches!(conversation.history.get(&channel), Some(crate::conversation::Load::Ready(messages)) if messages.iter().any(|m| m.id == posted.id && m.author_name == "Bob"))
     );
     assert!(poll.due(Resource::Channels, Duration::from_secs(15)));
-    let listing = conversation.refresh_channels(&session).unwrap();
+    let listing = conversation.refresh_channels(&identity).unwrap();
     let channels = session
         .client_for(listing.generation)
         .unwrap()
         .channels()
         .await
         .unwrap();
-    conversation.complete_channels(&mut session, &listing, Ok(channels));
+    conversation.complete_channels(&mut identity, &listing, Ok(channels));
     assert!(
         matches!(conversation.channels, Some(crate::conversation::Load::Ready(ref channels)) if channels.contains(&new_channel))
     );
@@ -1066,8 +1071,13 @@ async fn rewrite_history_traverses_multiple_pages_with_timestamp_ties() {
     session.change_server(url.clone());
     let login_request = session.submit("Alice", "long password").unwrap();
     session.complete_login(login_request, Ok(login), chrono::Utc::now().timestamp());
+    let mut identity = crate::conversation::ConversationIdentity {
+        generation: session.session_generation(),
+        expires_at: session.active.as_ref().unwrap().expires_at,
+        rejected: None,
+    };
     let mut conversation = crate::conversation::Conversation::default();
-    let channels = conversation.start(&session).unwrap();
+    let channels = conversation.start(&identity).unwrap();
     let list = session
         .client_for(channels.generation)
         .unwrap()
@@ -1075,7 +1085,7 @@ async fn rewrite_history_traverses_multiple_pages_with_timestamp_ties() {
         .await
         .unwrap();
     let initial = conversation
-        .complete_channels(&mut session, &channels, Ok(list))
+        .complete_channels(&mut identity, &channels, Ok(list))
         .unwrap();
     let read = |request: &crate::conversation::ReadRequest,
                 session: &crate::session::AppSession| {
@@ -1085,7 +1095,7 @@ async fn rewrite_history_traverses_multiple_pages_with_timestamp_ties() {
             .history_page(request.channel_id.clone().unwrap(), request.before.clone())
     };
     let first_page = read(&initial, &session).await.unwrap();
-    conversation.complete_history(&mut session, &initial, Ok(first_page));
+    conversation.complete_history(&mut identity, &initial, Ok(first_page));
     for ix in 53..158 {
         assert_eq!(
             client
@@ -1106,11 +1116,11 @@ async fn rewrite_history_traverses_multiple_pages_with_timestamp_ties() {
             ))
             .await
             .unwrap();
-    let mut request = conversation.refresh_history(&session).unwrap();
+    let mut request = conversation.refresh_history(&identity).unwrap();
     let mut traversed = 0;
     loop {
         let page = read(&request, &session).await.unwrap();
-        let outcome = conversation.complete_history(&mut session, &request, Ok(page));
+        let outcome = conversation.complete_history(&mut identity, &request, Ok(page));
         traversed += 1;
         if let Some(next) = outcome.next {
             request = next;

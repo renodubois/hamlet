@@ -64,14 +64,13 @@ fn poll_catches_up_multiple_pages_without_duplicate_work_and_switch_cancels_late
         }))
         .unwrap();
     cx.run_until_parked();
-    cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(4), cx)));
+    advance(cx, 1);
     cx.run_until_parked();
     let (cursor, first) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
     assert!(cursor.is_none());
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("refresh-history", cx); // pending, inert
-        view.update(cx, |v, cx| v.poll_at(Duration::from_secs(20), cx));
     });
     cx.run_until_parked();
     assert!(requests.try_recv().is_err());
@@ -84,7 +83,7 @@ fn poll_catches_up_multiple_pages_without_duplicate_work_and_switch_cancels_late
     cx.run_until_parked();
     let (cursor, second) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(cursor.as_deref(), Some("next"));
-    cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(30), cx)));
+    advance(cx, 1);
     cx.run_until_parked();
     assert!(requests.try_recv().is_err());
     second
@@ -98,9 +97,9 @@ fn poll_catches_up_multiple_pages_without_duplicate_work_and_switch_cancels_late
         window.render_frame(cx);
         assert_eq!(view.read(cx).history_list.item_count(), 102);
         assert_eq!(window.find("message-102").label(), Some("102"));
-        view.update(cx, |v, cx| v.poll_at(Duration::from_secs(35), cx));
     });
     cx.run_until_parked();
+    advance(cx, 3);
     let (_, late) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -124,10 +123,10 @@ fn poll_catches_up_multiple_pages_without_duplicate_work_and_switch_cancels_late
         .unwrap();
     cx.run_until_parked();
     cx.update(|_, cx| {
-        assert_eq!(view.read(cx).conversation.selected.as_deref(), Some("000000000000002"));
-        assert!(!view.read(cx).conversation.history.contains_key("000000000000002") ||
-            matches!(view.read(cx).conversation.history.get("000000000000002"), Some(crate::conversation::Load::Ready(items)) if items.is_empty()));
-        assert!(matches!(view.read(cx).conversation.history.get("000000000000001"), Some(crate::conversation::Load::Ready(items)) if items.len() == 102));
+        assert_eq!(view.read(cx).conversation.as_ref().unwrap().read().selected.as_deref(), Some("000000000000002"));
+        assert!(!view.read(cx).conversation.as_ref().unwrap().read().history.contains_key("000000000000002") ||
+            matches!(view.read(cx).conversation.as_ref().unwrap().read().history.get("000000000000002"), Some(crate::conversation::Load::Ready(items)) if items.is_empty()));
+        assert!(matches!(view.read(cx).conversation.as_ref().unwrap().read().history.get("000000000000001"), Some(crate::conversation::Load::Ready(items)) if items.len() == 102));
     });
 }
 
@@ -165,7 +164,7 @@ fn focus_return_during_read_catches_up_once_and_logout_stops_selected_reads(
         }))
         .unwrap();
     cx.run_until_parked();
-    cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(4), cx)));
+    advance(cx, 1);
     cx.run_until_parked();
     let (_, pending) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
     cx.deactivate_window();
@@ -182,7 +181,7 @@ fn focus_return_during_read_catches_up_once_and_logout_stops_selected_reads(
         }))
         .unwrap();
     cx.run_until_parked();
-    cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(v.poll_time(), cx)));
+    advance(cx, 1);
     cx.run_until_parked();
     let (_, catchup) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
     assert!(requests.try_recv().is_err(), "only one catch-up read");
@@ -193,7 +192,7 @@ fn focus_return_during_read_catches_up_once_and_logout_stops_selected_reads(
         }))
         .unwrap();
     cx.run_until_parked();
-    cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(v.poll_time(), cx)));
+    advance(cx, 1);
     cx.run_until_parked();
     assert!(
         requests.try_recv().is_err(),
@@ -205,7 +204,7 @@ fn focus_return_during_read_catches_up_once_and_logout_stops_selected_reads(
     });
     cx.run_until_parked();
     let (_, selected) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
-    cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(500), cx)));
+    advance(cx, 1);
     cx.run_until_parked();
     assert!(
         requests.try_recv().is_err(),
@@ -218,7 +217,7 @@ fn focus_return_during_read_catches_up_once_and_logout_stops_selected_reads(
         }))
         .unwrap();
     cx.run_until_parked();
-    cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(1000), cx)));
+    advance(cx, 3);
     cx.run_until_parked();
     let (_, late) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
     assert!(
@@ -228,7 +227,6 @@ fn focus_return_during_read_catches_up_once_and_logout_stops_selected_reads(
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("logout", cx);
-        view.update(cx, |v, cx| v.poll_at(Duration::from_secs(1500), cx));
     });
     // Let the stale result arrive; it must not restore the logged-out session.
     let _ = late.try_send(Ok(crate::conversation::Page {
@@ -241,8 +239,7 @@ fn focus_return_during_read_catches_up_once_and_logout_stops_selected_reads(
         "logout must not read any channel"
     );
     cx.update(|_, cx| {
-        assert!(view.read(cx).conversation.history.is_empty());
-        assert!(view.read(cx).conversation.selected.is_none());
+        assert!(view.read(cx).conversation.is_none());
     });
 }
 
@@ -290,15 +287,14 @@ fn focused_polls_pause_resume_and_recover_without_losing_draft(cx: &mut TestAppC
         );
         window.click("composer", cx);
         window.input("keep draft", cx);
-        view.update(cx, |v, cx| v.poll_at(Duration::from_secs(2), cx));
     });
     assert_eq!(history.load(Ordering::SeqCst), 1);
     assert_eq!(channels.load(Ordering::SeqCst), 1);
-    cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(4), cx)));
+    advance(cx, 1);
     cx.run_until_parked();
     assert_eq!(history.load(Ordering::SeqCst), 2);
     assert_eq!(channels.load(Ordering::SeqCst), 1);
-    cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(16), cx)));
+    advance(cx, 14);
     cx.run_until_parked();
     assert_eq!(channels.load(Ordering::SeqCst), 2);
     offline.store(true, Ordering::SeqCst);
@@ -319,7 +315,12 @@ fn focused_polls_pause_resume_and_recover_without_losing_draft(cx: &mut TestAppC
         );
         assert!(window.find("message-000000000000001").label().is_some());
         assert_eq!(
-            view.read(cx).conversation.draft("000000000000001"),
+            view.read(cx)
+                .conversation
+                .as_ref()
+                .unwrap()
+                .read()
+                .draft("000000000000001"),
             "keep draft"
         );
     });
@@ -333,7 +334,7 @@ fn focused_polls_pause_resume_and_recover_without_losing_draft(cx: &mut TestAppC
         assert!(!status.contains("Retrying"));
     });
     let before = history.load(Ordering::SeqCst);
-    cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(200), cx)));
+    advance(cx, 200);
     cx.run_until_parked();
     assert_eq!(history.load(Ordering::SeqCst), before);
     offline.store(false, Ordering::SeqCst);
@@ -348,7 +349,12 @@ fn focused_polls_pause_resume_and_recover_without_losing_draft(cx: &mut TestAppC
             Some("Connected. Checking for new messages and channels.")
         );
         assert_eq!(
-            view.read(cx).conversation.draft("000000000000001"),
+            view.read(cx)
+                .conversation
+                .as_ref()
+                .unwrap()
+                .read()
+                .draft("000000000000001"),
             "keep draft"
         );
     });

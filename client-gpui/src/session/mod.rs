@@ -9,6 +9,7 @@ pub(crate) use saved_login::StorageRetry;
 use saved_login::{SavedLogin, SavedUpdate};
 
 use crate::api::HttpTransport;
+use crate::conversation::{ConversationHandle, SessionEnd};
 use crate::runtime::{Execution, Work};
 use std::time::Duration;
 
@@ -41,6 +42,7 @@ pub(crate) struct SessionCoordinator {
     expiry: Option<Work>,
     lifecycle: Option<Lifecycle>,
     saved: SavedLogin,
+    conversation: Option<ConversationHandle>,
 }
 
 impl SessionCoordinator {
@@ -68,6 +70,7 @@ impl SessionCoordinator {
             expiry: None,
             lifecycle: None,
             saved,
+            conversation: None,
         };
         coordinator.start_saved_login();
         coordinator
@@ -91,8 +94,26 @@ impl SessionCoordinator {
     pub fn session_generation(&self) -> Option<u64> {
         self.state.session_generation()
     }
+    #[cfg(test)]
     pub fn client_for(&self, generation: u64) -> Option<crate::api::AuthenticatedClient> {
         self.state.client_for(generation)
+    }
+    pub fn conversation(&self) -> Option<ConversationHandle> {
+        self.conversation.clone()
+    }
+    pub fn conversation_ended(&mut self, end: SessionEnd) {
+        match end {
+            SessionEnd::Rejected(generation) => self.protected_rejected(generation),
+            SessionEnd::Expired(generation) if self.session_generation() == Some(generation) => {
+                self.expire(self.execution.unix_seconds());
+            }
+            SessionEnd::Expired(_) => {}
+        }
+    }
+    fn close_conversation(&mut self) {
+        if let Some(conversation) = self.conversation.take() {
+            conversation.close();
+        }
     }
     pub fn take_lifecycle(&mut self) -> Option<Lifecycle> {
         self.lifecycle.take()
@@ -169,6 +190,14 @@ impl SessionCoordinator {
                 .await;
         });
         self.expiry = Some(work);
+        self.close_conversation();
+        let session = self.active().unwrap();
+        self.conversation = Some(ConversationHandle::new(
+            generation,
+            session.expires_at,
+            session.client(),
+            self.execution.clone(),
+        ));
         self.lifecycle = Some(Lifecycle::Authenticated);
         if save {
             self.save_login();
@@ -181,12 +210,14 @@ impl SessionCoordinator {
         }
     }
     fn invalidated(&mut self) {
+        self.close_conversation();
         self.cancel_expiry();
         self.lifecycle = Some(Lifecycle::Invalidated);
         self.invalidate_storage();
     }
     pub fn change_server(&mut self, server: String) {
         if self.server() != server {
+            self.close_conversation();
             self.state.change_server(server);
             self.cancel_expiry();
             self.lifecycle = Some(Lifecycle::ServerChanged);
@@ -238,6 +269,7 @@ impl SessionCoordinator {
 
 impl Drop for SessionCoordinator {
     fn drop(&mut self) {
+        self.close_conversation();
         self.cancel_expiry();
     }
 }
@@ -250,39 +282,6 @@ pub(crate) use state::{AuthError, DEFAULT_SERVER_URL, RestoreDecision, RestoreRe
 // second mutable session owner to production callers.
 #[cfg(test)]
 pub(crate) use state::{AppSession, User};
-
-/// Narrow bridge for the still-pure conversation transitions. No authentication,
-/// credential or mutable coordinator state is exposed to conversation behavior.
-pub(crate) trait SessionAccess {
-    fn session_generation(&self) -> Option<u64>;
-    fn expire(&mut self, now: i64);
-    fn protected_rejected(&mut self, generation: u64);
-}
-
-impl SessionAccess for SessionCoordinator {
-    fn session_generation(&self) -> Option<u64> {
-        self.session_generation()
-    }
-    fn expire(&mut self, now: i64) {
-        self.expire(now);
-    }
-    fn protected_rejected(&mut self, generation: u64) {
-        self.protected_rejected(generation);
-    }
-}
-
-#[cfg(test)]
-impl SessionAccess for AppSession {
-    fn session_generation(&self) -> Option<u64> {
-        self.session_generation()
-    }
-    fn expire(&mut self, now: i64) {
-        self.expire(now);
-    }
-    fn protected_rejected(&mut self, generation: u64) {
-        self.protected_rejected(generation);
-    }
-}
 
 impl Session {
     /// Credential material goes directly from the accepted context to the ordered worker.
@@ -307,7 +306,8 @@ impl AppSession {
         self.active.as_ref().map(Session::client)
     }
 
-    /// Capture only the accepted context that originated protected work.
+    /// Pure-state integration fixtures capture their originating accepted context.
+    #[cfg(test)]
     pub fn client_for(&self, generation: u64) -> Option<crate::api::AuthenticatedClient> {
         (self.session_generation() == Some(generation))
             .then(|| self.active_client())

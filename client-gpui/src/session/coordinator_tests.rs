@@ -7,6 +7,110 @@ use gpui_kit::TestAppContext;
 use reqwest::{Request, StatusCode};
 use std::{sync::Arc, time::Duration};
 
+#[gpui_kit::test]
+fn session_loss_closes_surviving_conversation_handles_before_any_host_update(
+    cx: &mut TestAppContext,
+) {
+    for reason in ["logout", "expiry", "server", "rejection"] {
+        let (mut session, calls) = controlled(cx);
+        let generation = accept(cx, &mut session, &calls, "Old", 1_800_000_100);
+        let old_client = session.client_for(generation).unwrap();
+        let activity = session.conversation().unwrap();
+        activity.start(false);
+        cx.executor().run_until_parked();
+        calls
+            .try_recv()
+            .unwrap()
+            .reply
+            .try_send(Ok(Response::controlled(
+                StatusCode::OK,
+                r#"{"items":[{"id":"1","name":"General","type":"text"}]}"#,
+            )))
+            .unwrap();
+        cx.executor().run_until_parked();
+        assert!(
+            activity
+                .apply(activity.updates().try_recv().unwrap())
+                .is_none()
+        );
+        cx.executor().run_until_parked();
+        calls
+            .try_recv()
+            .unwrap()
+            .reply
+            .try_send(Ok(Response::controlled(
+                StatusCode::OK,
+                r#"{"items":[],"next_cursor":null}"#,
+            )))
+            .unwrap();
+        cx.executor().run_until_parked();
+        assert!(
+            activity
+                .apply(activity.updates().try_recv().unwrap())
+                .is_none()
+        );
+        activity.edit_draft("private draft".into());
+        activity.refresh_history();
+        activity.send();
+        activity.create_channel("Room");
+        cx.executor().run_until_parked();
+        let mut pending = Vec::new();
+        while let Ok(call) = calls.try_recv() {
+            pending.push(call);
+        }
+        assert_eq!(pending.len(), 3);
+        // Finish before invalidation but leave deliveries queued for the old workspace.
+        for call in pending {
+            call.reply
+                .try_send(Ok(Response::controlled(
+                    StatusCode::UNAUTHORIZED,
+                    r#"{"error":{"code":"unauthorized"}}"#,
+                )))
+                .unwrap();
+        }
+        cx.executor().run_until_parked();
+        assert_eq!(activity.updates().len(), 3);
+        match reason {
+            "logout" => session.logout(),
+            "expiry" => session.expire(1_800_000_100),
+            "server" => session.change_server("https://new.example".into()),
+            _ => session.protected_rejected(generation),
+        }
+        // No shell, observer or lifecycle consumer has run yet.
+        assert!(session.active().is_none());
+        assert!(session.conversation().is_none());
+        assert!(activity.read().channels.is_none());
+        assert!(activity.read().history.is_empty());
+        assert!(activity.read().drafts.is_empty());
+        activity.start(true);
+        activity.set_focused(true);
+        activity.edit_draft("must stay closed".into());
+        activity.send();
+        activity.refresh_channels();
+        activity.refresh_history();
+        activity.create_channel("Must stay closed");
+        cx.executor().run_until_parked();
+        while let Ok(call) = calls.try_recv() {
+            assert_eq!(call.request.url().path(), "/api/v1/auth/logout");
+            call.reply
+                .try_send(Ok(Response::controlled(StatusCode::NO_CONTENT, "")))
+                .unwrap();
+        }
+        deliver(cx, &mut session);
+        let current = accept(cx, &mut session, &calls, "New", 1_800_000_100);
+        assert_ne!(generation, current);
+        while let Ok(update) = activity.updates().try_recv() {
+            assert!(activity.apply(update).is_none());
+        }
+        session.conversation_ended(SessionEnd::Rejected(generation));
+        assert_eq!(session.session_generation(), Some(current));
+        assert_eq!(session.active().unwrap().user.username, "New");
+        assert!(activity.read().drafts.is_empty());
+        assert!(calls.try_recv().is_err());
+        drop(old_client); // An independently retained bound client never reopens activity.
+    }
+}
+
 struct Login;
 impl RequestAdapter for Login {
     fn execute(&self, _: Request) -> ApiFuture<Result<Response, AuthError>> {

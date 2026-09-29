@@ -140,7 +140,7 @@ fn composer_uses_real_textarea_keyboard_button_focus_and_channel_drafts(cx: &mut
             "first\nsecond"
         );
         window.click("logout", cx);
-        assert!(view.read(cx).conversation.drafts.is_empty());
+        assert!(view.read(cx).conversation.is_none());
     });
 }
 
@@ -205,7 +205,7 @@ fn enter_at_mid_caret_and_after_shift_enter_sends_unchanged_text(cx: &mut TestAp
         view.update(cx, |v, cx| {
             v.composer
                 .update(cx, |input, cx| input.set_value("tail", window, cx));
-            v.conversation.set_draft("000000000000001", "tail".into());
+            v.conversation.as_ref().unwrap().edit_draft("tail".into());
         });
         window.render_frame(cx);
         window.click("composer", cx);
@@ -275,10 +275,21 @@ fn uncertain_send_retains_draft_refreshes_only_selected_channel_and_never_replay
         assert!(
             view.read(cx)
                 .conversation
+                .as_ref()
+                .unwrap()
+                .read()
                 .uncertain
                 .contains("000000000000001")
         );
-        assert!(view.read(cx).conversation.refreshing.is_empty());
+        assert!(
+            view.read(cx)
+                .conversation
+                .as_ref()
+                .unwrap()
+                .read()
+                .refreshing
+                .is_empty()
+        );
         window.click("channel-000000000000001", cx);
     });
     cx.run_until_parked();
@@ -299,6 +310,9 @@ fn uncertain_send_retains_draft_refreshes_only_selected_channel_and_never_replay
             !view
                 .read(cx)
                 .conversation
+                .as_ref()
+                .unwrap()
+                .read()
                 .uncertain
                 .contains("000000000000001")
         );
@@ -355,7 +369,15 @@ fn stalled_send_times_out_and_late_completion_cannot_clear_the_draft(cx: &mut Te
                 .unwrap()
                 .contains("may already")
         );
-        assert!(view.read(cx).conversation.send_pending.is_empty());
+        assert!(
+            view.read(cx)
+                .conversation
+                .as_ref()
+                .unwrap()
+                .read()
+                .send_pending
+                .is_empty()
+        );
     });
     // The fixture's future was dropped rather than retried, so delivery is impossible.
     let (_, _, sender) = calls.lock().unwrap().remove(0);

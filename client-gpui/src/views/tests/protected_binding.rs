@@ -98,16 +98,20 @@ fn protected_contexts_survive_logout_changed_server_and_late_old_results(cx: &mu
             window.click("login", cx);
         });
         cx.run_until_parked();
-        reply
-            .send_blocking(Ok(Response::controlled(
-                if rejected {
-                    StatusCode::UNAUTHORIZED
-                } else {
-                    StatusCode::OK
-                },
-                json!({"items":[{"id":"old", "name":"old channel", "type":"text"}]}).to_string(),
-            )))
-            .unwrap();
+        // Session shutdown now cancels channel reads as well as selected history.
+        assert!(
+            reply
+                .send_blocking(Ok(Response::controlled(
+                    if rejected {
+                        StatusCode::UNAUTHORIZED
+                    } else {
+                        StatusCode::OK
+                    },
+                    json!({"items":[{"id":"old", "name":"old channel", "type":"text"}]})
+                        .to_string(),
+                )))
+                .is_err()
+        );
         cx.run_until_parked();
         cx.update(|window, cx| {
             window.render_frame(cx);

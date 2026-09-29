@@ -1,7 +1,26 @@
 use crate::api::ApiError as AuthError;
-#[cfg(test)]
-use crate::session::AppSession;
-use crate::session::SessionAccess;
+/// Pure originating-session identity and rejection outcome, never mutable auth state.
+pub(crate) struct Identity {
+    pub generation: Option<u64>,
+    pub expires_at: i64,
+    pub rejected: Option<u64>,
+}
+impl Identity {
+    pub fn session_generation(&self) -> Option<u64> {
+        self.generation
+    }
+    pub fn expire(&mut self, now: i64) {
+        if now >= self.expires_at {
+            self.generation = None;
+        }
+    }
+    fn protected_rejected(&mut self, generation: u64) {
+        if self.generation == Some(generation) {
+            self.rejected = Some(generation);
+            self.generation = None;
+        }
+    }
+}
 // Temporary import compatibility; server data is API-owned.
 pub use crate::api::{Channel, Message, Page};
 use std::collections::{HashMap, HashSet};
@@ -125,7 +144,7 @@ impl Conversation {
         self.channel_serial = channel_next;
     }
 
-    pub fn create(&mut self, session: &impl SessionAccess, name: &str) -> Option<CreateRequest> {
+    pub fn create(&mut self, session: &Identity, name: &str) -> Option<CreateRequest> {
         if self.create_pending || !matches!(self.channels, Some(Load::Ready(_))) {
             return None;
         }
@@ -151,7 +170,7 @@ impl Conversation {
 
     pub fn complete_create(
         &mut self,
-        session: &mut impl SessionAccess,
+        session: &mut Identity,
         request: &CreateRequest,
         result: Result<Channel, AuthError>,
         now: i64,
@@ -213,7 +232,7 @@ impl Conversation {
         }
     }
 
-    pub fn send(&mut self, session: &impl SessionAccess) -> Option<SendRequest> {
+    pub fn send(&mut self, session: &Identity) -> Option<SendRequest> {
         let id = self.selected.as_ref()?;
         if self.send_pending.contains_key(id) {
             return None;
@@ -241,7 +260,7 @@ impl Conversation {
 
     pub fn complete_send(
         &mut self,
-        session: &mut impl SessionAccess,
+        session: &mut Identity,
         request: &SendRequest,
         result: Result<Message, AuthError>,
         now: i64,
@@ -293,7 +312,7 @@ impl Conversation {
         }
     }
 
-    pub fn reconcile_confirmed(&mut self, session: &impl SessionAccess) -> Option<ReadRequest> {
+    pub fn reconcile_confirmed(&mut self, session: &Identity) -> Option<ReadRequest> {
         let id = self.selected.as_ref()?;
         if !self.confirmed.contains_key(id) || self.confirmed_refresh.contains(id) {
             return None;
@@ -310,7 +329,7 @@ impl Conversation {
     /// Incomplete catch-up always requires a deliberate retry, never an automatic loop.
     pub fn after_history_read(
         &mut self,
-        session: &impl SessionAccess,
+        session: &Identity,
         succeeded: bool,
     ) -> Option<ReadRequest> {
         let id = self.selected.as_ref()?;
@@ -344,7 +363,7 @@ impl Conversation {
         1
     }
 
-    pub fn reconcile_uncertain(&mut self, session: &impl SessionAccess) -> Option<ReadRequest> {
+    pub fn reconcile_uncertain(&mut self, session: &Identity) -> Option<ReadRequest> {
         let id = self.selected.clone()?;
         if !self.uncertain.contains(&id) {
             return None;
@@ -356,7 +375,7 @@ impl Conversation {
         request
     }
 
-    pub fn start(&mut self, session: &impl SessionAccess) -> Option<ReadRequest> {
+    pub fn start(&mut self, session: &Identity) -> Option<ReadRequest> {
         session.session_generation()?;
         if self.channels.is_some() {
             return None;
@@ -365,7 +384,7 @@ impl Conversation {
         self.read_channels(session)
     }
 
-    pub fn refresh_channels(&mut self, session: &impl SessionAccess) -> Option<ReadRequest> {
+    pub fn refresh_channels(&mut self, session: &Identity) -> Option<ReadRequest> {
         if self.channel_pending {
             return None;
         }
@@ -375,7 +394,7 @@ impl Conversation {
         self.read_channels(session)
     }
 
-    fn read_channels(&mut self, session: &impl SessionAccess) -> Option<ReadRequest> {
+    fn read_channels(&mut self, session: &Identity) -> Option<ReadRequest> {
         session.session_generation()?;
         self.channel_pending = true;
         self.channel_error = None;
@@ -397,7 +416,7 @@ impl Conversation {
 
     pub fn complete_channels(
         &mut self,
-        session: &mut impl SessionAccess,
+        session: &mut Identity,
         request: &ReadRequest,
         result: Result<Vec<Channel>, AuthError>,
     ) -> Option<ReadRequest> {
@@ -458,7 +477,7 @@ impl Conversation {
         self.read_serial = self.read_serial.wrapping_add(1);
     }
 
-    pub fn select(&mut self, session: &impl SessionAccess, id: &str) -> Option<ReadRequest> {
+    pub fn select(&mut self, session: &Identity, id: &str) -> Option<ReadRequest> {
         let Some(Load::Ready(channels)) = &self.channels else {
             return None;
         };
@@ -491,7 +510,7 @@ impl Conversation {
     }
 
     /// Begin a newest-first reconciliation; only commit when overlap or exhaustion proves continuity.
-    pub fn refresh_history(&mut self, session: &impl SessionAccess) -> Option<ReadRequest> {
+    pub fn refresh_history(&mut self, session: &Identity) -> Option<ReadRequest> {
         let id = self.selected.clone()?;
         if matches!(self.history.get(&id), Some(Load::Loading))
             || matches!(self.refreshing.get(&id), Some(Refresh::Running))
@@ -523,7 +542,7 @@ impl Conversation {
     }
 
     /// Begin one deliberate older-page read for the currently selected channel.
-    pub fn request_older(&mut self, session: &impl SessionAccess) -> Option<ReadRequest> {
+    pub fn request_older(&mut self, session: &Identity) -> Option<ReadRequest> {
         let id = self.selected.as_ref()?;
         if matches!(self.refreshing.get(id), Some(Refresh::Running))
             || !matches!(self.older.get(id), Some(Older::Available))
@@ -543,7 +562,7 @@ impl Conversation {
         })
     }
 
-    pub fn retry_older(&mut self, session: &impl SessionAccess) -> Option<ReadRequest> {
+    pub fn retry_older(&mut self, session: &Identity) -> Option<ReadRequest> {
         let id = self.selected.as_ref()?;
         if matches!(self.refreshing.get(id), Some(Refresh::Running))
             || !matches!(self.older.get(id), Some(Older::Failed(_)))
@@ -556,7 +575,7 @@ impl Conversation {
 
     pub fn complete_history(
         &mut self,
-        session: &mut impl SessionAccess,
+        session: &mut Identity,
         request: &ReadRequest,
         result: Result<Page, AuthError>,
     ) -> HistoryOutcome {
@@ -732,27 +751,12 @@ impl Conversation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{Authentication, HttpTransport, User};
-    fn logged_in() -> AppSession {
-        let mut session = AppSession::new();
-        let request = session.submit("ada", "password").unwrap();
-        session.complete_login(
-            request,
-            Ok(Authentication {
-                user: User {
-                    id: "u".into(),
-                    username: "ada".into(),
-                },
-                client: HttpTransport::new()
-                    .server(&session.server)
-                    .unwrap()
-                    .restore_candidate("token".into())
-                    .unwrap(),
-                expires_at: 100,
-            }),
-            0,
-        );
-        session
+    fn logged_in() -> Identity {
+        Identity {
+            generation: Some(1),
+            expires_at: 100,
+            rejected: None,
+        }
     }
     fn channels() -> Vec<Channel> {
         vec![
@@ -866,7 +870,7 @@ mod tests {
         );
         view.set_draft("z", "new draft".into());
         let late = view.send(&session).unwrap();
-        session.logout();
+        session.generation = None;
         view.clear();
         assert_eq!(
             view.complete_send(&mut session, &late, Ok(message("11", "z", "new draft")), 0),
@@ -1134,7 +1138,7 @@ mod tests {
             view.complete_send(&mut session, &rejected, Err(AuthError::AlreadyInvalid), 0),
             SendOutcome::Invalidated
         );
-        assert!(session.active.is_none());
+        assert!(session.generation.is_none());
         assert!(view.drafts.is_empty());
         assert!(view.send_pending.is_empty());
         assert_eq!(
@@ -1281,7 +1285,7 @@ mod tests {
         );
         view.complete_history(&mut session, &poll, Err(AuthError::AlreadyInvalid));
         assert!(
-            session.active.is_some(),
+            session.generation.is_some(),
             "canceled poll cannot invalidate the session"
         );
         assert!(view.after_history_read(&session, false).is_none());
@@ -1342,7 +1346,7 @@ mod tests {
             if expire {
                 session.expire(100);
             } else {
-                session.logout();
+                session.generation = None;
             }
             view.clear();
             assert_eq!(
@@ -1359,7 +1363,7 @@ mod tests {
             );
             assert!(view.drafts.is_empty());
             assert!(view.history.is_empty());
-            assert!(session.active.is_none());
+            assert!(session.generation.is_none());
         }
         let mut session = logged_in();
         let mut view = Conversation::default();
@@ -1378,25 +1382,10 @@ mod tests {
         view.set_draft("z", "old".into());
         let old_send = view.send(&session).unwrap();
         let old_poll = view.refresh_history(&session).unwrap();
-        session.change_server("https://other.example".into());
         view.clear();
-        let login = session.submit("bob", "password").unwrap();
-        session.complete_login(
-            login,
-            Ok(Authentication {
-                user: User {
-                    id: "other".into(),
-                    username: "bob".into(),
-                },
-                client: HttpTransport::new()
-                    .server(&session.server)
-                    .unwrap()
-                    .restore_candidate("new-token".into())
-                    .unwrap(),
-                expires_at: 100,
-            }),
-            0,
-        );
+        session.generation = Some(2);
+        session.expires_at = 100;
+
         let new_list = view.start(&session).unwrap();
         assert_eq!(
             view.complete_send(&mut session, &old_send, Err(AuthError::AlreadyInvalid), 0),
@@ -1404,7 +1393,7 @@ mod tests {
         );
         view.complete_history(&mut session, &old_poll, Err(AuthError::AlreadyInvalid));
         view.complete_channels(&mut session, &old_list, Err(AuthError::AlreadyInvalid));
-        assert!(session.active.is_some());
+        assert!(session.generation.is_some());
         assert!(view.is_current_channels(&new_list));
         assert!(view.drafts.is_empty());
     }
@@ -1490,12 +1479,12 @@ mod tests {
             }),
         );
         assert_eq!(view.history.get("a"), Some(&Load::Ready(vec![])));
-        session.logout();
+        session.generation = None;
         view.clear();
         view.complete_history(&mut session, &old, Err(AuthError::AlreadyInvalid));
         assert!(view.history.is_empty());
         assert!(view.selected.is_none());
-        assert!(session.active.is_none());
+        assert!(session.generation.is_none());
     }
 
     #[test]
@@ -1506,32 +1495,17 @@ mod tests {
         let old_history = conversation
             .complete_channels(&mut session, &old_channels, Ok(channels()))
             .unwrap();
-        session.change_server("https://another.example".into());
+        session.generation = Some(2);
+        session.expires_at = 100;
         conversation.clear();
-        let login = session.submit("bob", "password").unwrap();
-        session.complete_login(
-            login,
-            Ok(Authentication {
-                user: User {
-                    id: "other".into(),
-                    username: "bob".into(),
-                },
-                client: HttpTransport::new()
-                    .server(&session.server)
-                    .unwrap()
-                    .restore_candidate("new-token".into())
-                    .unwrap(),
-                expires_at: 100,
-            }),
-            0,
-        );
+
         conversation.complete_history(&mut session, &old_history, Err(AuthError::AlreadyInvalid));
         assert!(
             conversation
                 .complete_channels(&mut session, &old_channels, Ok(channels()))
                 .is_none()
         );
-        assert_eq!(session.active.as_ref().unwrap().user.username, "bob");
+        assert_eq!(session.generation, Some(2));
         assert!(conversation.channels.is_none());
         assert!(conversation.history.is_empty());
     }
@@ -1581,7 +1555,7 @@ mod tests {
         conversation.complete_channels(&mut session, &list, Ok(vec![]));
         let old = conversation.create(&session, "New").unwrap();
         assert!(conversation.create(&session, "New").is_none());
-        session.logout();
+        session.generation = None;
         conversation.clear();
         assert!(
             !conversation
@@ -1597,24 +1571,9 @@ mod tests {
                 .0
         );
         assert!(conversation.channels.is_none());
-        session.change_server("https://other.example".into());
-        let login_request = session.submit("other", "password").unwrap();
-        session.complete_login(
-            login_request,
-            Ok(Authentication {
-                user: User {
-                    id: "other".into(),
-                    username: "other".into(),
-                },
-                client: HttpTransport::new()
-                    .server(&session.server)
-                    .unwrap()
-                    .restore_candidate("new-token".into())
-                    .unwrap(),
-                expires_at: 100,
-            }),
-            0,
-        );
+        session.generation = Some(2);
+        session.expires_at = 100;
+
         let list = conversation.start(&session).unwrap();
         conversation.complete_channels(&mut session, &list, Ok(channels()));
         let selection = conversation.selected.clone();
@@ -1624,7 +1583,7 @@ mod tests {
                 .0
         );
         assert_eq!(conversation.selected, selection);
-        assert!(session.active.is_some());
+        assert!(session.generation.is_some());
     }
 
     #[test]
@@ -1645,7 +1604,7 @@ mod tests {
         );
         assert!(!confirmed);
         assert!(history.is_none());
-        assert!(session.active.is_none());
+        assert!(session.generation.is_none());
         assert!(conversation.channels.is_none());
         assert!(conversation.selected.is_none());
     }
@@ -1753,7 +1712,7 @@ mod tests {
         let old = view.request_older(&session).unwrap();
         let other = view.select(&session, "a").unwrap();
         view.complete_history(&mut session, &old, Err(AuthError::AlreadyInvalid));
-        assert!(session.active.is_some());
+        assert!(session.generation.is_some());
         assert_eq!(view.selected.as_deref(), Some("a"));
         view.complete_history(
             &mut session,
@@ -1764,7 +1723,7 @@ mod tests {
             }),
         );
         let pending = view.request_older(&session).unwrap();
-        session.logout();
+        session.generation = None;
         view.clear();
         view.complete_history(
             &mut session,
@@ -1818,7 +1777,7 @@ mod tests {
                 .added,
             0
         );
-        assert!(session.active.is_some());
+        assert!(session.generation.is_some());
     }
 
     #[test]
@@ -1839,7 +1798,7 @@ mod tests {
         );
         let older = view.request_older(&session).unwrap();
         view.complete_history(&mut session, &older, Err(AuthError::AlreadyInvalid));
-        assert!(session.active.is_none());
+        assert!(session.generation.is_none());
         assert!(view.history.is_empty());
         assert!(view.older.is_empty());
         assert!(view.selected.is_none());
@@ -2044,7 +2003,7 @@ mod tests {
                 .added,
             0
         );
-        assert!(session.active.is_some());
+        assert!(session.generation.is_some());
         view.complete_history(
             &mut session,
             &refresh,
@@ -2104,7 +2063,7 @@ mod tests {
         let pending = view.refresh_history(&session).unwrap();
         view.select(&session, "a");
         view.complete_history(&mut session, &pending, Err(AuthError::AlreadyInvalid));
-        assert!(session.active.is_some());
+        assert!(session.generation.is_some());
         assert!(!view.refreshing.contains_key("z"));
     }
 
@@ -2139,7 +2098,7 @@ mod tests {
         assert_eq!(view.selected, None);
         assert_eq!(view.channels, Some(Load::Ready(vec![])));
         view.complete_channels(&mut session, &refresh, Err(AuthError::AlreadyInvalid));
-        assert!(session.active.is_some());
+        assert!(session.generation.is_some());
     }
 
     #[test]
@@ -2151,7 +2110,7 @@ mod tests {
             .complete_channels(&mut session, &list, Ok(channels()))
             .unwrap();
         view.complete_history(&mut session, &read, Err(AuthError::AlreadyInvalid));
-        assert!(session.active.is_none());
+        assert!(session.generation.is_none());
         assert!(view.selected.is_none());
         assert!(view.channels.is_none());
         assert!(view.history.is_empty());

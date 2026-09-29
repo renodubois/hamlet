@@ -93,12 +93,24 @@ fn create_controls_confirm_order_selection_and_empty_history(cx: &mut TestAppCon
             );
             assert_eq!(window.find("channel-name").value(), Some("  Middle  "));
             assert_eq!(
-                view.read(cx).conversation.selected.as_deref(),
+                view.read(cx)
+                    .conversation
+                    .as_ref()
+                    .unwrap()
+                    .read()
+                    .selected
+                    .as_deref(),
                 if empty { None } else { Some("1") }
             );
             window.click("create-channel", cx);
             assert_eq!(
-                view.read(cx).conversation.selected.as_deref(),
+                view.read(cx)
+                    .conversation
+                    .as_ref()
+                    .unwrap()
+                    .read()
+                    .selected
+                    .as_deref(),
                 if empty { None } else { Some("1") }
             );
         });
@@ -107,11 +119,23 @@ fn create_controls_confirm_order_selection_and_empty_history(cx: &mut TestAppCon
         cx.update(|window, cx| {
             window.render_frame(cx);
             assert_eq!(window.find("channel-name").value(), Some(""));
-            assert_eq!(view.read(cx).conversation.selected.as_deref(), Some("3"));
+            assert_eq!(
+                view.read(cx)
+                    .conversation
+                    .as_ref()
+                    .unwrap()
+                    .read()
+                    .selected
+                    .as_deref(),
+                Some("3")
+            );
             assert_eq!(window.find("channel-3").label(), Some("# Middle"));
             assert_eq!(
                 view.read(cx)
                     .conversation
+                    .as_ref()
+                    .unwrap()
+                    .read()
                     .channels
                     .as_ref()
                     .and_then(|list| match list {
@@ -126,7 +150,13 @@ fn create_controls_confirm_order_selection_and_empty_history(cx: &mut TestAppCon
                 })
             );
             assert!(
-                view.read(cx).conversation.history.get("3")
+                view.read(cx)
+                    .conversation
+                    .as_ref()
+                    .unwrap()
+                    .read()
+                    .history
+                    .get("3")
                     == Some(&crate::conversation::Load::Ready(vec![]))
             );
         });
@@ -217,8 +247,7 @@ fn create_controls_keep_input_on_errors_without_replay(cx: &mut TestAppContext) 
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert!(view.read(cx).conversation.channels.is_none());
-        assert!(view.read(cx).conversation.selected.is_none());
+        assert!(view.read(cx).conversation.is_none());
         assert_eq!(window.find("login").label(), Some("Log in"));
     });
 }
@@ -270,8 +299,7 @@ fn create_completion_after_logout_cannot_navigate(cx: &mut TestAppContext) {
     cx.update(|window, cx| {
         window.render_frame(cx);
         assert_eq!(window.find("login").label(), Some("Log in"));
-        assert!(view.read(cx).conversation.channels.is_none());
-        assert!(view.read(cx).conversation.selected.is_none());
+        assert!(view.read(cx).conversation.is_none());
     });
 }
 
