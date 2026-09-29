@@ -281,6 +281,125 @@ fn restart_restores_selected_login_without_losing_old_cleanup_warning(cx: &mut T
 }
 
 #[gpui_kit::test]
+fn noncandidate_replacement_cleanup_remains_retryable_after_logout_and_restart(
+    cx: &mut TestAppContext,
+) {
+    cx.background_executor.allow_parking();
+    let fixtures: serde_json::Value =
+        serde_json::from_str(include_str!("../../baseline-47/compatibility.json")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&fixtures["configs"][1]["value"]).unwrap(),
+    )
+    .unwrap();
+    let config = crate::storage::load_at(Some(&path));
+    let old = config.saved.clone().unwrap();
+    let shared: Shared = Arc::new((
+        Mutex::new((
+            vec![(crate::storage::account(&old), "old-synthetic".into())],
+            false,
+            false,
+            true,
+            false,
+            false,
+        )),
+        Condvar::new(),
+    ));
+    let api = HttpTransport::with_adapter(Arc::new(SavedAuth));
+    let execution = Execution::controlled(cx.background_executor.clone(), 1_800_000_000);
+    let mut session = SessionCoordinator::new(
+        api.clone(),
+        execution.clone(),
+        config,
+        Some(Persistence::start(
+            Controlled(shared.clone()),
+            Some(path.clone()),
+        )),
+    );
+    // Noncandidate metadata must not prefill or start/offer restoration.
+    assert_eq!(session.initial_username(), "");
+    assert!(!session.pending());
+    assert!(session.storage_retry().is_none());
+    session.submit("Ada".into(), "password".into(), false);
+    settle(cx, &mut session, "Login saved, but");
+    settle(cx, &mut session, "Could not confirm deletion");
+    assert!(session.active().is_some());
+    assert!(matches!(
+        session.storage_retry(),
+        Some(StorageRetry::Deletion)
+    ));
+    assert_eq!(
+        crate::storage::load_at(Some(&path)).pending_deletions,
+        vec![old.clone()]
+    );
+
+    session.logout();
+    for update in take_updates(cx, &session, 2) {
+        session.apply(update);
+    }
+    assert!(session.active().is_none());
+    assert!(
+        session
+            .storage_feedback()
+            .unwrap()
+            .contains("Could not confirm deletion")
+    );
+    assert!(matches!(
+        session.storage_retry(),
+        Some(StorageRetry::Deletion)
+    ));
+    drop(session);
+
+    let config = crate::storage::load_at(Some(&path));
+    assert!(config.saved.is_none());
+    assert_eq!(config.pending_deletions.len(), 2);
+    assert!(config.pending_deletions.contains(&old));
+    let mut restarted = SessionCoordinator::new(
+        api,
+        execution,
+        config,
+        Some(Persistence::start(
+            Controlled(shared.clone()),
+            Some(path.clone()),
+        )),
+    );
+    for update in take_updates(cx, &restarted, 2) {
+        restarted.apply(update);
+    }
+    assert!(restarted.active().is_none());
+    assert!(
+        restarted
+            .storage_feedback()
+            .unwrap()
+            .contains("Could not confirm deletion")
+    );
+    assert!(matches!(
+        restarted.storage_retry(),
+        Some(StorageRetry::Deletion)
+    ));
+    shared.0.lock().unwrap().3 = false;
+    restarted.retry_storage();
+    for update in take_updates(cx, &restarted, 1) {
+        restarted.apply(update);
+    }
+    assert!(matches!(
+        restarted.storage_retry(),
+        Some(StorageRetry::Deletion)
+    ));
+    restarted.retry_storage();
+    settle(cx, &mut restarted, "Saved login removed");
+    assert!(restarted.storage_retry().is_none());
+    assert!(
+        crate::storage::load_at(Some(&path))
+            .pending_deletions
+            .is_empty()
+    );
+    assert!(shared.0.lock().unwrap().0.is_empty());
+}
+
+#[gpui_kit::test]
 fn legacy_prefill_and_logged_out_restart_fixtures_use_session_startup(cx: &mut TestAppContext) {
     cx.background_executor.allow_parking();
     let fixtures: serde_json::Value =
@@ -417,6 +536,82 @@ fn delayed_failed_deletion_cannot_remove_a_new_save_of_the_same_identity(cx: &mu
     shared.0.lock().unwrap().3 = false;
     session.logout();
     settle(cx, &mut session, "Saved login removed");
+    assert!(shared.0.lock().unwrap().0.is_empty());
+}
+
+#[gpui_kit::test]
+fn successful_new_logout_preserves_warning_for_an_older_failed_deletion(cx: &mut TestAppContext) {
+    cx.background_executor.allow_parking();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    let shared: Shared = Arc::new((
+        Mutex::new((vec![], false, false, false, false, false)),
+        Condvar::new(),
+    ));
+    let mut session = SessionCoordinator::new(
+        HttpTransport::with_adapter(Arc::new(SavedAuth)),
+        Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
+        Config::default(),
+        Some(Persistence::start(
+            Controlled(shared.clone()),
+            Some(path.clone()),
+        )),
+    );
+    session.submit("Ada".into(), "password".into(), false);
+    settle(cx, &mut session, "Login saved in");
+    let old = crate::storage::load_at(Some(&path)).saved.unwrap();
+    shared.0.lock().unwrap().3 = true;
+    session.logout();
+    for update in take_updates(cx, &session, 2) {
+        session.apply(update);
+    }
+    assert!(
+        session
+            .storage_feedback()
+            .unwrap()
+            .contains("Could not confirm deletion")
+    );
+
+    session.change_server("https://other.example.test".into());
+    session.submit("Ada".into(), "new password".into(), false);
+    settle(cx, &mut session, "Login saved in");
+    assert!(session.active().is_some());
+    assert!(
+        session
+            .storage_feedback()
+            .unwrap()
+            .contains("Could not confirm deletion")
+    );
+    shared.0.lock().unwrap().3 = false;
+    session.logout();
+    for update in take_updates(cx, &session, 2) {
+        session.apply(update);
+    }
+    assert!(session.active().is_none());
+    assert!(matches!(
+        session.storage_retry(),
+        Some(StorageRetry::Deletion)
+    ));
+    let feedback = session.storage_feedback().unwrap();
+    assert!(
+        feedback.contains("Could not confirm deletion"),
+        "{feedback}"
+    );
+    assert!(
+        !feedback.contains("Removing"),
+        "no deletion is still in flight"
+    );
+    let config = crate::storage::load_at(Some(&path));
+    assert!(config.saved.is_none());
+    assert_eq!(config.pending_deletions, vec![old]);
+    session.retry_storage();
+    settle(cx, &mut session, "Saved login removed");
+    assert!(session.storage_retry().is_none());
+    assert!(
+        crate::storage::load_at(Some(&path))
+            .pending_deletions
+            .is_empty()
+    );
     assert!(shared.0.lock().unwrap().0.is_empty());
 }
 

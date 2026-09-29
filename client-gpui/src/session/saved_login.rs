@@ -54,9 +54,12 @@ pub(super) enum SavedUpdate {
 impl SavedLogin {
     pub(super) fn new(config: Config, persistence: Option<Persistence>, server: &str) -> Self {
         let deletion_id = config.pending_deletions.len() as u64;
-        let credential = config.saved.filter(|s| s.server == server);
+        // Keep noncandidate metadata for replacement/logout cleanup. Exact server
+        // matching gates restoration and prefill, not ownership of the stored identity.
+        let credential = config.saved;
         let initial_username = credential
             .as_ref()
+            .filter(|s| s.server == server)
             .map(|s| s.user.username.clone())
             .unwrap_or_default();
         Self {
@@ -109,7 +112,13 @@ impl SessionCoordinator {
         }
         if self.retryable_deletion().is_some() {
             Some(StorageRetry::Deletion)
-        } else if self.active().is_none() && self.saved.credential.is_some() {
+        } else if self.active().is_none()
+            && self
+                .saved
+                .credential
+                .as_ref()
+                .is_some_and(|s| s.server == self.server())
+        {
             Some(StorageRetry::Restoration)
         } else {
             None
@@ -172,6 +181,18 @@ impl SessionCoordinator {
             .map(|d| d.id)
     }
 
+    fn refresh_cleanup_feedback(&mut self) {
+        self.saved.cleanup_feedback = Some(if self.saved.deletions.iter().any(|d| !d.in_flight) {
+            "Could not confirm deletion from Secret Service; a saved login may remain. Unlock the store and retry deletion.".into()
+        } else if !self.saved.deletions.is_empty() {
+            "Removing saved login from Secret Service…".into()
+        } else if self.active().is_some() {
+            "Previous saved login removed from Secret Service; current session is unchanged.".into()
+        } else {
+            "Saved login removed from Secret Service.".into()
+        });
+    }
+
     fn run_deletion(&mut self, id: u64) {
         let active = self.active_account();
         let Some(deletion) = self
@@ -196,7 +217,7 @@ impl SessionCoordinator {
                 SECURE_STORE_DEADLINE,
                 async move { queued.recv().await.ok() },
             );
-        self.saved.cleanup_feedback = Some("Removing saved login from Secret Service…".into());
+        self.refresh_cleanup_feedback();
         let deliver = self.deliver.clone();
         self.execution.spawn(async move {
             let outcome = reply.recv().await.ok().flatten().flatten();
@@ -358,17 +379,10 @@ impl SessionCoordinator {
                             self.saved.deletions.remove(earlier);
                         }
                     }
-                    if self.saved.deletions.is_empty() {
-                        self.saved.cleanup_feedback = Some(if self.active().is_some() {
-                            "Previous saved login removed from Secret Service; current session is unchanged.".into()
-                        } else {
-                            "Saved login removed from Secret Service.".into()
-                        });
-                    }
                 } else {
                     self.saved.deletions[index].in_flight = false;
-                    self.saved.cleanup_feedback = Some("Could not confirm deletion from Secret Service; a saved login may remain. Unlock the store and retry deletion.".into());
                 }
+                self.refresh_cleanup_feedback();
             }
             SavedUpdate::Save {
                 serial,
@@ -389,6 +403,8 @@ impl SessionCoordinator {
                         .retain(|d| account(&d.selection) != account(&selection));
                     if self.saved.deletions.is_empty() {
                         self.saved.cleanup_feedback = None;
+                    } else {
+                        self.refresh_cleanup_feedback();
                     }
                     if let Some(old) = previous {
                         self.saved

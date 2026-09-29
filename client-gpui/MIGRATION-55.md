@@ -118,3 +118,45 @@ Evidence and review artifacts: `/tmp/hamlet-orchestrator/review-55/`. Parent own
 mandatory fresh parallel Standards/Spec review **after the scoped commit**, then
 any issue closure. No nested reviewers were launched. No substantive blocker;
 pending parent review is not an implementation blocker. Do not begin #56 here.
+
+## Review correction — two P2 findings (2026-09-29)
+
+Fresh correction session started at `bee2e53bd4f3c9ef096cd9601dd109baaeef39ff`;
+review baseline remains `e0d3be56a909437135dfc9941f93bda796bf8405`. Live #55 is
+still **OPEN**. Both findings were reproduced before their respective fixes at the
+approved session/storage interface, with controlled execution/time, isolated files
+and the existing fake provider. No private workflow-state assertions were added.
+
+1. **Noncandidate replacement cleanup:** the immutable
+   `last-successful-server-differs-after-failed-save` fixture reached the saved-with-
+   cleanup-warning outcome but never exposed coordinator deletion feedback/retry.
+   Startup had discarded its saved metadata solely because the selected server
+   differed. Retain that metadata independently of restoration eligibility; exact
+   server matching still gates username prefill, automatic restore and restore retry.
+   The existing replacement path now receives the old selection and owns its cleanup
+   identity. Regression covers warning/retry while authenticated, logout, restart
+   from durable intents and eventual successful deletion.
+2. **Partial cleanup success:** after old-account deletion failed, a newer account
+   logged in and then logged out with the provider unlocked. Its successful deletion
+   left feedback stuck at `Removing saved login from Secret Service…` while the older
+   deletion remained retryable. Recompute feedback after deletion starts/completions
+   and successful saves that retire identities. Remaining unconfirmed work takes
+   precedence over in-flight progress; removal is confirmed only when none remain.
+   Regression verifies the warning and retry after newer logout, then final cleanup.
+
+Red evidence: `correction-1-red.log` failed on missing cleanup feedback (5s bound);
+`correction-2-red.log` failed on the literal stuck `Removing` status. Each focused
+fix passed its tracer (`correction-{1,2}-green.log`). No storage protocol, screen,
+API, runtime, dependency or server code changed. Existing real-control journeys
+continue to verify the unchanged shared feedback/retry controls on both screens.
+
+Correction checks: `cargo check --locked --all-targets` passed twice; the nine owned
+saved-login tests passed; all 13 saved-login matches passed at `SEED=1,2,3`; 19
+storage matches and the four execution/storage cases passed. One initial targeted
+filter matched zero tests; the correct full module filter was then run (4 passed).
+Required `cargo fmt --check`, strict all-target clippy, full `cargo test --locked`
+(**139 passed, 0 failed/ignored**) and `cargo build --locked` passed at
+18:46:38–44 UTC. `git diff --check` and all six original file hashes passed.
+Artifacts remain in `/tmp/hamlet-orchestrator/review-55/`; parent reviews the
+correction commit against the original baseline before any issue action. Native
+limitations and all preservation/scope constraints above remain unchanged.
