@@ -5,48 +5,20 @@ struct PollAuth {
     history: Arc<AtomicUsize>,
     offline: Arc<AtomicBool>,
 }
-impl AuthApi for PollAuth {
-    fn signup(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
-        TestAuth.signup(s, u, p)
-    }
-    fn login(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
-        TestAuth.login(s, u, p)
-    }
-    fn logout(&self, s: String, t: String) -> ApiFuture<Result<(), AuthError>> {
-        TestAuth.logout(s, t)
-    }
-    fn channels(
-        &self,
-        s: String,
-        t: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
-        self.channels.fetch_add(1, Ordering::SeqCst);
-        if self.offline.load(Ordering::SeqCst) {
-            Box::pin(async { Err(AuthError::Unavailable) })
-        } else {
-            TestAuth.channels(s, t)
+impl RequestAdapter for PollAuth {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+        let count = match request.url().path() {
+            "/api/v1/channels" => Some(&self.channels),
+            path if path.ends_with("/messages") => Some(&self.history),
+            _ => None,
+        };
+        if let Some(count) = count {
+            count.fetch_add(1, Ordering::SeqCst);
+            if self.offline.load(Ordering::SeqCst) {
+                return Box::pin(async { Err(AuthError::Unavailable) });
+            }
         }
-    }
-    fn create_channel(
-        &self,
-        s: String,
-        t: String,
-        n: String,
-    ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
-        TestAuth.create_channel(s, t, n)
-    }
-    fn history(
-        &self,
-        s: String,
-        t: String,
-        id: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
-        self.history.fetch_add(1, Ordering::SeqCst);
-        if self.offline.load(Ordering::SeqCst) {
-            Box::pin(async { Err(AuthError::Unavailable) })
-        } else {
-            TestAuth.history(s, t, id)
-        }
+        BoundAuth.execute(request)
     }
 }
 

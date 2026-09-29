@@ -3,13 +3,12 @@
 //! Feature workflows and private view state remain here until their ownership tickets.
 //! See ../../MIGRATION-48.md for the compatibility inventory and removal gates.
 
+use crate::api::HttpTransport;
 use crate::conversation::polling::{Polling, Resource};
 use crate::conversation::{self, Conversation, Load, Older, ReadRequest};
 use crate::persistence::{self, Outcome, Persistence, Selection};
 use crate::runtime::{Execution, Work};
-use crate::session::{
-    self, AppSession, AuthApi, DEFAULT_SERVER_URL, RestoreDecision, RestoreResult,
-};
+use crate::session::{self, AppSession, DEFAULT_SERVER_URL, RestoreDecision, RestoreResult};
 use crate::theme;
 use gpui_kit::base::SelectableText;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -21,10 +20,7 @@ use gpui_kit::base::input::{
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, Textarea};
 use gpui_kit::*;
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 // Workflow policy stays with this temporary coordinator, not storage or runtime.
 const SECURE_STORE_DEADLINE: Duration = Duration::from_secs(10);
@@ -34,7 +30,7 @@ const READ_SEND_DEADLINE: Duration = Duration::from_secs(9);
 pub(crate) fn open(
     window: &mut Window,
     cx: &mut App,
-    api: Arc<dyn AuthApi>,
+    api: HttpTransport,
     config: persistence::Config,
     persistence: Option<Persistence>,
     execution: Execution,
@@ -120,7 +116,7 @@ impl Hamlet {
     fn with_dependencies(
         window: &mut Window,
         cx: &mut Context<Self>,
-        api: Arc<dyn AuthApi>,
+        api: HttpTransport,
         config: persistence::Config,
         persistence: Option<Persistence>,
         execution: Execution,
@@ -510,12 +506,13 @@ impl Hamlet {
             cx.notify();
             return;
         };
-        let api = self.session.api.clone();
+        let Some(api) = self.session.client_for(request.generation) else {
+            return;
+        };
         let work = request.clone();
         // Timeout never proves non-delivery and never replays a write.
         let receive = self.execution.bounded(READ_SEND_DEADLINE, async move {
-            api.send_message(work.server, work.token, work.channel_id, work.text)
-                .await
+            api.send_message(work.channel_id, work.text).await
         });
         cx.spawn(async move |weak, cx| {
             if let Ok(result) = receive.recv().await {
@@ -740,22 +737,18 @@ impl Hamlet {
     }
 
     fn dispatch_channels(&mut self, request: ReadRequest, cx: &mut Context<Self>) {
-        let api = self.session.api.clone();
-        let work = request.clone();
-        let receive = self.execution.bounded(READ_SEND_DEADLINE, async move {
-            api.channels(work.server, work.token).await
-        });
+        let Some(api) = self.session.client_for(request.generation) else {
+            return;
+        };
+        let receive = self
+            .execution
+            .bounded(READ_SEND_DEADLINE, async move { api.channels().await });
         cx.spawn(async move |weak, cx| {
             if let Ok(result) = receive.recv().await {
                 let result = result.unwrap_or(Err(session::AuthError::Unavailable));
                 let _ = weak.update_in(cx, |view, window, cx| {
                     let current = view.conversation.is_current_channels(&request)
-                        && view.session.session_generation() == Some(request.generation)
-                        && view
-                            .session
-                            .active
-                            .as_ref()
-                            .is_some_and(|active| active.server == request.server);
+                        && view.session.session_generation() == Some(request.generation);
                     let succeeded = result.is_ok();
                     let previous = view.conversation.selected.clone();
                     view.store_composer(cx);
@@ -830,18 +823,15 @@ impl Hamlet {
     fn load_history(&mut self, request: ReadRequest, cx: &mut Context<Self>) {
         self.history_serial = self.history_serial.wrapping_add(1);
         let serial = self.history_serial;
-        let api = self.session.api.clone();
+        let Some(api) = self.session.client_for(request.generation) else {
+            return;
+        };
         let work = request.clone();
         let (task, receive) = self
             .execution
             .start_bounded(READ_SEND_DEADLINE, async move {
-                api.history_page(
-                    work.server,
-                    work.token,
-                    work.channel_id.unwrap(),
-                    work.before,
-                )
-                .await
+                api.history_page(work.channel_id.unwrap(), work.before)
+                    .await
             });
         self.history_task = Some(task);
         cx.spawn(async move |weak, cx| {
@@ -960,11 +950,13 @@ impl Hamlet {
             cx.notify();
             return;
         };
-        let api = self.session.api.clone();
+        let Some(api) = self.session.client_for(request.generation) else {
+            return;
+        };
         let work = request.clone();
         let receive = self
             .execution
-            .spawn(async move { api.create_channel(work.server, work.token, work.name).await });
+            .spawn(async move { api.create_channel(work.name).await });
         cx.spawn(async move |weak, cx| {
             if let Ok(result) = receive.recv().await {
                 let _ = weak.update_in(cx, |view, window, cx| {

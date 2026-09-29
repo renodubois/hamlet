@@ -1,7 +1,7 @@
 //! Common lifecycle tests: injected execution and real Kit controls, no child fields.
 use super::bound_auth::*;
 use super::*;
-use crate::conversation::{Channel, Message};
+use crate::api::{Message, User};
 use crate::runtime::Execution;
 
 #[path = "execution_storage.rs"]
@@ -52,7 +52,7 @@ impl RequestAdapter for DelayedLogin {
     }
 }
 
-fn delayed_login(executor: gpui_kit::BackgroundExecutor) -> Arc<dyn AuthApi> {
+fn delayed_login(executor: gpui_kit::BackgroundExecutor) -> HttpTransport {
     bound_api(DelayedLogin { executor })
 }
 
@@ -112,7 +112,7 @@ fn send_times_out_at_nine_seconds_without_replay_or_late_draft_loss(cx: &mut Tes
         let view = crate::views::app_shell::open(
             window,
             cx,
-            Arc::new(SendAuth(sends.clone())),
+            bound_api(SendAuth(sends.clone())),
             crate::persistence::Config::default(),
             None,
             execution,
@@ -280,36 +280,18 @@ struct ReadCounts {
     channels: Arc<AtomicUsize>,
     history: Arc<AtomicUsize>,
 }
-impl AuthApi for ReadCounts {
-    fn login(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
-        TestAuth.login(s, u, p)
-    }
-    fn signup(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
-        TestAuth.signup(s, u, p)
-    }
-    fn logout(&self, s: String, t: String) -> ApiFuture<Result<(), AuthError>> {
-        TestAuth.logout(s, t)
-    }
-    fn channels(&self, s: String, t: String) -> ApiFuture<Result<Vec<Channel>, AuthError>> {
-        self.channels.fetch_add(1, Ordering::SeqCst);
-        TestAuth.channels(s, t)
-    }
-    fn create_channel(
-        &self,
-        s: String,
-        t: String,
-        n: String,
-    ) -> ApiFuture<Result<Channel, AuthError>> {
-        TestAuth.create_channel(s, t, n)
-    }
-    fn history(
-        &self,
-        s: String,
-        t: String,
-        id: String,
-    ) -> ApiFuture<Result<Vec<Message>, AuthError>> {
-        self.history.fetch_add(1, Ordering::SeqCst);
-        TestAuth.history(s, t, id)
+impl RequestAdapter for ReadCounts {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+        match request.url().path() {
+            "/api/v1/channels" => {
+                self.channels.fetch_add(1, Ordering::SeqCst);
+            }
+            path if path.ends_with("/messages") => {
+                self.history.fetch_add(1, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+        BoundAuth.execute(request)
     }
 }
 
@@ -323,7 +305,7 @@ fn automatic_polls_follow_focus_and_three_fifteen_second_intervals(cx: &mut Test
         let view = crate::views::app_shell::open(
             window,
             cx,
-            Arc::new(ReadCounts {
+            bound_api(ReadCounts {
                 channels: channels.clone(),
                 history: history.clone(),
             }),

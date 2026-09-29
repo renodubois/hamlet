@@ -82,11 +82,6 @@ impl AuthenticatedClient {
         })
     }
 
-    pub fn history(&self, channel_id: String) -> ApiFuture<Result<Vec<Message>, ApiError>> {
-        let page = self.history_page(channel_id, None);
-        Box::pin(async move { page.await.map(|page| page.items) })
-    }
-
     pub fn history_page(
         &self,
         channel_id: String,

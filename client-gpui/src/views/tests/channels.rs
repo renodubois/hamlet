@@ -9,61 +9,37 @@ struct CreateAuth {
     calls: Arc<AtomicUsize>,
     empty: bool,
 }
-impl AuthApi for CreateAuth {
-    fn signup(
-        &self,
-        _: String,
-        username: String,
-        _: String,
-    ) -> ApiFuture<Result<Login, AuthError>> {
-        TestAuth.login(String::new(), username, String::new())
-    }
-    fn login(&self, _: String, username: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
-        TestAuth.login(String::new(), username, String::new())
-    }
-    fn logout(&self, _: String, _: String) -> ApiFuture<Result<(), AuthError>> {
-        Box::pin(async { Ok(()) })
-    }
-    fn channels(
-        &self,
-        _: String,
-        _: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
-        let empty = self.empty;
-        Box::pin(async move {
-            if empty {
-                Ok(vec![])
-            } else {
-                Ok(vec![
-                    crate::conversation::Channel {
-                        id: "1".into(),
-                        name: "alpha".into(),
-                    },
-                    crate::conversation::Channel {
-                        id: "2".into(),
-                        name: "zebra".into(),
-                    },
-                ])
-            }
-        })
-    }
-    fn create_channel(
-        &self,
-        _: String,
-        _: String,
-        _: String,
-    ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        let result = self.results.lock().unwrap().pop_front().unwrap();
-        Box::pin(async move { result })
-    }
-    fn history(
-        &self,
-        _: String,
-        _: String,
-        _: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
-        Box::pin(async { Ok(vec![]) })
+impl RequestAdapter for CreateAuth {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+        use serde_json::json;
+        if request.url().path() == "/api/v1/channels" {
+            let result =
+                if request.method() == reqwest::Method::POST {
+                    self.calls.fetch_add(1, Ordering::SeqCst);
+                    wire_response(
+                        self.results.lock().unwrap().pop_front().unwrap().map(
+                            |channel| json!({"id":channel.id,"name":channel.name,"type":"text"}),
+                        ),
+                        StatusCode::CREATED,
+                    )
+                } else {
+                    Ok(Response::controlled(
+                        StatusCode::OK,
+                        if self.empty {
+                            json!({"items":[]})
+                        } else {
+                            json!({"items":[{"id":"1","name":"alpha","type":"text"},
+                    {"id":"2","name":"zebra","type":"text"}]})
+                        }
+                        .to_string(),
+                    ))
+                };
+            return Box::pin(async move { result });
+        }
+        if request.url().path().ends_with("/messages") {
+            return Box::pin(async { Ok(Response::controlled(StatusCode::OK, r#"{"items":[]}"#)) });
+        }
+        BoundAuth.execute(request)
     }
 }
 
@@ -355,55 +331,17 @@ fn refresh_channels_control_keeps_selected_conversation(cx: &mut TestAppContext)
 }
 
 struct RemovingChannel(Arc<AtomicBool>);
-impl AuthApi for RemovingChannel {
-    fn signup(
-        &self,
-        server: String,
-        user: String,
-        password: String,
-    ) -> ApiFuture<Result<Login, AuthError>> {
-        TestAuth.signup(server, user, password)
-    }
-    fn login(
-        &self,
-        server: String,
-        user: String,
-        password: String,
-    ) -> ApiFuture<Result<Login, AuthError>> {
-        TestAuth.login(server, user, password)
-    }
-    fn logout(&self, server: String, token: String) -> ApiFuture<Result<(), AuthError>> {
-        TestAuth.logout(server, token)
-    }
-    fn channels(
-        &self,
-        server: String,
-        token: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
-        let removed = self.0.load(Ordering::SeqCst);
-        Box::pin(async move {
-            let mut list = TestAuth.channels(server, token).await?;
-            if removed {
-                list.remove(0);
-            }
-            Ok(list)
-        })
-    }
-    fn create_channel(
-        &self,
-        server: String,
-        token: String,
-        name: String,
-    ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
-        TestAuth.create_channel(server, token, name)
-    }
-    fn history(
-        &self,
-        server: String,
-        token: String,
-        id: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
-        TestAuth.history(server, token, id)
+impl RequestAdapter for RemovingChannel {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+        if request.url().path() == "/api/v1/channels" && self.0.load(Ordering::SeqCst) {
+            return Box::pin(async {
+                Ok(Response::controlled(
+                    StatusCode::OK,
+                    r#"{"items":[{"id":"000000000000002","name":"general","type":"text"}]}"#,
+                ))
+            });
+        }
+        BoundAuth.execute(request)
     }
 }
 

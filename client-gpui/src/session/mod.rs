@@ -28,6 +28,13 @@ impl AppSession {
         self.active.as_ref().map(Session::client)
     }
 
+    /// Capture only the accepted context that originated protected work.
+    pub fn client_for(&self, generation: u64) -> Option<crate::api::AuthenticatedClient> {
+        (self.session_generation() == Some(generation))
+            .then(|| self.active_client())
+            .flatten()
+    }
+
     /// The candidate remains inside this future until current-user verification completes.
     /// Identity, expiry and generation still gate activation in `finish_restore`.
     pub async fn verify_saved(server: crate::api::ServerClient, token: String) -> RestoreResult {

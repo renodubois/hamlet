@@ -80,63 +80,13 @@ struct RaceAuth {
     pages: std::sync::mpsc::Sender<(Option<String>, PageReply)>,
     sends: Arc<Mutex<Vec<Sent>>>,
 }
-impl AuthApi for RaceAuth {
-    fn signup(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
-        TestAuth.signup(s, u, p)
-    }
-    fn login(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
-        TestAuth.login(s, u, p)
-    }
-    fn logout(&self, s: String, t: String) -> ApiFuture<Result<(), AuthError>> {
-        TestAuth.logout(s, t)
-    }
-    fn channels(
-        &self,
-        s: String,
-        t: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
-        TestAuth.channels(s, t)
-    }
-    fn create_channel(
-        &self,
-        s: String,
-        t: String,
-        n: String,
-    ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
-        TestAuth.create_channel(s, t, n)
-    }
-    fn history(
-        &self,
-        _: String,
-        _: String,
-        _: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
-        Box::pin(async { unreachable!() })
-    }
-    fn history_page(
-        &self,
-        _: String,
-        _: String,
-        _: String,
-        before: Option<String>,
-    ) -> ApiFuture<Result<crate::conversation::Page, AuthError>> {
-        let tx = self.pages.clone();
-        Box::pin(async move {
-            let (reply, rx) = async_channel::bounded(1);
-            tx.send((before, reply)).unwrap();
-            rx.recv().await.unwrap()
-        })
-    }
-    fn send_message(
-        &self,
-        _: String,
-        _: String,
-        id: String,
-        text: String,
-    ) -> ApiFuture<Result<crate::conversation::Message, AuthError>> {
-        let (tx, rx) = async_channel::bounded(1);
-        self.sends.lock().unwrap().push((id, text, tx));
-        Box::pin(async move { rx.recv().await.unwrap() })
+impl RequestAdapter for RaceAuth {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+        if request.method() == reqwest::Method::POST {
+            SendAuth(self.sends.clone()).execute(request)
+        } else {
+            PagedAuth(self.pages.clone()).execute(request)
+        }
     }
 }
 
@@ -225,77 +175,24 @@ fn polling_and_send_confirmation_share_one_headless_history_without_duplicate(
     });
 }
 
-// Bridge only the test fixture's HTTP futures onto Tokio; Hamlet still dispatches
-// channels and history via its production poll_at / completion paths.
-struct ServerPollingAuth {
-    api: crate::http::HttpAuth,
-    completed: std::sync::mpsc::Sender<&'static str>,
-}
-impl AuthApi for ServerPollingAuth {
-    fn signup(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
-        self.api.signup(s, u, p)
-    }
-    fn login(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
-        self.api.login(s, u, p)
-    }
-    fn current_user(&self, s: String, t: String) -> ApiFuture<Result<User, AuthError>> {
-        self.api.current_user(s, t)
-    }
-    fn logout(&self, s: String, t: String) -> ApiFuture<Result<(), AuthError>> {
-        self.api.logout(s, t)
-    }
-    fn channels(
-        &self,
-        s: String,
-        t: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
-        let future = self.api.channels(s, t);
-        let done = self.completed.clone();
-        Box::pin(async move {
-            let result = future.await;
-            done.send("channels").unwrap();
-            result
-        })
-    }
-    fn create_channel(
-        &self,
-        s: String,
-        t: String,
-        n: String,
-    ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
-        self.api.create_channel(s, t, n)
-    }
-    fn send_message(
-        &self,
-        s: String,
-        t: String,
-        id: String,
-        text: String,
-    ) -> ApiFuture<Result<crate::conversation::Message, AuthError>> {
-        self.api.send_message(s, t, id, text)
-    }
-    fn history(
-        &self,
-        s: String,
-        t: String,
-        id: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
-        self.api.history(s, t, id)
-    }
-    fn history_page(
-        &self,
-        s: String,
-        t: String,
-        id: String,
-        before: Option<String>,
-    ) -> ApiFuture<Result<crate::conversation::Page, AuthError>> {
-        let future = self.api.history_page(s, t, id, before);
-        let done = self.completed.clone();
-        Box::pin(async move {
-            let result = future.await;
-            done.send("history").unwrap();
-            result
-        })
+// Wait for real HTTP/foreign-thread progress, observing only the stable control surface.
+fn await_control(cx: &mut gpui_kit::VisualTestContext, id: String, label: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        cx.run_until_parked();
+        if cx.update(|window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(id.clone())
+                .is_some_and(|control| control.label() == Some(label))
+        }) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "loopback activity did not reach {id}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
     }
 }
 
@@ -329,84 +226,66 @@ fn bob_activity_arrives_through_hamlet_poll_at_and_real_rewrite_routes(cx: &mut 
         });
     });
     let (url, server_handle) = ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-    let api = crate::http::HttpAuth::new();
-    let alice = super::runtime()
-        .block_on(api.signup(url.clone(), "Alice".into(), "long password".into()))
-        .unwrap();
+    let api = HttpTransport::new().server(&url).unwrap();
     let bob = super::runtime()
-        .block_on(api.signup(url.clone(), "Bob".into(), "long password".into()))
+        .block_on(api.signup("Bob".into(), "long password".into()))
         .unwrap();
-    let (done, completions) = std::sync::mpsc::channel();
+    super::runtime()
+        .block_on(api.signup("Alice".into(), "long password".into()))
+        .unwrap();
+    let selected = super::runtime().block_on(bob.client.channels()).unwrap()[0]
+        .id
+        .clone();
+    let initial = super::runtime()
+        .block_on(
+            bob.client
+                .send_message(selected.clone(), "already here".into()),
+        )
+        .unwrap();
     cx.update(gpui_kit::init);
-    let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let stored = saved.clone();
+    let execution = crate::runtime::Execution::production(cx.background_executor.clone());
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| {
-            let execution = crate::runtime::Execution::production(cx.background_executor().clone());
-            Hamlet::with_dependencies(
-                window,
-                cx,
-                Arc::new(ServerPollingAuth {
-                    api: crate::http::HttpAuth::new(),
-                    completed: done,
-                }),
-                crate::persistence::Config::default(),
-                None,
-                execution,
-            )
-        });
-        *stored.borrow_mut() = Some(view.clone());
+        let view = crate::views::app_shell::open(
+            window,
+            cx,
+            HttpTransport::new(),
+            crate::persistence::Config {
+                server: Some(url),
+                ..Default::default()
+            },
+            None,
+            execution,
+        );
         Root::new(view, window, cx)
     });
-    let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
-    cx.update(|_, cx| {
-        view.update(cx, |v, cx| {
-            v.session.change_server(url.clone());
-            v.session.username = "Alice".into();
-            v.session.password = "long password".into();
-            let login = v.session.submit().unwrap();
-            v.session
-                .complete_login(login, Ok(alice.bind(&url)), chrono::Utc::now().timestamp());
-            v.polling.focus(true, Duration::ZERO);
-            v.load_channels(cx);
-        })
+    cx.update(|window, cx| {
+        window.activate_window();
+        window.render_frame(cx);
+        window.click("username", cx);
+        window.input("Alice", cx);
+        window.click("password", cx);
+        window.input("long password", cx);
+        window.click("login", cx);
     });
-    assert_eq!(
-        completions.recv_timeout(Duration::from_secs(5)).unwrap(),
-        "channels"
-    );
-    cx.run_until_parked();
-    assert_eq!(
-        completions.recv_timeout(Duration::from_secs(5)).unwrap(),
-        "history"
-    );
-    cx.run_until_parked();
-    let selected = cx.update(|_, cx| view.read(cx).conversation.selected.clone().unwrap());
+    await_control(cx, format!("message-{}", initial.id), "already here");
     let posted = super::runtime()
-        .block_on(api.send_message(
-            url.clone(),
-            bob.token.clone(),
-            selected.clone(),
-            "hello from Bob".into(),
-        ))
+        .block_on(
+            bob.client
+                .send_message(selected.clone(), "hello from Bob".into()),
+        )
         .unwrap();
     let channel = super::runtime()
-        .block_on(api.create_channel(url.clone(), bob.token, "Bob room".into()))
+        .block_on(bob.client.create_channel("Bob room".into()))
         .unwrap();
-    cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(100), cx)));
-    assert_eq!(
-        completions.recv_timeout(Duration::from_secs(5)).unwrap(),
-        "channels"
-    );
-    cx.run_until_parked();
-    assert_eq!(
-        completions.recv_timeout(Duration::from_secs(5)).unwrap(),
-        "history"
-    );
-    cx.update(|_, cx| {
-        let v = view.read(cx);
-        assert!(matches!(&v.conversation.channels, Some(crate::conversation::Load::Ready(items)) if items.contains(&channel)));
-        assert!(matches!(v.conversation.history.get(&selected), Some(crate::conversation::Load::Ready(items)) if items.iter().any(|m| m.id == posted.id && m.author_name == "Bob")));
+    // The actual lifecycle timer drives poll_at; no private state or alternate HTTP wrapper.
+    cx.background_executor
+        .advance_clock(Duration::from_secs(15));
+    await_control(cx, format!("channel-{}", channel.id), "# Bob room");
+    await_control(cx, format!("message-{}", posted.id), "hello from Bob");
+    cx.update(|window, cx| {
+        window.click("logout", cx);
+        window.render_frame(cx);
+        assert_eq!(window.find("login").label(), Some("Log in"));
     });
     super::runtime().block_on(server_handle.stop(true));
     server_thread.join().unwrap();

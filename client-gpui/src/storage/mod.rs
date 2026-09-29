@@ -59,14 +59,14 @@ pub(crate) fn load_at(path: Option<&std::path::Path>) -> Config {
     if config
         .server
         .as_deref()
-        .is_some_and(|s| crate::http::validate_server(s).is_ok())
+        .is_some_and(|s| crate::api::validate_server(s).is_ok())
         && config.saved.as_ref().is_none_or(|saved| {
-            crate::http::validate_server(&saved.server).is_ok()
+            crate::api::validate_server(&saved.server).is_ok()
                 && !saved.user.id.is_empty()
                 && !saved.user.username.is_empty()
         })
         && config.pending_deletions.iter().all(|s| {
-            crate::http::validate_server(&s.server).is_ok()
+            crate::api::validate_server(&s.server).is_ok()
                 && !s.user.id.is_empty()
                 && !s.user.username.is_empty()
         })

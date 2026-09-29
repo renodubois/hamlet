@@ -32,12 +32,10 @@ struct Catchup {
     cursors: HashSet<String>,
 }
 
-// Legacy descriptors still carry credentials until protected callers migrate; no Debug.
+// Completion identities contain no endpoint or credential; dispatch captures the accepted client.
 #[derive(Clone)]
 pub struct SendRequest {
     pub generation: u64,
-    pub server: String,
-    pub token: String,
     pub channel_id: String,
     pub text: String,
     serial: u64,
@@ -61,8 +59,6 @@ pub struct HistoryOutcome {
 #[derive(Clone)]
 pub struct ReadRequest {
     pub generation: u64,
-    pub server: String,
-    pub token: String,
     pub channel_id: Option<String>,
     pub before: Option<String>,
     pub serial: u64,
@@ -78,8 +74,6 @@ impl ReadRequest {
 #[derive(Clone)]
 pub struct CreateRequest {
     pub generation: u64,
-    pub server: String,
-    pub token: String,
     pub name: String,
     serial: u64,
 }
@@ -142,14 +136,12 @@ impl Conversation {
             self.create_feedback = Some("Channel name must be 1–64 bytes after trimming, using ASCII letters, digits, spaces, hyphens or underscores.".into());
             return None;
         }
-        let active = session.active.as_ref()?;
+        session.active.as_ref()?;
         self.create_serial = self.create_serial.wrapping_add(1);
         self.create_pending = true;
         self.create_feedback = None;
         Some(CreateRequest {
             generation: session.session_generation()?,
-            server: active.server.clone(),
-            token: active.token().to_owned(),
             name: normalized.into(),
             serial: self.create_serial,
         })
@@ -165,9 +157,6 @@ impl Conversation {
         if !self.create_pending
             || self.create_serial != request.serial
             || session.session_generation() != Some(request.generation)
-            || session.active.as_ref().is_none_or(|active| {
-                active.server != request.server || active.token() != request.token
-            })
         {
             return (false, None);
         }
@@ -235,15 +224,13 @@ impl Conversation {
             );
             return None;
         }
-        let active = session.active.as_ref()?;
+        session.active.as_ref()?;
         self.send_serial = self.send_serial.wrapping_add(1);
         self.send_pending.insert(id.clone(), self.send_serial);
         self.uncertain_notice.remove(id);
         self.send_feedback.remove(id);
         Some(SendRequest {
             generation: session.session_generation()?,
-            server: active.server.clone(),
-            token: active.token().into(),
             channel_id: id.clone(),
             text,
             serial: self.send_serial,
@@ -260,9 +247,6 @@ impl Conversation {
         let id = &request.channel_id;
         if self.send_pending.get(id) != Some(&request.serial)
             || session.session_generation() != Some(request.generation)
-            || session.active.as_ref().is_none_or(|active| {
-                active.server != request.server || active.token() != request.token
-            })
         {
             return SendOutcome::Stale;
         }
@@ -390,14 +374,12 @@ impl Conversation {
     }
 
     fn read_channels(&mut self, session: &AppSession) -> Option<ReadRequest> {
-        let active = session.active.as_ref()?;
+        session.active.as_ref()?;
         self.channel_pending = true;
         self.channel_error = None;
         self.channel_serial = self.channel_serial.wrapping_add(1);
         Some(ReadRequest {
             generation: session.session_generation()?,
-            server: active.server.clone(),
-            token: active.token().to_owned(),
             channel_id: None,
             before: None,
             serial: self.channel_serial,
@@ -421,9 +403,6 @@ impl Conversation {
             || session.session_generation() != Some(request.generation)
             || !self.channel_pending
             || self.channel_serial != request.serial
-            || session.active.as_ref().is_none_or(|active| {
-                active.server != request.server || active.token() != request.token
-            })
         {
             return None;
         }
@@ -497,13 +476,11 @@ impl Conversation {
         if matches!(self.history.get(id), Some(Load::Loading | Load::Ready(_))) {
             return None;
         }
-        let active = session.active.as_ref()?;
+        session.active.as_ref()?;
         self.history.insert(id.into(), Load::Loading);
         self.read_serial = self.read_serial.wrapping_add(1);
         Some(ReadRequest {
             generation: session.session_generation()?,
-            server: active.server.clone(),
-            token: active.token().to_owned(),
             channel_id: Some(id.into()),
             before: None,
             serial: self.read_serial,
@@ -522,7 +499,7 @@ impl Conversation {
         if !matches!(self.history.get(&id), Some(Load::Ready(_))) {
             return self.select(session, &id);
         }
-        let active = session.active.as_ref()?;
+        session.active.as_ref()?;
         // Cancel an older read before starting reconciliation; its late completion is ignored.
         if matches!(self.older.get(&id), Some(Older::Loading)) {
             self.older.insert(id.clone(), Older::Available);
@@ -536,8 +513,6 @@ impl Conversation {
         self.refreshing.insert(id.clone(), Refresh::Running);
         Some(ReadRequest {
             generation: session.session_generation()?,
-            server: active.server.clone(),
-            token: active.token().into(),
             channel_id: Some(id),
             before: None,
             serial: self.read_serial,
@@ -553,14 +528,12 @@ impl Conversation {
         {
             return None;
         }
-        let active = session.active.as_ref()?;
+        session.active.as_ref()?;
         let before = self.cursors.get(id)?.clone();
         self.older.insert(id.clone(), Older::Loading);
         self.read_serial = self.read_serial.wrapping_add(1);
         Some(ReadRequest {
             generation: session.session_generation()?,
-            server: active.server.clone(),
-            token: active.token().to_owned(),
             channel_id: Some(id.clone()),
             before: Some(before),
             serial: self.read_serial,
@@ -593,11 +566,7 @@ impl Conversation {
         let Some(id) = &request.channel_id else {
             return outcome;
         };
-        if session.session_generation() != Some(request.generation)
-            || session.active.as_ref().is_none_or(|active| {
-                active.server != request.server || active.token() != request.token
-            })
-        {
+        if session.session_generation() != Some(request.generation) {
             return outcome;
         }
         let older = request.before.is_some() && !request.refresh;
@@ -674,8 +643,6 @@ impl Conversation {
                             self.read_serial = self.read_serial.wrapping_add(1);
                             outcome.next = Some(ReadRequest {
                                 generation: request.generation,
-                                server: request.server.clone(),
-                                token: request.token.clone(),
                                 channel_id: Some(id.clone()),
                                 before: Some(cursor),
                                 serial: self.read_serial,
@@ -763,56 +730,27 @@ impl Conversation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{ApiFuture, AuthApi, Login, User};
-    use std::sync::Arc;
-
-    struct Stub;
-    impl AuthApi for Stub {
-        fn signup(&self, _: String, _: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
-            Box::pin(async { unreachable!() })
-        }
-        fn login(&self, _: String, _: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
-            Box::pin(async { unreachable!() })
-        }
-        fn logout(&self, _: String, _: String) -> ApiFuture<Result<(), AuthError>> {
-            Box::pin(async { Ok(()) })
-        }
-        fn channels(&self, _: String, _: String) -> ApiFuture<Result<Vec<Channel>, AuthError>> {
-            Box::pin(async { unreachable!() })
-        }
-        fn create_channel(
-            &self,
-            _: String,
-            _: String,
-            _: String,
-        ) -> ApiFuture<Result<Channel, AuthError>> {
-            Box::pin(async { unreachable!() })
-        }
-        fn history(
-            &self,
-            _: String,
-            _: String,
-            _: String,
-        ) -> ApiFuture<Result<Vec<Message>, AuthError>> {
-            Box::pin(async { unreachable!() })
-        }
-    }
+    use crate::api::{Authentication, HttpTransport, User};
     fn logged_in() -> AppSession {
-        let mut session = AppSession::new(Arc::new(Stub));
+        let mut session = AppSession::new(HttpTransport::new());
         session.username = "ada".into();
         session.password = "password".into();
         let request = session.submit().unwrap();
         session.complete_login(
             request,
-            Ok(Login {
+            Ok(Authentication {
                 user: User {
                     id: "u".into(),
                     username: "ada".into(),
                 },
-                token: "token".into(),
+                client: session
+                    .api
+                    .server(&session.server)
+                    .unwrap()
+                    .restore_candidate("token".into())
+                    .unwrap(),
                 expires_at: 100,
-            }
-            .bind(&session.server)),
+            }),
             0,
         );
         session
@@ -1448,15 +1386,19 @@ mod tests {
         let login = session.submit().unwrap();
         session.complete_login(
             login,
-            Ok(Login {
+            Ok(Authentication {
                 user: User {
                     id: "other".into(),
                     username: "bob".into(),
                 },
-                token: "new-token".into(),
+                client: session
+                    .api
+                    .server(&session.server)
+                    .unwrap()
+                    .restore_candidate("new-token".into())
+                    .unwrap(),
                 expires_at: 100,
-            }
-            .bind(&session.server)),
+            }),
             0,
         );
         let new_list = view.start(&session).unwrap();
@@ -1575,15 +1517,19 @@ mod tests {
         let login = session.submit().unwrap();
         session.complete_login(
             login,
-            Ok(Login {
+            Ok(Authentication {
                 user: User {
                     id: "other".into(),
                     username: "bob".into(),
                 },
-                token: "new-token".into(),
+                client: session
+                    .api
+                    .server(&session.server)
+                    .unwrap()
+                    .restore_candidate("new-token".into())
+                    .unwrap(),
                 expires_at: 100,
-            }
-            .bind(&session.server)),
+            }),
             0,
         );
         conversation.complete_history(&mut session, &old_history, Err(AuthError::AlreadyInvalid));
@@ -1664,15 +1610,19 @@ mod tests {
         let login_request = session.submit().unwrap();
         session.complete_login(
             login_request,
-            Ok(Login {
+            Ok(Authentication {
                 user: User {
                     id: "other".into(),
                     username: "other".into(),
                 },
-                token: "new-token".into(),
+                client: session
+                    .api
+                    .server(&session.server)
+                    .unwrap()
+                    .restore_candidate("new-token".into())
+                    .unwrap(),
                 expires_at: 100,
-            }
-            .bind(&session.server)),
+            }),
             0,
         );
         let list = conversation.start(&session).unwrap();

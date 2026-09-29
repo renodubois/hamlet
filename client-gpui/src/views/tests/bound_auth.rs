@@ -1,14 +1,17 @@
 //! Controlled wire responses for authentication/control workflows, after real client binding.
 use super::*;
+use crate::api::HttpTransport;
 pub(super) use crate::api::test_support::{RequestAdapter, Response};
-use crate::api::{HttpTransport, legacy::HttpAuth};
 pub(super) use reqwest::{Request, StatusCode};
 use serde_json::json;
 
-pub(super) fn bound_api(adapter: impl RequestAdapter + 'static) -> Arc<dyn AuthApi> {
-    Arc::new(HttpAuth::with_transport(HttpTransport::with_adapter(
-        Arc::new(adapter),
-    )))
+pub(super) fn bound_api(adapter: impl RequestAdapter + 'static) -> HttpTransport {
+    HttpTransport::with_adapter(Arc::new(adapter))
+}
+
+// The retained private-view fixture accepts an adapter; lifecycle tests supply a transport.
+pub(super) fn fixture_api(adapter: impl RequestAdapter + 'static) -> Arc<dyn RequestAdapter> {
+    Arc::new(adapter)
 }
 
 pub(super) struct BoundAuth;

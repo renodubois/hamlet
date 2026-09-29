@@ -1,3 +1,4 @@
+use super::ApiError as AuthError;
 use super::*;
 use reqwest::{Client, StatusCode};
 use std::time::Duration;
@@ -7,7 +8,7 @@ use std::{
     thread,
 };
 
-// TCP fixtures exercise the public AuthApi (not private decoding helpers).
+// TCP fixtures exercise bound clients (not private decoding helpers).
 pub(super) fn server(reply: impl Into<String>) -> (String, thread::JoinHandle<String>) {
     let reply = reply.into();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -74,24 +75,15 @@ async fn send_message_uses_real_rewrite_validation_and_decodes_created_identity(
     .run();
     let handle = server.handle();
     actix_web::rt::spawn(server);
-    let auth: &dyn AuthApi = &HttpAuth::new();
+    let auth = HttpTransport::new().server(&url).unwrap();
     let login = auth
-        .signup(url.clone(), "Ada".into(), "long password".into())
+        .signup("Ada".into(), "long password".into())
         .await
         .unwrap();
-    let channel = auth
-        .channels(url.clone(), login.token.clone())
-        .await
-        .unwrap()[0]
-        .id
-        .clone();
-    let sent = auth
-        .send_message(
-            url.clone(),
-            login.token.clone(),
-            channel.clone(),
-            "first\nsecond".into(),
-        )
+    let channel = login.client.channels().await.unwrap()[0].id.clone();
+    let sent = login
+        .client
+        .send_message(channel.clone(), "first\nsecond".into())
         .await
         .unwrap();
     assert_eq!(sent.channel_id, channel);
@@ -101,30 +93,31 @@ async fn send_message_uses_real_rewrite_validation_and_decodes_created_identity(
     assert!(!sent.id.is_empty());
     assert!(sent.created_at.contains('T'));
     assert_eq!(
-        auth.history(url.clone(), login.token.clone(), channel.clone())
+        login
+            .client
+            .history_page(channel.clone(), None)
             .await
-            .unwrap(),
+            .unwrap()
+            .items,
         vec![sent]
     );
     for text in ["   ".to_owned(), "x".repeat(4001)] {
         assert!(matches!(
-            auth.send_message(url.clone(), login.token.clone(), channel.clone(), text)
-                .await,
+            login.client.send_message(channel.clone(), text).await,
             Err(AuthError::InvalidInput)
         ));
     }
     assert!(matches!(
-        auth.send_message(
-            url.clone(),
-            login.token.clone(),
-            "999999999999999".into(),
-            "hi".into()
-        )
-        .await,
+        login
+            .client
+            .send_message("999999999999999".into(), "hi".into())
+            .await,
         Err(AuthError::NotFound)
     ));
     assert!(matches!(
-        auth.send_message(url.clone(), "bad".into(), channel, "hi".into())
+        auth.restore_candidate("bad".into())
+            .unwrap()
+            .send_message(channel, "hi".into())
             .await,
         Err(AuthError::AlreadyInvalid)
     ));
@@ -159,17 +152,20 @@ async fn ambiguous_write_timeout_does_not_replay_and_malformed_success_is_uncert
         );
         String::from_utf8_lossy(&request[..count]).to_string()
     });
-    let auth = HttpAuth::with_client(
+    let auth = HttpTransport::from_client(
         Client::builder()
             .no_proxy()
             .timeout(Duration::from_millis(30))
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap(),
-    );
+    )
+    .server(&url)
+    .unwrap()
+    .restore_candidate("token".into())
+    .unwrap();
     assert!(matches!(
-        auth.send_message(url, "token".into(), "123".into(), "do not retry".into())
-            .await,
+        auth.send_message("123".into(), "do not retry".into()).await,
         Err(AuthError::Unavailable)
     ));
     let captured = captured.join().unwrap();
@@ -177,8 +173,12 @@ async fn ambiguous_write_timeout_does_not_replay_and_malformed_success_is_uncert
     assert!(captured.contains("do not retry"));
     let (url, request) = server(response("201 Created", "{bad json"));
     assert!(matches!(
-        HttpAuth::new()
-            .send_message(url, "token".into(), "123".into(), "hi".into())
+        HttpTransport::new()
+            .server(&url)
+            .unwrap()
+            .restore_candidate("token".into())
+            .unwrap()
+            .send_message("123".into(), "hi".into())
             .await,
         Err(AuthError::InvalidResponse)
     ));
@@ -294,7 +294,7 @@ async fn current_user_timeout_is_not_authoritative_invalidity() {
         thread::sleep(Duration::from_millis(120));
         drop(stream);
     });
-    let auth = HttpAuth::with_client(
+    let auth = HttpTransport::from_client(
         Client::builder()
             .no_proxy()
             .timeout(Duration::from_millis(30))
@@ -303,8 +303,7 @@ async fn current_user_timeout_is_not_authoritative_invalidity() {
             .unwrap(),
     );
     assert!(matches!(
-        std::sync::Arc::new(auth)
-            .server(&url)
+        auth.server(&url)
             .unwrap()
             .restore_candidate("still-valid-until-verified".into())
             .unwrap()
@@ -464,7 +463,7 @@ async fn bounded_revocation_and_error_decoding() {
         thread::sleep(Duration::from_millis(150));
         drop(stream);
     });
-    let auth = HttpAuth::with_client(
+    let auth = HttpTransport::from_client(
         Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_millis(30))
@@ -473,8 +472,7 @@ async fn bounded_revocation_and_error_decoding() {
     );
     let started = std::time::Instant::now();
     assert!(matches!(
-        std::sync::Arc::new(auth)
-            .server(&url)
+        auth.server(&url)
             .unwrap()
             .restore_candidate("secret".into())
             .unwrap()
@@ -485,7 +483,7 @@ async fn bounded_revocation_and_error_decoding() {
     assert!(started.elapsed() < Duration::from_millis(130));
     waiting.join().unwrap();
 }
-// Exercise the unchanged server-rewrite routes over real HTTP using the public AuthApi.
+// Exercise unchanged server-rewrite routes over real HTTP using bound clients.
 #[actix_web::test]
 async fn rewrite_routes_signup_login_logout_and_errors() {
     use actix_web::{App, HttpServer, web};
@@ -526,19 +524,19 @@ async fn rewrite_routes_signup_login_logout_and_errors() {
         .unwrap();
     assert_eq!(me.status(), StatusCode::OK);
 
-    let auth: &dyn AuthApi = &HttpAuth::new();
+    let auth = HttpTransport::new().server(&url).unwrap();
     let login = auth
-        .login(url.clone(), "aLiCe".into(), "long password".into())
+        .login("aLiCe".into(), "long password".into())
         .await
         .unwrap();
     assert_eq!(login.user.username, "Alice");
     assert_eq!(login.user.id, bootstrap["user"]["id"].as_str().unwrap());
-    assert_ne!(login.token, bootstrap_token);
+    assert_ne!(login.client.credential_for_session(), bootstrap_token);
     assert!(login.expires_at > chrono::Utc::now().timestamp());
 
     let channel = client
         .post(format!("{url}/api/v1/channels"))
-        .bearer_auth(&login.token)
+        .bearer_auth(login.client.credential_for_session())
         .json(&serde_json::json!({"name":"alpha", "type":"text"}))
         .send()
         .await
@@ -546,43 +544,49 @@ async fn rewrite_routes_signup_login_logout_and_errors() {
     assert_eq!(channel.status(), StatusCode::CREATED);
     let channel: serde_json::Value = channel.json().await.unwrap();
     let channel_id = channel["id"].as_str().unwrap();
-    let list = auth
-        .channels(url.clone(), login.token.clone())
-        .await
-        .unwrap();
+    let list = login.client.channels().await.unwrap();
     assert_eq!(
         list.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
         ["alpha", "general"]
     );
     assert_eq!(list[0].id, channel_id);
     assert!(matches!(
-        auth.channels(url.clone(), "bad".into()).await,
-        Err(AuthError::AlreadyInvalid)
-    ));
-    assert!(matches!(
-        auth.history(url.clone(), "bad".into(), channel_id.into())
+        auth.restore_candidate("bad".into())
+            .unwrap()
+            .channels()
             .await,
         Err(AuthError::AlreadyInvalid)
     ));
-    let empty = auth
-        .history(url.clone(), login.token.clone(), channel_id.into())
+    assert!(matches!(
+        auth.restore_candidate("bad".into())
+            .unwrap()
+            .history_page(channel_id.into(), None)
+            .await,
+        Err(AuthError::AlreadyInvalid)
+    ));
+    let empty = login
+        .client
+        .history_page(channel_id.into(), None)
         .await
-        .unwrap();
+        .unwrap()
+        .items;
     assert!(empty.is_empty());
     for text in ["first\nline", "second"] {
         let posted = client
             .post(format!("{url}/api/v1/channels/{channel_id}/messages"))
-            .bearer_auth(&login.token)
+            .bearer_auth(login.client.credential_for_session())
             .json(&serde_json::json!({"text":text}))
             .send()
             .await
             .unwrap();
         assert_eq!(posted.status(), StatusCode::CREATED);
     }
-    let newest = auth
-        .history(url.clone(), login.token.clone(), channel_id.into())
+    let newest = login
+        .client
+        .history_page(channel_id.into(), None)
         .await
-        .unwrap();
+        .unwrap()
+        .items;
     assert_eq!(newest.len(), 2);
     assert_eq!(newest[0].text, "second");
     assert_eq!(newest[1].text, "first\nline");
@@ -592,18 +596,18 @@ async fn rewrite_routes_signup_login_logout_and_errors() {
     assert_ne!(newest[0].id, newest[1].id);
     assert!(newest[0].created_at.contains('T'));
     assert!(matches!(
-        auth.history(url.clone(), login.token.clone(), "999999999999999".into())
+        login
+            .client
+            .history_page("999999999999999".into(), None)
             .await,
         Err(AuthError::NotFound)
     ));
     assert!(matches!(
-        auth.history(url.clone(), login.token.clone(), "../bad".into())
-            .await,
+        login.client.history_page("../bad".into(), None).await,
         Err(AuthError::InvalidResponse)
     ));
     assert!(matches!(
-        auth.login(url.clone(), "Alice".into(), "bad password".into())
-            .await,
+        auth.login("Alice".into(), "bad password".into()).await,
         Err(AuthError::InvalidCredentials)
     ));
 
@@ -620,14 +624,15 @@ async fn rewrite_routes_signup_login_logout_and_errors() {
     let error: serde_json::Value = malformed.json().await.unwrap();
     assert_eq!(error["error"]["code"], "bad_request");
     assert!(matches!(
-        auth.login("http://example.com".into(), "Alice".into(), "pass".into())
-            .await,
+        HttpTransport::new().server("http://example.com"),
         Err(AuthError::InvalidResponse)
     ));
 
     // The second token stays live; this distinguishes a protected bearer logout from a
     // misleading 204 on a public route or an invalid-token 401 interpreted as success.
-    auth.logout(url.clone(), bootstrap_token.into())
+    auth.restore_candidate(bootstrap_token.into())
+        .unwrap()
+        .logout()
         .await
         .unwrap();
     assert_eq!(
@@ -643,7 +648,7 @@ async fn rewrite_routes_signup_login_logout_and_errors() {
     assert_eq!(
         client
             .get(format!("{url}/api/v1/me"))
-            .bearer_auth(&login.token)
+            .bearer_auth(login.client.credential_for_session())
             .send()
             .await
             .unwrap()
@@ -651,7 +656,10 @@ async fn rewrite_routes_signup_login_logout_and_errors() {
         StatusCode::OK
     );
     assert!(matches!(
-        auth.logout(url, bootstrap_token.into()).await,
+        auth.restore_candidate(bootstrap_token.into())
+            .unwrap()
+            .logout()
+            .await,
         Err(AuthError::AlreadyInvalid)
     ));
     server_handle.stop(true).await;
@@ -732,7 +740,7 @@ async fn signup_uses_shared_persistent_session_and_verified_restore_against_rewr
     .run();
     let handle = server.handle();
     actix_web::rt::spawn(server);
-    let api: Arc<dyn AuthApi> = Arc::new(HttpAuth::new());
+    let api = HttpTransport::new();
     let mut session = AppSession::new(api.clone());
     session.change_server(url.clone());
     session.username = "Alice".into();
@@ -753,7 +761,7 @@ async fn signup_uses_shared_persistent_session_and_verified_restore_against_rewr
         user: active.user.clone(),
         expires_at: active.expires_at,
     };
-    let token = active.token().to_owned();
+    let token = active.client().credential_for_session().to_owned();
     let shared = Arc::new((
         Mutex::new((vec![], false, false, false, false, false)),
         Condvar::new(),
@@ -826,71 +834,63 @@ async fn second_user_activity_is_found_by_focused_polling_against_unchanged_rout
     .run();
     let handle = server.handle();
     actix_web::rt::spawn(server);
-    let api: &dyn AuthApi = &HttpAuth::new();
+    let api = HttpTransport::new().server(&url).unwrap();
     let alice = api
-        .signup(url.clone(), "Alice".into(), "long password".into())
+        .signup("Alice".into(), "long password".into())
         .await
         .unwrap();
     let bob = api
-        .signup(url.clone(), "Bob".into(), "long password".into())
+        .signup("Bob".into(), "long password".into())
         .await
         .unwrap();
-    let channel = api
-        .channels(url.clone(), alice.token.clone())
-        .await
-        .unwrap()[0]
-        .id
-        .clone();
-    let mut session = crate::session::AppSession::new(std::sync::Arc::new(HttpAuth::new()));
+    let channel = alice.client.channels().await.unwrap()[0].id.clone();
+    let mut session = crate::session::AppSession::new(HttpTransport::new());
     session.change_server(url.clone());
     session.username = "Alice".into();
     session.password = "long password".into();
     let login = session.submit().unwrap();
-    session.complete_login(login, Ok(alice.bind(&url)), chrono::Utc::now().timestamp());
+    session.complete_login(login, Ok(alice), chrono::Utc::now().timestamp());
     let mut conversation = crate::conversation::Conversation::default();
     let list = conversation.start(&session).unwrap();
-    let channels = api.channels(url.clone(), list.token.clone()).await.unwrap();
+    let channels = session
+        .client_for(list.generation)
+        .unwrap()
+        .channels()
+        .await
+        .unwrap();
     let initial = conversation
         .complete_channels(&mut session, &list, Ok(channels))
         .unwrap();
-    conversation.complete_history(
-        &mut session,
-        &initial,
-        Ok(api
-            .history_page(url.clone(), initial.token.clone(), channel.clone(), None)
-            .await
-            .unwrap()),
-    );
+    let page = session
+        .client_for(initial.generation)
+        .unwrap()
+        .history_page(channel.clone(), None)
+        .await
+        .unwrap();
+    conversation.complete_history(&mut session, &initial, Ok(page));
     let mut poll = Polling::default();
     assert!(poll.focus(true, Duration::ZERO));
     poll.started(Resource::History);
     poll.started(Resource::Channels);
     poll.completed(Resource::History, true, Duration::ZERO);
     poll.completed(Resource::Channels, true, Duration::ZERO);
-    let posted = api
+    let posted = bob
+        .client
         .send_message(
-            url.clone(),
-            bob.token.clone(),
             channel.clone(),
             "Bob published while Alice was reading".into(),
         )
         .await
         .unwrap();
-    let new_channel = api
-        .create_channel(url.clone(), bob.token.clone(), "Bob room".into())
-        .await
-        .unwrap();
+    let new_channel = bob.client.create_channel("Bob room".into()).await.unwrap();
     assert!(poll.due(Resource::History, Duration::from_secs(3)));
     let refresh = conversation.refresh_history(&session).unwrap();
     let mut request = refresh;
     loop {
-        let page = api
-            .history_page(
-                url.clone(),
-                request.token.clone(),
-                channel.clone(),
-                request.before.clone(),
-            )
+        let page = session
+            .client_for(request.generation)
+            .unwrap()
+            .history_page(channel.clone(), request.before.clone())
             .await
             .unwrap();
         let outcome = conversation.complete_history(&mut session, &request, Ok(page));
@@ -905,7 +905,12 @@ async fn second_user_activity_is_found_by_focused_polling_against_unchanged_rout
     );
     assert!(poll.due(Resource::Channels, Duration::from_secs(15)));
     let listing = conversation.refresh_channels(&session).unwrap();
-    let channels = api.channels(url, listing.token.clone()).await.unwrap();
+    let channels = session
+        .client_for(listing.generation)
+        .unwrap()
+        .channels()
+        .await
+        .unwrap();
     conversation.complete_channels(&mut session, &listing, Ok(channels));
     assert!(
         matches!(conversation.channels, Some(crate::conversation::Load::Ready(ref channels)) if channels.contains(&new_channel))
@@ -936,35 +941,31 @@ async fn create_channel_against_unchanged_rewrite_routes() {
     .run();
     let handle = server.handle();
     actix_web::rt::spawn(server);
-    let auth: &dyn AuthApi = &HttpAuth::new();
+    let auth = HttpTransport::new().server(&url).unwrap();
     let login = auth
-        .signup(url.clone(), "Alice".into(), "long password".into())
+        .signup("Alice".into(), "long password".into())
         .await
         .unwrap();
-    let channel = auth
-        .create_channel(url.clone(), login.token.clone(), "  New Room  ".into())
+    let channel = login
+        .client
+        .create_channel("  New Room  ".into())
         .await
         .unwrap();
     assert_eq!(channel.name, "New Room");
     assert!(!channel.id.is_empty());
-    assert!(
-        auth.channels(url.clone(), login.token.clone())
-            .await
-            .unwrap()
-            .contains(&channel)
-    );
+    assert!(login.client.channels().await.unwrap().contains(&channel));
     assert!(matches!(
-        auth.create_channel(url.clone(), login.token.clone(), "new room".into())
-            .await,
+        login.client.create_channel("new room".into()).await,
         Err(AuthError::Conflict)
     ));
     assert!(matches!(
-        auth.create_channel(url.clone(), login.token.clone(), "bad!".into())
-            .await,
+        login.client.create_channel("bad!".into()).await,
         Err(AuthError::InvalidInput)
     ));
     assert!(matches!(
-        auth.create_channel(url.clone(), "bad".into(), "Other".into())
+        auth.restore_candidate("bad".into())
+            .unwrap()
+            .create_channel("Other".into())
             .await,
         Err(AuthError::AlreadyInvalid)
     ));
@@ -998,23 +999,18 @@ async fn rewrite_history_traverses_multiple_pages_with_timestamp_ties() {
     .run();
     let handle = server.handle();
     actix_web::rt::spawn(server);
-    let auth: &dyn AuthApi = &HttpAuth::new();
+    let auth = HttpTransport::new().server(&url).unwrap();
     let login = auth
-        .signup(url.clone(), "Alice".into(), "long password".into())
+        .signup("Alice".into(), "long password".into())
         .await
         .unwrap();
-    let channel = auth
-        .channels(url.clone(), login.token.clone())
-        .await
-        .unwrap()[0]
-        .id
-        .clone();
+    let channel = login.client.channels().await.unwrap()[0].id.clone();
     let client = Client::new();
     for ix in 0..53 {
         assert_eq!(
             client
                 .post(format!("{url}/api/v1/channels/{channel}/messages"))
-                .bearer_auth(&login.token)
+                .bearer_auth(login.client.credential_for_session())
                 .json(&serde_json::json!({"text": format!("line {ix}")}))
                 .send()
                 .await
@@ -1030,8 +1026,9 @@ async fn rewrite_history_traverses_multiple_pages_with_timestamp_ties() {
         ))
         .await
         .unwrap();
-    let first = auth
-        .history_page(url.clone(), login.token.clone(), channel.clone(), None)
+    let first = login
+        .client
+        .history_page(channel.clone(), None)
         .await
         .unwrap();
     assert_eq!(first.items.len(), 50);
@@ -1039,13 +1036,9 @@ async fn rewrite_history_traverses_multiple_pages_with_timestamp_ties() {
         .next_cursor
         .clone()
         .expect("a server-issued next cursor");
-    let last = auth
-        .history_page(
-            url.clone(),
-            login.token.clone(),
-            channel.clone(),
-            Some(cursor),
-        )
+    let last = login
+        .client
+        .history_page(channel.clone(), Some(cursor))
         .await
         .unwrap();
     assert_eq!(last.items.len(), 3);
@@ -1073,21 +1066,18 @@ async fn rewrite_history_traverses_multiple_pages_with_timestamp_ties() {
     );
     // Catch up through the real route, not just adapter pagination: a burst spans
     // multiple pages before it can reach the previously loaded 53-message segment.
-    let mut session = crate::session::AppSession::new(std::sync::Arc::new(HttpAuth::new()));
+    let mut session = crate::session::AppSession::new(HttpTransport::new());
     session.change_server(url.clone());
     session.username = "Alice".into();
     session.password = "long password".into();
     let login_request = session.submit().unwrap();
-    session.complete_login(
-        login_request,
-        Ok(login.bind(&url)),
-        chrono::Utc::now().timestamp(),
-    );
+    session.complete_login(login_request, Ok(login), chrono::Utc::now().timestamp());
     let mut conversation = crate::conversation::Conversation::default();
     let channels = conversation.start(&session).unwrap();
     let list = session
-        .api
-        .channels(url.clone(), session.active.as_ref().unwrap().token().into())
+        .client_for(channels.generation)
+        .unwrap()
+        .channels()
         .await
         .unwrap();
     let initial = conversation
@@ -1095,12 +1085,10 @@ async fn rewrite_history_traverses_multiple_pages_with_timestamp_ties() {
         .unwrap();
     let read = |request: &crate::conversation::ReadRequest,
                 session: &crate::session::AppSession| {
-        session.api.history_page(
-            request.server.clone(),
-            request.token.clone(),
-            request.channel_id.clone().unwrap(),
-            request.before.clone(),
-        )
+        session
+            .client_for(request.generation)
+            .unwrap()
+            .history_page(request.channel_id.clone().unwrap(), request.before.clone())
     };
     let first_page = read(&initial, &session).await.unwrap();
     conversation.complete_history(&mut session, &initial, Ok(first_page));
@@ -1108,7 +1096,7 @@ async fn rewrite_history_traverses_multiple_pages_with_timestamp_ties() {
         assert_eq!(
             client
                 .post(format!("{url}/api/v1/channels/{channel}/messages"))
-                .bearer_auth(session.active.as_ref().unwrap().token())
+                .bearer_auth(session.active_client().unwrap().credential_for_session())
                 .json(&serde_json::json!({"text": format!("line {ix}")}))
                 .send()
                 .await
@@ -1164,8 +1152,12 @@ async fn create_decodes_response_and_sends_text_type_without_redirect() {
         r#"{"id":"123","name":"Trimmed","type":"text"}"#,
     ));
     assert_eq!(
-        HttpAuth::new()
-            .create_channel(url, "secret".into(), "  Trimmed  ".into())
+        HttpTransport::new()
+            .server(&url)
+            .unwrap()
+            .restore_candidate("secret".into())
+            .unwrap()
+            .create_channel("  Trimmed  ".into())
             .await
             .unwrap(),
         Channel {
@@ -1186,16 +1178,24 @@ async fn create_decodes_response_and_sends_text_type_without_redirect() {
         r#"{"id":"123","name":"A","type":"voice"}"#,
     ));
     assert!(matches!(
-        HttpAuth::new()
-            .create_channel(url, "secret".into(), "A".into())
+        HttpTransport::new()
+            .server(&url)
+            .unwrap()
+            .restore_candidate("secret".into())
+            .unwrap()
+            .create_channel("A".into())
             .await,
         Err(AuthError::InvalidResponse)
     ));
     captured.join().unwrap();
     let (url, captured) = server(response("409 Conflict", r#"{"error":{"code":"conflict"}}"#));
     assert!(matches!(
-        HttpAuth::new()
-            .create_channel(url, "secret".into(), "A".into())
+        HttpTransport::new()
+            .server(&url)
+            .unwrap()
+            .restore_candidate("secret".into())
+            .unwrap()
+            .create_channel("A".into())
             .await,
         Err(AuthError::Conflict)
     ));

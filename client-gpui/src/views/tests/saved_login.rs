@@ -1,3 +1,4 @@
+use super::bound_auth::fixture_api as bound_api;
 use super::bound_auth::*;
 use super::*;
 

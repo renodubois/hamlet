@@ -1,8 +1,5 @@
-//! Temporary fixture for mechanically relocated root suites, not a new testing seam.
-//!
-//! Suites remain descendants of app_shell so existing private assertions need no
-//! visibility changes. Replace these fixtures/assertions at the owned interfaces
-//! when session, conversation and child views migrate (see MIGRATION-48.md).
+//! Existing private-view assertions remain until the view ownership tickets.
+//! All network fixtures now use the same bound request adapter as production clients.
 
 #[path = "authentication.rs"]
 mod authentication;
@@ -20,16 +17,19 @@ mod history;
 mod journeys;
 #[path = "polling.rs"]
 mod polling;
+#[path = "protected_binding.rs"]
+mod protected_binding;
 #[path = "saved_login.rs"]
 mod saved_login;
 
 use super::Hamlet;
+use crate::api::{ApiError as AuthError, ApiFuture, HttpTransport};
 use crate::persistence::{
     Outcome, Persistence,
     tests::{Controlled, Shared},
 };
 use crate::runtime::runtime;
-use crate::session::{ApiFuture, AuthApi, AuthError, Login, User};
+use bound_auth::{BoundAuth, Request, RequestAdapter, Response, StatusCode};
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::base::SelectableText;
 use gpui_kit::component::Root;
@@ -46,16 +46,15 @@ use std::sync::{
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
-// Preserve the original headless constructor: no profile reads, provider, restore
-// startup or poll timer. Both constructors use the same root initialization code.
+// Preserve old fixture startup (no restore or automatic polling); real lifecycle tests use open.
 impl Hamlet {
-    fn new(window: &mut Window, cx: &mut Context<Self>, api: Arc<dyn AuthApi>) -> Self {
+    fn new(window: &mut Window, cx: &mut Context<Self>, api: Arc<dyn RequestAdapter>) -> Self {
         let execution =
             crate::runtime::Execution::controlled(cx.background_executor().clone(), 1_800_000_000);
         Self::with_dependencies(
             window,
             cx,
-            api,
+            HttpTransport::with_adapter(api),
             crate::persistence::Config::default(),
             None,
             execution,
@@ -64,189 +63,105 @@ impl Hamlet {
 }
 
 struct TestAuth;
-impl AuthApi for TestAuth {
-    fn signup(
-        &self,
-        _: String,
-        username: String,
-        _: String,
-    ) -> ApiFuture<Result<Login, AuthError>> {
-        self.login(String::new(), username, String::new())
+impl RequestAdapter for TestAuth {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+        BoundAuth.execute(request)
     }
-    fn login(&self, _: String, username: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
-        Box::pin(async move {
-            Ok(Login {
-                user: User {
-                    id: "42".into(),
-                    username,
-                },
-                token: "secret".into(),
-                expires_at: 4_070_908_800,
+}
+
+// Fixture responses deliberately use wire representations, so decoding remains under API ownership.
+fn message_json(message: crate::api::Message) -> serde_json::Value {
+    serde_json::json!({"id":message.id, "channel_id":message.channel_id,
+        "author":{"id":message.author_id,"display_name":message.author_name},
+        "text":message.text, "created_at":message.created_at})
+}
+fn page_response(result: Result<crate::api::Page, AuthError>) -> Result<Response, AuthError> {
+    wire_response(
+        result.map(|page| {
+            serde_json::json!({
+                "items":page.items.into_iter().map(message_json).collect::<Vec<_>>(),
+                "next_cursor":page.next_cursor
             })
-        })
-    }
-    fn logout(&self, _: String, _: String) -> ApiFuture<Result<(), AuthError>> {
-        Box::pin(async { Ok(()) })
-    }
-    fn channels(
-        &self,
-        _: String,
-        _: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
-        Box::pin(async {
-            Ok(vec![
-                crate::conversation::Channel {
-                    id: "000000000000001".into(),
-                    name: "alpha".into(),
-                },
-                crate::conversation::Channel {
-                    id: "000000000000002".into(),
-                    name: "general".into(),
-                },
-            ])
-        })
-    }
-    fn create_channel(
-        &self,
-        _: String,
-        _: String,
-        _: String,
-    ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
-        Box::pin(async { unreachable!() })
-    }
-    fn history(
-        &self,
-        _: String,
-        _: String,
-        id: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
-        Box::pin(async move {
-            Ok(vec![crate::conversation::Message {
-                id: id.clone(),
-                channel_id: id.clone(),
-                author_id: "42".into(),
-                author_name: "Ada".into(),
-                text: if id.ends_with('1') {
-                    "first line\nsecond line"
-                } else {
-                    "other channel"
+        }),
+        StatusCode::OK,
+    )
+}
+fn wire_response(
+    result: Result<serde_json::Value, AuthError>,
+    success: StatusCode,
+) -> Result<Response, AuthError> {
+    let (status, body) = match result {
+        Ok(body) => (success, body.to_string()),
+        Err(AuthError::Unavailable) => return Err(AuthError::Unavailable),
+        Err(AuthError::InvalidResponse) => (success, "malformed".into()),
+        Err(error) => (
+            match error {
+                AuthError::AlreadyInvalid | AuthError::InvalidCredentials => {
+                    StatusCode::UNAUTHORIZED
                 }
-                .into(),
-                created_at: "2026-01-01T00:00:00Z".into(),
-            }])
-        })
-    }
+                AuthError::InvalidInput => StatusCode::BAD_REQUEST,
+                AuthError::Conflict => StatusCode::CONFLICT,
+                AuthError::NotFound => StatusCode::NOT_FOUND,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            },
+            serde_json::json!({"error":{"code": match error {
+                AuthError::InvalidInput => "bad_request",
+                AuthError::Conflict => "conflict",
+                AuthError::NotFound => "not_found",
+                _ => "unauthorized",
+            }}})
+            .to_string(),
+        ),
+    };
+    Ok(Response::controlled(status, body))
 }
 
 type Sent = (
     String,
     String,
-    async_channel::Sender<Result<crate::conversation::Message, AuthError>>,
+    async_channel::Sender<Result<crate::api::Message, AuthError>>,
 );
-struct SendAuth(Arc<std::sync::Mutex<Vec<Sent>>>);
-impl AuthApi for SendAuth {
-    fn signup(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
-        TestAuth.signup(s, u, p)
-    }
-    fn login(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
-        TestAuth.login(s, u, p)
-    }
-    fn logout(&self, s: String, t: String) -> ApiFuture<Result<(), AuthError>> {
-        TestAuth.logout(s, t)
-    }
-    fn channels(
-        &self,
-        s: String,
-        t: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
-        TestAuth.channels(s, t)
-    }
-    fn create_channel(
-        &self,
-        s: String,
-        t: String,
-        n: String,
-    ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
-        TestAuth.create_channel(s, t, n)
-    }
-    fn history(
-        &self,
-        s: String,
-        t: String,
-        id: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
-        TestAuth.history(s, t, id)
-    }
-    fn send_message(
-        &self,
-        _: String,
-        _: String,
-        id: String,
-        text: String,
-    ) -> ApiFuture<Result<crate::conversation::Message, AuthError>> {
+struct SendAuth(Arc<Mutex<Vec<Sent>>>);
+impl RequestAdapter for SendAuth {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+        if request.method() != reqwest::Method::POST || !request.url().path().ends_with("/messages")
+        {
+            return BoundAuth.execute(request);
+        }
+        let id = request.url().path().split('/').nth(4).unwrap().to_owned();
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
         let (tx, rx) = async_channel::bounded(1);
-        self.0.lock().unwrap().push((id, text, tx));
-        Box::pin(async move { rx.recv().await.unwrap() })
+        self.0
+            .lock()
+            .unwrap()
+            .push((id, body["text"].as_str().unwrap().into(), tx));
+        Box::pin(async move {
+            wire_response(
+                rx.recv().await.unwrap().map(message_json),
+                StatusCode::CREATED,
+            )
+        })
     }
 }
 
-type PageReply = async_channel::Sender<Result<crate::conversation::Page, AuthError>>;
+type PageReply = async_channel::Sender<Result<crate::api::Page, AuthError>>;
 struct PagedAuth(std::sync::mpsc::Sender<(Option<String>, PageReply)>);
-impl AuthApi for PagedAuth {
-    fn signup(
-        &self,
-        server: String,
-        user: String,
-        password: String,
-    ) -> ApiFuture<Result<Login, AuthError>> {
-        TestAuth.signup(server, user, password)
-    }
-    fn login(
-        &self,
-        server: String,
-        user: String,
-        password: String,
-    ) -> ApiFuture<Result<Login, AuthError>> {
-        TestAuth.login(server, user, password)
-    }
-    fn logout(&self, server: String, token: String) -> ApiFuture<Result<(), AuthError>> {
-        TestAuth.logout(server, token)
-    }
-    fn channels(
-        &self,
-        server: String,
-        token: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
-        TestAuth.channels(server, token)
-    }
-    fn create_channel(
-        &self,
-        server: String,
-        token: String,
-        name: String,
-    ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
-        TestAuth.create_channel(server, token, name)
-    }
-    fn history(
-        &self,
-        _: String,
-        _: String,
-        _: String,
-    ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
-        Box::pin(async { unreachable!() })
-    }
-    fn history_page(
-        &self,
-        _: String,
-        _: String,
-        _: String,
-        before: Option<String>,
-    ) -> ApiFuture<Result<crate::conversation::Page, AuthError>> {
+impl RequestAdapter for PagedAuth {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+        if !request.url().path().ends_with("/messages") {
+            return BoundAuth.execute(request);
+        }
+        let before = request
+            .url()
+            .query_pairs()
+            .find(|(key, _)| key == "before")
+            .map(|(_, value)| value.into_owned());
         let tx = self.0.clone();
         Box::pin(async move {
             let (reply, rx) = async_channel::bounded(1);
             tx.send((before, reply)).unwrap();
-            rx.recv().await.unwrap()
+            page_response(rx.recv().await.unwrap())
         })
     }
 }

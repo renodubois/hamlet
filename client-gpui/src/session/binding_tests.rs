@@ -2,7 +2,6 @@
 use super::*;
 use crate::api::{
     HttpTransport,
-    legacy::HttpAuth,
     test_support::{RequestAdapter, Response},
 };
 use reqwest::{Request, StatusCode};
@@ -47,7 +46,7 @@ async fn respond(
 async fn old_context_and_revocation_keep_their_binding_without_affecting_new_login() {
     let adapter = Arc::new(Controlled(Mutex::new(vec![])));
     let transport = HttpTransport::with_adapter(adapter.clone());
-    let mut session = AppSession::new(Arc::new(HttpAuth::with_transport(transport.clone())));
+    let mut session = AppSession::new(transport.clone());
     session.username = "Ada".into();
     session.password = "long password".into();
     let request = session.submit_signup().unwrap();
@@ -150,7 +149,7 @@ async fn restoration_retry_remains_distinct_from_rejection_identity_expiry_and_m
     ] {
         let adapter = Arc::new(Controlled(Mutex::new(vec![])));
         let transport = HttpTransport::with_adapter(adapter.clone());
-        let mut session = AppSession::new(Arc::new(HttpAuth::with_transport(transport.clone())));
+        let mut session = AppSession::new(transport.clone());
         let expected = User {
             id: "42".into(),
             username: "Ada".into(),
@@ -201,7 +200,7 @@ async fn saving_accepted_context_preserves_stored_identity_without_plaintext_met
     use crate::storage::{self, Outcome, Persistence, Selection, tests::Controlled as Store};
     let adapter = Arc::new(Controlled(Mutex::new(vec![])));
     let transport = HttpTransport::with_adapter(adapter.clone());
-    let mut session = AppSession::new(Arc::new(HttpAuth::with_transport(transport.clone())));
+    let mut session = AppSession::new(transport.clone());
     session.change_server("https://CHAT.example.test/".into());
     session.username = "Ada".into();
     session.password = "synthetic-password".into();
@@ -281,7 +280,7 @@ async fn saving_accepted_context_preserves_stored_identity_without_plaintext_met
 async fn candidate_stays_private_until_verified_and_late_verification_cannot_activate() {
     let adapter = Arc::new(Controlled(Mutex::new(vec![])));
     let transport = HttpTransport::with_adapter(adapter.clone());
-    let mut session = AppSession::new(Arc::new(HttpAuth::with_transport(transport.clone())));
+    let mut session = AppSession::new(transport.clone());
     let server = session.server.clone();
     let expected = User {
         id: "42".into(),

@@ -1,13 +1,5 @@
-#[cfg(test)]
-pub use crate::api::ApiFuture;
-#[cfg(test)]
-use crate::api::{Channel, Message};
-// Temporary import compatibility; API is the authoritative owner.
-#[cfg(test)]
-pub use crate::api::legacy::Login;
-pub use crate::api::{ApiError as AuthError, User, legacy::AuthApi};
-use crate::api::{AuthenticatedClient, Authentication};
-use std::sync::Arc;
+pub use crate::api::{ApiError as AuthError, User};
+use crate::api::{AuthenticatedClient, Authentication, HttpTransport};
 
 pub const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8081";
 
@@ -49,11 +41,6 @@ pub struct Session {
 }
 
 impl Session {
-    // Compatibility for protected descriptors only, retired by #52. No second credential owner.
-    pub fn token(&self) -> &str {
-        self.client.credential_for_session()
-    }
-
     pub fn client(&self) -> AuthenticatedClient {
         self.client.clone()
     }
@@ -68,11 +55,11 @@ pub struct AppSession {
     pub feedback: Option<String>,
     pub active: Option<Session>,
     generation: u64,
-    pub api: Arc<dyn AuthApi>,
+    pub api: HttpTransport,
 }
 
 impl AppSession {
-    pub fn new(api: Arc<dyn AuthApi>) -> Self {
+    pub fn new(api: HttpTransport) -> Self {
         Self {
             server: DEFAULT_SERVER_URL.into(),
             username: String::new(),
@@ -135,7 +122,7 @@ impl AppSession {
         if self.pending || self.active.is_some() {
             return false;
         }
-        if crate::http::validate_server(&self.server).is_err() {
+        if crate::api::validate_server(&self.server).is_err() {
             self.feedback =
                 Some("Use an HTTPS server URL (HTTP is allowed only for loopback).".into());
             return false;
@@ -361,50 +348,22 @@ impl AppSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    struct Controlled;
-    impl AuthApi for Controlled {
-        fn signup(&self, _: String, _: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
-            Box::pin(async { Err(AuthError::Unavailable) })
-        }
-        fn login(&self, _: String, _: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
-            Box::pin(async { Err(AuthError::Unavailable) })
-        }
-        fn logout(&self, _: String, _: String) -> ApiFuture<Result<(), AuthError>> {
-            Box::pin(async { Ok(()) })
-        }
-        fn channels(&self, _: String, _: String) -> ApiFuture<Result<Vec<Channel>, AuthError>> {
-            Box::pin(async { unreachable!() })
-        }
-        fn create_channel(
-            &self,
-            _: String,
-            _: String,
-            _: String,
-        ) -> ApiFuture<Result<Channel, AuthError>> {
-            Box::pin(async { unreachable!() })
-        }
-        fn history(
-            &self,
-            _: String,
-            _: String,
-            _: String,
-        ) -> ApiFuture<Result<Vec<Message>, AuthError>> {
-            Box::pin(async { unreachable!() })
-        }
-    }
     fn app() -> AppSession {
-        AppSession::new(Arc::new(Controlled))
+        AppSession::new(HttpTransport::new())
     }
     fn login(name: &str) -> Authentication {
-        Login {
+        Authentication {
             user: User {
                 id: "42".into(),
                 username: name.into(),
             },
-            token: "secret".into(),
+            client: HttpTransport::new()
+                .server(DEFAULT_SERVER_URL)
+                .unwrap()
+                .restore_candidate("secret".into())
+                .unwrap(),
             expires_at: 100,
         }
-        .bind(DEFAULT_SERVER_URL)
     }
     #[test]
     fn login_feedback_and_recoverable_inputs() {

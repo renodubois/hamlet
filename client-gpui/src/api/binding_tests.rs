@@ -215,7 +215,14 @@ async fn loopback_bound_operations_keep_headers_bodies_and_opaque_cursors() {
         "first\nsecond"
     );
     old.client.logout().await.unwrap();
-    assert!(clone.history("c".into()).await.unwrap().is_empty());
+    assert!(
+        clone
+            .history_page("c".into(), None)
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
     let captured = requests.lock().unwrap().clone();
     let observed: Vec<_> = captured
         .iter()
@@ -321,7 +328,7 @@ async fn controlled_adapter_cannot_bypass_binding_validation_or_invent_missing_o
     let candidate = server.restore_candidate("synthetic-stored".into()).unwrap();
     for channel in ["", "..", ".", "../steal", "a/b", "a\\b"] {
         assert!(matches!(
-            candidate.history(channel.into()).await,
+            candidate.history_page(channel.into(), None).await,
             Err(ApiError::InvalidResponse)
         ));
         assert!(matches!(

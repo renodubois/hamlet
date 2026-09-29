@@ -191,7 +191,6 @@ impl ServerClient {
 impl AuthenticatedClient {
     /// Restricted session/storage seam, not a view or conversation interface.
     /// Session persistence copies directly into the ordered secure-store operation.
-    /// The temporary session token accessor also delegates here until #52 removes descriptors.
     pub(crate) fn credential_for_session(&self) -> &str {
         &self.0.token
     }
