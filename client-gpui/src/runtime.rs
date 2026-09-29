@@ -86,7 +86,7 @@ impl Execution {
         reply
     }
 
-    fn start<T: Send + 'static>(
+    pub(crate) fn start<T: Send + 'static>(
         &self,
         future: impl Future<Output = T> + Send + 'static,
     ) -> (Work, async_channel::Receiver<T>) {

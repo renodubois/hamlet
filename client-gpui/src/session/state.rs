@@ -1,13 +1,11 @@
 pub use crate::api::{ApiError as AuthError, User};
-use crate::api::{AuthenticatedClient, Authentication, HttpTransport};
+use crate::api::{AuthenticatedClient, Authentication};
 
 pub const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8081";
 
 pub struct LoginRequest {
     pub generation: u64,
     pub server: String,
-    pub username: String,
-    pub password: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -48,28 +46,22 @@ impl Session {
 
 pub struct AppSession {
     pub server: String,
-    pub username: String,
-    pub password: String,
     pub pending: bool,
     restore_pending: bool,
     pub feedback: Option<String>,
     pub active: Option<Session>,
     generation: u64,
-    pub api: HttpTransport,
 }
 
 impl AppSession {
-    pub fn new(api: HttpTransport) -> Self {
+    pub fn new() -> Self {
         Self {
             server: DEFAULT_SERVER_URL.into(),
-            username: String::new(),
-            password: String::new(),
             pending: false,
             restore_pending: false,
             feedback: None,
             active: None,
             generation: 0,
-            api,
         }
     }
 
@@ -79,31 +71,29 @@ impl AppSession {
             self.pending = false;
             self.restore_pending = false;
             self.active = None;
-            self.password.clear();
             self.server = server;
             self.feedback = None;
         }
     }
 
-    pub fn submit(&mut self) -> Option<LoginRequest> {
+    pub fn submit(&mut self, username: &str, password: &str) -> Option<LoginRequest> {
         if !self.validate_submission() {
             return None;
         }
-        if self.username.trim().is_empty() || self.password.is_empty() {
+        if username.trim().is_empty() || password.is_empty() {
             self.feedback = Some("Enter a username and password.".into());
             return None;
         }
         Some(self.begin_submission())
     }
 
-    pub fn submit_signup(&mut self) -> Option<LoginRequest> {
+    pub fn submit_signup(&mut self, username: &str, password: &str) -> Option<LoginRequest> {
         if !self.validate_submission() {
             return None;
         }
         // Mirror the rewrite server's byte-based limits; the server remains authoritative.
-        if !(3..=32).contains(&self.username.len())
-            || !self
-                .username
+        if !(3..=32).contains(&username.len())
+            || !username
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.')
         {
@@ -111,7 +101,7 @@ impl AppSession {
                 Some("Username must be 3–32 ASCII letters, digits, underscores or dots.".into());
             return None;
         }
-        if !(8..=256).contains(&self.password.len()) {
+        if !(8..=256).contains(&password.len()) {
             self.feedback = Some("Password must be 8–256 bytes long.".into());
             return None;
         }
@@ -138,8 +128,6 @@ impl AppSession {
         LoginRequest {
             generation: self.generation,
             server: self.server.clone(),
-            username: self.username.clone(),
-            password: self.password.clone(),
         }
     }
 
@@ -183,7 +171,6 @@ impl AppSession {
                     && crate::api::validate_server(server)
                         .is_ok_and(|url| &url == client.server_url()) =>
             {
-                self.username = user.username.clone();
                 self.active = Some(Session {
                     server: server.into(),
                     user,
@@ -250,7 +237,6 @@ impl AppSession {
         match result {
             Ok(login) if login.expires_at > now
                 && crate::api::validate_server(&request.server).is_ok_and(|url| &url == login.client.server_url()) => {
-                self.password.clear();
                 self.active = Some(Session {
                     server: request.server,
                     user: login.user,
@@ -297,7 +283,6 @@ impl AppSession {
         self.generation = self.generation.wrapping_add(1);
         self.pending = false;
         self.restore_pending = false;
-        self.password.clear();
         self.feedback = None;
         let client = self.active_client();
         self.active.take();
@@ -348,8 +333,9 @@ impl AppSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::HttpTransport;
     fn app() -> AppSession {
-        AppSession::new(HttpTransport::new())
+        AppSession::new()
     }
     fn login(name: &str) -> Authentication {
         Authentication {
@@ -368,37 +354,28 @@ mod tests {
     #[test]
     fn login_feedback_and_recoverable_inputs() {
         let mut app = app();
-        assert!(app.submit().is_none());
-        app.username = "alice".into();
-        app.password = "wrong".into();
-        let request = app.submit().unwrap();
-        assert!(app.submit().is_none());
+        assert!(app.submit("", "").is_none());
+        let request = app.submit("alice", "wrong").unwrap();
+        assert!(app.submit("alice", "wrong").is_none());
         app.complete_login(request, Err(AuthError::InvalidCredentials), 0);
         assert_eq!(
             app.feedback.as_deref(),
             Some("Incorrect username or password.")
         );
-        assert_eq!(app.password, "wrong");
-        let request = app.submit().unwrap();
+        let request = app.submit("alice", "corrected").unwrap();
         app.complete_login(request, Ok(login("alice")), 0);
         assert_eq!(app.active.as_ref().unwrap().user.username, "alice");
-        assert!(app.password.is_empty());
     }
     #[test]
     fn signup_enters_session_and_preserves_inputs_on_rejection() {
         let mut app = app();
-        app.username = "bad!".into();
-        app.password = "short".into();
-        assert!(app.submit_signup().is_none());
+        assert!(app.submit_signup("bad!", "short").is_none());
         assert!(app.feedback.as_deref().unwrap().contains("3–32"));
-        app.username = "Alice_1".into();
-        app.password = "long password".into();
-        let request = app.submit_signup().unwrap();
-        assert!(app.submit_signup().is_none());
+        let request = app.submit_signup("Alice_1", "long password").unwrap();
+        assert!(app.submit_signup("Alice_1", "long password").is_none());
         assert!(app.complete_signup(request, Err(AuthError::Conflict), 0));
         assert!(app.feedback.as_deref().unwrap().contains("already exists"));
-        assert_eq!(app.password, "long password");
-        let request = app.submit_signup().unwrap();
+        let request = app.submit_signup("Alice_1", "long password").unwrap();
         assert!(app.complete_signup(request, Err(AuthError::Unavailable), 0));
         assert!(
             app.feedback
@@ -406,19 +383,16 @@ mod tests {
                 .unwrap()
                 .contains("may have succeeded")
         );
-        let request = app.submit_signup().unwrap();
+        let request = app.submit_signup("Alice_1", "long password").unwrap();
         assert!(app.complete_signup(request, Ok(login("Alice_1")), 0));
         assert_eq!(app.active.as_ref().unwrap().user.username, "Alice_1");
-        assert!(app.password.is_empty());
     }
     #[test]
     fn stale_signup_cannot_replace_new_session_or_feedback() {
         let mut app = app();
-        app.username = "Alice".into();
-        app.password = "password".into();
-        let old = app.submit_signup().unwrap();
+        let old = app.submit_signup("Alice", "password").unwrap();
         app.cancel_pending();
-        let newer = app.submit().unwrap();
+        let newer = app.submit("Alice", "password").unwrap();
         app.complete_login(newer, Ok(login("new")), 0);
         assert!(!app.complete_signup(old, Err(AuthError::Conflict), 0));
         assert_eq!(app.active.as_ref().unwrap().user.username, "new");
@@ -427,12 +401,9 @@ mod tests {
     #[test]
     fn stale_outcomes_cannot_replace_or_invalidate_newer_session() {
         let mut app = app();
-        app.username = "a".into();
-        app.password = "p".into();
-        let old = app.submit().unwrap();
+        let old = app.submit("a", "p").unwrap();
         app.logout();
-        app.password = "p".into();
-        let newer = app.submit().unwrap();
+        let newer = app.submit("a", "p").unwrap();
         app.complete_login(newer, Ok(login("new")), 0);
         let current = app.session_generation().unwrap();
         app.complete_login(old, Err(AuthError::InvalidCredentials), 0);
@@ -445,13 +416,10 @@ mod tests {
     #[test]
     fn logout_clears_immediately_and_only_current_revocation_warns() {
         let mut app = app();
-        app.username = "a".into();
-        app.password = "p".into();
-        let request = app.submit().unwrap();
+        let request = app.submit("a", "p").unwrap();
         app.complete_login(request, Ok(login("a")), 0);
         let revocation = app.logout().unwrap();
         assert!(app.active.is_none());
-        assert!(app.password.is_empty());
         app.revocation_result(revocation.generation, Err(AuthError::Unavailable));
         assert!(
             app.feedback
@@ -466,8 +434,7 @@ mod tests {
                 .unwrap()
                 .contains("already invalid (401)")
         );
-        app.password = "p".into();
-        let request = app.submit().unwrap();
+        let request = app.submit("a", "p").unwrap();
         app.revocation_result(revocation.generation, Err(AuthError::Unavailable));
         assert!(
             app.feedback.is_none(),
@@ -599,9 +566,7 @@ mod tests {
     #[test]
     fn changing_servers_invalidates_pending_and_active() {
         let mut app = app();
-        app.username = "a".into();
-        app.password = "p".into();
-        let request = app.submit().unwrap();
+        let request = app.submit("a", "p").unwrap();
         app.change_server("https://example.org".into());
         app.complete_login(request, Ok(login("a")), 0);
         assert!(app.active.is_none());

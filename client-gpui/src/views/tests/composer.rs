@@ -360,5 +360,5 @@ fn stalled_send_times_out_and_late_completion_cannot_clear_the_draft(cx: &mut Te
     // The fixture's future was dropped rather than retried, so delivery is impossible.
     let (_, _, sender) = calls.lock().unwrap().remove(0);
     assert!(sender.try_send(Err(AuthError::AlreadyInvalid)).is_err());
-    assert!(view.read_with(cx, |v, _| v.session.active.is_some()));
+    assert!(view.read_with(cx, |v, _| v.session.active().is_some()));
 }

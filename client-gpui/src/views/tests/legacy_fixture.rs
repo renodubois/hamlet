@@ -21,6 +21,8 @@ mod polling;
 mod protected_binding;
 #[path = "saved_login.rs"]
 mod saved_login;
+#[path = "session_lifecycle.rs"]
+mod session_lifecycle;
 
 use super::Hamlet;
 use crate::api::{ApiError as AuthError, ApiFuture, HttpTransport};

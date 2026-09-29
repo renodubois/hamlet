@@ -46,15 +46,13 @@ async fn respond(
 async fn old_context_and_revocation_keep_their_binding_without_affecting_new_login() {
     let adapter = Arc::new(Controlled(Mutex::new(vec![])));
     let transport = HttpTransport::with_adapter(adapter.clone());
-    let mut session = AppSession::new(transport.clone());
-    session.username = "Ada".into();
-    session.password = "long password".into();
-    let request = session.submit_signup().unwrap();
+    let mut session = AppSession::new();
+    let request = session.submit_signup("Ada", "long password").unwrap();
     let auth = tokio::spawn(
         transport
             .server(&request.server)
             .unwrap()
-            .signup(request.username.clone(), request.password.clone()),
+            .signup("Ada".into(), "long password".into()),
     );
     respond(&adapter, "/api/v1/auth/signup", None, DEFAULT_SERVER_URL, StatusCode::CREATED,
         r#"{"user":{"id":"42","username":"Ada"},"access_token":"old-secret","expires_at":"2099-01-01T00:00:00Z"}"#).await;
@@ -64,14 +62,12 @@ async fn old_context_and_revocation_keep_their_binding_without_affecting_new_log
     let revocation = session.logout().unwrap();
     assert!(session.active_client().is_none());
     session.change_server("https://NEW.example/".into());
-    session.username = "Bob".into();
-    session.password = "new password".into();
-    let request = session.submit().unwrap();
+    let request = session.submit("Bob", "new password").unwrap();
     let auth = tokio::spawn(
         transport
             .server(&request.server)
             .unwrap()
-            .login(request.username.clone(), request.password.clone()),
+            .login("Bob".into(), "new password".into()),
     );
     respond(&adapter, "/api/v1/auth/login", None, "https://new.example", StatusCode::OK,
         r#"{"user":{"id":"43","username":"Bob"},"access_token":"new-secret","expires_at":"2099-01-01T00:00:00Z"}"#).await;
@@ -149,7 +145,7 @@ async fn restoration_retry_remains_distinct_from_rejection_identity_expiry_and_m
     ] {
         let adapter = Arc::new(Controlled(Mutex::new(vec![])));
         let transport = HttpTransport::with_adapter(adapter.clone());
-        let mut session = AppSession::new(transport.clone());
+        let mut session = AppSession::new();
         let expected = User {
             id: "42".into(),
             username: "Ada".into(),
@@ -232,7 +228,7 @@ async fn pre_rearchitecture_saved_login_restores_only_after_verification() {
     };
     let adapter = Arc::new(Controlled(Mutex::new(vec![])));
     let transport = HttpTransport::with_adapter(adapter.clone());
-    let mut session = AppSession::new(transport.clone());
+    let mut session = AppSession::new();
     session.change_server(config.server.unwrap());
     let generation = session.begin_restore();
     let verified = tokio::spawn(AppSession::verify_saved(
@@ -288,16 +284,14 @@ async fn saving_accepted_context_preserves_stored_identity_without_plaintext_met
     use crate::test_support::storage::Controlled as Store;
     let adapter = Arc::new(Controlled(Mutex::new(vec![])));
     let transport = HttpTransport::with_adapter(adapter.clone());
-    let mut session = AppSession::new(transport.clone());
+    let mut session = AppSession::new();
     session.change_server("https://CHAT.example.test/".into());
-    session.username = "Ada".into();
-    session.password = "synthetic-password".into();
-    let request = session.submit().unwrap();
+    let request = session.submit("Ada", "synthetic-password").unwrap();
     let auth = tokio::spawn(
         transport
             .server(&request.server)
             .unwrap()
-            .login(request.username.clone(), request.password.clone()),
+            .login("Ada".into(), "synthetic-password".into()),
     );
     respond(&adapter, "/api/v1/auth/login", None, "https://chat.example.test", StatusCode::OK,
         r#"{"user":{"id":"42","username":"Ada"},"access_token":"saved-secret","expires_at":"2099-01-01T00:00:00Z"}"#).await;
@@ -334,7 +328,7 @@ async fn saving_accepted_context_preserves_stored_identity_without_plaintext_met
     let Outcome::Token(Some(token)) = store.read(expected.clone()).recv().await.unwrap() else {
         panic!("credential not saved under original identity")
     };
-    let mut restarted = AppSession::new(session.api.clone());
+    let mut restarted = AppSession::new();
     restarted.change_server(expected.server.clone());
     let generation = restarted.begin_restore();
     let verified = tokio::spawn(AppSession::verify_saved(
@@ -368,7 +362,7 @@ async fn saving_accepted_context_preserves_stored_identity_without_plaintext_met
 async fn candidate_stays_private_until_verified_and_late_verification_cannot_activate() {
     let adapter = Arc::new(Controlled(Mutex::new(vec![])));
     let transport = HttpTransport::with_adapter(adapter.clone());
-    let mut session = AppSession::new(transport.clone());
+    let mut session = AppSession::new();
     let server = session.server.clone();
     let expected = User {
         id: "42".into(),

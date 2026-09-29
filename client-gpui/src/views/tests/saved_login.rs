@@ -125,7 +125,6 @@ fn signup_controls_save_and_restore_through_view_and_controlled_worker(cx: &mut 
         );
         assert!(window.find("message-000000000000001").label().is_some());
         let view = first.read(cx);
-        assert!(view.session.password.is_empty());
         assert_eq!(view.password.read(cx).text().len(), 0);
     });
     let config = crate::persistence::load_at(Some(&path));
@@ -170,7 +169,7 @@ fn signup_controls_save_and_restore_through_view_and_controlled_worker(cx: &mut 
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         cx.run_until_parked();
-        let ready = cx.update(|_, cx| restarted.read(cx).session.active.is_some());
+        let ready = cx.update(|_, cx| restarted.read(cx).session.active().is_some());
         if ready {
             break;
         }
@@ -195,12 +194,12 @@ fn signup_controls_save_and_restore_through_view_and_controlled_worker(cx: &mut 
                 .contains("Alice_1")
         );
         assert_eq!(
-            restarted.read(cx).session.active.as_ref().unwrap().user,
+            restarted.read(cx).session.active().unwrap().user,
             selection.user
         );
         window.click("logout", cx);
         window.render_frame(cx);
-        assert!(restarted.read(cx).session.active.is_none());
+        assert!(restarted.read(cx).session.active().is_none());
     });
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
@@ -246,7 +245,7 @@ fn headless_logout_dispatches_deletion_warns_and_retries(cx: &mut TestAppContext
     let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
     cx.update(|window, cx| {
         view.update(cx, |view, cx| {
-            view.session.begin_restore();
+            assert!(view.session.begin_restore().is_some());
             cx.notify();
         });
         window.render_frame(cx);

@@ -1,16 +1,40 @@
 use super::*;
+use crate::{runtime::Execution, storage as persistence, views::app_shell::open};
+
+struct ShortLogin(crate::runtime::Execution);
+impl RequestAdapter for ShortLogin {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+        if request.url().path() == "/api/v1/auth/login" {
+            let expiry = chrono::DateTime::from_timestamp(self.0.unix_seconds() + 3, 0)
+                .unwrap()
+                .to_rfc3339();
+            let body = serde_json::json!({
+                "user": {"id":"42", "username":"Ada"}, "access_token":"synthetic",
+                "expires_at": expiry
+            });
+            return Box::pin(
+                async move { Ok(Response::controlled(StatusCode::OK, body.to_string())) },
+            );
+        }
+        bound_auth::BoundAuth.execute(request)
+    }
+}
 
 #[gpui_kit::test]
 fn expiry_wipes_hidden_composer_before_a_new_login(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
-    let stored = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let saved = stored.clone();
+    let execution = Execution::controlled(cx.background_executor.clone(), 1_800_000_000);
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(TestAuth)));
-        *saved.borrow_mut() = Some(view.clone());
+        let view = open(
+            window,
+            cx,
+            bound_auth::bound_api(ShortLogin(execution.clone())),
+            persistence::Config::default(),
+            None,
+            execution,
+        );
         Root::new(view, window, cx)
     });
-    let view: gpui_kit::Entity<Hamlet> = stored.borrow().as_ref().unwrap().clone();
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("username", cx);
@@ -24,15 +48,44 @@ fn expiry_wipes_hidden_composer_before_a_new_login(cx: &mut TestAppContext) {
         window.render_frame(cx);
         window.click("composer", cx);
         window.input("secret draft", cx);
-        view.update(cx, |view, _| {
-            view.session.expire(i64::MAX);
-            view.conversation.clear();
-        });
-        window.render_frame(cx);
-        assert!(view.read(cx).session.active.is_none());
-        assert!(view.read(cx).conversation.drafts.is_empty());
-        assert_eq!(view.read(cx).composer.read(cx).text().to_string(), "");
+        window.click("channel-000000000000002", cx);
     });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("composer", cx);
+        window.input("another secret draft", cx);
+    });
+    cx.background_executor.advance_clock(Duration::from_secs(3));
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("composer").is_none());
+        assert!(window.find("password").value().is_none_or(str::is_empty));
+        window.click("password", cx);
+        window.input("pass", cx);
+        window.click("login", cx);
+    });
+    cx.run_until_parked();
+    for channel in ["channel-000000000000001", "channel-000000000000002"] {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click(channel, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("composer").value().is_none_or(str::is_empty));
+            window.click("composer", cx);
+            window.input("fresh", cx);
+            window.press("ctrl-a", cx);
+            window.press("ctrl-c", cx);
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|c| c.text()),
+                Some("fresh".into())
+            );
+        });
+    }
 }
 
 #[gpui_kit::test]

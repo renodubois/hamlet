@@ -742,21 +742,18 @@ async fn signup_uses_shared_persistent_session_and_verified_restore_against_rewr
     let handle = server.handle();
     actix_web::rt::spawn(server);
     let api = HttpTransport::new();
-    let mut session = AppSession::new(api.clone());
+    let mut session = AppSession::new();
     session.change_server(url.clone());
-    session.username = "Alice".into();
-    session.password = "long password".into();
-    let request = session.submit_signup().unwrap();
+    let request = session.submit_signup("Alice", "long password").unwrap();
     let created = api
         .clone()
         .server(&request.server)
         .unwrap()
-        .signup(request.username.clone(), request.password.clone())
+        .signup("Alice".into(), "long password".into())
         .await
         .unwrap();
     assert!(session.complete_signup(request, Ok(created), chrono::Utc::now().timestamp()));
     let active = session.active.as_ref().unwrap();
-    assert!(session.password.is_empty());
     let selected = Selection {
         server: active.server.clone(),
         user: active.user.clone(),
@@ -776,7 +773,7 @@ async fn signup_uses_shared_persistent_session_and_verified_restore_against_rewr
     let metadata = std::fs::read_to_string(&path).unwrap();
     assert!(!metadata.contains(&token) && !metadata.contains("long password"));
     // This is the same restoration decision path used by the view after reading the store.
-    let mut restarted = AppSession::new(api.clone());
+    let mut restarted = AppSession::new();
     restarted.change_server(url.clone());
     let generation = restarted.begin_restore();
     let stored = match store.read(selected.clone()).recv().await.unwrap() {
@@ -845,11 +842,9 @@ async fn second_user_activity_is_found_by_focused_polling_against_unchanged_rout
         .await
         .unwrap();
     let channel = alice.client.channels().await.unwrap()[0].id.clone();
-    let mut session = crate::session::AppSession::new(HttpTransport::new());
+    let mut session = crate::session::AppSession::new();
     session.change_server(url.clone());
-    session.username = "Alice".into();
-    session.password = "long password".into();
-    let login = session.submit().unwrap();
+    let login = session.submit("Alice", "long password").unwrap();
     session.complete_login(login, Ok(alice), chrono::Utc::now().timestamp());
     let mut conversation = crate::conversation::Conversation::default();
     let list = conversation.start(&session).unwrap();
@@ -1067,11 +1062,9 @@ async fn rewrite_history_traverses_multiple_pages_with_timestamp_ties() {
     );
     // Catch up through the real route, not just adapter pagination: a burst spans
     // multiple pages before it can reach the previously loaded 53-message segment.
-    let mut session = crate::session::AppSession::new(HttpTransport::new());
+    let mut session = crate::session::AppSession::new();
     session.change_server(url.clone());
-    session.username = "Alice".into();
-    session.password = "long password".into();
-    let login_request = session.submit().unwrap();
+    let login_request = session.submit("Alice", "long password").unwrap();
     session.complete_login(login_request, Ok(login), chrono::Utc::now().timestamp());
     let mut conversation = crate::conversation::Conversation::default();
     let channels = conversation.start(&session).unwrap();

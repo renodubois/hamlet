@@ -45,9 +45,9 @@ fn login_validation_and_pending_button_are_visible_and_inert(cx: &mut TestAppCon
         assert_eq!(window.find("login").label(), Some("Signing in…"));
         assert!(view.read(cx).login_disabled());
         window.click("login", cx);
-        view.update(cx, |view, cx| view.submit(cx)); // guard also covers non-pointer callers
+        view.update(cx, |view, cx| view.submit(window, cx)); // guard also covers non-pointer callers
         window.render_frame(cx);
-        assert!(view.read(cx).session.pending);
+        assert!(view.read(cx).session.pending());
         assert!(view.read(cx).login_disabled());
     });
     cx.run_until_parked();
