@@ -1,6 +1,7 @@
 mod conversation;
 mod http;
 mod persistence;
+mod polling;
 mod session;
 
 use conversation::{Conversation, Load, Older, ReadRequest};
@@ -16,10 +17,11 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, Textarea};
 use gpui_kit::*;
 use persistence::{Outcome, Persistence, Selection};
+use polling::{Polling, Resource};
 use session::{AppSession, AuthApi, DEFAULT_SERVER_URL, RestoreDecision, RestoreResult};
 use std::{
     sync::{Arc, OnceLock},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 // Presentation tokens and bundled icon mapping live here; pane layout is in render().
@@ -100,6 +102,9 @@ struct Hamlet {
     session: AppSession,
     conversation: Conversation,
     history_focus: FocusHandle,
+    _window_activation: Subscription,
+    polling: Polling,
+    poll_clock: Instant,
     history_list: ListState,
     history_task: Option<tokio::task::JoinHandle<()>>,
     history_serial: u64,
@@ -179,11 +184,16 @@ impl Hamlet {
                     view.invalidate_storage(cx);
                     view.cancel_history();
                     view.conversation.clear();
+                    view.polling = Polling::default();
                     view.history_list.reset(0);
                     view.clear_password = true;
                     cx.notify();
                 }
             }
+        });
+        // Native platform activation, independent of which input has keyboard focus.
+        let window_activation = cx.observe_window_activation(window, |view, window, cx| {
+            view.set_window_focused(window.is_window_active(), cx);
         });
         let history_list = ListState::new(0, ListAlignment::Top, px(0.));
         let weak = cx.entity().downgrade();
@@ -203,6 +213,9 @@ impl Hamlet {
             session,
             conversation: Conversation::default(),
             history_focus: cx.focus_handle(),
+            _window_activation: window_activation,
+            polling: Polling::default(),
+            poll_clock: Instant::now(),
             history_list,
             history_task: None,
             history_serial: 0,
@@ -562,6 +575,7 @@ impl Hamlet {
             .conversation
             .complete_send(&mut self.session, &request, result, now());
         if self.session.active.is_none() {
+            self.polling = Polling::default();
             self.invalidate_storage(cx);
             self.cancel_history();
             self.history_list.reset(0);
@@ -670,6 +684,7 @@ impl Hamlet {
                                 view.invalidate_storage(cx);
                                 view.cancel_history();
                                 view.conversation.clear();
+                                view.polling = Polling::default();
                                 view.history_list.reset(0);
                                 // The next login restores an empty composer.
                             }
@@ -682,18 +697,76 @@ impl Hamlet {
             self.password
                 .update(cx, |input, cx| input.set_value("", window, cx));
             self.sync_composer(window, cx);
+            self.polling = Polling::default();
+            self.polling
+                .focus(window.is_window_active(), self.poll_time());
             self.load_channels(cx);
+        }
+    }
+
+    #[cfg(not(test))]
+    fn start_poll_timer(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |weak, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                if weak
+                    .update(cx, |view, cx| view.poll_at(view.poll_time(), cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn poll_time(&self) -> Duration {
+        self.poll_clock.elapsed()
+    }
+
+    fn set_window_focused(&mut self, focused: bool, cx: &mut Context<Self>) {
+        if self.polling.focus(focused, self.poll_time()) {
+            self.poll_at(self.poll_time(), cx);
+            cx.notify();
+        }
+    }
+
+    fn poll_at(&mut self, time: Duration, cx: &mut Context<Self>) {
+        if self.session.active.is_none() {
+            return;
+        }
+        let mut dispatched = false;
+        if self.polling.due(Resource::Channels, time)
+            && let Some(request) = self.conversation.refresh_channels(&self.session)
+        {
+            self.polling.started(Resource::Channels);
+            self.dispatch_channels(request, cx);
+            dispatched = true;
+        }
+        if self.polling.due(Resource::History, time)
+            && let Some(id) = self.conversation.selected.as_deref()
+            && !matches!(self.conversation.older.get(id), Some(Older::Loading))
+            && let Some(request) = self.conversation.refresh_history(&self.session)
+        {
+            self.polling.started(Resource::History);
+            self.load_history(request, cx);
+            dispatched = true;
+        }
+        if dispatched {
+            cx.notify();
         }
     }
 
     fn load_channels(&mut self, cx: &mut Context<Self>) {
         if let Some(request) = self.conversation.start(&self.session) {
+            self.polling.started(Resource::Channels);
             self.dispatch_channels(request, cx);
         }
     }
 
     fn refresh_channels(&mut self, cx: &mut Context<Self>) {
         if let Some(request) = self.conversation.refresh_channels(&self.session) {
+            self.polling.started(Resource::Channels);
             self.dispatch_channels(request, cx);
             cx.notify();
         }
@@ -704,21 +777,44 @@ impl Hamlet {
         let (send, receive) = async_channel::bounded(1);
         let work = request.clone();
         runtime().spawn(async move {
-            let result = api.channels(work.server, work.token).await;
+            let result = tokio::time::timeout(
+                Duration::from_secs(9),
+                api.channels(work.server, work.token),
+            )
+            .await
+            .unwrap_or(Err(session::AuthError::Unavailable));
             let _ = send.send(result).await;
         });
         cx.spawn(async move |weak, cx| {
             if let Ok(result) = receive.recv().await {
                 let _ = weak.update_in(cx, |view, window, cx| {
+                    let current = view.conversation.is_current_channels(&request)
+                        && view.session.session_generation() == Some(request.generation)
+                        && view
+                            .session
+                            .active
+                            .as_ref()
+                            .is_some_and(|active| active.server == request.server);
+                    let succeeded = result.is_ok();
                     let previous = view.conversation.selected.clone();
                     view.store_composer(cx);
                     let next =
                         view.conversation
                             .complete_channels(&mut view.session, &request, result);
                     if view.session.active.is_none() {
+                        view.polling = Polling::default();
                         view.invalidate_storage(cx);
+                    } else if current {
+                        let recovered =
+                            view.polling
+                                .completed(Resource::Channels, succeeded, view.poll_time());
+                        if recovered {
+                            view.polling
+                                .recover_other(Resource::Channels, view.poll_time());
+                        }
                     }
                     if previous != view.conversation.selected {
+                        view.polling.reset_history(view.poll_time());
                         view.sync_composer(window, cx);
                         view.cancel_history();
                         view.history_list.reset(0);
@@ -751,6 +847,7 @@ impl Hamlet {
 
     fn refresh_history(&mut self, cx: &mut Context<Self>) {
         if let Some(request) = self.conversation.refresh_history(&self.session) {
+            self.polling.started(Resource::History);
             self.cancel_history();
             self.load_history(request, cx);
             cx.notify();
@@ -777,32 +874,34 @@ impl Hamlet {
         // The headless scheduler is single-threaded: deliver controlled fixture outcomes on
         // its own executor, without a foreign thread waking it during a GPUI frame.
         #[cfg(test)]
-        cx.spawn(async move |weak, cx| {
-            let result = api
-                .history_page(
-                    work.server,
-                    work.token,
-                    work.channel_id.unwrap(),
-                    work.before,
-                )
-                .await;
+        {
+            let timeout = cx.background_executor().timer(Duration::from_secs(9));
+            cx.spawn(async move |weak, cx| {
+            let result = tokio::select! {
+                result = api.history_page(work.server, work.token, work.channel_id.unwrap(), work.before) => result,
+                _ = timeout => Err(session::AuthError::Unavailable),
+            };
             let _ = weak.update(cx, |view, cx| {
                 view.finish_history(serial, request, result, cx)
             });
         })
         .detach();
+        }
         #[cfg(not(test))]
         {
             let (send, receive) = async_channel::bounded(1);
             self.history_task = Some(runtime().spawn(async move {
-                let result = api
-                    .history_page(
+                let result = tokio::time::timeout(
+                    Duration::from_secs(9),
+                    api.history_page(
                         work.server,
                         work.token,
                         work.channel_id.unwrap(),
                         work.before,
-                    )
-                    .await;
+                    ),
+                )
+                .await
+                .unwrap_or(Err(session::AuthError::Unavailable));
                 let _ = send.send(result).await;
             }));
             cx.spawn(async move |weak, cx| {
@@ -845,6 +944,8 @@ impl Hamlet {
         });
         let follow = self.history_list.is_scrolled_to_end() != Some(false);
         let read_succeeded = result.is_ok();
+        let current = selected && self.session.session_generation() == Some(request.generation);
+        let is_older = request.before.is_some() && !request.is_catchup();
         let outcome = self
             .conversation
             .complete_history(&mut self.session, &request, result);
@@ -879,6 +980,25 @@ impl Hamlet {
             self.history_list.reset(0);
         }
         self.history_task = None;
+        if self.session.active.is_none() {
+            self.polling = Polling::default();
+        } else if current && !is_older && outcome.next.is_none() {
+            let complete = read_succeeded
+                && !matches!(
+                    request
+                        .channel_id
+                        .as_ref()
+                        .and_then(|id| self.conversation.refreshing.get(id)),
+                    Some(conversation::Refresh::Incomplete(_))
+                );
+            let recovered = self
+                .polling
+                .completed(Resource::History, complete, self.poll_time());
+            if recovered {
+                self.polling
+                    .recover_other(Resource::History, self.poll_time());
+            }
+        }
         if let Some(next) = outcome.next {
             self.load_history(next, cx);
         }
@@ -957,6 +1077,7 @@ impl Hamlet {
     fn select_channel(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.store_composer(cx);
         if self.conversation.selected.as_deref() != Some(id) {
+            self.polling.reset_history(self.poll_time());
             self.cancel_history();
             self.history_list.reset(0);
         }
@@ -974,6 +1095,7 @@ impl Hamlet {
         self.cancel_history();
         self.history_list.reset(0);
         self.conversation.clear();
+        self.polling = Polling::default();
         self.sync_composer(window, cx);
         let revocation = self.session.logout();
         self.invalidate_storage(cx);
@@ -1040,6 +1162,13 @@ impl Render for Hamlet {
                         .on_click(move |_, window, cx| {
                             let _ = logout_view.update(cx, |view, cx| view.logout(window, cx));
                         }),
+                )
+                .child(
+                    div()
+                        .id("connection-status")
+                        .aria_label(self.polling.status())
+                        .test_support()
+                        .child(self.polling.status()),
                 )
                 .child(self.conversation_panes(cx));
         } else {
@@ -1481,6 +1610,8 @@ fn main() {
                         view.start_restore(cx);
                     });
 
+                    #[cfg(not(test))]
+                    view.update(cx, |view, cx| view.start_poll_timer(cx));
                     cx.new(|cx| Root::new(view, window, cx))
                 },
             )
@@ -1511,6 +1642,7 @@ mod tests {
         atomic::{AtomicBool, AtomicUsize, Ordering},
     };
     use std::sync::{Condvar, Mutex};
+    use std::time::Duration;
 
     // This is a real Kit/GPUI history surface, not a simulated scrolling model.
     struct HistoryProbe {
@@ -3131,6 +3263,574 @@ mod tests {
             };
             assert_eq!(messages.iter().filter(|m| m.id == "20").count(), 1);
         });
+    }
+
+    struct PollAuth {
+        channels: Arc<AtomicUsize>,
+        history: Arc<AtomicUsize>,
+        offline: Arc<AtomicBool>,
+    }
+    impl AuthApi for PollAuth {
+        fn signup(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
+            TestAuth.signup(s, u, p)
+        }
+        fn login(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
+            TestAuth.login(s, u, p)
+        }
+        fn logout(&self, s: String, t: String) -> ApiFuture<Result<(), AuthError>> {
+            TestAuth.logout(s, t)
+        }
+        fn channels(
+            &self,
+            s: String,
+            t: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
+            self.channels.fetch_add(1, Ordering::SeqCst);
+            if self.offline.load(Ordering::SeqCst) {
+                Box::pin(async { Err(AuthError::Unavailable) })
+            } else {
+                TestAuth.channels(s, t)
+            }
+        }
+        fn create_channel(
+            &self,
+            s: String,
+            t: String,
+            n: String,
+        ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
+            TestAuth.create_channel(s, t, n)
+        }
+        fn history(
+            &self,
+            s: String,
+            t: String,
+            id: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
+            self.history.fetch_add(1, Ordering::SeqCst);
+            if self.offline.load(Ordering::SeqCst) {
+                Box::pin(async { Err(AuthError::Unavailable) })
+            } else {
+                TestAuth.history(s, t, id)
+            }
+        }
+    }
+
+    #[gpui_kit::test]
+    fn poll_catches_up_multiple_pages_without_duplicate_work_and_switch_cancels_late_read(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let (tx, requests) = std::sync::mpsc::channel();
+        let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let stored = saved.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(PagedAuth(tx))));
+            *stored.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
+        cx.deactivate_window();
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        let (_, initial) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+        let message = |id: i32| crate::conversation::Message {
+            id: id.to_string(),
+            channel_id: "000000000000001".into(),
+            author_id: "42".into(),
+            author_name: "Ada".into(),
+            text: id.to_string(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        initial
+            .send_blocking(Ok(crate::conversation::Page {
+                items: vec![message(1)],
+                next_cursor: None,
+            }))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(4), cx)));
+        cx.run_until_parked();
+        let (cursor, first) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(cursor.is_none());
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("refresh-history", cx); // pending, inert
+            view.update(cx, |v, cx| v.poll_at(Duration::from_secs(20), cx));
+        });
+        cx.run_until_parked();
+        assert!(requests.try_recv().is_err());
+        first
+            .send_blocking(Ok(crate::conversation::Page {
+                items: (53..=102).rev().map(message).collect(),
+                next_cursor: Some("next".into()),
+            }))
+            .unwrap();
+        cx.run_until_parked();
+        let (cursor, second) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(cursor.as_deref(), Some("next"));
+        cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(30), cx)));
+        cx.run_until_parked();
+        assert!(requests.try_recv().is_err());
+        second
+            .send_blocking(Ok(crate::conversation::Page {
+                items: (1..=52).rev().map(message).collect(),
+                next_cursor: None,
+            }))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).history_list.item_count(), 102);
+            assert_eq!(window.find("message-102").label(), Some("102"));
+            view.update(cx, |v, cx| v.poll_at(Duration::from_secs(35), cx));
+        });
+        cx.run_until_parked();
+        let (_, late) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("channel-000000000000002", cx);
+        });
+        cx.run_until_parked();
+        let (_, selected) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+        late.send_blocking(Ok(crate::conversation::Page {
+            items: vec![message(999)],
+            next_cursor: None,
+        }))
+        .unwrap();
+        selected
+            .send_blocking(Ok(crate::conversation::Page {
+                items: vec![],
+                next_cursor: None,
+            }))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert_eq!(view.read(cx).conversation.selected.as_deref(), Some("000000000000002"));
+            assert!(!view.read(cx).conversation.history.contains_key("000000000000002") ||
+                matches!(view.read(cx).conversation.history.get("000000000000002"), Some(crate::conversation::Load::Ready(items)) if items.is_empty()));
+            assert!(matches!(view.read(cx).conversation.history.get("000000000000001"), Some(crate::conversation::Load::Ready(items)) if items.len() == 102));
+        });
+    }
+
+    // Bridge only the test fixture's HTTP futures onto Tokio; Hamlet still dispatches
+    // channels and history via its production poll_at / completion paths.
+    struct ServerPollingAuth {
+        api: crate::http::HttpAuth,
+        completed: std::sync::mpsc::Sender<&'static str>,
+    }
+    impl AuthApi for ServerPollingAuth {
+        fn signup(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
+            self.api.signup(s, u, p)
+        }
+        fn login(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
+            self.api.login(s, u, p)
+        }
+        fn current_user(&self, s: String, t: String) -> ApiFuture<Result<User, AuthError>> {
+            self.api.current_user(s, t)
+        }
+        fn logout(&self, s: String, t: String) -> ApiFuture<Result<(), AuthError>> {
+            self.api.logout(s, t)
+        }
+        fn channels(
+            &self,
+            s: String,
+            t: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
+            let future = self.api.channels(s, t);
+            let done = self.completed.clone();
+            Box::pin(async move {
+                let result = future.await;
+                done.send("channels").unwrap();
+                result
+            })
+        }
+        fn create_channel(
+            &self,
+            s: String,
+            t: String,
+            n: String,
+        ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
+            self.api.create_channel(s, t, n)
+        }
+        fn send_message(
+            &self,
+            s: String,
+            t: String,
+            id: String,
+            text: String,
+        ) -> ApiFuture<Result<crate::conversation::Message, AuthError>> {
+            self.api.send_message(s, t, id, text)
+        }
+        fn history(
+            &self,
+            s: String,
+            t: String,
+            id: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
+            self.api.history(s, t, id)
+        }
+        fn history_page(
+            &self,
+            s: String,
+            t: String,
+            id: String,
+            before: Option<String>,
+        ) -> ApiFuture<Result<crate::conversation::Page, AuthError>> {
+            let future = self.api.history_page(s, t, id, before);
+            let done = self.completed.clone();
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            super::runtime().spawn(async move {
+                let result = future.await;
+                tx.send(result).unwrap();
+                done.send("history").unwrap();
+            });
+            // The headless scheduler forbids a foreign thread waking its futures. The
+            // test-only bridge waits for the bounded HTTP read on its own thread instead.
+            Box::pin(async move { rx.recv_timeout(Duration::from_secs(9)).unwrap() })
+        }
+    }
+
+    #[gpui_kit::test]
+    fn bob_activity_arrives_through_hamlet_poll_at_and_real_rewrite_routes(
+        cx: &mut TestAppContext,
+    ) {
+        use actix_web::{App, HttpServer, web};
+        use std::net::TcpListener;
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let server_thread = std::thread::spawn(move || {
+            actix_web::rt::System::new().block_on(async move {
+                let dir = tempfile::tempdir().unwrap();
+                let db = hamlet::connect_to_database(&format!(
+                    "sqlite://{}?mode=rwc",
+                    dir.path().join("poll-at.db").display()
+                ))
+                .await
+                .unwrap();
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let url = format!("http://{}", listener.local_addr().unwrap());
+                let server = HttpServer::new(move || {
+                    App::new()
+                        .app_data(web::Data::new(db.clone()))
+                        .configure(hamlet::routes)
+                })
+                .listen(listener)
+                .unwrap()
+                .run();
+                ready_tx.send((url, server.handle())).unwrap();
+                server.await.unwrap();
+            });
+        });
+        let (url, server_handle) = ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let api = crate::http::HttpAuth::new();
+        let alice = super::runtime()
+            .block_on(api.signup(url.clone(), "Alice".into(), "long password".into()))
+            .unwrap();
+        let bob = super::runtime()
+            .block_on(api.signup(url.clone(), "Bob".into(), "long password".into()))
+            .unwrap();
+        let (done, completions) = std::sync::mpsc::channel();
+        cx.update(gpui_kit::init);
+        let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let stored = saved.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Hamlet::new(
+                    window,
+                    cx,
+                    Arc::new(ServerPollingAuth {
+                        api: crate::http::HttpAuth::new(),
+                        completed: done,
+                    }),
+                )
+            });
+            *stored.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
+        cx.update(|_, cx| {
+            view.update(cx, |v, cx| {
+                v.session.change_server(url.clone());
+                v.session.username = "Alice".into();
+                v.session.password = "long password".into();
+                let login = v.session.submit().unwrap();
+                v.session
+                    .complete_login(login, Ok(alice), chrono::Utc::now().timestamp());
+                v.polling.focus(true, Duration::ZERO);
+                v.load_channels(cx);
+            })
+        });
+        assert_eq!(
+            completions.recv_timeout(Duration::from_secs(5)).unwrap(),
+            "channels"
+        );
+        cx.run_until_parked();
+        assert_eq!(
+            completions.recv_timeout(Duration::from_secs(5)).unwrap(),
+            "history"
+        );
+        cx.run_until_parked();
+        let selected = cx.update(|_, cx| view.read(cx).conversation.selected.clone().unwrap());
+        let posted = super::runtime()
+            .block_on(api.send_message(
+                url.clone(),
+                bob.token.clone(),
+                selected.clone(),
+                "hello from Bob".into(),
+            ))
+            .unwrap();
+        let channel = super::runtime()
+            .block_on(api.create_channel(url.clone(), bob.token, "Bob room".into()))
+            .unwrap();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(100), cx)));
+        assert_eq!(
+            completions.recv_timeout(Duration::from_secs(5)).unwrap(),
+            "channels"
+        );
+        cx.run_until_parked();
+        assert_eq!(
+            completions.recv_timeout(Duration::from_secs(5)).unwrap(),
+            "history"
+        );
+        cx.update(|_, cx| {
+            let v = view.read(cx);
+            assert!(matches!(&v.conversation.channels, Some(crate::conversation::Load::Ready(items)) if items.contains(&channel)));
+            assert!(matches!(v.conversation.history.get(&selected), Some(crate::conversation::Load::Ready(items)) if items.iter().any(|m| m.id == posted.id && m.author_name == "Bob")));
+        });
+        super::runtime().block_on(server_handle.stop(true));
+        server_thread.join().unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn focus_return_during_read_catches_up_once_and_logout_stops_selected_reads(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let (tx, requests) = std::sync::mpsc::channel();
+        let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let stored = saved.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(PagedAuth(tx))));
+            *stored.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
+        cx.deactivate_window();
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        let (_, initial) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+        initial
+            .send_blocking(Ok(crate::conversation::Page {
+                items: vec![],
+                next_cursor: None,
+            }))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(4), cx)));
+        cx.run_until_parked();
+        let (_, pending) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+        cx.deactivate_window();
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        assert!(
+            requests.try_recv().is_err(),
+            "focus must not overlap an in-flight read"
+        );
+        pending
+            .send_blocking(Ok(crate::conversation::Page {
+                items: vec![],
+                next_cursor: None,
+            }))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(v.poll_time(), cx)));
+        cx.run_until_parked();
+        let (_, catchup) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(requests.try_recv().is_err(), "only one catch-up read");
+        catchup
+            .send_blocking(Ok(crate::conversation::Page {
+                items: vec![],
+                next_cursor: None,
+            }))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(v.poll_time(), cx)));
+        cx.run_until_parked();
+        assert!(
+            requests.try_recv().is_err(),
+            "catch-up resets the normal interval"
+        );
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("channel-000000000000002", cx);
+        });
+        cx.run_until_parked();
+        let (_, selected) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(500), cx)));
+        cx.run_until_parked();
+        assert!(
+            requests.try_recv().is_err(),
+            "no unselected or overlapping read on switch"
+        );
+        selected
+            .send_blocking(Ok(crate::conversation::Page {
+                items: vec![],
+                next_cursor: None,
+            }))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(1000), cx)));
+        cx.run_until_parked();
+        let (_, late) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            requests.try_recv().is_err(),
+            "only the selected channel is scheduled"
+        );
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("logout", cx);
+            view.update(cx, |v, cx| v.poll_at(Duration::from_secs(1500), cx));
+        });
+        // Let the stale result arrive; it must not restore the logged-out session.
+        let _ = late.try_send(Ok(crate::conversation::Page {
+            items: vec![],
+            next_cursor: None,
+        }));
+        cx.run_until_parked();
+        assert!(
+            requests.try_recv().is_err(),
+            "logout must not read any channel"
+        );
+        cx.update(|_, cx| {
+            assert!(view.read(cx).conversation.history.is_empty());
+            assert!(view.read(cx).conversation.selected.is_none());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn focused_polls_pause_resume_and_recover_without_losing_draft(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let channels = Arc::new(AtomicUsize::new(0));
+        let history = Arc::new(AtomicUsize::new(0));
+        let offline = Arc::new(AtomicBool::new(false));
+        let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let stored = saved.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Hamlet::new(
+                    window,
+                    cx,
+                    Arc::new(PollAuth {
+                        channels: channels.clone(),
+                        history: history.clone(),
+                        offline: offline.clone(),
+                    }),
+                )
+            });
+            *stored.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
+        cx.deactivate_window();
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("connection-status").label(),
+                Some("Connected. Checking for new messages and channels.")
+            );
+            window.click("composer", cx);
+            window.input("keep draft", cx);
+            view.update(cx, |v, cx| v.poll_at(Duration::from_secs(2), cx));
+        });
+        assert_eq!(history.load(Ordering::SeqCst), 1);
+        assert_eq!(channels.load(Ordering::SeqCst), 1);
+        cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(4), cx)));
+        cx.run_until_parked();
+        assert_eq!(history.load(Ordering::SeqCst), 2);
+        assert_eq!(channels.load(Ordering::SeqCst), 1);
+        cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(16), cx)));
+        cx.run_until_parked();
+        assert_eq!(channels.load(Ordering::SeqCst), 2);
+        offline.store(true, Ordering::SeqCst);
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("refresh-history", cx);
+            window.click("refresh-channels", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find("connection-status")
+                    .label()
+                    .unwrap()
+                    .contains("Connection trouble")
+            );
+            assert!(window.find("message-000000000000001").label().is_some());
+            assert_eq!(
+                view.read(cx).conversation.draft("000000000000001"),
+                "keep draft"
+            );
+        });
+        cx.deactivate_window();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            let status_node = window.find("connection-status");
+            let status = status_node.label().unwrap();
+            assert!(status.contains("Connection trouble"));
+            assert!(status.contains("Updates paused"));
+            assert!(!status.contains("Retrying"));
+        });
+        let before = history.load(Ordering::SeqCst);
+        cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(200), cx)));
+        cx.run_until_parked();
+        assert_eq!(history.load(Ordering::SeqCst), before);
+        offline.store(false, Ordering::SeqCst);
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.render_frame(cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("connection-status").label(),
+                Some("Connected. Checking for new messages and channels.")
+            );
+            assert_eq!(
+                view.read(cx).conversation.draft("000000000000001"),
+                "keep draft"
+            );
+        });
+        assert!(history.load(Ordering::SeqCst) > before);
     }
 
     #[gpui_kit::test]

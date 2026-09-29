@@ -1150,6 +1150,116 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn second_user_activity_is_found_by_focused_polling_against_unchanged_routes() {
+        use crate::polling::{Polling, Resource};
+        use actix_web::{App, HttpServer, web};
+        let dir = tempfile::tempdir().unwrap();
+        let db = hamlet::connect_to_database(&format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("polling.db").display()
+        ))
+        .await
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = HttpServer::new(move || {
+            App::new()
+                .app_data(web::Data::new(db.clone()))
+                .configure(hamlet::routes)
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+        let handle = server.handle();
+        actix_web::rt::spawn(server);
+        let api: &dyn AuthApi = &HttpAuth::new();
+        let alice = api
+            .signup(url.clone(), "Alice".into(), "long password".into())
+            .await
+            .unwrap();
+        let bob = api
+            .signup(url.clone(), "Bob".into(), "long password".into())
+            .await
+            .unwrap();
+        let channel = api
+            .channels(url.clone(), alice.token.clone())
+            .await
+            .unwrap()[0]
+            .id
+            .clone();
+        let mut session = crate::session::AppSession::new(std::sync::Arc::new(HttpAuth::new()));
+        session.change_server(url.clone());
+        session.username = "Alice".into();
+        session.password = "long password".into();
+        let login = session.submit().unwrap();
+        session.complete_login(login, Ok(alice), chrono::Utc::now().timestamp());
+        let mut conversation = crate::conversation::Conversation::default();
+        let list = conversation.start(&session).unwrap();
+        let channels = api.channels(url.clone(), list.token.clone()).await.unwrap();
+        let initial = conversation
+            .complete_channels(&mut session, &list, Ok(channels))
+            .unwrap();
+        conversation.complete_history(
+            &mut session,
+            &initial,
+            Ok(api
+                .history_page(url.clone(), initial.token.clone(), channel.clone(), None)
+                .await
+                .unwrap()),
+        );
+        let mut poll = Polling::default();
+        assert!(poll.focus(true, Duration::ZERO));
+        poll.started(Resource::History);
+        poll.started(Resource::Channels);
+        poll.completed(Resource::History, true, Duration::ZERO);
+        poll.completed(Resource::Channels, true, Duration::ZERO);
+        let posted = api
+            .send_message(
+                url.clone(),
+                bob.token.clone(),
+                channel.clone(),
+                "Bob published while Alice was reading".into(),
+            )
+            .await
+            .unwrap();
+        let new_channel = api
+            .create_channel(url.clone(), bob.token.clone(), "Bob room".into())
+            .await
+            .unwrap();
+        assert!(poll.due(Resource::History, Duration::from_secs(3)));
+        let refresh = conversation.refresh_history(&session).unwrap();
+        let mut request = refresh;
+        loop {
+            let page = api
+                .history_page(
+                    url.clone(),
+                    request.token.clone(),
+                    channel.clone(),
+                    request.before.clone(),
+                )
+                .await
+                .unwrap();
+            let outcome = conversation.complete_history(&mut session, &request, Ok(page));
+            if let Some(next) = outcome.next {
+                request = next;
+            } else {
+                break;
+            }
+        }
+        assert!(
+            matches!(conversation.history.get(&channel), Some(crate::conversation::Load::Ready(messages)) if messages.iter().any(|m| m.id == posted.id && m.author_name == "Bob"))
+        );
+        assert!(poll.due(Resource::Channels, Duration::from_secs(15)));
+        let listing = conversation.refresh_channels(&session).unwrap();
+        let channels = api.channels(url, listing.token.clone()).await.unwrap();
+        conversation.complete_channels(&mut session, &listing, Ok(channels));
+        assert!(
+            matches!(conversation.channels, Some(crate::conversation::Load::Ready(ref channels)) if channels.contains(&new_channel))
+        );
+        handle.stop(true).await;
+    }
+
+    #[actix_web::test]
     async fn create_channel_against_unchanged_rewrite_routes() {
         use actix_web::{App, HttpServer, web};
         use hamlet::{connect_to_database, routes};

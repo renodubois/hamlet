@@ -88,6 +88,12 @@ pub struct ReadRequest {
     refresh: bool,
 }
 
+impl ReadRequest {
+    pub fn is_catchup(&self) -> bool {
+        self.refresh
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CreateRequest {
     pub generation: u64,
@@ -416,6 +422,12 @@ impl Conversation {
             serial: self.channel_serial,
             refresh: false,
         })
+    }
+
+    pub fn is_current_channels(&self, request: &ReadRequest) -> bool {
+        request.channel_id.is_none()
+            && self.channel_pending
+            && self.channel_serial == request.serial
     }
 
     pub fn complete_channels(
