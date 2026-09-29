@@ -1,17 +1,15 @@
 //! Temporary monolithic application shell, mechanically relocated for #48.
 //!
 //! Session workflows are owned by the application-lifetime coordinator (#54).
-//! Saved-login and conversation workflows and local controls remain until their tickets.
-//! See ../../MIGRATION-54.md for the current lifecycle bridge and removal gates.
+//! Saved-login workflows also belong to session (#55). Conversation workflows and
+//! local controls remain until their tickets. See ../../MIGRATION-55.md.
 
 use crate::api::HttpTransport;
 use crate::conversation::polling::{Polling, Resource};
 use crate::conversation::{self, Conversation, Load, Older, ReadRequest};
-use crate::persistence::{self, Outcome, Persistence, Selection};
 use crate::runtime::{Execution, Work};
-use crate::session::{
-    self, DEFAULT_SERVER_URL, Lifecycle, RestoreDecision, RestoreResult, SessionCoordinator,
-};
+use crate::session::{self, Lifecycle, SessionCoordinator, StorageRetry};
+use crate::storage::{Config, Persistence};
 use crate::theme;
 use gpui_kit::base::SelectableText;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -25,8 +23,7 @@ use gpui_kit::component::input::{Input, Textarea};
 use gpui_kit::*;
 use std::time::{Duration, Instant};
 
-// Workflow policy stays with this temporary coordinator, not storage or runtime.
-const SECURE_STORE_DEADLINE: Duration = Duration::from_secs(10);
+// Conversation workflow policy stays here until its coordinator extraction.
 const READ_SEND_DEADLINE: Duration = Duration::from_secs(9);
 
 /// Create the legacy root and start restoration and polling with supplied execution.
@@ -34,16 +31,12 @@ pub(crate) fn open(
     window: &mut Window,
     cx: &mut App,
     api: HttpTransport,
-    config: persistence::Config,
+    config: Config,
     persistence: Option<Persistence>,
     execution: Execution,
 ) -> Entity<Hamlet> {
     let view =
         cx.new(|cx| Hamlet::with_dependencies(window, cx, api, config, persistence, execution));
-    view.update(cx, |view, cx| {
-        view.resume_deletions(cx);
-        view.start_restore(cx);
-    });
     view.update(cx, |view, cx| view.start_poll_timer(cx));
     view
 }
@@ -79,12 +72,6 @@ fn reconcile_history_list(list: &ListState, before: &[String], after: &[String])
     }
 }
 
-struct Deletion {
-    selection: Selection,
-    id: u64,
-    in_flight: bool,
-}
-
 pub(crate) struct Hamlet {
     session: SessionCoordinator,
     conversation: Conversation,
@@ -105,13 +92,6 @@ pub(crate) struct Hamlet {
     syncing_composer: bool,
     _server_subscription: Subscription,
     signup: bool,
-    persistence: Option<Persistence>,
-    credential: Option<Selection>,
-    retained_credentials: Vec<Selection>,
-    storage_feedback: Option<String>,
-    storage_serial: u64,
-    deletions: Vec<Deletion>,
-    deletion_id: u64,
 }
 
 impl Hamlet {
@@ -119,22 +99,14 @@ impl Hamlet {
         window: &mut Window,
         cx: &mut Context<Self>,
         api: HttpTransport,
-        config: persistence::Config,
+        config: Config,
         persistence: Option<Persistence>,
         execution: Execution,
     ) -> Self {
-        let initial_server = config.server.as_deref().unwrap_or(DEFAULT_SERVER_URL);
-        let server = cx.new(|cx| InputState::new(window, cx).default_value(initial_server));
-        let username = cx.new(|cx| {
-            InputState::new(window, cx).default_value(
-                config
-                    .saved
-                    .as_ref()
-                    .filter(|s| s.server == initial_server)
-                    .map(|s| s.user.username.as_str())
-                    .unwrap_or(""),
-            )
-        });
+        let session = SessionCoordinator::new(api, execution.clone(), config, persistence);
+        let server = cx.new(|cx| InputState::new(window, cx).default_value(session.server()));
+        let username =
+            cx.new(|cx| InputState::new(window, cx).default_value(session.initial_username()));
         let password = cx.new(|cx| InputState::new(window, cx).masked(true));
         let channel_name = cx.new(|cx| InputState::new(window, cx));
         let composer = cx.new(|cx| TextareaState::new(window, cx).submit_on_enter(true));
@@ -173,7 +145,6 @@ impl Hamlet {
                     let value = field.read(cx).text().to_string();
                     if view.session.server() != value {
                         view.session.change_server(value);
-                        view.storage_feedback = None;
                         view.session_changed(window, cx);
                         cx.notify();
                     }
@@ -196,7 +167,6 @@ impl Hamlet {
                 });
             }
         });
-        let session = SessionCoordinator::new(api, execution.clone(), initial_server.into());
         let updates = session.updates();
         cx.spawn(async move |weak, cx| {
             while let Ok(update) = updates.recv().await {
@@ -233,257 +203,7 @@ impl Hamlet {
             syncing_composer: false,
             _server_subscription: subscription,
             signup: false,
-            persistence,
-            credential: config.saved.filter(|s| s.server == initial_server),
-            retained_credentials: Vec::new(),
-            storage_feedback: if config.pending_deletions.is_empty() {
-                None
-            } else {
-                Some("Previous saved login cleanup is pending; retry deletion if it fails.".into())
-            },
-            storage_serial: 0,
-            deletions: config
-                .pending_deletions
-                .into_iter()
-                .enumerate()
-                .map(|(i, selection)| Deletion {
-                    selection,
-                    id: i as u64 + 1,
-                    in_flight: false,
-                })
-                .collect(),
-            deletion_id: 0,
         }
-    }
-
-    fn resume_deletions(&mut self, cx: &mut Context<Self>) {
-        self.deletion_id = self.deletions.len() as u64;
-        let ids: Vec<_> = self.deletions.iter().map(|d| d.id).collect();
-        for id in ids {
-            self.run_deletion(id, cx);
-        }
-    }
-
-    // Deletions have their own identities: a server edit or a newer save must not
-    // discard an older failed cleanup callback or its retry target.
-    fn queue_deletion(&mut self, selection: Selection, cx: &mut Context<Self>) {
-        let Some(store) = &self.persistence else {
-            return;
-        };
-        if self
-            .deletions
-            .iter()
-            .any(|d| persistence::account(&d.selection) == persistence::account(&selection))
-        {
-            return;
-        }
-        self.deletion_id = self.deletion_id.wrapping_add(1);
-        let id = self.deletion_id;
-        self.deletions.push(Deletion {
-            selection: selection.clone(),
-            id,
-            in_flight: false,
-        });
-        let _ = store;
-        self.run_deletion(id, cx);
-    }
-
-    fn retryable_deletion(&self) -> Option<u64> {
-        let active = self.session.active().map(|s| {
-            persistence::account(&Selection {
-                server: s.server.clone(),
-                user: s.user.clone(),
-                expires_at: s.expires_at,
-            })
-        });
-        self.deletions
-            .iter()
-            .find(|d| {
-                !d.in_flight
-                    && active.as_deref() != Some(persistence::account(&d.selection).as_str())
-            })
-            .map(|d| d.id)
-    }
-
-    fn run_deletion(&mut self, id: u64, cx: &mut Context<Self>) {
-        let Some(deletion) = self
-            .deletions
-            .iter_mut()
-            .find(|d| d.id == id && !d.in_flight)
-        else {
-            return;
-        };
-        // A newer active login for this account must never be removed by a retry.
-        if self.session.active().is_some_and(|s| {
-            persistence::account(&Selection {
-                server: s.server.clone(),
-                user: s.user.clone(),
-                expires_at: s.expires_at,
-            }) == persistence::account(&deletion.selection)
-        }) {
-            return;
-        }
-        let Some(store) = &self.persistence else {
-            return;
-        };
-        deletion.in_flight = true;
-        let queued = store.delete(deletion.selection.clone());
-        let reply = self
-            .execution
-            .bounded(SECURE_STORE_DEADLINE, async move { queued.recv().await });
-        self.storage_feedback = Some("Removing saved login from Secret Service…".into());
-        cx.spawn(async move |weak, cx| {
-            let outcome = reply.recv().await;
-            let _ = weak.update(cx, |view, cx| {
-                let Some(index) = view.deletions.iter().position(|d| d.id == id) else { return; };
-                if matches!(outcome, Ok(Some(Ok(Outcome::Deleted)))) {
-                    view.deletions.remove(index);
-                    if view.deletions.is_empty() {
-                        view.storage_feedback = Some(if view.session.active().is_some() {
-                            "Previous saved login removed from Secret Service; current session is unchanged.".into()
-                        } else {
-                            "Saved login removed from Secret Service.".into()
-                        });
-                    }
-                } else {
-                    view.deletions[index].in_flight = false;
-                    view.storage_feedback = Some("Could not confirm deletion from Secret Service; a saved login may remain. Unlock the store and retry deletion.".into());
-                }
-                cx.notify();
-            });
-        }).detach();
-    }
-
-    fn invalidate_storage(&mut self, cx: &mut Context<Self>) {
-        self.storage_serial = self.storage_serial.wrapping_add(1);
-        if let Some(store) = &self.persistence {
-            store.invalidate();
-        }
-        if let Some(selection) = self.credential.take() {
-            self.queue_deletion(selection, cx);
-        }
-        for selection in std::mem::take(&mut self.retained_credentials) {
-            self.queue_deletion(selection, cx);
-        }
-    }
-
-    fn save_login(&mut self, cx: &mut Context<Self>) {
-        let Some(store) = &self.persistence else {
-            return;
-        };
-        let Some(session) = self.session.active() else {
-            return;
-        };
-        let selection = Selection {
-            server: session.server.clone(),
-            user: session.user.clone(),
-            expires_at: session.expires_at,
-        };
-        let previous = self.credential.replace(selection.clone());
-        if let Some(old) = previous.as_ref()
-            && persistence::account(old) != persistence::account(&selection)
-            && !self
-                .retained_credentials
-                .iter()
-                .any(|s| persistence::account(s) == persistence::account(old))
-        {
-            self.retained_credentials.push(old.clone());
-        }
-        // Remember successful authentication independently of secure-store success.
-        let remembered = store.remember(selection.server.clone());
-        let queued = session.save(store);
-        let reply = self.execution.bounded(SECURE_STORE_DEADLINE, async move {
-            (remembered.recv().await, queued.recv().await)
-        });
-        self.storage_serial = self.storage_serial.wrapping_add(1);
-        let serial = self.storage_serial;
-        self.storage_feedback = Some("Saving login to Secret Service…".into());
-        cx.spawn(async move |weak, cx| {
-            let outcome = reply.recv().await;
-            let _ = weak.update(cx, |view, cx| {
-                if view.storage_serial == serial && view.session.active().is_some() {
-                    let (remembered, outcome) = match outcome {
-                        Ok(Some((remembered, outcome))) => (remembered, outcome),
-                        _ => (Err(async_channel::RecvError), Err(async_channel::RecvError)),
-                    };
-                    if matches!(outcome, Ok(Outcome::Saved | Outcome::SavedWithCleanupWarning)) {
-                        view.deletions.retain(|d| persistence::account(&d.selection) != persistence::account(&selection));
-                        if let Some(old) = previous {
-                            view.retained_credentials.retain(|s| persistence::account(s) != persistence::account(&old));
-                            if matches!(outcome, Ok(Outcome::SavedWithCleanupWarning)) {
-                                view.queue_deletion(old, cx);
-                            }
-                        }
-                    }
-                    view.storage_feedback = Some(match outcome {
-                        Ok(Outcome::Saved) => "Login saved in Secret Service for this server and user.".into(),
-                        Ok(Outcome::SavedWithCleanupWarning) => "Login saved, but a previous server/user credential could not be removed from Secret Service.".into(),
-                        Ok(Outcome::Failed) if remembered == Ok(Outcome::Remembered) => "Secure storage failed; this session is memory-only. A previous saved login may remain until deletion is confirmed.".into(),
-                        Ok(Outcome::Failed) => "Secure storage and server preference could not be saved; this session is memory-only.".into(),
-                        _ => "Secure storage timed out or was interrupted; saving is unconfirmed. Continue in memory, but a credential may still appear in Secret Service. Log out to request deletion.".into(),
-                    });
-                    cx.notify();
-                }
-            });
-        }).detach();
-    }
-
-    fn start_restore(&mut self, cx: &mut Context<Self>) {
-        let Some(store) = &self.persistence else {
-            return;
-        };
-        let Some(selection) = self.credential.clone() else {
-            return;
-        };
-        if self.session.active().is_some()
-            || self.session.pending()
-            || selection.server != self.session.server()
-        {
-            return;
-        }
-        let Some(generation) = self.session.begin_restore() else {
-            return;
-        };
-        if selection.expires_at <= self.execution.unix_seconds() {
-            if self
-                .session
-                .finish_restore(generation, &selection, RestoreResult::Unavailable)
-                == RestoreDecision::Delete
-            {
-                self.invalidate_storage(cx);
-            }
-            cx.notify();
-            return;
-        }
-        let reply = store.read(selection.clone());
-        let server = self.session.restore_server(&selection.server);
-        // One budget covers the worker reply AND verification, not a fresh budget per step.
-        let result = self.execution.bounded(SECURE_STORE_DEADLINE, async move {
-            match reply.recv().await {
-                Ok(Outcome::Token(Some(token))) => match server {
-                    Ok(server) => SessionCoordinator::verify_saved(server, token).await,
-                    Err(_) => RestoreResult::Unavailable,
-                },
-                Ok(Outcome::Token(None)) => RestoreResult::MissingCredential,
-                _ => RestoreResult::Unavailable,
-            }
-        });
-        cx.spawn(async move |weak, cx| {
-            let result = result.recv().await.ok().flatten().unwrap_or(RestoreResult::Unavailable);
-            let _ = weak.update_in(cx, |view, window, cx| {
-                match view.session.finish_restore(generation, &selection, result) {
-                    RestoreDecision::Restored => {
-                        view.storage_feedback = Some("Login restored from Secret Service.".into());
-                        view.session_changed(window, cx);
-                    }
-                    RestoreDecision::Delete => view.invalidate_storage(cx),
-                    RestoreDecision::Retry => view.storage_feedback = Some("Could not verify saved login; use a memory-only login or retry restoration.".into()),
-                    RestoreDecision::Stale => return,
-                }
-                cx.notify();
-            });
-        }).detach();
-        cx.notify();
     }
 
     fn store_composer(&mut self, cx: &mut Context<Self>) {
@@ -967,16 +687,12 @@ impl Hamlet {
         cx.notify();
     }
 
-    /// Explicit temporary lifecycle wiring: clear local activity before any cleanup
-    /// work or screen removal. Saved-login decisions move to session in #55.
+    /// Synchronous local activity cleanup before screen removal; session owns storage work.
     fn session_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.session.take_lifecycle() {
-            Some(Lifecycle::Authenticated { save }) => {
+            Some(Lifecycle::Authenticated) => {
                 self.password
                     .update(cx, |input, cx| input.set_value("", window, cx));
-                if save {
-                    self.save_login(cx);
-                }
                 self.enter_authenticated(window, cx);
             }
             Some(Lifecycle::Invalidated | Lifecycle::ServerChanged) => {
@@ -987,7 +703,6 @@ impl Hamlet {
                 self.sync_composer(window, cx);
                 self.password
                     .update(cx, |input, cx| input.set_value("", window, cx));
-                self.invalidate_storage(cx);
             }
             None => {}
         }
@@ -1102,37 +817,29 @@ impl Render for Hamlet {
                     "Log in to start a session. Secure storage status appears below."
                 }));
         }
-        if self.persistence.is_some()
-            && !self.session.pending()
-            && (self.retryable_deletion().is_some()
-                || (self.session.active().is_none() && self.credential.is_some()))
-        {
+        if let Some(action) = self.session.storage_retry() {
             let retry = view.clone();
             surface = surface.child(
                 Button::new("retry-storage")
-                    .label(if self.retryable_deletion().is_some() {
-                        "Retry saved-login deletion"
-                    } else {
-                        "Retry saved-login restoration"
+                    .label(match action {
+                        StorageRetry::Deletion => "Retry saved-login deletion",
+                        StorageRetry::Restoration => "Retry saved-login restoration",
                     })
                     .on_click(move |_, _, cx| {
                         let _ = retry.update(cx, |view, cx| {
-                            if let Some(id) = view.retryable_deletion() {
-                                view.run_deletion(id, cx);
-                            } else {
-                                view.start_restore(cx);
-                            }
+                            view.session.retry_storage();
+                            cx.notify();
                         });
                     }),
             );
         }
-        if let Some(feedback) = &self.storage_feedback {
+        if let Some(feedback) = self.session.storage_feedback() {
             surface = surface.child(
                 div()
                     .id("storage-status")
-                    .aria_label(feedback.clone())
+                    .aria_label(feedback.to_owned())
                     .test_support()
-                    .child(feedback.clone()),
+                    .child(feedback.to_owned()),
             );
         }
         if let Some(feedback) = self.session.feedback() {

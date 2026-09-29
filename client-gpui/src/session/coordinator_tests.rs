@@ -24,7 +24,8 @@ fn application_session_authenticates_and_invalidates_without_a_screen(cx: &mut T
     let mut session = SessionCoordinator::new(
         HttpTransport::with_adapter(Arc::new(Login)),
         Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
-        DEFAULT_SERVER_URL.into(),
+        Config::default(),
+        None,
     );
     let updates = session.updates();
     session.submit("Ada".into(), "password".into(), false);
@@ -34,10 +35,7 @@ fn application_session_authenticates_and_invalidates_without_a_screen(cx: &mut T
     session.apply(updates.try_recv().unwrap());
     let generation = session.session_generation().unwrap();
     assert_eq!(session.active().unwrap().user.username, "Ada");
-    assert_eq!(
-        session.take_lifecycle(),
-        Some(Lifecycle::Authenticated { save: true })
-    );
+    assert_eq!(session.take_lifecycle(), Some(Lifecycle::Authenticated));
     session.logout();
     assert!(session.client_for(generation).is_none());
     assert_eq!(session.take_lifecycle(), Some(Lifecycle::Invalidated));
@@ -61,7 +59,8 @@ fn controlled(cx: &TestAppContext) -> (SessionCoordinator, async_channel::Receiv
         SessionCoordinator::new(
             HttpTransport::with_adapter(Arc::new(Gated(calls))),
             Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
-            DEFAULT_SERVER_URL.into(),
+            Config::default(),
+            None,
         ),
         requests,
     )
@@ -98,10 +97,7 @@ fn accept(
     cx.executor().run_until_parked();
     auth(calls.try_recv().unwrap(), name, expiry);
     deliver(cx, session);
-    assert_eq!(
-        session.take_lifecycle(),
-        Some(Lifecycle::Authenticated { save: true })
-    );
+    assert_eq!(session.take_lifecycle(), Some(Lifecycle::Authenticated));
     session.session_generation().unwrap()
 }
 
@@ -176,7 +172,8 @@ fn form_and_restore_intentions_cannot_orphan_an_active_expiry(cx: &mut TestAppCo
     let generation = accept(cx, &mut session, &calls, "Ada", 1_800_000_003);
     session.cancel_pending();
     assert_eq!(session.session_generation(), Some(generation));
-    assert!(session.begin_restore().is_none());
+    session.retry_storage();
+    assert!(!session.restore_pending());
     cx.background_executor.advance_clock(Duration::from_secs(3));
     deliver(cx, &mut session);
     assert!(session.client_for(generation).is_none());
@@ -187,7 +184,9 @@ fn form_and_restore_intentions_cannot_orphan_an_active_expiry(cx: &mut TestAppCo
 fn restored_context_uses_the_same_lifetime_and_server_change_invalidates_it(
     cx: &mut TestAppContext,
 ) {
-    let (mut session, calls) = controlled(cx);
+    use crate::test_support::storage::{Controlled, Shared};
+    use std::sync::{Condvar, Mutex};
+    cx.background_executor.allow_parking();
     let selection = crate::storage::Selection {
         server: DEFAULT_SERVER_URL.into(),
         user: User {
@@ -196,16 +195,46 @@ fn restored_context_uses_the_same_lifetime_and_server_change_invalidates_it(
         },
         expires_at: 1_800_000_003,
     };
-    let generation = session.begin_restore().unwrap();
-    let execution = Execution::controlled(cx.background_executor.clone(), 1_800_000_000);
-    let verified = execution.spawn(SessionCoordinator::verify_saved(
-        session.restore_server(&selection.server).unwrap(),
-        "synthetic-saved".into(),
+    let config = Config {
+        server: Some(selection.server.clone()),
+        saved: Some(selection.clone()),
+        pending_deletions: vec![],
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let shared: Shared = Arc::new((
+        Mutex::new((
+            vec![(
+                crate::storage::account(&selection),
+                "synthetic-saved".into(),
+            )],
+            false,
+            false,
+            false,
+            false,
+            false,
+        )),
+        Condvar::new(),
     ));
-    cx.executor().run_until_parked();
-    let verification = calls.try_recv().unwrap();
+    let (requests, calls) = async_channel::unbounded();
+    let mut session = SessionCoordinator::new(
+        HttpTransport::with_adapter(Arc::new(Gated(requests))),
+        Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
+        config,
+        Some(Persistence::start(Controlled(shared), Some(path))),
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let verification = loop {
+        cx.executor().run_until_parked();
+        if let Ok(call) = calls.try_recv() {
+            break call;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    };
     assert_eq!(verification.request.url().path(), "/api/v1/me");
-    assert!(session.client_for(generation).is_none());
+    assert!(session.active().is_none());
     verification
         .reply
         .try_send(Ok(Response::controlled(
@@ -213,15 +242,9 @@ fn restored_context_uses_the_same_lifetime_and_server_change_invalidates_it(
             r#"{"id":"Ada","username":"Ada"}"#,
         )))
         .unwrap();
-    cx.executor().run_until_parked();
-    assert_eq!(
-        session.finish_restore(generation, &selection, verified.try_recv().unwrap()),
-        RestoreDecision::Restored
-    );
-    assert_eq!(
-        session.take_lifecycle(),
-        Some(Lifecycle::Authenticated { save: false })
-    );
+    deliver(cx, &mut session);
+    assert_eq!(session.take_lifecycle(), Some(Lifecycle::Authenticated));
+    let generation = session.session_generation().unwrap();
     assert!(session.client_for(generation).is_some());
     session.change_server("https://other.example".into());
     assert!(session.active().is_none());

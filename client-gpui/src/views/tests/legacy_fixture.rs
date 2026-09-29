@@ -26,7 +26,7 @@ mod session_lifecycle;
 
 use super::Hamlet;
 use crate::api::{ApiError as AuthError, ApiFuture, HttpTransport};
-use crate::persistence::{Outcome, Persistence};
+use crate::persistence::Persistence;
 use crate::runtime::runtime;
 use crate::test_support::storage::{Controlled, Shared};
 use bound_auth::{BoundAuth, Request, RequestAdapter, Response, StatusCode};

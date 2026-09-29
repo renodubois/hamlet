@@ -1,8 +1,12 @@
 //! Application-lifetime session coordination, independent of either rendered screen.
 //! The host delivers opaque updates and observes lifecycle changes; it never dispatches auth.
-//! Saved-login workflow decisions remain behind temporary hooks until #55.
+//! Saved-login workflows share this owner, never the lifetime of a rendered screen.
 
+mod saved_login;
 mod state;
+use crate::storage::{Config, Persistence};
+pub(crate) use saved_login::StorageRetry;
+use saved_login::{SavedLogin, SavedUpdate};
 
 use crate::api::HttpTransport;
 use crate::runtime::{Execution, Work};
@@ -10,7 +14,7 @@ use std::time::Duration;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Lifecycle {
-    Authenticated { save: bool },
+    Authenticated,
     Invalidated,
     ServerChanged,
 }
@@ -25,6 +29,7 @@ enum Update {
     ),
     Expiry(u64),
     Revocation(u64, Result<(), AuthError>),
+    Saved(SavedUpdate),
 }
 
 pub(crate) struct SessionCoordinator {
@@ -35,14 +40,26 @@ pub(crate) struct SessionCoordinator {
     deliver: async_channel::Sender<SessionUpdate>,
     expiry: Option<Work>,
     lifecycle: Option<Lifecycle>,
+    saved: SavedLogin,
 }
 
 impl SessionCoordinator {
-    pub fn new(api: HttpTransport, execution: Execution, server: String) -> Self {
+    pub fn new(
+        api: HttpTransport,
+        execution: Execution,
+        config: Config,
+        persistence: Option<Persistence>,
+    ) -> Self {
         let (deliver, updates) = async_channel::unbounded();
         let mut state = AppSession::new();
-        state.change_server(server);
-        Self {
+        state.change_server(
+            config
+                .server
+                .clone()
+                .unwrap_or_else(|| DEFAULT_SERVER_URL.into()),
+        );
+        let saved = SavedLogin::new(config, persistence, &state.server);
+        let mut coordinator = Self {
             state,
             api,
             execution,
@@ -50,7 +67,10 @@ impl SessionCoordinator {
             deliver,
             expiry: None,
             lifecycle: None,
-        }
+            saved,
+        };
+        coordinator.start_saved_login();
+        coordinator
     }
 
     pub fn updates(&self) -> async_channel::Receiver<SessionUpdate> {
@@ -105,6 +125,7 @@ impl SessionCoordinator {
 
     pub fn apply(&mut self, update: SessionUpdate) {
         match update.0 {
+            Update::Saved(update) => self.apply_saved(update),
             Update::Authentication(request, result, signup) => {
                 let accepted = if signup {
                     self.state
@@ -148,7 +169,10 @@ impl SessionCoordinator {
                 .await;
         });
         self.expiry = Some(work);
-        self.lifecycle = Some(Lifecycle::Authenticated { save });
+        self.lifecycle = Some(Lifecycle::Authenticated);
+        if save {
+            self.save_login();
+        }
     }
 
     fn cancel_expiry(&mut self) {
@@ -159,12 +183,14 @@ impl SessionCoordinator {
     fn invalidated(&mut self) {
         self.cancel_expiry();
         self.lifecycle = Some(Lifecycle::Invalidated);
+        self.invalidate_storage();
     }
     pub fn change_server(&mut self, server: String) {
         if self.server() != server {
             self.state.change_server(server);
             self.cancel_expiry();
             self.lifecycle = Some(Lifecycle::ServerChanged);
+            self.invalidate_storage();
         }
     }
     pub fn cancel_pending(&mut self) {
@@ -205,37 +231,8 @@ impl SessionCoordinator {
         }
     }
 
-    // Temporary saved-login lifecycle hooks. No active-context owner exists in the shell.
     pub fn restore_pending(&self) -> bool {
         self.state.restore_pending()
-    }
-    pub fn begin_restore(&mut self) -> Option<u64> {
-        if self.active().is_some() || self.pending() {
-            return None;
-        }
-        Some(self.state.begin_restore())
-    }
-    pub fn restore_server(&self, server: &str) -> Result<crate::api::ServerClient, AuthError> {
-        self.api.server(server)
-    }
-    pub fn finish_restore(
-        &mut self,
-        generation: u64,
-        selection: &crate::storage::Selection,
-        result: RestoreResult,
-    ) -> RestoreDecision {
-        let decision = self.state.finish_restore(
-            generation,
-            &selection.server,
-            &selection.user,
-            selection.expires_at,
-            result,
-            self.execution.unix_seconds(),
-        );
-        if decision == RestoreDecision::Restored {
-            self.activated(false);
-        }
-        decision
     }
 }
 
@@ -320,8 +317,8 @@ impl AppSession {
 
 impl SessionCoordinator {
     /// The candidate remains inside this future until current-user verification completes.
-    /// Identity, expiry and generation still gate activation in `finish_restore`.
-    pub async fn verify_saved(server: crate::api::ServerClient, token: String) -> RestoreResult {
+    /// Identity, expiry and generation still gate activation in the saved-login workflow.
+    async fn verify_saved(server: crate::api::ServerClient, token: String) -> RestoreResult {
         let Ok(client) = server.restore_candidate(token) else {
             return RestoreResult::MissingCredential;
         };
@@ -345,3 +342,5 @@ impl AppSession {
 mod binding_tests;
 #[cfg(test)]
 mod coordinator_tests;
+#[cfg(test)]
+mod saved_login_tests;
