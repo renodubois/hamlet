@@ -48,7 +48,7 @@ fn path() -> Option<PathBuf> {
 pub fn load() -> Config {
     load_at(path().as_deref())
 }
-fn load_at(path: Option<&std::path::Path>) -> Config {
+pub(crate) fn load_at(path: Option<&std::path::Path>) -> Config {
     let Some(path) = path else {
         return Config::default();
     };

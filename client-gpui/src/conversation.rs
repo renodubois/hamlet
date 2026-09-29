@@ -1282,6 +1282,213 @@ mod tests {
     }
 
     #[test]
+    fn poll_before_send_confirmation_requires_a_fresh_read_and_deduplicates_by_id() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let list = view.start(&session).unwrap();
+        let initial = view
+            .complete_channels(&mut session, &list, Ok(channels()))
+            .unwrap();
+        let m = |id: &str| Message {
+            id: id.into(),
+            channel_id: "z".into(),
+            author_id: "u".into(),
+            author_name: "Ada".into(),
+            text: "same text".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let page = |ids: &[&str]| Page {
+            items: ids.iter().map(|id| m(id)).collect(),
+            next_cursor: None,
+        };
+        view.complete_history(&mut session, &initial, Ok(page(&["8"])));
+        view.set_draft("z", "same text".into());
+        let send = view.send(&session).unwrap();
+        let poll = view.refresh_history(&session).unwrap();
+        assert!(view.refresh_history(&session).is_none());
+        // The poll observes the publication before the POST response arrives.
+        view.complete_history(&mut session, &poll, Ok(page(&["10", "9", "8"])));
+        assert_eq!(view.draft("z"), "same text");
+        assert_eq!(
+            view.complete_send(&mut session, &send, Ok(m("10")), 0),
+            SendOutcome::Confirmed
+        );
+        assert_eq!(view.draft("z"), "");
+        let confirmation_read = view.reconcile_confirmed(&session).unwrap();
+        view.complete_history(
+            &mut session,
+            &confirmation_read,
+            Ok(page(&["10", "9", "8"])),
+        );
+        assert_eq!(
+            view.history.get("z"),
+            Some(&Load::Ready(page(&["10", "9", "8"]).items))
+        );
+        assert!(view.confirmed.is_empty());
+        assert!(view.after_history_read(&session, true).is_none());
+    }
+
+    #[test]
+    fn uncertain_send_while_polling_switches_channels_never_replays_or_clears_draft() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let list = view.start(&session).unwrap();
+        let first = view
+            .complete_channels(&mut session, &list, Ok(channels()))
+            .unwrap();
+        let m = |id: &str| Message {
+            id: id.into(),
+            channel_id: "z".into(),
+            author_id: "u".into(),
+            author_name: "Ada".into(),
+            text: "maybe".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        view.complete_history(
+            &mut session,
+            &first,
+            Ok(Page {
+                items: vec![m("8")],
+                next_cursor: None,
+            }),
+        );
+        view.set_draft("z", "maybe".into());
+        let send = view.send(&session).unwrap();
+        let poll = view.refresh_history(&session).unwrap();
+        let other = view.select(&session, "a").unwrap();
+        assert_eq!(
+            view.complete_send(&mut session, &send, Err(AuthError::Unavailable), 0),
+            SendOutcome::Uncertain
+        );
+        view.complete_history(&mut session, &poll, Err(AuthError::AlreadyInvalid));
+        assert!(
+            session.active.is_some(),
+            "canceled poll cannot invalidate the session"
+        );
+        assert!(view.after_history_read(&session, false).is_none());
+        assert_eq!(view.draft("z"), "maybe");
+        view.complete_history(
+            &mut session,
+            &other,
+            Ok(Page {
+                items: vec![],
+                next_cursor: None,
+            }),
+        );
+        assert_eq!(view.draft("z"), "maybe");
+        let reconcile = view.select(&session, "z").unwrap();
+        assert!(reconcile.is_catchup());
+        assert!(view.uncertain.is_empty());
+        assert!(view.send_pending.is_empty());
+        assert!(view.send_feedback.get("z").unwrap().contains("may already"));
+        view.complete_history(
+            &mut session,
+            &reconcile,
+            Ok(Page {
+                items: vec![m("10"), m("9"), m("8")],
+                next_cursor: None,
+            }),
+        );
+        assert_eq!(
+            view.draft("z"),
+            "maybe",
+            "matching text is not confirmation"
+        );
+        assert_eq!(
+            view.history.get("z"),
+            Some(&Load::Ready(vec![m("10"), m("9"), m("8")]))
+        );
+    }
+
+    #[test]
+    fn logout_expiry_and_old_server_rejection_cannot_settle_pending_poll_or_write() {
+        for expire in [false, true] {
+            let mut session = logged_in();
+            let mut view = Conversation::default();
+            let list = view.start(&session).unwrap();
+            let first = view
+                .complete_channels(&mut session, &list, Ok(channels()))
+                .unwrap();
+            view.complete_history(
+                &mut session,
+                &first,
+                Ok(Page {
+                    items: vec![],
+                    next_cursor: None,
+                }),
+            );
+            view.set_draft("z", "private".into());
+            let send = view.send(&session).unwrap();
+            let poll = view.refresh_history(&session).unwrap();
+            if expire {
+                session.expire(100);
+            } else {
+                session.logout();
+            }
+            view.clear();
+            assert_eq!(
+                view.complete_send(&mut session, &send, Err(AuthError::AlreadyInvalid), 0),
+                SendOutcome::Stale
+            );
+            view.complete_history(
+                &mut session,
+                &poll,
+                Ok(Page {
+                    items: vec![],
+                    next_cursor: None,
+                }),
+            );
+            assert!(view.drafts.is_empty());
+            assert!(view.history.is_empty());
+            assert!(session.active.is_none());
+        }
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let old_list = view.start(&session).unwrap();
+        let old_read = view
+            .complete_channels(&mut session, &old_list, Ok(channels()))
+            .unwrap();
+        view.complete_history(
+            &mut session,
+            &old_read,
+            Ok(Page {
+                items: vec![],
+                next_cursor: None,
+            }),
+        );
+        view.set_draft("z", "old".into());
+        let old_send = view.send(&session).unwrap();
+        let old_poll = view.refresh_history(&session).unwrap();
+        session.change_server("https://other.example".into());
+        view.clear();
+        session.username = "bob".into();
+        session.password = "password".into();
+        let login = session.submit().unwrap();
+        session.complete_login(
+            login,
+            Ok(Login {
+                user: User {
+                    id: "other".into(),
+                    username: "bob".into(),
+                },
+                token: "new-token".into(),
+                expires_at: 100,
+            }),
+            0,
+        );
+        let new_list = view.start(&session).unwrap();
+        assert_eq!(
+            view.complete_send(&mut session, &old_send, Err(AuthError::AlreadyInvalid), 0),
+            SendOutcome::Stale
+        );
+        view.complete_history(&mut session, &old_poll, Err(AuthError::AlreadyInvalid));
+        view.complete_channels(&mut session, &old_list, Err(AuthError::AlreadyInvalid));
+        assert!(session.active.is_some());
+        assert!(view.is_current_channels(&new_list));
+        assert!(view.drafts.is_empty());
+    }
+
+    #[test]
     fn ordered_channels_first_selection_and_only_selected_history() {
         let mut session = logged_in();
         let mut view = Conversation::default();

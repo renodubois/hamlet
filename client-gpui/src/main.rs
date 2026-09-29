@@ -2588,6 +2588,254 @@ mod tests {
         });
     }
 
+    // Exercises the actual signup button -> Hamlet::submit -> enter_authenticated ->
+    // save_login chain. The worker is real, but its Store is controlled, not Secret Service.
+    struct PersistentSignupAuth {
+        verified: Arc<AtomicUsize>,
+        revoked: Arc<AtomicBool>,
+    }
+    impl AuthApi for PersistentSignupAuth {
+        fn signup(
+            &self,
+            server: String,
+            username: String,
+            password: String,
+        ) -> ApiFuture<Result<Login, AuthError>> {
+            assert_eq!(server, crate::session::DEFAULT_SERVER_URL);
+            assert_eq!(username, "Alice_1");
+            assert_eq!(password, "long password");
+            Box::pin(async move {
+                Ok(Login {
+                    user: User {
+                        id: "42".into(),
+                        username,
+                    },
+                    token: "controlled-signup-token".into(),
+                    expires_at: 4_070_908_800,
+                })
+            })
+        }
+        fn login(&self, _: String, _: String, _: String) -> ApiFuture<Result<Login, AuthError>> {
+            Box::pin(async { panic!("signup must not call login") })
+        }
+        fn current_user(
+            &self,
+            server: String,
+            token: String,
+        ) -> ApiFuture<Result<User, AuthError>> {
+            assert_eq!(server, crate::session::DEFAULT_SERVER_URL);
+            self.verified.fetch_add(1, Ordering::SeqCst);
+            let valid = token == "controlled-signup-token" && !self.revoked.load(Ordering::SeqCst);
+            Box::pin(async move {
+                if valid {
+                    Ok(User {
+                        id: "42".into(),
+                        username: "Alice_1".into(),
+                    })
+                } else {
+                    Err(AuthError::AlreadyInvalid)
+                }
+            })
+        }
+        fn logout(&self, _: String, token: String) -> ApiFuture<Result<(), AuthError>> {
+            assert_eq!(token, "controlled-signup-token");
+            self.revoked.store(true, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+        fn channels(
+            &self,
+            s: String,
+            t: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
+            TestAuth.channels(s, t)
+        }
+        fn create_channel(
+            &self,
+            s: String,
+            t: String,
+            n: String,
+        ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
+            TestAuth.create_channel(s, t, n)
+        }
+        fn history(
+            &self,
+            s: String,
+            t: String,
+            id: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
+            TestAuth.history(s, t, id)
+        }
+    }
+
+    #[gpui_kit::test]
+    fn signup_controls_save_and_restore_through_view_and_controlled_worker(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let shared: Shared = Arc::new((
+            Mutex::new((vec![], false, false, false, false, false)),
+            Condvar::new(),
+        ));
+        let verified = Arc::new(AtomicUsize::new(0));
+        let revoked = Arc::new(AtomicBool::new(false));
+        let api: Arc<dyn AuthApi> = Arc::new(PersistentSignupAuth {
+            verified: verified.clone(),
+            revoked: revoked.clone(),
+        });
+        let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let target = saved.clone();
+        let first_store = shared.clone();
+        let first_path = path.clone();
+        let first_api = api.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view = Hamlet::new(window, cx, first_api);
+                view.persistence = Some(Persistence::start(
+                    Controlled(first_store),
+                    Some(first_path),
+                ));
+                view
+            });
+            *target.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let first: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("auth-mode", cx);
+            window.click("username", cx);
+            window.input("Alice_1", cx);
+            window.click("password", cx);
+            window.input("long password", cx);
+            window.click("signup", cx);
+        });
+        // The signup future and storage worker run on foreign threads. Pump GPUI until
+        // both callbacks have been delivered, without a timing-dependent sleep.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            cx.run_until_parked();
+            let saved = cx.update(|_, cx| {
+                let view = first.read(cx);
+                view.storage_feedback.as_deref()
+                    == Some("Login saved in Secret Service for this server and user.")
+            });
+            if saved {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "signup/storage did not finish"
+            );
+            std::thread::yield_now();
+        }
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find("session-status")
+                    .label()
+                    .unwrap()
+                    .contains("Alice_1")
+            );
+            assert!(window.find("message-000000000000001").label().is_some());
+            let view = first.read(cx);
+            assert!(view.session.password.is_empty());
+            assert_eq!(view.password.read(cx).text().len(), 0);
+        });
+        let config = crate::persistence::load_at(Some(&path));
+        let selection = config.saved.clone().expect("signup stored selection");
+        assert_eq!(
+            config.server.as_deref(),
+            Some(crate::session::DEFAULT_SERVER_URL)
+        );
+        assert_eq!(selection.user.username, "Alice_1");
+        let json = std::fs::read_to_string(&path).unwrap();
+        assert!(!json.contains("long password") && !json.contains("controlled-signup-token"));
+        assert_eq!(
+            shared.0.lock().unwrap().0.as_slice(),
+            &[(
+                crate::persistence::account(&selection),
+                "controlled-signup-token".into()
+            )]
+        );
+
+        // Simulate a fresh view/worker using only the saved metadata and the shared
+        // controlled credential backend. start_restore must read and verify identity.
+        let restored = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let target = restored.clone();
+        let second_store = shared.clone();
+        let second_path = path.clone();
+        let second_api = api.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view = Hamlet::new(window, cx, second_api);
+                view.persistence = Some(Persistence::start(
+                    Controlled(second_store),
+                    Some(second_path),
+                ));
+                view.credential = config.saved;
+                view
+            });
+            *target.borrow_mut() = Some(view.clone());
+            view.update(cx, |view, cx| view.start_restore(cx));
+            Root::new(view, window, cx)
+        });
+        let restarted: gpui_kit::Entity<Hamlet> = restored.borrow().as_ref().unwrap().clone();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            cx.run_until_parked();
+            let ready = cx.update(|_, cx| restarted.read(cx).session.active.is_some());
+            if ready {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "restoration did not finish"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            verified.load(Ordering::SeqCst),
+            1,
+            "restore must check /me identity"
+        );
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find("session-status")
+                    .label()
+                    .unwrap()
+                    .contains("Alice_1")
+            );
+            assert_eq!(
+                restarted.read(cx).session.active.as_ref().unwrap().user,
+                selection.user
+            );
+            window.click("logout", cx);
+            window.render_frame(cx);
+            assert!(restarted.read(cx).session.active.is_none());
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            cx.run_until_parked();
+            if crate::persistence::load_at(Some(&path)).saved.is_none()
+                && shared.0.lock().unwrap().0.is_empty()
+                && revoked.load(Ordering::SeqCst)
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "logout cleanup did not finish"
+            );
+            std::thread::yield_now();
+        }
+        assert!(restarted.read_with(cx, |view, _| view.deletions.is_empty()));
+    }
+
     #[gpui_kit::test]
     fn pending_signup_is_inert_and_preserves_editable_inputs(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
@@ -3262,6 +3510,155 @@ mod tests {
                 panic!("history not ready")
             };
             assert_eq!(messages.iter().filter(|m| m.id == "20").count(), 1);
+        });
+    }
+
+    struct RaceAuth {
+        pages: std::sync::mpsc::Sender<(Option<String>, PageReply)>,
+        sends: Arc<Mutex<Vec<Sent>>>,
+    }
+    impl AuthApi for RaceAuth {
+        fn signup(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
+            TestAuth.signup(s, u, p)
+        }
+        fn login(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
+            TestAuth.login(s, u, p)
+        }
+        fn logout(&self, s: String, t: String) -> ApiFuture<Result<(), AuthError>> {
+            TestAuth.logout(s, t)
+        }
+        fn channels(
+            &self,
+            s: String,
+            t: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
+            TestAuth.channels(s, t)
+        }
+        fn create_channel(
+            &self,
+            s: String,
+            t: String,
+            n: String,
+        ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
+            TestAuth.create_channel(s, t, n)
+        }
+        fn history(
+            &self,
+            _: String,
+            _: String,
+            _: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
+            Box::pin(async { unreachable!() })
+        }
+        fn history_page(
+            &self,
+            _: String,
+            _: String,
+            _: String,
+            before: Option<String>,
+        ) -> ApiFuture<Result<crate::conversation::Page, AuthError>> {
+            let tx = self.pages.clone();
+            Box::pin(async move {
+                let (reply, rx) = async_channel::bounded(1);
+                tx.send((before, reply)).unwrap();
+                rx.recv().await.unwrap()
+            })
+        }
+        fn send_message(
+            &self,
+            _: String,
+            _: String,
+            id: String,
+            text: String,
+        ) -> ApiFuture<Result<crate::conversation::Message, AuthError>> {
+            let (tx, rx) = async_channel::bounded(1);
+            self.sends.lock().unwrap().push((id, text, tx));
+            Box::pin(async move { rx.recv().await.unwrap() })
+        }
+    }
+
+    #[gpui_kit::test]
+    fn polling_and_send_confirmation_share_one_headless_history_without_duplicate(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let (pages_tx, pages) = std::sync::mpsc::channel();
+        let sends = Arc::new(Mutex::new(Vec::<Sent>::new()));
+        let captured = sends.clone();
+        let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let stored = saved.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Hamlet::new(
+                    window,
+                    cx,
+                    Arc::new(RaceAuth {
+                        pages: pages_tx,
+                        sends: captured,
+                    }),
+                )
+            });
+            *stored.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
+        cx.deactivate_window();
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        let (_, initial) = pages.recv_timeout(Duration::from_secs(2)).unwrap();
+        let message = |id: &str| crate::conversation::Message {
+            id: id.into(),
+            channel_id: "000000000000001".into(),
+            author_id: "42".into(),
+            author_name: "Ada".into(),
+            text: "same".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let page = |ids: &[&str]| crate::conversation::Page {
+            items: ids.iter().map(|id| message(id)).collect(),
+            next_cursor: None,
+        };
+        initial.send_blocking(Ok(page(&["8"]))).unwrap();
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("composer", cx);
+            window.input("same", cx);
+            window.click("send-message", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(sends.lock().unwrap().len(), 1);
+        cx.update(|_, cx| view.update(cx, |v, cx| v.poll_at(Duration::from_secs(4), cx)));
+        cx.run_until_parked();
+        let (_, poll) = pages.recv_timeout(Duration::from_secs(2)).unwrap();
+        poll.send_blocking(Ok(page(&["10", "9", "8"]))).unwrap();
+        cx.run_until_parked();
+        let (_, text, confirmation) = sends.lock().unwrap().remove(0);
+        assert_eq!(text, "same");
+        confirmation.try_send(Ok(message("10"))).unwrap();
+        cx.run_until_parked();
+        let (_, read) = pages.recv_timeout(Duration::from_secs(2)).unwrap();
+        read.send_blocking(Ok(page(&["10", "9", "8"]))).unwrap();
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("message-10").label(), Some("same"));
+            assert_eq!(view.read(cx).composer.read(cx).text().to_string(), "");
+            assert!(
+                matches!(view.read(cx).conversation.history.get("000000000000001"),
+                Some(crate::conversation::Load::Ready(items)) if items.len() == 3)
+            );
+            assert!(sends.lock().unwrap().is_empty());
+            assert!(pages.try_recv().is_err());
         });
     }
 

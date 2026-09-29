@@ -1150,6 +1150,116 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn signup_uses_shared_persistent_session_and_verified_restore_against_rewrite_routes() {
+        use crate::persistence::{Outcome, Persistence, Selection, tests::Controlled};
+        use crate::session::{AppSession, RestoreDecision, RestoreResult};
+        use actix_web::{App, HttpServer, web};
+        use std::sync::{Arc, Condvar, Mutex};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let db = hamlet::connect_to_database(&format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("signup-restore.db").display()
+        ))
+        .await
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = HttpServer::new(move || {
+            App::new()
+                .app_data(web::Data::new(db.clone()))
+                .configure(hamlet::routes)
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+        let handle = server.handle();
+        actix_web::rt::spawn(server);
+        let api: Arc<dyn AuthApi> = Arc::new(HttpAuth::new());
+        let mut session = AppSession::new(api.clone());
+        session.change_server(url.clone());
+        session.username = "Alice".into();
+        session.password = "long password".into();
+        let request = session.submit_signup().unwrap();
+        let created = api
+            .signup(
+                request.server.clone(),
+                request.username.clone(),
+                request.password.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(session.complete_signup(request, Ok(created), chrono::Utc::now().timestamp()));
+        let active = session.active.as_ref().unwrap();
+        assert!(session.password.is_empty());
+        let selected = Selection {
+            server: active.server.clone(),
+            user: active.user.clone(),
+            expires_at: active.expires_at,
+        };
+        let token = active.token().to_owned();
+        let shared = Arc::new((
+            Mutex::new((vec![], false, false, false, false, false)),
+            Condvar::new(),
+        ));
+        let store = Persistence::start(Controlled(shared.clone()), Some(path.clone()));
+        assert_eq!(
+            store.remember(url.clone()).recv().await.unwrap(),
+            Outcome::Remembered
+        );
+        assert_eq!(
+            store
+                .save(selected.clone(), token.clone())
+                .recv()
+                .await
+                .unwrap(),
+            Outcome::Saved
+        );
+        let metadata = std::fs::read_to_string(&path).unwrap();
+        assert!(!metadata.contains(&token) && !metadata.contains("long password"));
+        // This is the same restoration decision path used by the view after reading the store.
+        let mut restarted = AppSession::new(api.clone());
+        restarted.change_server(url.clone());
+        let generation = restarted.begin_restore();
+        let stored = match store.read(selected.clone()).recv().await.unwrap() {
+            Outcome::Token(Some(token)) => token,
+            _ => panic!("saved credential missing"),
+        };
+        let user = api.current_user(url.clone(), stored.clone()).await.unwrap();
+        assert_eq!(
+            restarted.finish_restore(
+                generation,
+                &url,
+                &selected.user,
+                selected.expires_at,
+                RestoreResult::Verified {
+                    user,
+                    token: stored
+                },
+                chrono::Utc::now().timestamp()
+            ),
+            RestoreDecision::Restored
+        );
+        assert_eq!(restarted.active.as_ref().unwrap().user, selected.user);
+        let revocation = restarted.logout().unwrap();
+        assert!(restarted.active.is_none());
+        assert_eq!(
+            store.delete(selected.clone()).recv().await.unwrap(),
+            Outcome::Deleted
+        );
+        api.logout(revocation.server, revocation.token)
+            .await
+            .unwrap();
+        assert_eq!(store.read(selected).recv().await.unwrap(), Outcome::Stale);
+        assert!(matches!(
+            api.current_user(url, token).await,
+            Err(AuthError::AlreadyInvalid)
+        ));
+        assert!(shared.0.lock().unwrap().0.is_empty());
+        handle.stop(true).await;
+    }
+
+    #[actix_web::test]
     async fn second_user_activity_is_found_by_focused_polling_against_unchanged_routes() {
         use crate::polling::{Polling, Resource};
         use actix_web::{App, HttpServer, web};
