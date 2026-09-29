@@ -10,6 +10,8 @@ mod authentication;
 mod channels;
 #[path = "composer.rs"]
 mod composer;
+#[path = "execution.rs"]
+mod execution;
 #[path = "history.rs"]
 mod history;
 #[path = "journeys.rs"]
@@ -46,7 +48,16 @@ use std::time::Duration;
 // startup or poll timer. Both constructors use the same root initialization code.
 impl Hamlet {
     fn new(window: &mut Window, cx: &mut Context<Self>, api: Arc<dyn AuthApi>) -> Self {
-        Self::with_dependencies(window, cx, api, crate::persistence::Config::default(), None)
+        let execution =
+            crate::runtime::Execution::controlled(cx.background_executor().clone(), 1_800_000_000);
+        Self::with_dependencies(
+            window,
+            cx,
+            api,
+            crate::persistence::Config::default(),
+            None,
+            execution,
+        )
     }
 }
 

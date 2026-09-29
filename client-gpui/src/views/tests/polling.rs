@@ -136,11 +136,14 @@ fn poll_catches_up_multiple_pages_without_duplicate_work_and_switch_cancels_late
     });
     cx.run_until_parked();
     let (_, selected) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
-    late.send_blocking(Ok(crate::conversation::Page {
-        items: vec![message(999)],
-        next_cursor: None,
-    }))
-    .unwrap();
+    // The common path now cancels the controlled read just as production does.
+    assert!(
+        late.send_blocking(Ok(crate::conversation::Page {
+            items: vec![message(999)],
+            next_cursor: None,
+        }))
+        .is_err()
+    );
     selected
         .send_blocking(Ok(crate::conversation::Page {
             items: vec![],

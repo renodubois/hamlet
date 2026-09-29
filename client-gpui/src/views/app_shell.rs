@@ -6,7 +6,7 @@
 use crate::conversation::polling::{Polling, Resource};
 use crate::conversation::{self, Conversation, Load, Older, ReadRequest};
 use crate::persistence::{self, Outcome, Persistence, Selection};
-use crate::runtime::{bounded, runtime};
+use crate::runtime::{Execution, Work};
 use crate::session::{
     self, AppSession, AuthApi, DEFAULT_SERVER_URL, RestoreDecision, RestoreResult,
 };
@@ -23,32 +23,30 @@ use gpui_kit::component::input::{Input, Textarea};
 use gpui_kit::*;
 use std::{
     sync::Arc,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
-/// Create the legacy root and start the same restoration/polling lifecycle as before #48.
+// Workflow policy stays with this temporary coordinator, not storage or runtime.
+const SECURE_STORE_DEADLINE: Duration = Duration::from_secs(10);
+const READ_SEND_DEADLINE: Duration = Duration::from_secs(9);
+
+/// Create the legacy root and start restoration and polling with supplied execution.
 pub(crate) fn open(
     window: &mut Window,
     cx: &mut App,
     api: Arc<dyn AuthApi>,
     config: persistence::Config,
     persistence: Option<Persistence>,
+    execution: Execution,
 ) -> Entity<Hamlet> {
-    let view = cx.new(|cx| Hamlet::with_dependencies(window, cx, api, config, persistence));
+    let view =
+        cx.new(|cx| Hamlet::with_dependencies(window, cx, api, config, persistence, execution));
     view.update(cx, |view, cx| {
         view.resume_deletions(cx);
         view.start_restore(cx);
     });
-    #[cfg(not(test))]
     view.update(cx, |view, cx| view.start_poll_timer(cx));
     view
-}
-
-fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
 }
 
 fn hint_history_row_heights(list: &ListState) {
@@ -96,7 +94,8 @@ pub(crate) struct Hamlet {
     polling: Polling,
     poll_clock: Instant,
     history_list: ListState,
-    history_task: Option<tokio::task::JoinHandle<()>>,
+    history_task: Option<Work>,
+    execution: Execution,
     history_serial: u64,
     server: Entity<InputBaseState<InputMode>>,
     username: Entity<InputBaseState<InputMode>>,
@@ -124,6 +123,7 @@ impl Hamlet {
         api: Arc<dyn AuthApi>,
         config: persistence::Config,
         persistence: Option<Persistence>,
+        execution: Execution,
     ) -> Self {
         let initial_server = config.server.as_deref().unwrap_or(DEFAULT_SERVER_URL);
         let server = cx.new(|cx| InputState::new(window, cx).default_value(initial_server));
@@ -207,7 +207,8 @@ impl Hamlet {
             history_focus: cx.focus_handle(),
             _window_activation: window_activation,
             polling: Polling::default(),
-            poll_clock: Instant::now(),
+            poll_clock: execution.now(),
+            execution,
             history_list,
             history_task: None,
             history_serial: 0,
@@ -316,7 +317,9 @@ impl Hamlet {
         };
         deletion.in_flight = true;
         let queued = store.delete(deletion.selection.clone());
-        let reply = bounded(persistence::DEADLINE, async move { queued.recv().await });
+        let reply = self
+            .execution
+            .bounded(SECURE_STORE_DEADLINE, async move { queued.recv().await });
         self.storage_feedback = Some("Removing saved login from Secret Service…".into());
         cx.spawn(async move |weak, cx| {
             let outcome = reply.recv().await;
@@ -378,7 +381,7 @@ impl Hamlet {
         // Remember successful authentication independently of secure-store success.
         let remembered = store.remember(selection.server.clone());
         let queued = store.save(selection.clone(), session.token().into());
-        let reply = bounded(persistence::DEADLINE, async move {
+        let reply = self.execution.bounded(SECURE_STORE_DEADLINE, async move {
             (remembered.recv().await, queued.recv().await)
         });
         self.storage_serial = self.storage_serial.wrapping_add(1);
@@ -428,14 +431,14 @@ impl Hamlet {
             return;
         }
         let generation = self.session.begin_restore();
-        if selection.expires_at <= now() {
+        if selection.expires_at <= self.execution.unix_seconds() {
             if self.session.finish_restore(
                 generation,
                 &selection.server,
                 &selection.user,
                 selection.expires_at,
                 RestoreResult::Unavailable,
-                now(),
+                self.execution.unix_seconds(),
             ) == RestoreDecision::Delete
             {
                 self.invalidate_storage(cx);
@@ -446,18 +449,16 @@ impl Hamlet {
         let reply = store.read(selection.clone());
         let api = self.session.api.clone();
         let server = selection.server.clone();
-        let result = bounded(persistence::DEADLINE, async move {
+        // One budget covers the worker reply AND verification, not a fresh budget per step.
+        let result = self.execution.bounded(SECURE_STORE_DEADLINE, async move {
             match reply.recv().await {
-                Ok(Outcome::Token(Some(token))) if !token.is_empty() => match tokio::time::timeout(
-                    persistence::DEADLINE,
-                    api.current_user(server, token.clone()),
-                )
-                .await
-                {
-                    Ok(Ok(user)) => RestoreResult::Verified { user, token },
-                    Ok(Err(session::AuthError::AlreadyInvalid)) => RestoreResult::Rejected,
-                    _ => RestoreResult::Unavailable,
-                },
+                Ok(Outcome::Token(Some(token))) if !token.is_empty() => {
+                    match api.current_user(server, token.clone()).await {
+                        Ok(user) => RestoreResult::Verified { user, token },
+                        Err(session::AuthError::AlreadyInvalid) => RestoreResult::Rejected,
+                        _ => RestoreResult::Unavailable,
+                    }
+                }
                 Ok(Outcome::Token(None)) => RestoreResult::MissingCredential,
                 _ => RestoreResult::Unavailable,
             }
@@ -465,7 +466,7 @@ impl Hamlet {
         cx.spawn(async move |weak, cx| {
             let result = result.recv().await.ok().flatten().unwrap_or(RestoreResult::Unavailable);
             let _ = weak.update_in(cx, |view, window, cx| {
-                match view.session.finish_restore(generation, &selection.server, &selection.user, selection.expires_at, result, now()) {
+                match view.session.finish_restore(generation, &selection.server, &selection.user, selection.expires_at, result, view.execution.unix_seconds()) {
                     RestoreDecision::Restored => {
                         view.storage_feedback = Some("Login restored from Secret Service.".into());
                         view.enter_authenticated(window, cx);
@@ -515,42 +516,20 @@ impl Hamlet {
         };
         let api = self.session.api.clone();
         let work = request.clone();
-        // Timeout also bounds controlled adapters; aborting a timed-out future never replays it.
-        #[cfg(test)]
-        {
-            let timeout = cx.background_executor().timer(Duration::from_secs(9));
-            cx.spawn(async move |weak, cx| {
-            let result = tokio::select! {
-                result = api.send_message(work.server, work.token, work.channel_id, work.text) => result,
-                _ = timeout => Err(session::AuthError::Unavailable),
-            };
-            let _ = weak.update_in(cx, |view, window, cx| {
-                view.finish_send(request, result, window, cx)
-            });
+        // Timeout never proves non-delivery and never replays a write.
+        let receive = self.execution.bounded(READ_SEND_DEADLINE, async move {
+            api.send_message(work.server, work.token, work.channel_id, work.text)
+                .await
+        });
+        cx.spawn(async move |weak, cx| {
+            if let Ok(result) = receive.recv().await {
+                let result = result.unwrap_or(Err(session::AuthError::Unavailable));
+                let _ = weak.update_in(cx, |view, window, cx| {
+                    view.finish_send(request, result, window, cx)
+                });
+            }
         })
         .detach();
-        }
-        #[cfg(not(test))]
-        {
-            let (send, receive) = async_channel::bounded(1);
-            runtime().spawn(async move {
-                let result = tokio::time::timeout(
-                    Duration::from_secs(9),
-                    api.send_message(work.server, work.token, work.channel_id, work.text),
-                )
-                .await
-                .unwrap_or(Err(session::AuthError::Unavailable));
-                let _ = send.send(result).await;
-            });
-            cx.spawn(async move |weak, cx| {
-                if let Ok(result) = receive.recv().await {
-                    let _ = weak.update_in(cx, |view, window, cx| {
-                        view.finish_send(request, result, window, cx)
-                    });
-                }
-            })
-            .detach();
-        }
         cx.notify();
     }
 
@@ -562,9 +541,12 @@ impl Hamlet {
         cx: &mut Context<Self>,
     ) {
         let id = request.channel_id.clone();
-        let outcome = self
-            .conversation
-            .complete_send(&mut self.session, &request, result, now());
+        let outcome = self.conversation.complete_send(
+            &mut self.session,
+            &request,
+            result,
+            self.execution.unix_seconds(),
+        );
         if self.session.active.is_none() {
             self.polling = Polling::default();
             self.invalidate_storage(cx);
@@ -623,25 +605,25 @@ impl Hamlet {
             return;
         };
         let api = self.session.api.clone();
-        let (send, receive) = async_channel::bounded(1);
         let server = request.server.clone();
         let username = request.username.clone();
         let password = request.password.clone();
-        runtime().spawn(async move {
-            let result = if signup {
+        let receive = self.execution.spawn(async move {
+            if signup {
                 api.signup(server, username, password).await
             } else {
                 api.login(server, username, password).await
-            };
-            let _ = send.send(result).await;
+            }
         });
         cx.spawn(async move |weak, cx| {
             if let Ok(result) = receive.recv().await {
                 let _ = weak.update_in(cx, |view, window, cx| {
                     let accepted = if signup {
-                        view.session.complete_signup(request, result, now())
+                        view.session
+                            .complete_signup(request, result, view.execution.unix_seconds())
                     } else {
-                        view.session.complete_login(request, result, now())
+                        view.session
+                            .complete_login(request, result, view.execution.unix_seconds())
                     };
                     if accepted && view.session.active.is_some() {
                         view.storage_serial = view.storage_serial.wrapping_add(1);
@@ -660,29 +642,27 @@ impl Hamlet {
         if let Some(session) = self.session.active.as_ref() {
             let generation = self.session.session_generation().unwrap();
             let expires_at = session.expires_at;
-            let (send, receive) = async_channel::bounded(1);
-            runtime().spawn(async move {
-                tokio::time::sleep(Duration::from_secs(expires_at.saturating_sub(now()) as u64))
-                    .await;
-                let _ = send.send(()).await;
-            });
+            let delay = self.execution.sleep(Duration::from_secs(
+                expires_at
+                    .saturating_sub(self.execution.unix_seconds())
+                    .max(0) as u64,
+            ));
             cx.spawn(async move |weak, cx| {
-                if receive.recv().await.is_ok() {
-                    let _ = weak.update(cx, |view, cx| {
-                        if view.session.session_generation() == Some(generation) {
-                            view.session.expire(now());
-                            if view.session.active.is_none() {
-                                view.invalidate_storage(cx);
-                                view.cancel_history();
-                                view.conversation.clear();
-                                view.polling = Polling::default();
-                                view.history_list.reset(0);
-                                // The next login restores an empty composer.
-                            }
-                            cx.notify();
+                delay.await;
+                let _ = weak.update(cx, |view, cx| {
+                    if view.session.session_generation() == Some(generation) {
+                        view.session.expire(view.execution.unix_seconds());
+                        if view.session.active.is_none() {
+                            view.invalidate_storage(cx);
+                            view.cancel_history();
+                            view.conversation.clear();
+                            view.polling = Polling::default();
+                            view.history_list.reset(0);
+                            // The next login restores an empty composer.
                         }
-                    });
-                }
+                        cx.notify();
+                    }
+                });
             })
             .detach();
             self.password
@@ -695,11 +675,11 @@ impl Hamlet {
         }
     }
 
-    #[cfg(not(test))]
     fn start_poll_timer(&mut self, cx: &mut Context<Self>) {
+        let execution = self.execution.clone();
         cx.spawn(async move |weak, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_secs(1)).await;
+                execution.sleep(Duration::from_secs(1)).await;
                 if weak
                     .update(cx, |view, cx| view.poll_at(view.poll_time(), cx))
                     .is_err()
@@ -712,7 +692,7 @@ impl Hamlet {
     }
 
     fn poll_time(&self) -> Duration {
-        self.poll_clock.elapsed()
+        self.execution.now().duration_since(self.poll_clock)
     }
 
     fn set_window_focused(&mut self, focused: bool, cx: &mut Context<Self>) {
@@ -765,19 +745,13 @@ impl Hamlet {
 
     fn dispatch_channels(&mut self, request: ReadRequest, cx: &mut Context<Self>) {
         let api = self.session.api.clone();
-        let (send, receive) = async_channel::bounded(1);
         let work = request.clone();
-        runtime().spawn(async move {
-            let result = tokio::time::timeout(
-                Duration::from_secs(9),
-                api.channels(work.server, work.token),
-            )
-            .await
-            .unwrap_or(Err(session::AuthError::Unavailable));
-            let _ = send.send(result).await;
+        let receive = self.execution.bounded(READ_SEND_DEADLINE, async move {
+            api.channels(work.server, work.token).await
         });
         cx.spawn(async move |weak, cx| {
             if let Ok(result) = receive.recv().await {
+                let result = result.unwrap_or(Err(session::AuthError::Unavailable));
                 let _ = weak.update_in(cx, |view, window, cx| {
                     let current = view.conversation.is_current_channels(&request)
                         && view.session.session_generation() == Some(request.generation)
@@ -862,48 +836,27 @@ impl Hamlet {
         let serial = self.history_serial;
         let api = self.session.api.clone();
         let work = request.clone();
-        // The headless scheduler is single-threaded: deliver controlled fixture outcomes on
-        // its own executor, without a foreign thread waking it during a GPUI frame.
-        #[cfg(test)]
-        {
-            let timeout = cx.background_executor().timer(Duration::from_secs(9));
-            cx.spawn(async move |weak, cx| {
-            let result = tokio::select! {
-                result = api.history_page(work.server, work.token, work.channel_id.unwrap(), work.before) => result,
-                _ = timeout => Err(session::AuthError::Unavailable),
-            };
-            let _ = weak.update(cx, |view, cx| {
-                view.finish_history(serial, request, result, cx)
-            });
-        })
-        .detach();
-        }
-        #[cfg(not(test))]
-        {
-            let (send, receive) = async_channel::bounded(1);
-            self.history_task = Some(runtime().spawn(async move {
-                let result = tokio::time::timeout(
-                    Duration::from_secs(9),
-                    api.history_page(
-                        work.server,
-                        work.token,
-                        work.channel_id.unwrap(),
-                        work.before,
-                    ),
+        let (task, receive) = self
+            .execution
+            .start_bounded(READ_SEND_DEADLINE, async move {
+                api.history_page(
+                    work.server,
+                    work.token,
+                    work.channel_id.unwrap(),
+                    work.before,
                 )
                 .await
-                .unwrap_or(Err(session::AuthError::Unavailable));
-                let _ = send.send(result).await;
-            }));
-            cx.spawn(async move |weak, cx| {
-                if let Ok(result) = receive.recv().await {
-                    let _ = weak.update(cx, |view, cx| {
-                        view.finish_history(serial, request, result, cx)
-                    });
-                }
-            })
-            .detach();
-        }
+            });
+        self.history_task = Some(task);
+        cx.spawn(async move |weak, cx| {
+            if let Ok(result) = receive.recv().await {
+                let result = result.unwrap_or(Err(session::AuthError::Unavailable));
+                let _ = weak.update(cx, |view, cx| {
+                    view.finish_history(serial, request, result, cx)
+                });
+            }
+        })
+        .detach();
     }
 
     fn finish_history(
@@ -1012,12 +965,10 @@ impl Hamlet {
             return;
         };
         let api = self.session.api.clone();
-        let (send, receive) = async_channel::bounded(1);
         let work = request.clone();
-        runtime().spawn(async move {
-            let result = api.create_channel(work.server, work.token, work.name).await;
-            let _ = send.send(result).await;
-        });
+        let receive = self
+            .execution
+            .spawn(async move { api.create_channel(work.server, work.token, work.name).await });
         cx.spawn(async move |weak, cx| {
             if let Ok(result) = receive.recv().await {
                 let _ = weak.update_in(cx, |view, window, cx| {
@@ -1026,7 +977,7 @@ impl Hamlet {
                         &mut view.session,
                         &request,
                         result,
-                        now(),
+                        view.execution.unix_seconds(),
                     );
                     if view.session.active.is_none() {
                         view.invalidate_storage(cx);
@@ -1092,10 +1043,9 @@ impl Hamlet {
         self.invalidate_storage(cx);
         if let Some(revocation) = revocation {
             let api = self.session.api.clone();
-            let (send, receive) = async_channel::bounded(1);
-            runtime().spawn(async move {
+            let receive = self.execution.spawn(async move {
                 let result = api.logout(revocation.server, revocation.token).await;
-                let _ = send.send((revocation.generation, result)).await;
+                (revocation.generation, result)
             });
             cx.spawn(async move |weak, cx| {
                 if let Ok((generation, result)) = receive.recv().await {

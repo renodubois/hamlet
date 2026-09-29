@@ -77,10 +77,7 @@ fn login_validation_and_pending_button_are_visible_and_inert(cx: &mut TestAppCon
         assert!(view.read(cx).session.pending);
         assert!(view.read(cx).login_disabled());
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while calls.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    cx.run_until_parked();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
@@ -292,10 +289,7 @@ fn pending_signup_is_inert_and_preserves_editable_inputs(cx: &mut TestAppContext
         window.render_frame(cx);
         assert_eq!(window.find("signup").label(), Some("Creating user…"));
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while calls.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    cx.run_until_parked();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     cx.update(|window, cx| {
         window.click("auth-mode", cx);

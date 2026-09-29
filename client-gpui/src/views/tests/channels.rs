@@ -126,8 +126,8 @@ fn create_controls_confirm_order_selection_and_empty_history(cx: &mut TestAppCon
                 if empty { None } else { Some("1") }
             );
         });
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
         cx.run_until_parked();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
         cx.update(|window, cx| {
             window.render_frame(cx);
             assert_eq!(window.find("channel-name").value(), Some(""));

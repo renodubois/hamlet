@@ -13,12 +13,10 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
 };
 
 #[cfg(not(test))]
 const SERVICE: &str = "org.hamlet.gpui.rewrite.session.v1";
-pub const DEADLINE: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Selection {

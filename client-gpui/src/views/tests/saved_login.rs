@@ -78,6 +78,7 @@ impl AuthApi for PersistentSignupAuth {
 #[gpui_kit::test]
 fn signup_controls_save_and_restore_through_view_and_controlled_worker(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
+    cx.background_executor.allow_parking(); // real dedicated storage worker
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.json");
     let shared: Shared = Arc::new((
@@ -245,6 +246,7 @@ fn signup_controls_save_and_restore_through_view_and_controlled_worker(cx: &mut 
 #[gpui_kit::test]
 fn headless_logout_dispatches_deletion_warns_and_retries(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
+    cx.background_executor.allow_parking(); // real dedicated storage worker
     let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
     let target = saved.clone();
     let shared: Shared = Arc::new((

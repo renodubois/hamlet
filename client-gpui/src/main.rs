@@ -34,7 +34,10 @@ fn main() {
                         (storage::load(), Some(storage::Persistence::new()));
                     #[cfg(test)]
                     let (config, persistence) = (storage::Config::default(), None);
-                    let view = views::app_shell::open(window, cx, api, config, persistence);
+                    let execution =
+                        runtime::Execution::production(cx.background_executor().clone());
+                    let view =
+                        views::app_shell::open(window, cx, api, config, persistence, execution);
                     cx.new(|cx| Root::new(view, window, cx))
                 },
             )

@@ -291,20 +291,17 @@ impl AuthApi for ServerPollingAuth {
     ) -> ApiFuture<Result<crate::conversation::Page, AuthError>> {
         let future = self.api.history_page(s, t, id, before);
         let done = self.completed.clone();
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        super::runtime().spawn(async move {
+        Box::pin(async move {
             let result = future.await;
-            tx.send(result).unwrap();
             done.send("history").unwrap();
-        });
-        // The headless scheduler forbids a foreign thread waking its futures. The
-        // test-only bridge waits for the bounded HTTP read on its own thread instead.
-        Box::pin(async move { rx.recv_timeout(Duration::from_secs(9)).unwrap() })
+            result
+        })
     }
 }
 
 #[gpui_kit::test]
 fn bob_activity_arrives_through_hamlet_poll_at_and_real_rewrite_routes(cx: &mut TestAppContext) {
+    cx.background_executor.allow_parking(); // real loopback I/O on the production executor
     use actix_web::{App, HttpServer, web};
     use std::net::TcpListener;
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
@@ -345,13 +342,17 @@ fn bob_activity_arrives_through_hamlet_poll_at_and_real_rewrite_routes(cx: &mut 
     let stored = saved.clone();
     let (_, cx) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
-            Hamlet::new(
+            let execution = crate::runtime::Execution::production(cx.background_executor().clone());
+            Hamlet::with_dependencies(
                 window,
                 cx,
                 Arc::new(ServerPollingAuth {
                     api: crate::http::HttpAuth::new(),
                     completed: done,
                 }),
+                crate::persistence::Config::default(),
+                None,
+                execution,
             )
         });
         *stored.borrow_mut() = Some(view.clone());
