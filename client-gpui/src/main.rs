@@ -1,5 +1,6 @@
 mod conversation;
 mod http;
+mod persistence;
 mod session;
 
 use conversation::{Conversation, Load, Older, ReadRequest};
@@ -14,7 +15,8 @@ use gpui_kit::component::Root;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, Textarea};
 use gpui_kit::*;
-use session::{AppSession, AuthApi, DEFAULT_SERVER_URL};
+use persistence::{Outcome, Persistence, Selection};
+use session::{AppSession, AuthApi, DEFAULT_SERVER_URL, RestoreDecision, RestoreResult};
 use std::{
     sync::{Arc, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -70,9 +72,28 @@ fn reconcile_history_list(list: &ListState, before: &[String], after: &[String])
     }
 }
 
+fn bounded<T: Send + 'static>(
+    future: impl std::future::Future<Output = T> + Send + 'static,
+) -> async_channel::Receiver<Option<T>> {
+    let (send, receive) = async_channel::bounded(1);
+    runtime().spawn(async move {
+        let result = tokio::time::timeout(persistence::DEADLINE, future)
+            .await
+            .ok();
+        let _ = send.send(result).await;
+    });
+    receive
+}
+
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| tokio::runtime::Runtime::new().expect("network runtime"))
+}
+
+struct Deletion {
+    selection: Selection,
+    id: u64,
+    in_flight: bool,
 }
 
 struct Hamlet {
@@ -92,12 +113,33 @@ struct Hamlet {
     _server_subscription: Subscription,
     clear_password: bool,
     signup: bool,
+    persistence: Option<Persistence>,
+    credential: Option<Selection>,
+    retained_credentials: Vec<Selection>,
+    storage_feedback: Option<String>,
+    storage_serial: u64,
+    deletions: Vec<Deletion>,
+    deletion_id: u64,
 }
 
 impl Hamlet {
     fn new(window: &mut Window, cx: &mut Context<Self>, api: Arc<dyn AuthApi>) -> Self {
-        let server = cx.new(|cx| InputState::new(window, cx).default_value(DEFAULT_SERVER_URL));
-        let username = cx.new(|cx| InputState::new(window, cx));
+        #[cfg(not(test))]
+        let config = persistence::load();
+        #[cfg(test)]
+        let config = persistence::Config::default();
+        let initial_server = config.server.as_deref().unwrap_or(DEFAULT_SERVER_URL);
+        let server = cx.new(|cx| InputState::new(window, cx).default_value(initial_server));
+        let username = cx.new(|cx| {
+            InputState::new(window, cx).default_value(
+                config
+                    .saved
+                    .as_ref()
+                    .filter(|s| s.server == initial_server)
+                    .map(|s| s.user.username.as_str())
+                    .unwrap_or(""),
+            )
+        });
         let password = cx.new(|cx| InputState::new(window, cx).masked(true));
         let channel_name = cx.new(|cx| InputState::new(window, cx));
         let composer = cx.new(|cx| TextareaState::new(window, cx).submit_on_enter(true));
@@ -133,6 +175,8 @@ impl Hamlet {
                 let value = field.read(cx).text().to_string();
                 if view.session.server != value {
                     view.session.change_server(value);
+                    view.storage_feedback = None;
+                    view.invalidate_storage(cx);
                     view.cancel_history();
                     view.conversation.clear();
                     view.history_list.reset(0);
@@ -153,8 +197,10 @@ impl Hamlet {
                 });
             }
         });
+        let mut session = AppSession::new(api);
+        session.change_server(initial_server.into());
         Self {
-            session: AppSession::new(api),
+            session,
             conversation: Conversation::default(),
             history_focus: cx.focus_handle(),
             history_list,
@@ -170,7 +216,264 @@ impl Hamlet {
             _server_subscription: subscription,
             clear_password: false,
             signup: false,
+            #[cfg(not(test))]
+            persistence: Some(Persistence::new()),
+            #[cfg(test)]
+            persistence: None,
+            credential: config.saved.filter(|s| s.server == initial_server),
+            retained_credentials: Vec::new(),
+            storage_feedback: if config.pending_deletions.is_empty() {
+                None
+            } else {
+                Some("Previous saved login cleanup is pending; retry deletion if it fails.".into())
+            },
+            storage_serial: 0,
+            deletions: config
+                .pending_deletions
+                .into_iter()
+                .enumerate()
+                .map(|(i, selection)| Deletion {
+                    selection,
+                    id: i as u64 + 1,
+                    in_flight: false,
+                })
+                .collect(),
+            deletion_id: 0,
         }
+    }
+
+    fn resume_deletions(&mut self, cx: &mut Context<Self>) {
+        self.deletion_id = self.deletions.len() as u64;
+        let ids: Vec<_> = self.deletions.iter().map(|d| d.id).collect();
+        for id in ids {
+            self.run_deletion(id, cx);
+        }
+    }
+
+    // Deletions have their own identities: a server edit or a newer save must not
+    // discard an older failed cleanup callback or its retry target.
+    fn queue_deletion(&mut self, selection: Selection, cx: &mut Context<Self>) {
+        let Some(store) = &self.persistence else {
+            return;
+        };
+        if self
+            .deletions
+            .iter()
+            .any(|d| persistence::account(&d.selection) == persistence::account(&selection))
+        {
+            return;
+        }
+        self.deletion_id = self.deletion_id.wrapping_add(1);
+        let id = self.deletion_id;
+        self.deletions.push(Deletion {
+            selection: selection.clone(),
+            id,
+            in_flight: false,
+        });
+        let _ = store;
+        self.run_deletion(id, cx);
+    }
+
+    fn retryable_deletion(&self) -> Option<u64> {
+        let active = self.session.active.as_ref().map(|s| {
+            persistence::account(&Selection {
+                server: s.server.clone(),
+                user: s.user.clone(),
+                expires_at: s.expires_at,
+            })
+        });
+        self.deletions
+            .iter()
+            .find(|d| {
+                !d.in_flight
+                    && active.as_deref() != Some(persistence::account(&d.selection).as_str())
+            })
+            .map(|d| d.id)
+    }
+
+    fn run_deletion(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(deletion) = self
+            .deletions
+            .iter_mut()
+            .find(|d| d.id == id && !d.in_flight)
+        else {
+            return;
+        };
+        // A newer active login for this account must never be removed by a retry.
+        if self.session.active.as_ref().is_some_and(|s| {
+            persistence::account(&Selection {
+                server: s.server.clone(),
+                user: s.user.clone(),
+                expires_at: s.expires_at,
+            }) == persistence::account(&deletion.selection)
+        }) {
+            return;
+        }
+        let Some(store) = &self.persistence else {
+            return;
+        };
+        deletion.in_flight = true;
+        let queued = store.delete(deletion.selection.clone());
+        let reply = bounded(async move { queued.recv().await });
+        self.storage_feedback = Some("Removing saved login from Secret Service…".into());
+        cx.spawn(async move |weak, cx| {
+            let outcome = reply.recv().await;
+            let _ = weak.update(cx, |view, cx| {
+                let Some(index) = view.deletions.iter().position(|d| d.id == id) else { return; };
+                if matches!(outcome, Ok(Some(Ok(Outcome::Deleted)))) {
+                    view.deletions.remove(index);
+                    if view.deletions.is_empty() {
+                        view.storage_feedback = Some(if view.session.active.is_some() {
+                            "Previous saved login removed from Secret Service; current session is unchanged.".into()
+                        } else {
+                            "Saved login removed from Secret Service.".into()
+                        });
+                    }
+                } else {
+                    view.deletions[index].in_flight = false;
+                    view.storage_feedback = Some("Could not confirm deletion from Secret Service; a saved login may remain. Unlock the store and retry deletion.".into());
+                }
+                cx.notify();
+            });
+        }).detach();
+    }
+
+    fn invalidate_storage(&mut self, cx: &mut Context<Self>) {
+        self.storage_serial = self.storage_serial.wrapping_add(1);
+        if let Some(store) = &self.persistence {
+            store.invalidate();
+        }
+        if let Some(selection) = self.credential.take() {
+            self.queue_deletion(selection, cx);
+        }
+        for selection in std::mem::take(&mut self.retained_credentials) {
+            self.queue_deletion(selection, cx);
+        }
+    }
+
+    fn save_login(&mut self, cx: &mut Context<Self>) {
+        let Some(store) = &self.persistence else {
+            return;
+        };
+        let Some(session) = &self.session.active else {
+            return;
+        };
+        let selection = Selection {
+            server: session.server.clone(),
+            user: session.user.clone(),
+            expires_at: session.expires_at,
+        };
+        let previous = self.credential.replace(selection.clone());
+        if let Some(old) = previous.as_ref()
+            && persistence::account(old) != persistence::account(&selection)
+            && !self
+                .retained_credentials
+                .iter()
+                .any(|s| persistence::account(s) == persistence::account(old))
+        {
+            self.retained_credentials.push(old.clone());
+        }
+        // Remember successful authentication independently of secure-store success.
+        let remembered = store.remember(selection.server.clone());
+        let queued = store.save(selection.clone(), session.token().into());
+        let reply = bounded(async move { (remembered.recv().await, queued.recv().await) });
+        self.storage_serial = self.storage_serial.wrapping_add(1);
+        let serial = self.storage_serial;
+        self.storage_feedback = Some("Saving login to Secret Service…".into());
+        cx.spawn(async move |weak, cx| {
+            let outcome = reply.recv().await;
+            let _ = weak.update(cx, |view, cx| {
+                if view.storage_serial == serial && view.session.active.is_some() {
+                    let (remembered, outcome) = match outcome {
+                        Ok(Some((remembered, outcome))) => (remembered, outcome),
+                        _ => (Err(async_channel::RecvError), Err(async_channel::RecvError)),
+                    };
+                    if matches!(outcome, Ok(Outcome::Saved | Outcome::SavedWithCleanupWarning)) {
+                        view.deletions.retain(|d| persistence::account(&d.selection) != persistence::account(&selection));
+                        if let Some(old) = previous {
+                            view.retained_credentials.retain(|s| persistence::account(s) != persistence::account(&old));
+                            if matches!(outcome, Ok(Outcome::SavedWithCleanupWarning)) {
+                                view.queue_deletion(old, cx);
+                            }
+                        }
+                    }
+                    view.storage_feedback = Some(match outcome {
+                        Ok(Outcome::Saved) => "Login saved in Secret Service for this server and user.".into(),
+                        Ok(Outcome::SavedWithCleanupWarning) => "Login saved, but a previous server/user credential could not be removed from Secret Service.".into(),
+                        Ok(Outcome::Failed) if remembered == Ok(Outcome::Remembered) => "Secure storage failed; this session is memory-only. A previous saved login may remain until deletion is confirmed.".into(),
+                        Ok(Outcome::Failed) => "Secure storage and server preference could not be saved; this session is memory-only.".into(),
+                        _ => "Secure storage timed out or was interrupted; saving is unconfirmed. Continue in memory, but a credential may still appear in Secret Service. Log out to request deletion.".into(),
+                    });
+                    cx.notify();
+                }
+            });
+        }).detach();
+    }
+
+    fn start_restore(&mut self, cx: &mut Context<Self>) {
+        let Some(store) = &self.persistence else {
+            return;
+        };
+        let Some(selection) = self.credential.clone() else {
+            return;
+        };
+        if self.session.active.is_some()
+            || self.session.pending
+            || selection.server != self.session.server
+        {
+            return;
+        }
+        let generation = self.session.begin_restore();
+        if selection.expires_at <= now() {
+            if self.session.finish_restore(
+                generation,
+                &selection.server,
+                &selection.user,
+                selection.expires_at,
+                RestoreResult::Unavailable,
+                now(),
+            ) == RestoreDecision::Delete
+            {
+                self.invalidate_storage(cx);
+            }
+            cx.notify();
+            return;
+        }
+        let reply = store.read(selection.clone());
+        let api = self.session.api.clone();
+        let server = selection.server.clone();
+        let result = bounded(async move {
+            match reply.recv().await {
+                Ok(Outcome::Token(Some(token))) if !token.is_empty() => match tokio::time::timeout(
+                    persistence::DEADLINE,
+                    api.current_user(server, token.clone()),
+                )
+                .await
+                {
+                    Ok(Ok(user)) => RestoreResult::Verified { user, token },
+                    Ok(Err(session::AuthError::AlreadyInvalid)) => RestoreResult::Rejected,
+                    _ => RestoreResult::Unavailable,
+                },
+                Ok(Outcome::Token(None)) => RestoreResult::MissingCredential,
+                _ => RestoreResult::Unavailable,
+            }
+        });
+        cx.spawn(async move |weak, cx| {
+            let result = result.recv().await.ok().flatten().unwrap_or(RestoreResult::Unavailable);
+            let _ = weak.update_in(cx, |view, window, cx| {
+                match view.session.finish_restore(generation, &selection.server, &selection.user, selection.expires_at, result, now()) {
+                    RestoreDecision::Restored => {
+                        view.storage_feedback = Some("Login restored from Secret Service.".into());
+                        view.enter_authenticated(window, cx);
+                    }
+                    RestoreDecision::Delete => view.invalidate_storage(cx),
+                    RestoreDecision::Retry => view.storage_feedback = Some("Could not verify saved login; use a memory-only login or retry restoration.".into()),
+                    RestoreDecision::Stale => return,
+                }
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
     }
 
     fn store_composer(&mut self, cx: &mut Context<Self>) {
@@ -259,6 +562,7 @@ impl Hamlet {
             .conversation
             .complete_send(&mut self.session, &request, result, now());
         if self.session.active.is_none() {
+            self.invalidate_storage(cx);
             self.cancel_history();
             self.history_list.reset(0);
             self.sync_composer(window, cx);
@@ -335,6 +639,8 @@ impl Hamlet {
                         view.session.complete_login(request, result, now())
                     };
                     if accepted && view.session.active.is_some() {
+                        view.storage_serial = view.storage_serial.wrapping_add(1);
+                        view.save_login(cx);
                         view.enter_authenticated(window, cx);
                     }
                     cx.notify();
@@ -361,6 +667,7 @@ impl Hamlet {
                         if view.session.session_generation() == Some(generation) {
                             view.session.expire(now());
                             if view.session.active.is_none() {
+                                view.invalidate_storage(cx);
                                 view.cancel_history();
                                 view.conversation.clear();
                                 view.history_list.reset(0);
@@ -408,6 +715,9 @@ impl Hamlet {
                     let next =
                         view.conversation
                             .complete_channels(&mut view.session, &request, result);
+                    if view.session.active.is_none() {
+                        view.invalidate_storage(cx);
+                    }
                     if previous != view.conversation.selected {
                         view.sync_composer(window, cx);
                         view.cancel_history();
@@ -565,6 +875,7 @@ impl Hamlet {
                 self.history_list.scroll_to_end();
             }
         } else if self.session.active.is_none() {
+            self.invalidate_storage(cx);
             self.history_list.reset(0);
         }
         self.history_task = None;
@@ -606,6 +917,9 @@ impl Hamlet {
                         result,
                         now(),
                     );
+                    if view.session.active.is_none() {
+                        view.invalidate_storage(cx);
+                    }
                     if confirmed
                         && view.channel_name.read(cx).text().to_string().trim() == request.name
                     {
@@ -661,7 +975,9 @@ impl Hamlet {
         self.history_list.reset(0);
         self.conversation.clear();
         self.sync_composer(window, cx);
-        if let Some(revocation) = self.session.logout() {
+        let revocation = self.session.logout();
+        self.invalidate_storage(cx);
+        if let Some(revocation) = revocation {
             let api = self.session.api.clone();
             let (send, receive) = async_channel::bounded(1);
             runtime().spawn(async move {
@@ -705,6 +1021,7 @@ impl Render for Hamlet {
             .gap_3()
             .text_color(rgb(theme::TEXT));
         if let Some(session) = &self.session.active {
+            let logout_view = view.clone();
             let label = format!(
                 "Logged in as {} at {}",
                 session.user.username, session.server
@@ -721,7 +1038,7 @@ impl Render for Hamlet {
                     Button::new("logout")
                         .label("Log out")
                         .on_click(move |_, window, cx| {
-                            let _ = view.update(cx, |view, cx| view.logout(window, cx));
+                            let _ = logout_view.update(cx, |view, cx| view.logout(window, cx));
                         }),
                 )
                 .child(self.conversation_panes(cx));
@@ -788,9 +1105,44 @@ impl Render for Hamlet {
                                 .update(cx, |view, cx| view.set_signup(!view.signup, cx));
                         }),
                 )
-                .child(div().child(
-                    "Session is memory-only: you will need to log in again after restarting.",
-                ));
+                .child(div().child(if self.session.restore_pending() {
+                    "Checking saved login before opening conversations…"
+                } else {
+                    "Log in to start a session. Secure storage status appears below."
+                }));
+        }
+        if self.persistence.is_some()
+            && !self.session.pending
+            && (self.retryable_deletion().is_some()
+                || (self.session.active.is_none() && self.credential.is_some()))
+        {
+            let retry = view.clone();
+            surface = surface.child(
+                Button::new("retry-storage")
+                    .label(if self.retryable_deletion().is_some() {
+                        "Retry saved-login deletion"
+                    } else {
+                        "Retry saved-login restoration"
+                    })
+                    .on_click(move |_, _, cx| {
+                        let _ = retry.update(cx, |view, cx| {
+                            if let Some(id) = view.retryable_deletion() {
+                                view.run_deletion(id, cx);
+                            } else {
+                                view.start_restore(cx);
+                            }
+                        });
+                    }),
+            );
+        }
+        if let Some(feedback) = &self.storage_feedback {
+            surface = surface.child(
+                div()
+                    .id("storage-status")
+                    .aria_label(feedback.clone())
+                    .test_support()
+                    .child(feedback.clone()),
+            );
         }
         if let Some(feedback) = &self.session.feedback {
             surface = surface.child(
@@ -1124,6 +1476,10 @@ fn main() {
                 |window, cx| {
                     let view =
                         cx.new(|cx| Hamlet::new(window, cx, Arc::new(http::HttpAuth::new())));
+                    view.update(cx, |view, cx| {
+                        view.resume_deletions(cx);
+                        view.start_restore(cx);
+                    });
 
                     cx.new(|cx| Root::new(view, window, cx))
                 },
@@ -1136,6 +1492,10 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::Hamlet;
+    use crate::persistence::{
+        Persistence,
+        tests::{Controlled, Shared},
+    };
     use crate::session::{ApiFuture, AuthApi, AuthError, Login, User};
     use gpui_kit::TestSupportExt as _;
     use gpui_kit::base::SelectableText;
@@ -1150,6 +1510,7 @@ mod tests {
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     };
+    use std::sync::{Condvar, Mutex};
 
     // This is a real Kit/GPUI history surface, not a simulated scrolling model.
     struct HistoryProbe {
@@ -3096,6 +3457,127 @@ mod tests {
                 .as_deref(),
             Some("first line\nsecond line")
         );
+    }
+
+    #[gpui_kit::test]
+    fn headless_logout_dispatches_deletion_warns_and_retries(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let target = saved.clone();
+        let shared: Shared = Arc::new((
+            Mutex::new((vec![], false, true, false, false, false)),
+            Condvar::new(),
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(TestAuth)));
+            view.update(cx, |view, _| {
+                view.persistence = Some(Persistence::start(
+                    Controlled(shared.clone()),
+                    Some(path.clone()),
+                ));
+            });
+            *target.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.session.begin_restore();
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find("auth-feedback")
+                    .label()
+                    .unwrap()
+                    .contains("Checking saved session")
+            );
+            assert!(window.find("login").label().unwrap().contains("Signing in"));
+            view.update(cx, |view, cx| {
+                view.session.cancel_pending();
+                cx.notify();
+            });
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find("storage-status")
+                    .label()
+                    .unwrap()
+                    .contains("memory-only")
+            );
+            // Force an actual failed Secret Service deletion, then retry via the button.
+            let selection = view.read(cx).credential.clone().unwrap();
+            shared.0.lock().unwrap().2 = false;
+            shared.0.lock().unwrap().3 = true;
+            assert_eq!(
+                view.read(cx)
+                    .persistence
+                    .as_ref()
+                    .unwrap()
+                    .save(selection, "token".into())
+                    .recv_blocking()
+                    .unwrap(),
+                super::Outcome::Saved
+            );
+            shared.0.lock().unwrap().5 = false;
+            window.click("logout", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                shared.0.lock().unwrap().5,
+                "logout must dispatch deletion without retry"
+            );
+            assert_eq!(
+                serde_json::from_slice::<crate::persistence::Config>(
+                    &std::fs::read(&path).unwrap()
+                )
+                .unwrap()
+                .pending_deletions
+                .len(),
+                1
+            );
+            assert!(
+                window
+                    .find("storage-status")
+                    .label()
+                    .unwrap()
+                    .contains("saved login may remain")
+            );
+            assert!(
+                window
+                    .find("retry-storage")
+                    .label()
+                    .unwrap()
+                    .contains("deletion")
+            );
+            shared.0.lock().unwrap().3 = false;
+            window.click("retry-storage", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find("storage-status")
+                    .label()
+                    .unwrap()
+                    .contains("removed")
+            );
+            assert!(shared.0.lock().unwrap().0.is_empty());
+        });
     }
 
     #[gpui_kit::test]

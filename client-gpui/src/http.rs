@@ -295,6 +295,31 @@ impl AuthApi for HttpAuth {
         })
     }
 
+    fn current_user(&self, server: String, token: String) -> ApiFuture<Result<User, AuthError>> {
+        let client = self.client.clone();
+        Box::pin(async move {
+            let url = validate_server(&server)?
+                .join("api/v1/me")
+                .map_err(|_| AuthError::InvalidResponse)?;
+            let wire: WireUser = protected_response(
+                client
+                    .get(url)
+                    .bearer_auth(token)
+                    .send()
+                    .await
+                    .map_err(|_| AuthError::Unavailable)?,
+            )
+            .await?;
+            if wire.id.is_empty() || wire.username.is_empty() {
+                return Err(AuthError::InvalidResponse);
+            }
+            Ok(User {
+                id: wire.id,
+                username: wire.username,
+            })
+        })
+    }
+
     fn channels(
         &self,
         server: String,
@@ -675,6 +700,124 @@ mod tests {
         ));
         captured.join().unwrap();
     }
+    #[tokio::test]
+    async fn current_user_requires_bearer_and_rejects_redirect_or_malformed_identity() {
+        let (url, captured) = server(response("200 OK", r#"{"id":"42","username":"Ada"}"#));
+        assert_eq!(
+            HttpAuth::new()
+                .current_user(url, "secret".into())
+                .await
+                .unwrap(),
+            User {
+                id: "42".into(),
+                username: "Ada".into()
+            }
+        );
+        let request = captured.join().unwrap();
+        assert!(request.starts_with("GET /api/v1/me "));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer secret")
+        );
+        let (url, captured) = server(response("401 Unauthorized", "{}"));
+        assert!(matches!(
+            HttpAuth::new().current_user(url, "bad".into()).await,
+            Err(AuthError::AlreadyInvalid)
+        ));
+        captured.join().unwrap();
+        let (url, captured) = server(response("200 OK", r#"{"id":"","username":"Ada"}"#));
+        assert!(matches!(
+            HttpAuth::new().current_user(url, "secret".into()).await,
+            Err(AuthError::InvalidResponse)
+        ));
+        captured.join().unwrap();
+        let destination = TcpListener::bind("127.0.0.1:0").unwrap();
+        destination.set_nonblocking(true).unwrap();
+        let reply = format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{}/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            destination.local_addr().unwrap()
+        );
+        let (url, captured) = server(reply);
+        assert!(matches!(
+            HttpAuth::new().current_user(url, "secret".into()).await,
+            Err(AuthError::Unavailable)
+        ));
+        captured.join().unwrap();
+        assert!(destination.accept().is_err());
+    }
+
+    #[tokio::test]
+    async fn current_user_timeout_is_not_authoritative_invalidity() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let waiting = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            thread::sleep(Duration::from_millis(120));
+            drop(stream);
+        });
+        let auth = HttpAuth {
+            client: Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_millis(30))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap(),
+        };
+        assert!(matches!(
+            auth.current_user(url, "still-valid-until-verified".into())
+                .await,
+            Err(AuthError::Unavailable)
+        ));
+        waiting.join().unwrap();
+    }
+
+    #[actix_web::test]
+    async fn current_user_against_rewrite_routes_before_and_after_revocation() {
+        use actix_web::{App, HttpServer, web};
+        use hamlet::{connect_to_database, routes};
+        let dir = tempfile::tempdir().unwrap();
+        let db = connect_to_database(&format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("me.db").display()
+        ))
+        .await
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = HttpServer::new(move || {
+            App::new()
+                .app_data(web::Data::new(db.clone()))
+                .configure(routes)
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+        let handle = server.handle();
+        actix_web::rt::spawn(server);
+        let api: &dyn AuthApi = &HttpAuth::new();
+        let login = api
+            .signup(url.clone(), "Ada".into(), "long password".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            api.current_user(url.clone(), login.token.clone())
+                .await
+                .unwrap(),
+            login.user
+        );
+        assert!(matches!(
+            api.current_user(url.clone(), "bad".into()).await,
+            Err(AuthError::AlreadyInvalid)
+        ));
+        api.logout(url.clone(), login.token.clone()).await.unwrap();
+        assert!(matches!(
+            api.current_user(url, login.token).await,
+            Err(AuthError::AlreadyInvalid)
+        ));
+        handle.stop(true).await;
+    }
+
     #[tokio::test]
     async fn unexpected_conflict_on_login_is_not_a_signup_error() {
         let (url, captured) = server(response(
