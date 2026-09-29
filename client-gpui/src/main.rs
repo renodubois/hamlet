@@ -7,10 +7,12 @@ use gpui_kit::base::SelectableText;
 use gpui_kit::prelude::FluentBuilder as _;
 
 use gpui_kit::base::Disableable;
-use gpui_kit::base::input::{InputBaseState, InputEvent, InputMode, InputState};
+use gpui_kit::base::input::{
+    InputBaseState, InputEvent, InputMode, InputState, TextareaMode, TextareaState,
+};
 use gpui_kit::component::Root;
 use gpui_kit::component::button::Button;
-use gpui_kit::component::input::Input;
+use gpui_kit::component::input::{Input, Textarea};
 use gpui_kit::*;
 use session::{AppSession, AuthApi, DEFAULT_SERVER_URL};
 use std::{
@@ -42,6 +44,32 @@ fn hint_history_row_heights(list: &ListState) {
     list.clone().with_uniform_item_height(px(64.));
 }
 
+// Both slices are chronological stable IDs. Splice each new gap at its real index;
+// ListState then adjusts the visible anchor for insertions preceding it.
+fn reconcile_history_list(list: &ListState, before: &[String], after: &[String]) {
+    let mut old = 0;
+    let mut new = 0;
+    while old < before.len() {
+        let start = new;
+        while new < after.len() && after[new] != before[old] {
+            new += 1;
+        }
+        if new == after.len() {
+            // Unexpected reorder/removal: do not leave list indices pointing at wrong rows.
+            list.splice(0..list.item_count(), after.len());
+            return;
+        }
+        if new > start {
+            list.splice(start..start, new - start);
+        }
+        old += 1;
+        new += 1;
+    }
+    if new < after.len() {
+        list.splice(new..new, after.len() - new);
+    }
+}
+
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| tokio::runtime::Runtime::new().expect("network runtime"))
@@ -58,6 +86,9 @@ struct Hamlet {
     username: Entity<InputBaseState<InputMode>>,
     password: Entity<InputBaseState<InputMode>>,
     channel_name: Entity<InputBaseState<InputMode>>,
+    composer: Entity<InputBaseState<TextareaMode>>,
+    _composer_subscription: Subscription,
+    syncing_composer: bool,
     _server_subscription: Subscription,
     clear_password: bool,
     signup: bool,
@@ -69,6 +100,34 @@ impl Hamlet {
         let username = cx.new(|cx| InputState::new(window, cx));
         let password = cx.new(|cx| InputState::new(window, cx).masked(true));
         let channel_name = cx.new(|cx| InputState::new(window, cx));
+        let composer = cx.new(|cx| TextareaState::new(window, cx).submit_on_enter(true));
+        let composer_subscription = cx.subscribe(&composer, |view: &mut Self, field, event, cx| {
+            if view.syncing_composer {
+                return;
+            }
+            match event {
+                InputEvent::Change => {
+                    if let Some(id) = view.conversation.selected.clone() {
+                        view.conversation
+                            .set_draft(&id, field.read(cx).text().to_string());
+                        cx.notify();
+                    }
+                }
+                InputEvent::PressEnter {
+                    shift: false,
+                    secondary: false,
+                } => {
+                    // submit_on_enter emits without modifying the textarea, including when
+                    // the caret is in the middle or the draft ends with an intentional newline.
+                    if let Some(id) = view.conversation.selected.clone() {
+                        view.conversation
+                            .set_draft(&id, field.read(cx).text().to_string());
+                    }
+                    view.dispatch_send(cx);
+                }
+                _ => {}
+            }
+        });
         let subscription = cx.subscribe(&server, |view: &mut Self, field, event, cx| {
             if matches!(event, InputEvent::Change) {
                 let value = field.read(cx).text().to_string();
@@ -105,10 +164,119 @@ impl Hamlet {
             username,
             password,
             channel_name,
+            composer,
+            _composer_subscription: composer_subscription,
+            syncing_composer: false,
             _server_subscription: subscription,
             clear_password: false,
             signup: false,
         }
+    }
+
+    fn store_composer(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.conversation.selected.clone()
+            && !self.conversation.send_pending.contains_key(&id)
+        {
+            self.conversation
+                .set_draft(&id, self.composer.read(cx).text().to_string());
+        }
+    }
+
+    fn sync_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self
+            .conversation
+            .selected
+            .as_deref()
+            .map(|id| self.conversation.draft(id))
+            .unwrap_or("")
+            .to_owned();
+        self.syncing_composer = true;
+        self.composer
+            .update(cx, |input, cx| input.set_value(&text, window, cx));
+        self.syncing_composer = false;
+    }
+
+    fn send_message(&mut self, cx: &mut Context<Self>) {
+        self.store_composer(cx);
+        self.dispatch_send(cx);
+    }
+
+    fn dispatch_send(&mut self, cx: &mut Context<Self>) {
+        let Some(request) = self.conversation.send(&self.session) else {
+            cx.notify();
+            return;
+        };
+        let api = self.session.api.clone();
+        let work = request.clone();
+        // Timeout also bounds controlled adapters; aborting a timed-out future never replays it.
+        #[cfg(test)]
+        {
+            let timeout = cx.background_executor().timer(Duration::from_secs(9));
+            cx.spawn(async move |weak, cx| {
+            let result = tokio::select! {
+                result = api.send_message(work.server, work.token, work.channel_id, work.text) => result,
+                _ = timeout => Err(session::AuthError::Unavailable),
+            };
+            let _ = weak.update_in(cx, |view, window, cx| {
+                view.finish_send(request, result, window, cx)
+            });
+        })
+        .detach();
+        }
+        #[cfg(not(test))]
+        {
+            let (send, receive) = async_channel::bounded(1);
+            runtime().spawn(async move {
+                let result = tokio::time::timeout(
+                    Duration::from_secs(9),
+                    api.send_message(work.server, work.token, work.channel_id, work.text),
+                )
+                .await
+                .unwrap_or(Err(session::AuthError::Unavailable));
+                let _ = send.send(result).await;
+            });
+            cx.spawn(async move |weak, cx| {
+                if let Ok(result) = receive.recv().await {
+                    let _ = weak.update_in(cx, |view, window, cx| {
+                        view.finish_send(request, result, window, cx)
+                    });
+                }
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    fn finish_send(
+        &mut self,
+        request: conversation::SendRequest,
+        result: Result<conversation::Message, session::AuthError>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = request.channel_id.clone();
+        let outcome = self
+            .conversation
+            .complete_send(&mut self.session, &request, result, now());
+        if self.session.active.is_none() {
+            self.cancel_history();
+            self.history_list.reset(0);
+            self.sync_composer(window, cx);
+        } else if self.conversation.selected.as_deref() == Some(&id) {
+            if outcome == conversation::SendOutcome::Confirmed {
+                self.sync_composer(window, cx);
+                if let Some(next) = self.conversation.reconcile_confirmed(&self.session) {
+                    self.cancel_history();
+                    self.load_history(next, cx);
+                }
+            } else if outcome == conversation::SendOutcome::Uncertain
+                && let Some(request) = self.conversation.reconcile_uncertain(&self.session)
+            {
+                self.cancel_history();
+                self.load_history(request, cx);
+            }
+        }
+        cx.notify();
     }
 
     fn login_disabled(&self) -> bool {
@@ -196,6 +364,7 @@ impl Hamlet {
                                 view.cancel_history();
                                 view.conversation.clear();
                                 view.history_list.reset(0);
+                                // The next login restores an empty composer.
                             }
                             cx.notify();
                         }
@@ -205,6 +374,7 @@ impl Hamlet {
             .detach();
             self.password
                 .update(cx, |input, cx| input.set_value("", window, cx));
+            self.sync_composer(window, cx);
             self.load_channels(cx);
         }
     }
@@ -232,12 +402,14 @@ impl Hamlet {
         });
         cx.spawn(async move |weak, cx| {
             if let Ok(result) = receive.recv().await {
-                let _ = weak.update(cx, |view, cx| {
+                let _ = weak.update_in(cx, |view, window, cx| {
                     let previous = view.conversation.selected.clone();
+                    view.store_composer(cx);
                     let next =
                         view.conversation
                             .complete_channels(&mut view.session, &request, result);
                     if previous != view.conversation.selected {
+                        view.sync_composer(window, cx);
                         view.cancel_history();
                         view.history_list.reset(0);
                     }
@@ -345,30 +517,42 @@ impl Hamlet {
             return;
         }
         let selected = self.conversation.selected == request.channel_id;
-        let was_ready = selected
-            && matches!(
-                self.conversation
-                    .history
-                    .get(request.channel_id.as_ref().unwrap()),
-                Some(Load::Ready(_))
-            );
+        let before = request.channel_id.as_ref().and_then(|id| {
+            if selected {
+                match self.conversation.history.get(id) {
+                    Some(Load::Ready(messages)) => Some(
+                        messages
+                            .iter()
+                            .rev()
+                            .map(|m| m.id.clone())
+                            .collect::<Vec<_>>(),
+                    ),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        });
         let follow = self.history_list.is_scrolled_to_end() != Some(false);
+        let read_succeeded = result.is_ok();
         let outcome = self
             .conversation
             .complete_history(&mut self.session, &request, result);
         if selected && self.session.active.is_some() {
-            if was_ready {
-                if outcome.added > 0 {
-                    if outcome.prepend {
-                        self.history_list.splice(0..0, outcome.added);
-                    } else {
-                        let end = self.history_list.item_count();
-                        self.history_list.splice(end..end, outcome.added);
-                        if follow {
+            if let Some(before) = before {
+                if let Some(Load::Ready(messages)) = self
+                    .conversation
+                    .history
+                    .get(request.channel_id.as_ref().unwrap())
+                {
+                    let after: Vec<_> = messages.iter().rev().map(|m| m.id.clone()).collect();
+                    reconcile_history_list(&self.history_list, &before, &after);
+                    if outcome.added > 0 {
+                        hint_history_row_heights(&self.history_list);
+                        if !outcome.prepend && follow && before.last() != after.last() {
                             self.history_list.scroll_to_end();
                         }
                     }
-                    hint_history_row_heights(&self.history_list);
                 }
             } else if let Some(Load::Ready(messages)) = self
                 .conversation
@@ -385,6 +569,15 @@ impl Hamlet {
         }
         self.history_task = None;
         if let Some(next) = outcome.next {
+            self.load_history(next, cx);
+        }
+        // A failed or disconnected catch-up needs a *manual* retry; never spin on
+        // repeated read failures while a confirmed/uncertain write waits for continuity.
+        if let Some(next) = self
+            .conversation
+            .after_history_read(&self.session, read_succeeded)
+        {
+            self.cancel_history();
             self.load_history(next, cx);
         }
         cx.notify();
@@ -406,6 +599,7 @@ impl Hamlet {
         cx.spawn(async move |weak, cx| {
             if let Ok(result) = receive.recv().await {
                 let _ = weak.update_in(cx, |view, window, cx| {
+                    view.store_composer(cx);
                     let (confirmed, history) = view.conversation.complete_create(
                         &mut view.session,
                         &request,
@@ -421,6 +615,7 @@ impl Hamlet {
                     if let Some(history) = history {
                         view.cancel_history();
                         view.history_list.reset(0);
+                        view.sync_composer(window, cx);
                         view.load_history(history, cx);
                     }
                     cx.notify();
@@ -445,14 +640,17 @@ impl Hamlet {
         }
     }
 
-    fn select_channel(&mut self, id: &str, cx: &mut Context<Self>) {
+    fn select_channel(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.store_composer(cx);
         if self.conversation.selected.as_deref() != Some(id) {
             self.cancel_history();
             self.history_list.reset(0);
         }
         if let Some(request) = self.conversation.select(&self.session, id) {
+            self.sync_composer(window, cx);
             self.load_history(request, cx);
         } else {
+            self.sync_composer(window, cx);
             self.restore_cached_history();
         }
         cx.notify();
@@ -462,6 +660,7 @@ impl Hamlet {
         self.cancel_history();
         self.history_list.reset(0);
         self.conversation.clear();
+        self.sync_composer(window, cx);
         if let Some(revocation) = self.session.logout() {
             let api = self.session.api.clone();
             let (send, receive) = async_channel::bounded(1);
@@ -491,6 +690,11 @@ impl Render for Hamlet {
             self.password
                 .update(cx, |input, cx| input.set_value("", window, cx));
             self.clear_password = false;
+        }
+        // Protected rejection and the expiry timer can clear the model without a
+        // Window; wipe the hidden textarea on the next frame, before another login.
+        if self.session.active.is_none() && self.composer.read(cx).text().len() != 0 {
+            self.sync_composer(window, cx);
         }
         let view = cx.entity().downgrade();
         let mut surface = div()
@@ -691,8 +895,9 @@ impl Hamlet {
                         Button::new(format!("channel-{id}"))
                             .label(label)
                             .icon(theme::channel_icon())
-                            .on_click(move |_, _, cx| {
-                                let _ = target.update(cx, |view, cx| view.select_channel(&id, cx));
+                            .on_click(move |_, window, cx| {
+                                let _ = target
+                                    .update(cx, |view, cx| view.select_channel(&id, window, cx));
                             })
                             .when(selected, |button| button.bg(rgb(theme::SELECTED))),
                     );
@@ -840,6 +1045,55 @@ impl Hamlet {
                     );
                 }
             }
+            let sending = self.conversation.send_pending.contains_key(id);
+            let composer_focus = self.composer.read(cx).focus_handle(cx);
+            let send_view = view.clone();
+            history = history.child(
+                div()
+                    .id("composer-panel")
+                    .test_support()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id("composer")
+                            .test_support()
+                            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                window.focus(&composer_focus, cx);
+                                cx.stop_propagation();
+                            })
+                            .child(
+                                Textarea::new(&self.composer)
+                                    .aria_label(format!("Message to {name}"))
+                                    .readonly(sending)
+                                    .h(px(90.)),
+                            ),
+                    )
+                    .child(
+                        Button::new("send-message")
+                            .icon(gpui_kit::assets::IconName::Send)
+                            .tooltip("Send message (Enter); Shift+Enter adds a line")
+                            .label(if sending {
+                                "Sending…"
+                            } else {
+                                "Send message"
+                            })
+                            .disabled(sending)
+                            .on_click(move |_, _, cx| {
+                                let _ = send_view.update(cx, |view, cx| view.send_message(cx));
+                            }),
+                    )
+                    .when_some(self.conversation.send_feedback.get(id), |pane, feedback| {
+                        pane.child(
+                            div()
+                                .id("send-feedback")
+                                .aria_label(feedback.clone())
+                                .test_support()
+                                .child(feedback.clone()),
+                        )
+                    }),
+            );
         } else if !matches!(self.conversation.channels, Some(Load::Ready(ref items)) if items.is_empty())
         {
             history = history.child("Select a text channel to read its conversation.");
@@ -888,9 +1142,9 @@ mod tests {
     use gpui_kit::component::Root;
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{
-        AppContext as _, Context, FocusHandle, InteractiveElement as _, IntoElement, ListAlignment,
-        ListState, MouseButton, ParentElement as _, Render, SharedString, Styled as _,
-        TestAppContext, Window, div, list, px,
+        AppContext as _, Context, FocusHandle, Focusable as _, InteractiveElement as _,
+        IntoElement, ListAlignment, ListState, MouseButton, ParentElement as _, Render,
+        SharedString, Styled as _, TestAppContext, Window, div, list, px,
     };
     use std::sync::{
         Arc,
@@ -1116,6 +1370,458 @@ mod tests {
                 }])
             })
         }
+    }
+
+    type Sent = (
+        String,
+        String,
+        async_channel::Sender<Result<crate::conversation::Message, AuthError>>,
+    );
+    struct SendAuth(Arc<std::sync::Mutex<Vec<Sent>>>);
+    impl AuthApi for SendAuth {
+        fn signup(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
+            TestAuth.signup(s, u, p)
+        }
+        fn login(&self, s: String, u: String, p: String) -> ApiFuture<Result<Login, AuthError>> {
+            TestAuth.login(s, u, p)
+        }
+        fn logout(&self, s: String, t: String) -> ApiFuture<Result<(), AuthError>> {
+            TestAuth.logout(s, t)
+        }
+        fn channels(
+            &self,
+            s: String,
+            t: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Channel>, AuthError>> {
+            TestAuth.channels(s, t)
+        }
+        fn create_channel(
+            &self,
+            s: String,
+            t: String,
+            n: String,
+        ) -> ApiFuture<Result<crate::conversation::Channel, AuthError>> {
+            TestAuth.create_channel(s, t, n)
+        }
+        fn history(
+            &self,
+            s: String,
+            t: String,
+            id: String,
+        ) -> ApiFuture<Result<Vec<crate::conversation::Message>, AuthError>> {
+            TestAuth.history(s, t, id)
+        }
+        fn send_message(
+            &self,
+            _: String,
+            _: String,
+            id: String,
+            text: String,
+        ) -> ApiFuture<Result<crate::conversation::Message, AuthError>> {
+            let (tx, rx) = async_channel::bounded(1);
+            self.0.lock().unwrap().push((id, text, tx));
+            Box::pin(async move { rx.recv().await.unwrap() })
+        }
+    }
+
+    #[gpui_kit::test]
+    fn composer_uses_real_textarea_keyboard_button_focus_and_channel_drafts(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let calls = Arc::new(std::sync::Mutex::new(Vec::<Sent>::new()));
+        let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let stored = saved.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(SendAuth(calls.clone()))));
+            *stored.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("composer", cx);
+            assert!(
+                view.read(cx)
+                    .composer
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
+            window.input("first", cx);
+            window.press("shift-enter", cx);
+            window.input("second", cx);
+            assert_eq!(
+                view.read(cx).composer.read(cx).text().to_string(),
+                "first\nsecond"
+            );
+            window.click("channel-000000000000002", cx);
+            window.render_frame(cx);
+            window.click("composer", cx);
+            window.input("other", cx);
+            window.click("channel-000000000000001", cx);
+            window.render_frame(cx);
+            assert_eq!(
+                view.read(cx).composer.read(cx).text().to_string(),
+                "first\nsecond"
+            );
+            window.click("composer", cx);
+            assert!(
+                view.read(cx)
+                    .composer
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
+            window.dispatch_action(
+                Box::new(gpui_kit::base::input::Enter {
+                    secondary: false,
+                    shift: false,
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("send-message").label(), Some("Sending…"));
+            assert_eq!(
+                view.read(cx).composer.read(cx).text().to_string(),
+                "first\nsecond"
+            );
+            window.input("blocked", cx);
+            assert_eq!(
+                view.read(cx).composer.read(cx).text().to_string(),
+                "first\nsecond"
+            );
+            window.click("send-message", cx);
+            window.dispatch_action(
+                Box::new(gpui_kit::base::input::Enter {
+                    secondary: false,
+                    shift: false,
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        let (_, text, sender) = calls.lock().unwrap().remove(0);
+        assert_eq!(text, "first\nsecond");
+        sender.try_send(Err(AuthError::InvalidInput)).unwrap();
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                view.read(cx).composer.read(cx).text().to_string(),
+                "first\nsecond"
+            );
+            assert!(
+                window
+                    .find("send-feedback")
+                    .label()
+                    .unwrap()
+                    .contains("rejected")
+            );
+            window.click("channel-000000000000002", cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).composer.read(cx).text().to_string(), "other");
+            window.click("send-message", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        let (_, text, sender) = calls.lock().unwrap().remove(0);
+        assert_eq!(text, "other");
+        sender
+            .try_send(Ok(crate::conversation::Message {
+                id: "000000000000003".into(),
+                channel_id: "000000000000002".into(),
+                author_id: "42".into(),
+                author_name: "Ada".into(),
+                text: "other".into(),
+                created_at: "2027-01-01T00:00:00Z".into(),
+            }))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).composer.read(cx).text().to_string(), "");
+            assert_eq!(
+                window.find("message-000000000000003").label(),
+                Some("other")
+            );
+            window.click("channel-000000000000001", cx);
+            window.render_frame(cx);
+            assert_eq!(window.find("send-message").label(), Some("Send message"));
+            assert_eq!(
+                view.read(cx).composer.read(cx).text().to_string(),
+                "first\nsecond"
+            );
+            window.click("logout", cx);
+            assert!(view.read(cx).conversation.drafts.is_empty());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn expiry_wipes_hidden_composer_before_a_new_login(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let stored = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let saved = stored.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(TestAuth)));
+            *saved.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view: gpui_kit::Entity<Hamlet> = stored.borrow().as_ref().unwrap().clone();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("composer", cx);
+            window.input("secret draft", cx);
+            view.update(cx, |view, _| {
+                view.session.expire(i64::MAX);
+                view.conversation.clear();
+            });
+            window.render_frame(cx);
+            assert!(view.read(cx).session.active.is_none());
+            assert!(view.read(cx).conversation.drafts.is_empty());
+            assert_eq!(view.read(cx).composer.read(cx).text().to_string(), "");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn enter_at_mid_caret_and_after_shift_enter_sends_unchanged_text(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let calls = Arc::new(std::sync::Mutex::new(Vec::<Sent>::new()));
+        let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let stored = saved.clone();
+        let sender = calls.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(SendAuth(sender))));
+            *stored.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("composer", cx);
+            window.input("middle", cx);
+            view.update(cx, |v, cx| {
+                v.composer.update(cx, |input, cx| {
+                    input.set_cursor_position(
+                        gpui_kit::base::input::Position {
+                            line: 0,
+                            character: 3,
+                        },
+                        window,
+                        cx,
+                    );
+                });
+            });
+            assert_eq!(
+                view.read(cx).composer.read(cx).cursor_position().character,
+                3
+            );
+            assert_eq!(view.read(cx).composer.read(cx).text().to_string(), "middle");
+            window.dispatch_event(
+                gpui_kit::PlatformInput::KeyDown(gpui_kit::KeyDownEvent {
+                    keystroke: gpui_kit::Keystroke::parse("enter").unwrap(),
+                    is_held: false,
+                    prefer_character_input: false,
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let (_, text, reply) = calls.lock().unwrap().remove(0);
+        assert_eq!(text, "middle");
+        reply.try_send(Err(AuthError::InvalidInput)).unwrap();
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            view.update(cx, |v, cx| {
+                v.composer
+                    .update(cx, |input, cx| input.set_value("tail", window, cx));
+                v.conversation.set_draft("000000000000001", "tail".into());
+            });
+            window.render_frame(cx);
+            window.click("composer", cx);
+            window.press("shift-enter", cx);
+            assert_eq!(view.read(cx).composer.read(cx).text().to_string(), "tail\n");
+            window.dispatch_event(
+                gpui_kit::PlatformInput::KeyDown(gpui_kit::KeyDownEvent {
+                    keystroke: gpui_kit::Keystroke::parse("enter").unwrap(),
+                    is_held: false,
+                    prefer_character_input: false,
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let (_, text, reply) = calls.lock().unwrap().remove(0);
+        assert_eq!(text, "tail\n");
+        reply.try_send(Err(AuthError::InvalidInput)).unwrap();
+        cx.run_until_parked();
+        cx.update(|_window, cx| {
+            assert_eq!(view.read(cx).composer.read(cx).text().to_string(), "tail\n");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn uncertain_send_retains_draft_refreshes_only_selected_channel_and_never_replays(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let calls = Arc::new(std::sync::Mutex::new(Vec::<Sent>::new()));
+        let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let stored = saved.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(SendAuth(calls.clone()))));
+            *stored.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("composer", cx);
+            window.input("maybe published", cx);
+            window.click("send-message", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        let (_, _, sender) = calls.lock().unwrap().remove(0);
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("channel-000000000000002", cx);
+            window.render_frame(cx);
+            assert_eq!(window.find("send-message").label(), Some("Send message"));
+        });
+        sender.try_send(Err(AuthError::Unavailable)).unwrap();
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                view.read(cx)
+                    .conversation
+                    .uncertain
+                    .contains("000000000000001")
+            );
+            assert!(view.read(cx).conversation.refreshing.is_empty());
+            window.click("channel-000000000000001", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                view.read(cx).composer.read(cx).text().to_string(),
+                "maybe published"
+            );
+            assert!(
+                window
+                    .find("send-feedback")
+                    .label()
+                    .unwrap()
+                    .contains("may already")
+            );
+            assert!(
+                !view
+                    .read(cx)
+                    .conversation
+                    .uncertain
+                    .contains("000000000000001")
+            );
+            assert!(
+                calls.lock().unwrap().is_empty(),
+                "refresh must not replay the write"
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn stalled_send_times_out_and_late_completion_cannot_clear_the_draft(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let calls = Arc::new(std::sync::Mutex::new(Vec::<Sent>::new()));
+        let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let stored = saved.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(SendAuth(calls.clone()))));
+            *stored.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("composer", cx);
+            window.input("timeout draft", cx);
+            window.click("send-message", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(10));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("send-message").label(), Some("Send message"));
+            assert_eq!(
+                view.read(cx).composer.read(cx).text().to_string(),
+                "timeout draft"
+            );
+            assert!(
+                window
+                    .find("send-feedback")
+                    .label()
+                    .unwrap()
+                    .contains("may already")
+            );
+            assert!(view.read(cx).conversation.send_pending.is_empty());
+        });
+        // The fixture's future was dropped rather than retried, so delivery is impossible.
+        let (_, _, sender) = calls.lock().unwrap().remove(0);
+        assert!(sender.try_send(Err(AuthError::AlreadyInvalid)).is_err());
+        assert!(view.read_with(cx, |v, _| v.session.active.is_some()));
     }
 
     struct PendingAuth(Arc<AtomicUsize>);
@@ -1970,6 +2676,99 @@ mod tests {
             );
             assert_eq!(window.find(id).bounds().origin.y, y);
             assert!(requests.try_recv().is_err());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn confirmed_middle_insertion_keeps_reader_anchor(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (tx, requests) = std::sync::mpsc::channel();
+        let stored = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let saved = stored.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(PagedAuth(tx))));
+            *saved.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view: gpui_kit::Entity<Hamlet> = stored.borrow().as_ref().unwrap().clone();
+        let m = |ix: i32| crate::conversation::Message {
+            id: ix.to_string(),
+            channel_id: "000000000000001".into(),
+            author_id: "42".into(),
+            author_name: "Ada".into(),
+            text: format!("message {ix}"),
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let original: Vec<_> = (1..=40).rev().filter(|&ix| ix != 20).map(m).collect();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("username", cx);
+            window.input("Ada", cx);
+            window.click("password", cx);
+            window.input("pass", cx);
+            window.click("login", cx);
+        });
+        cx.run_until_parked();
+        let (_, initial) = requests
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        initial
+            .send_blocking(Ok(crate::conversation::Page {
+                items: original.clone(),
+                next_cursor: None,
+            }))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            view.update(cx, |v, cx| {
+                v.history_list.scroll_to(gpui_kit::ListOffset {
+                    item_ix: 23,
+                    offset_in_item: px(0.),
+                });
+                v.conversation.set_draft("000000000000001", "twenty".into());
+                let send = v.conversation.send(&v.session).unwrap();
+                assert_eq!(
+                    v.conversation
+                        .complete_send(&mut v.session, &send, Ok(m(20)), 0),
+                    crate::conversation::SendOutcome::Confirmed
+                );
+                let read = v.conversation.reconcile_confirmed(&v.session).unwrap();
+                v.load_history(read, cx);
+            });
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).history_list.logical_scroll_top().item_ix, 23);
+            assert!(window.find("message-25").bounds().size.height > px(0.));
+        });
+        cx.run_until_parked();
+        let (_, refresh) = requests
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        let y = cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.find("message-25").bounds().origin.y
+        });
+        refresh
+            .send_blocking(Ok(crate::conversation::Page {
+                items: original,
+                next_cursor: None,
+            }))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).history_list.logical_scroll_top().item_ix, 24);
+            assert_eq!(window.find("message-25").bounds().origin.y, y);
+            assert_eq!(view.read(cx).history_list.item_count(), 40);
+            let crate::conversation::Load::Ready(messages) = view
+                .read(cx)
+                .conversation
+                .history
+                .get("000000000000001")
+                .unwrap()
+            else {
+                panic!("history not ready")
+            };
+            assert_eq!(messages.iter().filter(|m| m.id == "20").count(), 1);
         });
     }
 

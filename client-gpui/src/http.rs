@@ -192,6 +192,65 @@ async fn decode_auth(response: reqwest::Response, success: StatusCode) -> Result
     Err(AuthError::Unavailable)
 }
 
+async fn decode_created_message(
+    response: reqwest::Response,
+    channel_id: &str,
+) -> Result<Message, AuthError> {
+    match response.status() {
+        StatusCode::CREATED => {
+            let wire: WireMessage = response
+                .json()
+                .await
+                .map_err(|_| AuthError::InvalidResponse)?;
+            if wire.id.is_empty()
+                || wire.channel_id != channel_id
+                || wire.author.id.is_empty()
+                || wire.author.display_name.is_empty()
+            {
+                return Err(AuthError::InvalidResponse);
+            }
+            Ok(Message {
+                id: wire.id,
+                channel_id: wire.channel_id,
+                author_id: wire.author.id,
+                author_name: wire.author.display_name,
+                text: wire.text,
+                created_at: wire.created_at.to_rfc3339(),
+            })
+        }
+        StatusCode::UNAUTHORIZED => Err(AuthError::AlreadyInvalid),
+        StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND => {
+            let status = response.status();
+            let body: WireError = response
+                .json()
+                .await
+                .map_err(|_| AuthError::InvalidResponse)?;
+            match (status, body.error.code.as_str()) {
+                (StatusCode::BAD_REQUEST, "bad_request") => Err(AuthError::InvalidInput),
+                (StatusCode::NOT_FOUND, "not_found") => Err(AuthError::NotFound),
+                _ => Err(AuthError::InvalidResponse),
+            }
+        }
+        StatusCode::INTERNAL_SERVER_ERROR => Err(AuthError::ServerFailure),
+        _ => Err(AuthError::Unavailable),
+    }
+}
+
+fn message_url(server: &str, channel_id: &str) -> Result<Url, AuthError> {
+    if channel_id.is_empty()
+        || channel_id.contains(['/', '\\'])
+        || channel_id == "."
+        || channel_id == ".."
+    {
+        return Err(AuthError::InvalidResponse);
+    }
+    let mut url = validate_server(server)?;
+    url.path_segments_mut()
+        .map_err(|_| AuthError::InvalidResponse)?
+        .extend(["api", "v1", "channels", channel_id, "messages"]);
+    Ok(url)
+}
+
 impl AuthApi for HttpAuth {
     fn signup(
         &self,
@@ -294,6 +353,32 @@ impl AuthApi for HttpAuth {
         })
     }
 
+    fn send_message(
+        &self,
+        server: String,
+        token: String,
+        channel_id: String,
+        text: String,
+    ) -> ApiFuture<Result<Message, AuthError>> {
+        let client = self.client.clone();
+        Box::pin(async move {
+            let url = message_url(&server, &channel_id)?;
+            // One POST only. In particular, a timeout, lost response, malformed success or
+            // server failure must never turn into an automatic replay of a non-idempotent write.
+            decode_created_message(
+                client
+                    .post(url)
+                    .bearer_auth(token)
+                    .json(&serde_json::json!({"text": text}))
+                    .send()
+                    .await
+                    .map_err(|_| AuthError::Unavailable)?,
+                &channel_id,
+            )
+            .await
+        })
+    }
+
     fn history(
         &self,
         server: String,
@@ -313,19 +398,7 @@ impl AuthApi for HttpAuth {
     ) -> ApiFuture<Result<Page, AuthError>> {
         let client = self.client.clone();
         Box::pin(async move {
-            // The server supplies channel IDs. Encode them as one path segment rather than
-            // assuming their format or allowing an ID to escape the history route.
-            if channel_id.is_empty()
-                || channel_id.contains(['/', '\\'])
-                || channel_id == "."
-                || channel_id == ".."
-            {
-                return Err(AuthError::InvalidResponse);
-            }
-            let mut url = validate_server(&server)?;
-            url.path_segments_mut()
-                .map_err(|_| AuthError::InvalidResponse)?
-                .extend(["api", "v1", "channels", &channel_id, "messages"]);
+            let mut url = message_url(&server, &channel_id)?;
             if let Some(cursor) = before.as_ref() {
                 // Query serialization treats the server-issued cursor as opaque, even if it
                 // contains reserved URL characters. Never decode or synthesize one.
@@ -443,6 +516,140 @@ mod tests {
             body.len()
         )
     }
+    #[actix_web::test]
+    async fn send_message_uses_real_rewrite_validation_and_decodes_created_identity() {
+        use actix_web::{App, HttpServer, web};
+        use hamlet::{connect_to_database, routes};
+        let dir = tempfile::tempdir().unwrap();
+        let db = connect_to_database(&format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("messages.db").display()
+        ))
+        .await
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = HttpServer::new(move || {
+            App::new()
+                .app_data(web::Data::new(db.clone()))
+                .configure(routes)
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+        let handle = server.handle();
+        actix_web::rt::spawn(server);
+        let auth: &dyn AuthApi = &HttpAuth::new();
+        let login = auth
+            .signup(url.clone(), "Ada".into(), "long password".into())
+            .await
+            .unwrap();
+        let channel = auth
+            .channels(url.clone(), login.token.clone())
+            .await
+            .unwrap()[0]
+            .id
+            .clone();
+        let sent = auth
+            .send_message(
+                url.clone(),
+                login.token.clone(),
+                channel.clone(),
+                "first\nsecond".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sent.channel_id, channel);
+        assert_eq!(sent.author_id, login.user.id);
+        assert_eq!(sent.author_name, "Ada");
+        assert_eq!(sent.text, "first\nsecond");
+        assert!(!sent.id.is_empty());
+        assert!(sent.created_at.contains('T'));
+        assert_eq!(
+            auth.history(url.clone(), login.token.clone(), channel.clone())
+                .await
+                .unwrap(),
+            vec![sent]
+        );
+        for text in ["   ".to_owned(), "x".repeat(4001)] {
+            assert!(matches!(
+                auth.send_message(url.clone(), login.token.clone(), channel.clone(), text)
+                    .await,
+                Err(AuthError::InvalidInput)
+            ));
+        }
+        assert!(matches!(
+            auth.send_message(
+                url.clone(),
+                login.token.clone(),
+                "999999999999999".into(),
+                "hi".into()
+            )
+            .await,
+            Err(AuthError::NotFound)
+        ));
+        assert!(matches!(
+            auth.send_message(url.clone(), "bad".into(), channel, "hi".into())
+                .await,
+            Err(AuthError::AlreadyInvalid)
+        ));
+        handle.stop(true).await;
+    }
+
+    #[tokio::test]
+    async fn ambiguous_write_timeout_does_not_replay_and_malformed_success_is_uncertain() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let captured = thread::spawn(move || {
+            let start = std::time::Instant::now();
+            let mut first = None;
+            while start.elapsed() < Duration::from_secs(2) && first.is_none() {
+                if let Ok((stream, _)) = listener.accept() {
+                    first = Some(stream);
+                } else {
+                    thread::sleep(Duration::from_millis(2));
+                }
+            }
+            let mut stream = first.expect("one write reached server");
+            stream
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
+            let mut request = [0u8; 4096];
+            let count = stream.read(&mut request).unwrap();
+            thread::sleep(Duration::from_millis(120));
+            assert!(
+                listener.accept().is_err(),
+                "client retried an ambiguous POST"
+            );
+            String::from_utf8_lossy(&request[..count]).to_string()
+        });
+        let auth = HttpAuth {
+            client: Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_millis(30))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap(),
+        };
+        assert!(matches!(
+            auth.send_message(url, "token".into(), "123".into(), "do not retry".into())
+                .await,
+            Err(AuthError::Unavailable)
+        ));
+        let captured = captured.join().unwrap();
+        assert!(captured.starts_with("POST /api/v1/channels/123/messages "));
+        assert!(captured.contains("do not retry"));
+        let (url, request) = server(response("201 Created", "{bad json"));
+        assert!(matches!(
+            HttpAuth::new()
+                .send_message(url, "token".into(), "123".into(), "hi".into())
+                .await,
+            Err(AuthError::InvalidResponse)
+        ));
+        request.join().unwrap();
+    }
+
     #[tokio::test]
     async fn login_decodes_rewrite_contract_and_unauthorized() {
         let body = r#"{"user":{"id":"42","username":"ada"},"access_token":"abc","expires_at":"2099-01-01T00:00:00Z"}"#;

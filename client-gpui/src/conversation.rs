@@ -52,6 +52,25 @@ struct Catchup {
     cursors: HashSet<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct SendRequest {
+    pub generation: u64,
+    pub server: String,
+    pub token: String,
+    pub channel_id: String,
+    pub text: String,
+    serial: u64,
+}
+
+#[derive(PartialEq, Eq, Debug)]
+pub enum SendOutcome {
+    Stale,
+    Confirmed,
+    Rejected,
+    Uncertain,
+    Invalidated,
+}
+
 pub struct HistoryOutcome {
     pub added: usize,
     pub next: Option<ReadRequest>,
@@ -94,6 +113,15 @@ pub struct Conversation {
     pub create_pending: bool,
     pub create_feedback: Option<String>,
     create_serial: u64,
+    pub drafts: HashMap<String, String>,
+    pub send_pending: HashMap<String, u64>,
+    pub send_feedback: HashMap<String, String>,
+    pub uncertain: HashSet<String>,
+    uncertain_notice: HashSet<String>,
+    confirmed: HashMap<String, Vec<Message>>,
+    confirmed_refresh: HashSet<String>,
+    confirmed_during_refresh: HashSet<String>,
+    send_serial: u64,
 }
 
 impl Conversation {
@@ -106,7 +134,9 @@ impl Conversation {
         let next = self.create_serial.wrapping_add(1);
         let read_next = self.read_serial.wrapping_add(1);
         let channel_next = self.channel_serial.wrapping_add(1);
+        let send_next = self.send_serial.wrapping_add(1);
         *self = Self::default();
+        self.send_serial = send_next;
         self.create_serial = next;
         self.read_serial = read_next;
         self.channel_serial = channel_next;
@@ -190,6 +220,167 @@ impl Conversation {
                 (false, None)
             }
         }
+    }
+
+    pub fn draft(&self, id: &str) -> &str {
+        self.drafts.get(id).map(String::as_str).unwrap_or("")
+    }
+
+    pub fn set_draft(&mut self, id: &str, text: String) {
+        if !self.send_pending.contains_key(id) {
+            self.drafts.insert(id.into(), text);
+            if !self.uncertain_notice.contains(id) && !self.confirmed.contains_key(id) {
+                self.send_feedback.remove(id);
+            }
+        }
+    }
+
+    pub fn send(&mut self, session: &AppSession) -> Option<SendRequest> {
+        let id = self.selected.as_ref()?;
+        if self.send_pending.contains_key(id) {
+            return None;
+        }
+        let text = self.draft(id).to_owned();
+        if text.trim().is_empty() || text.chars().count() > 4000 {
+            self.send_feedback.insert(
+                id.clone(),
+                "Message must have text and be at most 4000 characters.".into(),
+            );
+            return None;
+        }
+        let active = session.active.as_ref()?;
+        self.send_serial = self.send_serial.wrapping_add(1);
+        self.send_pending.insert(id.clone(), self.send_serial);
+        self.uncertain_notice.remove(id);
+        self.send_feedback.remove(id);
+        Some(SendRequest {
+            generation: session.session_generation()?,
+            server: active.server.clone(),
+            token: active.token().into(),
+            channel_id: id.clone(),
+            text,
+            serial: self.send_serial,
+        })
+    }
+
+    pub fn complete_send(
+        &mut self,
+        session: &mut AppSession,
+        request: &SendRequest,
+        result: Result<Message, AuthError>,
+        now: i64,
+    ) -> SendOutcome {
+        let id = &request.channel_id;
+        if self.send_pending.get(id) != Some(&request.serial)
+            || session.session_generation() != Some(request.generation)
+            || session.active.as_ref().is_none_or(|active| {
+                active.server != request.server || active.token() != request.token
+            })
+        {
+            return SendOutcome::Stale;
+        }
+        session.expire(now);
+        if session.active.is_none() {
+            self.clear();
+            return SendOutcome::Invalidated;
+        }
+        self.send_pending.remove(id);
+        match result {
+            Ok(message) if !message.id.is_empty() && message.channel_id == *id => {
+                self.drafts.remove(id);
+                self.send_feedback.insert(id.clone(), "Message accepted by server; waiting for conversation catch-up. Refresh conversation if catch-up is incomplete.".into());
+                // Preserve the previous head as the continuity boundary. A confirmation
+                // must not make catch-up stop before intervening publications are read.
+                self.confirmed.entry(id.clone()).or_default().push(message);
+                if matches!(self.refreshing.get(id), Some(Refresh::Running)) {
+                    self.confirmed_during_refresh.insert(id.clone());
+                }
+                SendOutcome::Confirmed
+            }
+            Err(AuthError::AlreadyInvalid) => {
+                session.protected_rejected(request.generation);
+                self.clear();
+                SendOutcome::Invalidated
+            }
+            Err(
+                AuthError::InvalidInput
+                | AuthError::NotFound
+                | AuthError::Conflict
+                | AuthError::InvalidCredentials,
+            ) => {
+                self.send_feedback.insert(id.clone(), "The server rejected this message. Check the text and channel before sending again.".into());
+                SendOutcome::Rejected
+            }
+            _ => {
+                self.uncertain.insert(id.clone());
+                self.uncertain_notice.insert(id.clone());
+                self.send_feedback.insert(id.clone(), "Could not confirm publication; this message may already have been published. Check the conversation before resending.".into());
+                SendOutcome::Uncertain
+            }
+        }
+    }
+
+    pub fn reconcile_confirmed(&mut self, session: &AppSession) -> Option<ReadRequest> {
+        let id = self.selected.as_ref()?;
+        if !self.confirmed.contains_key(id) || self.confirmed_refresh.contains(id) {
+            return None;
+        }
+        let id = id.clone();
+        let request = self.refresh_history(session);
+        if request.as_ref().is_some_and(|request| request.refresh) {
+            self.confirmed_refresh.insert(id);
+        }
+        request
+    }
+
+    /// After any history read, run only the reconciliation that can safely start now.
+    /// Incomplete catch-up always requires a deliberate retry, never an automatic loop.
+    pub fn after_history_read(
+        &mut self,
+        session: &AppSession,
+        succeeded: bool,
+    ) -> Option<ReadRequest> {
+        let id = self.selected.as_ref()?;
+        if !succeeded || matches!(self.refreshing.get(id), Some(Refresh::Incomplete(_))) {
+            return None;
+        }
+        self.reconcile_uncertain(session)
+            .or_else(|| self.reconcile_confirmed(session))
+    }
+
+    fn merge_confirmed(&mut self, id: &str, message: Message) -> usize {
+        let Some(Load::Ready(messages)) = self.history.get_mut(id) else {
+            return 0;
+        };
+        if messages.iter().any(|m| m.id == message.id) {
+            return 0;
+        }
+        // The server orders by created_at DESC, id DESC. Compare parsed instants because
+        // RFC3339 can spell UTC with differing fractional-second precision.
+        let key = chrono::DateTime::parse_from_rfc3339(&message.created_at).ok();
+        let at = messages.partition_point(|m| {
+            let other = chrono::DateTime::parse_from_rfc3339(&m.created_at).ok();
+            other > key
+                || (other == key
+                    && match (m.id.parse::<u64>(), message.id.parse::<u64>()) {
+                        (Ok(a), Ok(b)) => a > b,
+                        _ => m.id > message.id,
+                    })
+        });
+        messages.insert(at, message);
+        1
+    }
+
+    pub fn reconcile_uncertain(&mut self, session: &AppSession) -> Option<ReadRequest> {
+        let id = self.selected.clone()?;
+        if !self.uncertain.contains(&id) {
+            return None;
+        }
+        let request = self.refresh_history(session);
+        if request.is_some() {
+            self.uncertain.remove(&id);
+        }
+        request
     }
 
     pub fn start(&mut self, session: &AppSession) -> Option<ReadRequest> {
@@ -285,6 +476,8 @@ impl Conversation {
             }
             if matches!(self.refreshing.get(old), Some(Refresh::Running)) {
                 self.refreshing.remove(old);
+                self.confirmed_refresh.remove(old);
+                self.confirmed_during_refresh.remove(old);
             }
         }
         self.catchup = None;
@@ -302,6 +495,12 @@ impl Conversation {
             self.cancel_selected();
         }
         self.selected = Some(id.into());
+        if self.uncertain.contains(id) && matches!(self.history.get(id), Some(Load::Ready(_))) {
+            return self.reconcile_uncertain(session);
+        }
+        if self.confirmed.contains_key(id) && matches!(self.history.get(id), Some(Load::Ready(_))) {
+            return self.reconcile_confirmed(session);
+        }
         if matches!(self.history.get(id), Some(Load::Loading | Load::Ready(_))) {
             return None;
         }
@@ -491,6 +690,20 @@ impl Conversation {
                             });
                         }
                     }
+                    if outcome.next.is_none() {
+                        let confirmed_refresh = self.confirmed_refresh.remove(id);
+                        if !matches!(self.refreshing.get(id), Some(Refresh::Incomplete(_))) {
+                            // A confirmation after the first page was requested might be absent
+                            // from its snapshot. Start a fresh catch-up against the old head.
+                            let needs_new_catchup = self.confirmed_during_refresh.remove(id);
+                            if confirmed_refresh && !needs_new_catchup {
+                                for confirmed in self.confirmed.remove(id).unwrap_or_default() {
+                                    outcome.added += self.merge_confirmed(id, confirmed);
+                                }
+                                self.send_feedback.remove(id);
+                            }
+                        }
+                    }
                     return outcome;
                 }
                 let existing = if older {
@@ -538,6 +751,7 @@ impl Conversation {
             Err(error) => {
                 if request.refresh {
                     self.catchup = None;
+                    self.confirmed_refresh.remove(id);
                     self.refreshing
                         .insert(id.clone(), Refresh::Incomplete(error.description().into()));
                 } else if older {
@@ -621,6 +835,440 @@ mod tests {
             },
         ]
     }
+    #[test]
+    fn sends_keep_independent_drafts_and_identity_across_navigation_refresh_and_invalidation() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let listing = view.start(&session).unwrap();
+        let first = view
+            .complete_channels(&mut session, &listing, Ok(channels()))
+            .unwrap();
+        let message = |id: &str, channel: &str, text: &str| Message {
+            id: id.into(),
+            channel_id: channel.into(),
+            author_id: "u".into(),
+            author_name: "Ada".into(),
+            text: text.into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        view.complete_history(
+            &mut session,
+            &first,
+            Ok(Page {
+                items: vec![message("8", "z", "old")],
+                next_cursor: None,
+            }),
+        );
+        view.set_draft("z", "same text\nsecond line".into());
+        let sent = view.send(&session).unwrap();
+        assert!(view.send(&session).is_none());
+        view.set_draft("z", "blocked".into());
+        assert_eq!(view.draft("z"), "same text\nsecond line");
+        let other = view.select(&session, "a").unwrap();
+        view.complete_history(
+            &mut session,
+            &other,
+            Ok(Page {
+                items: vec![],
+                next_cursor: None,
+            }),
+        );
+        view.set_draft("a", "other".into());
+        let second = view.send(&session).unwrap();
+        assert_eq!(
+            view.complete_send(&mut session, &sent, Err(AuthError::Unavailable), 0),
+            SendOutcome::Uncertain
+        );
+        assert_eq!(view.draft("z"), "same text\nsecond line");
+        assert!(view.uncertain.contains("z"));
+        assert!(
+            view.refreshing.is_empty(),
+            "inactive uncertainty cannot fetch history"
+        );
+        assert_eq!(
+            view.complete_send(&mut session, &second, Err(AuthError::InvalidInput), 0),
+            SendOutcome::Rejected
+        );
+        assert_eq!(view.draft("a"), "other");
+        assert_eq!(
+            view.complete_send(&mut session, &second, Ok(message("10", "a", "other")), 0),
+            SendOutcome::Stale
+        );
+        let refresh = view.select(&session, "z").unwrap();
+        assert_eq!(view.refreshing.get("z"), Some(&Refresh::Running));
+        assert!(view.uncertain.is_empty());
+        let sent = view.send(&session).unwrap(); // only deliberate user action replays an uncertain write
+        assert_eq!(
+            view.complete_send(
+                &mut session,
+                &sent,
+                Ok(message("10", "z", "same text\nsecond line")),
+                0
+            ),
+            SendOutcome::Confirmed
+        );
+        assert_eq!(view.draft("z"), "");
+        assert_eq!(
+            view.history.get("z"),
+            Some(&Load::Ready(vec![message("8", "z", "old")]))
+        );
+        // Refresh sees the confirmed identity first; no duplicate when its completion arrives.
+        view.complete_history(
+            &mut session,
+            &refresh,
+            Ok(Page {
+                items: vec![
+                    message("10", "z", "same text\nsecond line"),
+                    message("9", "z", "same text\nsecond line"),
+                    message("8", "z", "old"),
+                ],
+                next_cursor: None,
+            }),
+        );
+        assert_eq!(
+            view.history.get("z"),
+            Some(&Load::Ready(vec![
+                message("10", "z", "same text\nsecond line"),
+                message("9", "z", "same text\nsecond line"),
+                message("8", "z", "old")
+            ]))
+        );
+        view.set_draft("z", "new draft".into());
+        let late = view.send(&session).unwrap();
+        session.logout();
+        view.clear();
+        assert_eq!(
+            view.complete_send(&mut session, &late, Ok(message("11", "z", "new draft")), 0),
+            SendOutcome::Stale
+        );
+        assert!(view.drafts.is_empty());
+        assert!(view.history.is_empty());
+    }
+
+    #[test]
+    fn confirmation_before_refresh_merges_once_in_server_order_and_bad_inputs_do_not_send() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let listing = view.start(&session).unwrap();
+        let initial = view
+            .complete_channels(&mut session, &listing, Ok(channels()))
+            .unwrap();
+        let m = |id: &str| Message {
+            id: id.into(),
+            channel_id: "z".into(),
+            author_id: "u".into(),
+            author_name: "Ada".into(),
+            text: "identical text".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        view.complete_history(
+            &mut session,
+            &initial,
+            Ok(Page {
+                items: vec![m("8")],
+                next_cursor: None,
+            }),
+        );
+        for invalid in ["   ".to_owned(), "x".repeat(4001)] {
+            view.set_draft("z", invalid);
+            assert!(view.send(&session).is_none());
+            assert!(!view.send_pending.contains_key("z"));
+        }
+        view.set_draft("z", "identical text".into());
+        let send = view.send(&session).unwrap();
+        assert_eq!(
+            view.complete_send(&mut session, &send, Ok(m("10")), 0),
+            SendOutcome::Confirmed
+        );
+        assert_eq!(view.history.get("z"), Some(&Load::Ready(vec![m("8")])));
+        let refresh = view.reconcile_confirmed(&session).unwrap();
+        view.complete_history(
+            &mut session,
+            &refresh,
+            Ok(Page {
+                items: vec![m("10"), m("9"), m("8")],
+                next_cursor: None,
+            }),
+        );
+        assert_eq!(
+            view.history.get("z"),
+            Some(&Load::Ready(vec![m("10"), m("9"), m("8")]))
+        );
+    }
+
+    #[test]
+    fn second_confirmation_during_catchup_requires_a_new_safe_read() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let list = view.start(&session).unwrap();
+        let initial = view
+            .complete_channels(&mut session, &list, Ok(channels()))
+            .unwrap();
+        let message = |id: &str| Message {
+            id: id.into(),
+            channel_id: "z".into(),
+            author_id: "u".into(),
+            author_name: "Ada".into(),
+            text: id.into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let page = |ids: &[&str]| Page {
+            items: ids.iter().map(|id| message(id)).collect(),
+            next_cursor: None,
+        };
+        view.complete_history(&mut session, &initial, Ok(page(&["1"])));
+        view.set_draft("z", "first".into());
+        let first = view.send(&session).unwrap();
+        assert_eq!(
+            view.complete_send(&mut session, &first, Ok(message("3")), 0),
+            SendOutcome::Confirmed
+        );
+        let stale_read = view.reconcile_confirmed(&session).unwrap();
+        view.set_draft("z", "second".into());
+        let second = view.send(&session).unwrap();
+        assert_eq!(
+            view.complete_send(&mut session, &second, Ok(message("4")), 0),
+            SendOutcome::Confirmed
+        );
+        assert_eq!(
+            view.complete_history(&mut session, &stale_read, Ok(page(&["3", "2", "1"])))
+                .added,
+            2
+        );
+        assert_eq!(
+            view.history.get("z"),
+            Some(&Load::Ready(page(&["3", "2", "1"]).items))
+        );
+        assert_eq!(view.confirmed.get("z").map(Vec::len), Some(2));
+        let fresh = view.after_history_read(&session, true).unwrap();
+        assert!(fresh.refresh);
+        assert_eq!(
+            view.complete_history(&mut session, &fresh, Ok(page(&["4", "3", "2", "1"])))
+                .added,
+            1
+        );
+        assert_eq!(
+            view.history.get("z"),
+            Some(&Load::Ready(page(&["4", "3", "2", "1"]).items))
+        );
+        assert!(view.confirmed.is_empty());
+        assert!(view.after_history_read(&session, true).is_none());
+    }
+
+    #[test]
+    fn confirmed_message_remains_staged_when_catchup_cannot_prove_continuity() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let listing = view.start(&session).unwrap();
+        let first = view
+            .complete_channels(&mut session, &listing, Ok(channels()))
+            .unwrap();
+        let m = |id: &str| Message {
+            id: id.into(),
+            channel_id: "z".into(),
+            author_id: "u".into(),
+            author_name: "Ada".into(),
+            text: "same".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        view.complete_history(
+            &mut session,
+            &first,
+            Ok(Page {
+                items: vec![m("8")],
+                next_cursor: None,
+            }),
+        );
+        view.set_draft("z", "same".into());
+        let send = view.send(&session).unwrap();
+        view.complete_send(&mut session, &send, Ok(m("10")), 0);
+        let refresh = view.reconcile_confirmed(&session).unwrap();
+        view.complete_history(
+            &mut session,
+            &refresh,
+            Ok(Page {
+                items: vec![m("10")],
+                next_cursor: None,
+            }),
+        );
+        assert_eq!(view.history.get("z"), Some(&Load::Ready(vec![m("8")])));
+        assert!(matches!(
+            view.refreshing.get("z"),
+            Some(Refresh::Incomplete(_))
+        ));
+        assert!(view.confirmed.contains_key("z"));
+        let retry = view.reconcile_confirmed(&session).unwrap(); // deliberate retry only
+        view.complete_history(
+            &mut session,
+            &retry,
+            Ok(Page {
+                items: vec![m("10"), m("9"), m("8")],
+                next_cursor: None,
+            }),
+        );
+        assert_eq!(
+            view.history.get("z"),
+            Some(&Load::Ready(vec![m("10"), m("9"), m("8")]))
+        );
+    }
+
+    #[test]
+    fn success_for_inactive_channel_clears_only_its_draft_and_waits_for_selection() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let listing = view.start(&session).unwrap();
+        let first = view
+            .complete_channels(&mut session, &listing, Ok(channels()))
+            .unwrap();
+        let m = |id: &str| Message {
+            id: id.into(),
+            channel_id: "z".into(),
+            author_id: "u".into(),
+            author_name: "Ada".into(),
+            text: "same".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        view.complete_history(
+            &mut session,
+            &first,
+            Ok(Page {
+                items: vec![m("8")],
+                next_cursor: None,
+            }),
+        );
+        view.set_draft("z", "same".into());
+        let send = view.send(&session).unwrap();
+        let other = view.select(&session, "a").unwrap();
+        view.complete_history(
+            &mut session,
+            &other,
+            Ok(Page {
+                items: vec![],
+                next_cursor: None,
+            }),
+        );
+        view.set_draft("a", "different draft".into());
+        assert_eq!(
+            view.complete_send(&mut session, &send, Ok(m("10")), 0),
+            SendOutcome::Confirmed
+        );
+        assert_eq!(view.draft("a"), "different draft");
+        assert_eq!(view.draft("z"), "");
+        assert!(view.refreshing.is_empty());
+        let refresh = view.select(&session, "z").unwrap();
+        view.complete_history(
+            &mut session,
+            &refresh,
+            Ok(Page {
+                items: vec![m("10"), m("9"), m("8")],
+                next_cursor: None,
+            }),
+        );
+        assert_eq!(
+            view.history.get("z"),
+            Some(&Load::Ready(vec![m("10"), m("9"), m("8")]))
+        );
+    }
+
+    #[test]
+    fn authoritative_send_rejection_clears_all_drafts_and_invalidates_late_channel_completion() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let listing = view.start(&session).unwrap();
+        let first = view
+            .complete_channels(&mut session, &listing, Ok(channels()))
+            .unwrap();
+        view.complete_history(
+            &mut session,
+            &first,
+            Ok(Page {
+                items: vec![],
+                next_cursor: None,
+            }),
+        );
+        view.set_draft("z", "first".into());
+        let rejected = view.send(&session).unwrap();
+        let other = view.select(&session, "a").unwrap();
+        view.complete_history(
+            &mut session,
+            &other,
+            Ok(Page {
+                items: vec![],
+                next_cursor: None,
+            }),
+        );
+        view.set_draft("a", "second".into());
+        let late = view.send(&session).unwrap();
+        assert_eq!(
+            view.complete_send(&mut session, &rejected, Err(AuthError::AlreadyInvalid), 0),
+            SendOutcome::Invalidated
+        );
+        assert!(session.active.is_none());
+        assert!(view.drafts.is_empty());
+        assert!(view.send_pending.is_empty());
+        assert_eq!(
+            view.complete_send(&mut session, &late, Err(AuthError::Unavailable), 0),
+            SendOutcome::Stale
+        );
+        assert!(view.send_feedback.is_empty());
+    }
+
+    #[test]
+    fn refresh_that_started_before_confirmation_cannot_hide_an_intervening_message() {
+        let mut session = logged_in();
+        let mut view = Conversation::default();
+        let list = view.start(&session).unwrap();
+        let first = view
+            .complete_channels(&mut session, &list, Ok(channels()))
+            .unwrap();
+        let m = |id: &str| Message {
+            id: id.into(),
+            channel_id: "z".into(),
+            author_id: "u".into(),
+            author_name: "Ada".into(),
+            text: "same".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        view.complete_history(
+            &mut session,
+            &first,
+            Ok(Page {
+                items: vec![m("8")],
+                next_cursor: None,
+            }),
+        );
+        let old_refresh = view.refresh_history(&session).unwrap();
+        view.set_draft("z", "same".into());
+        let send = view.send(&session).unwrap();
+        assert_eq!(
+            view.complete_send(&mut session, &send, Ok(m("10")), 0),
+            SendOutcome::Confirmed
+        );
+        assert_eq!(view.history.get("z"), Some(&Load::Ready(vec![m("8")])));
+        view.complete_history(
+            &mut session,
+            &old_refresh,
+            Ok(Page {
+                items: vec![m("8")],
+                next_cursor: None,
+            }),
+        );
+        assert_eq!(view.history.get("z"), Some(&Load::Ready(vec![m("8")])));
+        let after_send = view.reconcile_confirmed(&session).unwrap();
+        view.complete_history(
+            &mut session,
+            &after_send,
+            Ok(Page {
+                items: vec![m("10"), m("9"), m("8")],
+                next_cursor: None,
+            }),
+        );
+        assert_eq!(
+            view.history.get("z"),
+            Some(&Load::Ready(vec![m("10"), m("9"), m("8")]))
+        );
+    }
+
     #[test]
     fn ordered_channels_first_selection_and_only_selected_history() {
         let mut session = logged_in();

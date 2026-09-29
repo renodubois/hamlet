@@ -53,6 +53,15 @@ pub trait AuthApi: Send + Sync {
         token: String,
         name: String,
     ) -> ApiFuture<Result<Channel, AuthError>>;
+    fn send_message(
+        &self,
+        _server: String,
+        _token: String,
+        _channel_id: String,
+        _text: String,
+    ) -> ApiFuture<Result<Message, AuthError>> {
+        Box::pin(async { unreachable!("fixture does not implement message creation") })
+    }
     fn history(
         &self,
         server: String,
