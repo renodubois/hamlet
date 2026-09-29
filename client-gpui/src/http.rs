@@ -202,21 +202,7 @@ async fn decode_created_message(
                 .json()
                 .await
                 .map_err(|_| AuthError::InvalidResponse)?;
-            if wire.id.is_empty()
-                || wire.channel_id != channel_id
-                || wire.author.id.is_empty()
-                || wire.author.display_name.is_empty()
-            {
-                return Err(AuthError::InvalidResponse);
-            }
-            Ok(Message {
-                id: wire.id,
-                channel_id: wire.channel_id,
-                author_id: wire.author.id,
-                author_name: wire.author.display_name,
-                text: wire.text,
-                created_at: wire.created_at.to_rfc3339(),
-            })
+            decode_message(wire, channel_id)
         }
         StatusCode::UNAUTHORIZED => Err(AuthError::AlreadyInvalid),
         StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND => {
@@ -234,6 +220,24 @@ async fn decode_created_message(
         StatusCode::INTERNAL_SERVER_ERROR => Err(AuthError::ServerFailure),
         _ => Err(AuthError::Unavailable),
     }
+}
+
+fn decode_message(wire: WireMessage, channel_id: &str) -> Result<Message, AuthError> {
+    if wire.id.is_empty()
+        || wire.channel_id != channel_id
+        || wire.author.id.is_empty()
+        || wire.author.display_name.is_empty()
+    {
+        return Err(AuthError::InvalidResponse);
+    }
+    Ok(Message {
+        id: wire.id,
+        channel_id: wire.channel_id,
+        author_id: wire.author.id,
+        author_name: wire.author.display_name,
+        text: wire.text,
+        created_at: wire.created_at.to_rfc3339(),
+    })
 }
 
 fn message_url(server: &str, channel_id: &str) -> Result<Url, AuthError> {
@@ -441,23 +445,7 @@ impl AuthApi for HttpAuth {
             let items = wire
                 .items
                 .into_iter()
-                .map(|item| {
-                    if item.id.is_empty()
-                        || item.channel_id != channel_id
-                        || item.author.id.is_empty()
-                        || item.author.display_name.is_empty()
-                    {
-                        return Err(AuthError::InvalidResponse);
-                    }
-                    Ok(Message {
-                        id: item.id,
-                        channel_id: item.channel_id,
-                        author_id: item.author.id,
-                        author_name: item.author.display_name,
-                        text: item.text,
-                        created_at: item.created_at.to_rfc3339(),
-                    })
-                })
+                .map(|item| decode_message(item, &channel_id))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Page {
                 items,
