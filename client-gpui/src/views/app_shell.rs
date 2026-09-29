@@ -1,8 +1,10 @@
 //! Temporary monolithic application shell, mechanically relocated for #48.
 //!
 //! Session workflows are owned by the application-lifetime coordinator (#54).
-//! Saved-login workflows also belong to session (#55). Conversation workflows and
-//! local controls remain until their tickets. See ../../MIGRATION-55.md.
+//! Saved-login workflows belong to session (#55), and LoginView owns the form (#56).
+//! Conversation workflows and authenticated controls await their own tickets.
+
+use super::login::LoginView;
 
 use crate::api::HttpTransport;
 use crate::conversation::polling::{Polling, Resource};
@@ -73,7 +75,9 @@ fn reconcile_history_list(list: &ListState, before: &[String], after: &[String])
 }
 
 pub(crate) struct Hamlet {
-    session: SessionCoordinator,
+    session: Entity<SessionCoordinator>,
+    login: Entity<LoginView>,
+    _session_subscription: Subscription,
     conversation: Conversation,
     history_focus: FocusHandle,
     _window_activation: Subscription,
@@ -83,15 +87,10 @@ pub(crate) struct Hamlet {
     history_task: Option<Work>,
     execution: Execution,
     history_serial: u64,
-    server: Entity<InputBaseState<InputMode>>,
-    username: Entity<InputBaseState<InputMode>>,
-    password: Entity<InputBaseState<InputMode>>,
     channel_name: Entity<InputBaseState<InputMode>>,
     composer: Entity<InputBaseState<TextareaMode>>,
     _composer_subscription: Subscription,
     syncing_composer: bool,
-    _server_subscription: Subscription,
-    signup: bool,
 }
 
 impl Hamlet {
@@ -103,11 +102,14 @@ impl Hamlet {
         persistence: Option<Persistence>,
         execution: Execution,
     ) -> Self {
-        let session = SessionCoordinator::new(api, execution.clone(), config, persistence);
-        let server = cx.new(|cx| InputState::new(window, cx).default_value(session.server()));
-        let username =
-            cx.new(|cx| InputState::new(window, cx).default_value(session.initial_username()));
-        let password = cx.new(|cx| InputState::new(window, cx).masked(true));
+        let session =
+            cx.new(|_| SessionCoordinator::new(api, execution.clone(), config, persistence));
+        let login = cx.new(|cx| LoginView::new(session.clone(), window, cx));
+        let session_subscription =
+            cx.observe_in(&session, window, |view: &mut Self, _, window, cx| {
+                view.session_changed(window, cx);
+                cx.notify();
+            });
         let channel_name = cx.new(|cx| InputState::new(window, cx));
         let composer = cx.new(|cx| TextareaState::new(window, cx).submit_on_enter(true));
         let composer_subscription = cx.subscribe(&composer, |view: &mut Self, field, event, cx| {
@@ -137,20 +139,6 @@ impl Hamlet {
                 _ => {}
             }
         });
-        let subscription = cx.subscribe_in(
-            &server,
-            window,
-            |view: &mut Self, field, event, window, cx| {
-                if matches!(event, InputEvent::Change) {
-                    let value = field.read(cx).text().to_string();
-                    if view.session.server() != value {
-                        view.session.change_server(value);
-                        view.session_changed(window, cx);
-                        cx.notify();
-                    }
-                }
-            },
-        );
         // Native platform activation, independent of which input has keyboard focus.
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             view.set_window_focused(window.is_window_active(), cx);
@@ -167,12 +155,15 @@ impl Hamlet {
                 });
             }
         });
-        let updates = session.updates();
+        let updates = session.read(cx).updates();
         cx.spawn(async move |weak, cx| {
             while let Ok(update) = updates.recv().await {
                 if weak
                     .update_in(cx, |view, window, cx| {
-                        view.session.apply(update);
+                        view.session.update(cx, |session, cx| {
+                            session.apply(update);
+                            cx.notify();
+                        });
                         view.session_changed(window, cx);
                         cx.notify();
                     })
@@ -185,6 +176,8 @@ impl Hamlet {
         .detach();
         Self {
             session,
+            login,
+            _session_subscription: session_subscription,
             conversation: Conversation::default(),
             history_focus: cx.focus_handle(),
             _window_activation: window_activation,
@@ -194,15 +187,10 @@ impl Hamlet {
             history_list,
             history_task: None,
             history_serial: 0,
-            server,
-            username,
-            password,
             channel_name,
             composer,
             _composer_subscription: composer_subscription,
             syncing_composer: false,
-            _server_subscription: subscription,
-            signup: false,
         }
     }
 
@@ -235,11 +223,11 @@ impl Hamlet {
     }
 
     fn dispatch_send(&mut self, cx: &mut Context<Self>) {
-        let Some(request) = self.conversation.send(&self.session) else {
+        let Some(request) = self.conversation.send(self.session.read(cx)) else {
             cx.notify();
             return;
         };
-        let Some(api) = self.session.client_for(request.generation) else {
+        let Some(api) = self.session.read(cx).client_for(request.generation) else {
             return;
         };
         let work = request.clone();
@@ -267,22 +255,28 @@ impl Hamlet {
         cx: &mut Context<Self>,
     ) {
         let id = request.channel_id.clone();
-        let outcome = self.conversation.complete_send(
-            &mut self.session,
-            &request,
-            result,
-            self.execution.unix_seconds(),
-        );
+        let outcome = self.session.update(cx, |session, cx| {
+            let outcome = self.conversation.complete_send(
+                session,
+                &request,
+                result,
+                self.execution.unix_seconds(),
+            );
+            cx.notify();
+            outcome
+        });
         self.session_changed(window, cx);
-        if self.session.active().is_some() && self.conversation.selected.as_deref() == Some(&id) {
+        if self.session.read(cx).active().is_some()
+            && self.conversation.selected.as_deref() == Some(&id)
+        {
             if outcome == conversation::SendOutcome::Confirmed {
                 self.sync_composer(window, cx);
-                if let Some(next) = self.conversation.reconcile_confirmed(&self.session) {
+                if let Some(next) = self.conversation.reconcile_confirmed(self.session.read(cx)) {
                     self.cancel_history();
                     self.load_history(next, cx);
                 }
             } else if outcome == conversation::SendOutcome::Uncertain
-                && let Some(request) = self.conversation.reconcile_uncertain(&self.session)
+                && let Some(request) = self.conversation.reconcile_uncertain(self.session.read(cx))
             {
                 self.cancel_history();
                 self.load_history(request, cx);
@@ -291,40 +285,8 @@ impl Hamlet {
         cx.notify();
     }
 
-    fn login_disabled(&self) -> bool {
-        self.session.pending()
-    }
-
-    fn set_signup(&mut self, signup: bool, cx: &mut Context<Self>) {
-        if !self.session.pending() && self.signup != signup {
-            self.session.cancel_pending();
-            self.signup = signup;
-            cx.notify();
-        }
-    }
-
-    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.session.pending() {
-            return;
-        }
-        let server = self.server.read(cx).text().to_string();
-        if self.session.server() != server {
-            self.session.change_server(server);
-            self.session_changed(window, cx);
-            self.session.server_changed_feedback();
-            cx.notify();
-            return;
-        }
-        self.session.submit(
-            self.username.read(cx).text().to_string(),
-            self.password.read(cx).text().to_string(),
-            self.signup,
-        );
-        cx.notify();
-    }
-
     fn enter_authenticated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.session.active().is_some() {
+        if self.session.read(cx).active().is_some() {
             self.sync_composer(window, cx);
             self.polling = Polling::default();
             self.polling
@@ -361,12 +323,12 @@ impl Hamlet {
     }
 
     fn poll_at(&mut self, time: Duration, cx: &mut Context<Self>) {
-        if self.session.active().is_none() {
+        if self.session.read(cx).active().is_none() {
             return;
         }
         let mut dispatched = false;
         if self.polling.due(Resource::Channels, time)
-            && let Some(request) = self.conversation.refresh_channels(&self.session)
+            && let Some(request) = self.conversation.refresh_channels(self.session.read(cx))
         {
             self.polling.started(Resource::Channels);
             self.dispatch_channels(request, cx);
@@ -375,7 +337,7 @@ impl Hamlet {
         if self.polling.due(Resource::History, time)
             && let Some(id) = self.conversation.selected.as_deref()
             && !matches!(self.conversation.older.get(id), Some(Older::Loading))
-            && let Some(request) = self.conversation.refresh_history(&self.session)
+            && let Some(request) = self.conversation.refresh_history(self.session.read(cx))
         {
             self.polling.started(Resource::History);
             self.load_history(request, cx);
@@ -387,14 +349,14 @@ impl Hamlet {
     }
 
     fn load_channels(&mut self, cx: &mut Context<Self>) {
-        if let Some(request) = self.conversation.start(&self.session) {
+        if let Some(request) = self.conversation.start(self.session.read(cx)) {
             self.polling.started(Resource::Channels);
             self.dispatch_channels(request, cx);
         }
     }
 
     fn refresh_channels(&mut self, cx: &mut Context<Self>) {
-        if let Some(request) = self.conversation.refresh_channels(&self.session) {
+        if let Some(request) = self.conversation.refresh_channels(self.session.read(cx)) {
             self.polling.started(Resource::Channels);
             self.dispatch_channels(request, cx);
             cx.notify();
@@ -402,7 +364,7 @@ impl Hamlet {
     }
 
     fn dispatch_channels(&mut self, request: ReadRequest, cx: &mut Context<Self>) {
-        let Some(api) = self.session.client_for(request.generation) else {
+        let Some(api) = self.session.read(cx).client_for(request.generation) else {
             return;
         };
         let receive = self
@@ -413,15 +375,19 @@ impl Hamlet {
                 let result = result.unwrap_or(Err(session::AuthError::Unavailable));
                 let _ = weak.update_in(cx, |view, window, cx| {
                     let current = view.conversation.is_current_channels(&request)
-                        && view.session.session_generation() == Some(request.generation);
+                        && view.session.read(cx).session_generation() == Some(request.generation);
                     let succeeded = result.is_ok();
                     let previous = view.conversation.selected.clone();
                     view.store_composer(cx);
-                    let next =
-                        view.conversation
-                            .complete_channels(&mut view.session, &request, result);
+                    let next = view.session.update(cx, |session, cx| {
+                        let next = view
+                            .conversation
+                            .complete_channels(session, &request, result);
+                        cx.notify();
+                        next
+                    });
                     view.session_changed(window, cx);
-                    if view.session.active().is_some() && current {
+                    if view.session.read(cx).active().is_some() && current {
                         let recovered =
                             view.polling
                                 .completed(Resource::Channels, succeeded, view.poll_time());
@@ -456,14 +422,14 @@ impl Hamlet {
     }
 
     fn request_older(&mut self, cx: &mut Context<Self>) {
-        if let Some(request) = self.conversation.request_older(&self.session) {
+        if let Some(request) = self.conversation.request_older(self.session.read(cx)) {
             self.load_history(request, cx);
             cx.notify();
         }
     }
 
     fn refresh_history(&mut self, cx: &mut Context<Self>) {
-        if let Some(request) = self.conversation.refresh_history(&self.session) {
+        if let Some(request) = self.conversation.refresh_history(self.session.read(cx)) {
             self.polling.started(Resource::History);
             self.cancel_history();
             self.load_history(request, cx);
@@ -477,7 +443,7 @@ impl Hamlet {
     }
 
     fn retry_older(&mut self, cx: &mut Context<Self>) {
-        if let Some(request) = self.conversation.retry_older(&self.session) {
+        if let Some(request) = self.conversation.retry_older(self.session.read(cx)) {
             self.load_history(request, cx);
             cx.notify();
         }
@@ -486,7 +452,7 @@ impl Hamlet {
     fn load_history(&mut self, request: ReadRequest, cx: &mut Context<Self>) {
         self.history_serial = self.history_serial.wrapping_add(1);
         let serial = self.history_serial;
-        let Some(api) = self.session.client_for(request.generation) else {
+        let Some(api) = self.session.read(cx).client_for(request.generation) else {
             return;
         };
         let work = request.clone();
@@ -538,13 +504,18 @@ impl Hamlet {
         });
         let follow = self.history_list.is_scrolled_to_end() != Some(false);
         let read_succeeded = result.is_ok();
-        let current = selected && self.session.session_generation() == Some(request.generation);
+        let current =
+            selected && self.session.read(cx).session_generation() == Some(request.generation);
         let is_older = request.before.is_some() && !request.is_catchup();
-        let outcome = self
-            .conversation
-            .complete_history(&mut self.session, &request, result);
+        let outcome = self.session.update(cx, |session, cx| {
+            let outcome = self
+                .conversation
+                .complete_history(session, &request, result);
+            cx.notify();
+            outcome
+        });
         self.session_changed(window, cx);
-        if selected && self.session.active().is_some() {
+        if selected && self.session.read(cx).active().is_some() {
             if let Some(before) = before {
                 if let Some(Load::Ready(messages)) = self
                     .conversation
@@ -572,7 +543,7 @@ impl Hamlet {
             }
         }
         self.history_task = None;
-        if self.session.active().is_none() {
+        if self.session.read(cx).active().is_none() {
             self.polling = Polling::default();
         } else if current && !is_older && outcome.next.is_none() {
             let complete = read_succeeded
@@ -598,7 +569,7 @@ impl Hamlet {
         // repeated read failures while a confirmed/uncertain write waits for continuity.
         if let Some(next) = self
             .conversation
-            .after_history_read(&self.session, read_succeeded)
+            .after_history_read(self.session.read(cx), read_succeeded)
         {
             self.cancel_history();
             self.load_history(next, cx);
@@ -608,11 +579,11 @@ impl Hamlet {
 
     fn create_channel(&mut self, cx: &mut Context<Self>) {
         let name = self.channel_name.read(cx).text().to_string();
-        let Some(request) = self.conversation.create(&self.session, &name) else {
+        let Some(request) = self.conversation.create(self.session.read(cx), &name) else {
             cx.notify();
             return;
         };
-        let Some(api) = self.session.client_for(request.generation) else {
+        let Some(api) = self.session.read(cx).client_for(request.generation) else {
             return;
         };
         let work = request.clone();
@@ -623,12 +594,16 @@ impl Hamlet {
             if let Ok(result) = receive.recv().await {
                 let _ = weak.update_in(cx, |view, window, cx| {
                     view.store_composer(cx);
-                    let (confirmed, history) = view.conversation.complete_create(
-                        &mut view.session,
-                        &request,
-                        result,
-                        view.execution.unix_seconds(),
-                    );
+                    let (confirmed, history) = view.session.update(cx, |session, cx| {
+                        let outcome = view.conversation.complete_create(
+                            session,
+                            &request,
+                            result,
+                            view.execution.unix_seconds(),
+                        );
+                        cx.notify();
+                        outcome
+                    });
                     view.session_changed(window, cx);
                     if confirmed
                         && view.channel_name.read(cx).text().to_string().trim() == request.name
@@ -671,7 +646,7 @@ impl Hamlet {
             self.cancel_history();
             self.history_list.reset(0);
         }
-        if let Some(request) = self.conversation.select(&self.session, id) {
+        if let Some(request) = self.conversation.select(self.session.read(cx), id) {
             self.sync_composer(window, cx);
             self.load_history(request, cx);
         } else {
@@ -682,17 +657,25 @@ impl Hamlet {
     }
 
     fn logout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.session.logout();
+        self.session.update(cx, |session, cx| {
+            session.logout();
+            cx.notify();
+        });
         self.session_changed(window, cx);
         cx.notify();
     }
 
     /// Synchronous local activity cleanup before screen removal; session owns storage work.
     fn session_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.session.take_lifecycle() {
+        let lifecycle = self
+            .session
+            .update(cx, |session, _| session.take_lifecycle());
+        if lifecycle.is_some() {
+            self.login
+                .update(cx, |login, cx| login.clear_sensitive(window, cx));
+        }
+        match lifecycle {
             Some(Lifecycle::Authenticated) => {
-                self.password
-                    .update(cx, |input, cx| input.set_value("", window, cx));
                 self.enter_authenticated(window, cx);
             }
             Some(Lifecycle::Invalidated | Lifecycle::ServerChanged) => {
@@ -701,8 +684,6 @@ impl Hamlet {
                 self.polling = Polling::default();
                 self.history_list.reset(0);
                 self.sync_composer(window, cx);
-                self.password
-                    .update(cx, |input, cx| input.set_value("", window, cx));
             }
             None => {}
         }
@@ -719,7 +700,7 @@ impl Render for Hamlet {
             .flex_col()
             .gap_3()
             .text_color(rgb(theme::TEXT));
-        if let Some(session) = self.session.active() {
+        if let Some(session) = self.session.read(cx).active() {
             let logout_view = view.clone();
             let label = format!(
                 "Logged in as {} at {}",
@@ -749,75 +730,12 @@ impl Render for Hamlet {
                 )
                 .child(self.conversation_panes(cx));
         } else {
-            let login_view = view.clone();
-            let toggle_view = view.clone();
             surface = surface
                 .justify_center()
                 .items_center()
-                .child(div().text_xl().child(if self.signup {
-                    "Sign up for Hamlet"
-                } else {
-                    "Log in to Hamlet"
-                }))
-                .child(
-                    div().w(px(360.)).child("Server URL").child(
-                        Input::new(&self.server)
-                            .id("server-url")
-                            .aria_label("Server URL"),
-                    ),
-                )
-                .child(
-                    div().w(px(360.)).child("Username").child(
-                        Input::new(&self.username)
-                            .id("username")
-                            .aria_label("Username"),
-                    ),
-                )
-                .child(
-                    div().w(px(360.)).child("Password").child(
-                        Input::new(&self.password)
-                            .id("password")
-                            .aria_label("Password"),
-                    ),
-                )
-                .child(
-                    Button::new(if self.signup { "signup" } else { "login" })
-                        .disabled(self.login_disabled())
-                        .label(if self.session.pending() {
-                            if self.signup {
-                                "Creating user…"
-                            } else {
-                                "Signing in…"
-                            }
-                        } else if self.signup {
-                            "Create user"
-                        } else {
-                            "Log in"
-                        })
-                        .on_click(move |_, window, cx| {
-                            let _ = login_view.update(cx, |view, cx| view.submit(window, cx));
-                        }),
-                )
-                .child(
-                    Button::new("auth-mode")
-                        .disabled(self.session.pending())
-                        .label(if self.signup {
-                            "Have a user? Log in"
-                        } else {
-                            "New user? Sign up"
-                        })
-                        .on_click(move |_, _, cx| {
-                            let _ = toggle_view
-                                .update(cx, |view, cx| view.set_signup(!view.signup, cx));
-                        }),
-                )
-                .child(div().child(if self.session.restore_pending() {
-                    "Checking saved login before opening conversations…"
-                } else {
-                    "Log in to start a session. Secure storage status appears below."
-                }));
+                .child(self.login.clone());
         }
-        if let Some(action) = self.session.storage_retry() {
+        if let Some(action) = self.session.read(cx).storage_retry() {
             let retry = view.clone();
             surface = surface.child(
                 Button::new("retry-storage")
@@ -827,13 +745,16 @@ impl Render for Hamlet {
                     })
                     .on_click(move |_, _, cx| {
                         let _ = retry.update(cx, |view, cx| {
-                            view.session.retry_storage();
+                            view.session.update(cx, |session, cx| {
+                                session.retry_storage();
+                                cx.notify();
+                            });
                             cx.notify();
                         });
                     }),
             );
         }
-        if let Some(feedback) = self.session.storage_feedback() {
+        if let Some(feedback) = self.session.read(cx).storage_feedback() {
             surface = surface.child(
                 div()
                     .id("storage-status")
@@ -842,7 +763,9 @@ impl Render for Hamlet {
                     .child(feedback.to_owned()),
             );
         }
-        if let Some(feedback) = self.session.feedback() {
+        if self.session.read(cx).active().is_some()
+            && let Some(feedback) = self.session.read(cx).feedback()
+        {
             surface = surface.child(
                 div()
                     .id("auth-feedback")

@@ -333,13 +333,21 @@ fn confirmed_middle_insertion_keeps_reader_anchor(cx: &mut TestAppContext) {
                 offset_in_item: px(0.),
             });
             v.conversation.set_draft("000000000000001", "twenty".into());
-            let send = v.conversation.send(&v.session).unwrap();
+            let send = v.conversation.send(v.session.read(cx)).unwrap();
             assert_eq!(
-                v.conversation
-                    .complete_send(&mut v.session, &send, Ok(m(20)), 0),
+                v.session
+                    .update(cx, |session, _| v.conversation.complete_send(
+                        session,
+                        &send,
+                        Ok(m(20)),
+                        0
+                    )),
                 crate::conversation::SendOutcome::Confirmed
             );
-            let read = v.conversation.reconcile_confirmed(&v.session).unwrap();
+            let read = v
+                .conversation
+                .reconcile_confirmed(v.session.read(cx))
+                .unwrap();
             v.load_history(read, cx);
         });
         window.render_frame(cx);

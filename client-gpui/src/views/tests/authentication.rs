@@ -2,6 +2,21 @@ use super::bound_auth::fixture_api as bound_api;
 use super::bound_auth::*;
 use super::*;
 
+fn open_auth(
+    window: &mut Window,
+    cx: &mut gpui_kit::App,
+    api: Arc<dyn RequestAdapter>,
+) -> gpui_kit::Entity<Hamlet> {
+    crate::views::app_shell::open(
+        window,
+        cx,
+        HttpTransport::with_adapter(api),
+        crate::storage::Config::default(),
+        None,
+        crate::runtime::Execution::controlled(cx.background_executor().clone(), 1_800_000_000),
+    )
+}
+
 struct PendingAuth(Arc<AtomicUsize>);
 impl RequestAdapter for PendingAuth {
     fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
@@ -15,17 +30,13 @@ impl RequestAdapter for PendingAuth {
 fn login_validation_and_pending_button_are_visible_and_inert(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let calls = Arc::new(AtomicUsize::new(0));
-    let probe = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let stored = probe.clone();
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, bound_api(PendingAuth(calls.clone()))));
-        *stored.borrow_mut() = Some(view.clone());
+        let view = open_auth(window, cx, bound_api(PendingAuth(calls.clone())));
         Root::new(view, window, cx)
     });
-    let view: gpui_kit::Entity<Hamlet> = probe.borrow().as_ref().unwrap().clone();
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert!(!view.read(cx).login_disabled());
+        assert_eq!(window.find("login").label(), Some("Log in"));
         window.click("login", cx);
         window.render_frame(cx);
         assert!(
@@ -35,7 +46,7 @@ fn login_validation_and_pending_button_are_visible_and_inert(cx: &mut TestAppCon
                 .unwrap()
                 .contains("username and password")
         );
-        assert!(!view.read(cx).login_disabled());
+        assert_eq!(window.find("login").label(), Some("Log in"));
         window.click("username", cx);
         window.input("Ada", cx);
         window.click("password", cx);
@@ -43,12 +54,9 @@ fn login_validation_and_pending_button_are_visible_and_inert(cx: &mut TestAppCon
         window.click("login", cx);
         window.render_frame(cx);
         assert_eq!(window.find("login").label(), Some("Signing in…"));
-        assert!(view.read(cx).login_disabled());
         window.click("login", cx);
-        view.update(cx, |view, cx| view.submit(window, cx)); // guard also covers non-pointer callers
         window.render_frame(cx);
-        assert!(view.read(cx).session.pending());
-        assert!(view.read(cx).login_disabled());
+        assert_eq!(window.find("login").label(), Some("Signing in…"));
     });
     cx.run_until_parked();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -90,16 +98,14 @@ fn signup_rejection_keeps_form_and_reports_uncertainty(cx: &mut TestAppContext) 
         let submissions = Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured = submissions.clone();
         let (_, cx) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|cx| {
-                Hamlet::new(
-                    window,
-                    cx,
-                    bound_api(SignupReject {
-                        error,
-                        submissions: captured,
-                    }),
-                )
-            });
+            let view = open_auth(
+                window,
+                cx,
+                bound_api(SignupReject {
+                    error,
+                    submissions: captured,
+                }),
+            );
             Root::new(view, window, cx)
         });
         cx.update(|window, cx| {
@@ -145,7 +151,7 @@ fn signup_rejection_keeps_form_and_reports_uncertainty(cx: &mut TestAppContext) 
 fn signup_form_supports_keyboard_focus(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, bound_api(BoundAuth)));
+        let view = open_auth(window, cx, bound_api(BoundAuth));
         Root::new(view, window, cx)
     });
     cx.update(|window, cx| {
@@ -164,7 +170,7 @@ fn signup_form_supports_keyboard_focus(cx: &mut TestAppContext) {
 fn signup_controls_validate_and_enter_conversation(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, bound_api(BoundAuth)));
+        let view = open_auth(window, cx, bound_api(BoundAuth));
         Root::new(view, window, cx)
     });
     cx.update(|window, cx| {
@@ -229,7 +235,7 @@ fn pending_signup_is_inert_and_preserves_editable_inputs(cx: &mut TestAppContext
     cx.update(gpui_kit::init);
     let calls = Arc::new(AtomicUsize::new(0));
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, bound_api(PendingAuth(calls.clone()))));
+        let view = open_auth(window, cx, bound_api(PendingAuth(calls.clone())));
         Root::new(view, window, cx)
     });
     cx.update(|window, cx| {
