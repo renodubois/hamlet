@@ -1,28 +1,8 @@
-use crate::session::{AppSession, AuthError};
+use crate::api::ApiError as AuthError;
+use crate::session::AppSession;
+// Temporary import compatibility; server data is API-owned.
+pub use crate::api::{Channel, Message, Page};
 use std::collections::{HashMap, HashSet};
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Channel {
-    pub id: String,
-    pub name: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Message {
-    pub id: String,
-    pub channel_id: String,
-    pub author_id: String,
-    pub author_name: String,
-    pub text: String,
-    pub created_at: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Page {
-    // Server order: newest first, with the server's tie breaker intact.
-    pub items: Vec<Message>,
-    pub next_cursor: Option<String>,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Older {
@@ -52,7 +32,8 @@ struct Catchup {
     cursors: HashSet<String>,
 }
 
-#[derive(Clone, Debug)]
+// Legacy descriptors still carry credentials until protected callers migrate; no Debug.
+#[derive(Clone)]
 pub struct SendRequest {
     pub generation: u64,
     pub server: String,
@@ -77,7 +58,7 @@ pub struct HistoryOutcome {
     pub prepend: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ReadRequest {
     pub generation: u64,
     pub server: String,
@@ -94,7 +75,7 @@ impl ReadRequest {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CreateRequest {
     pub generation: u64,
     pub server: String,

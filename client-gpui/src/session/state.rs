@@ -1,109 +1,15 @@
-use crate::conversation::{Channel, Message, Page};
-use serde::{Deserialize, Serialize};
+#[cfg(test)]
+pub use crate::api::ApiFuture;
+#[cfg(test)]
+use crate::api::{Channel, Message};
+// Temporary import compatibility; API is the authoritative owner.
+pub use crate::api::{
+    ApiError as AuthError, User,
+    legacy::{AuthApi, Login},
+};
 use std::sync::Arc;
 
 pub const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8081";
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct User {
-    pub id: String,
-    pub username: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct Login {
-    pub user: User,
-    pub token: String,
-    pub expires_at: i64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AuthError {
-    InvalidCredentials,
-    InvalidInput,
-    Conflict,
-    Unavailable,
-    InvalidResponse,
-    AlreadyInvalid,
-    NotFound,
-    ServerFailure,
-}
-
-pub type ApiFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
-
-// This is the view's behavior boundary. Only the HTTP adapter knows bearer headers or JSON.
-pub trait AuthApi: Send + Sync {
-    fn login(
-        &self,
-        server: String,
-        username: String,
-        password: String,
-    ) -> ApiFuture<Result<Login, AuthError>>;
-    fn signup(
-        &self,
-        server: String,
-        username: String,
-        password: String,
-    ) -> ApiFuture<Result<Login, AuthError>>;
-    fn logout(&self, server: String, token: String) -> ApiFuture<Result<(), AuthError>>;
-    fn current_user(&self, _server: String, _token: String) -> ApiFuture<Result<User, AuthError>> {
-        Box::pin(async { Err(AuthError::Unavailable) })
-    }
-    fn channels(&self, server: String, token: String)
-    -> ApiFuture<Result<Vec<Channel>, AuthError>>;
-    fn create_channel(
-        &self,
-        server: String,
-        token: String,
-        name: String,
-    ) -> ApiFuture<Result<Channel, AuthError>>;
-    fn send_message(
-        &self,
-        _server: String,
-        _token: String,
-        _channel_id: String,
-        _text: String,
-    ) -> ApiFuture<Result<Message, AuthError>> {
-        Box::pin(async { unreachable!("fixture does not implement message creation") })
-    }
-    fn history(
-        &self,
-        server: String,
-        token: String,
-        channel_id: String,
-    ) -> ApiFuture<Result<Vec<Message>, AuthError>>;
-    fn history_page(
-        &self,
-        server: String,
-        token: String,
-        channel_id: String,
-        before: Option<String>,
-    ) -> ApiFuture<Result<Page, AuthError>> {
-        let _ = before;
-        let history = self.history(server, token, channel_id);
-        Box::pin(async move {
-            history.await.map(|items| Page {
-                items,
-                next_cursor: None,
-            })
-        })
-    }
-}
-
-impl AuthError {
-    pub fn description(&self) -> &'static str {
-        match self {
-            Self::AlreadyInvalid => "Session rejected. Please log in again.",
-            Self::InvalidInput => "The server rejected the request.",
-            Self::Conflict => "Username already exists.",
-            Self::InvalidCredentials => "Credentials were rejected.",
-            Self::InvalidResponse => "The server returned an invalid response.",
-            Self::Unavailable => "Could not reach the server. Check the address and try again.",
-            Self::NotFound => "The channel no longer exists on the server.",
-            Self::ServerFailure => "The server could not complete the request. Try again later.",
-        }
-    }
-}
 
 pub struct LoginRequest {
     pub generation: u64,
