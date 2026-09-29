@@ -1249,7 +1249,7 @@ mod tests {
 
     #[actix_web::test]
     async fn second_user_activity_is_found_by_focused_polling_against_unchanged_routes() {
-        use crate::polling::{Polling, Resource};
+        use crate::conversation::polling::{Polling, Resource};
         use actix_web::{App, HttpServer, web};
         let dir = tempfile::tempdir().unwrap();
         let db = hamlet::connect_to_database(&format!(
