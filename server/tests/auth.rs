@@ -1,754 +1,161 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
-mod common;
-
-use actix_web::{
-    App,
-    http::{StatusCode, header::ContentType},
-    test, web,
-};
-use common::TestCtx;
-use hamlet::{Config, CookieConfig, CookieSameSite, auth, configure_app, entity};
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
-
-fn config_with_registration(account_registration_enabled: bool) -> Config {
-    let mut config = Config::from_env();
-    config.account_registration_enabled = account_registration_enabled;
-    config
-}
-
-fn deps_with_cookie_config(ctx: &TestCtx, cookie_config: CookieConfig) -> hamlet::AppDeps {
-    let mut deps = ctx.deps();
-    deps.cookie_config = web::Data::new(cookie_config);
-    deps
-}
-
-fn set_cookie_header(resp: &actix_web::dev::ServiceResponse) -> &str {
-    resp.headers()
-        .get("set-cookie")
-        .expect("set-cookie header missing")
-        .to_str()
-        .unwrap()
-}
-
-// --- public config ---
+use actix_web::{App, http::StatusCode, test, web};
+use hamlet::{connect_to_database, routes};
+use sea_orm::{ConnectionTrait, DbBackend, Statement};
+use serde_json::{Value, json};
 
 #[actix_web::test]
-async fn test_public_config_reports_enabled_registration() {
-    let ctx = TestCtx::new().await;
+async fn signup_and_identity_are_isolated_and_sessions_are_digest_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!(
+        "sqlite://{}?mode=rwc",
+        dir.path().join("hamlet.db").display()
+    );
+    let db = connect_to_database(&url).await.unwrap();
     let app = test::init_service(
         App::new()
-            .app_data(web::Data::new(config_with_registration(true)))
-            .configure(|cfg| configure_app(cfg, ctx.deps())),
+            .app_data(web::Data::new(db.clone()))
+            .configure(routes),
     )
     .await;
-
-    let req = test::TestRequest::get().uri("/config").to_request();
-    let resp = test::call_service(&app, req).await;
-
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body: serde_json::Value = serde_json::from_slice(&test::read_body(resp).await).unwrap();
-    assert_eq!(body["account_registration_enabled"], true);
-}
-
-#[actix_web::test]
-async fn test_public_config_reports_disabled_registration() {
-    let ctx = TestCtx::new().await;
-    let app = test::init_service(
-        App::new()
-            .app_data(web::Data::new(config_with_registration(false)))
-            .configure(|cfg| configure_app(cfg, ctx.deps())),
-    )
-    .await;
-
-    let req = test::TestRequest::get().uri("/config").to_request();
-    let resp = test::call_service(&app, req).await;
-
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body: serde_json::Value = serde_json::from_slice(&test::read_body(resp).await).unwrap();
-    assert_eq!(body["account_registration_enabled"], false);
-}
-
-// --- register ---
-
-#[actix_web::test]
-async fn test_register_creates_user_and_sets_cookie() {
-    let ctx = TestCtx::new().await;
-    let app = test::init_service(
-        App::new()
-            .app_data(web::Data::new(config_with_registration(true)))
-            .configure(|cfg| configure_app(cfg, ctx.deps())),
-    )
-    .await;
-
-    let req = test::TestRequest::post()
-        .uri("/register")
-        .insert_header(ContentType::json())
-        .set_payload(serde_json::json!({"username": "alice", "password": "hunter2"}).to_string())
+    let request = test::TestRequest::post()
+        .uri("/api/v1/auth/signup")
+        .set_json(json!({"username":"Alice_1", "password":"correct horse battery staple"}))
         .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert!(resp.status().is_success());
-    let cookie = set_cookie_header(&resp);
-    assert!(cookie.starts_with("session="));
-    assert!(cookie.contains("HttpOnly"));
-    assert!(cookie.contains("SameSite=Lax"));
-    assert!(cookie.contains("Path=/"));
-    assert!(!cookie.contains("Secure"));
-}
-
-#[actix_web::test]
-async fn test_auth_endpoints_use_production_cookie_policy() {
-    let ctx = TestCtx::new().await;
-    let production_cookie = CookieConfig {
-        secure: true,
-        same_site: CookieSameSite::None,
-    };
-    let deps = deps_with_cookie_config(&ctx, production_cookie);
-    let app = test::init_service(
-        App::new()
-            .app_data(web::Data::new(config_with_registration(true)))
-            .configure(|cfg| configure_app(cfg, deps.clone())),
-    )
-    .await;
-
-    let req = test::TestRequest::post()
-        .uri("/register")
-        .insert_header(ContentType::json())
-        .set_payload(serde_json::json!({"username": "alice", "password": "hunter2"}).to_string())
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert!(resp.status().is_success());
-    let cookie = set_cookie_header(&resp);
-    assert!(cookie.starts_with("session="));
-    assert!(cookie.contains("HttpOnly"));
-    assert!(cookie.contains("Path=/"));
-    assert!(cookie.contains("SameSite=None"));
-    assert!(cookie.contains("Secure"));
-
-    let req = test::TestRequest::post()
-        .uri("/login")
-        .insert_header(ContentType::json())
-        .set_payload(serde_json::json!({"username": "alice", "password": "hunter2"}).to_string())
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert!(resp.status().is_success());
-    let cookie = set_cookie_header(&resp);
-    assert!(cookie.starts_with("session="));
-    assert!(cookie.contains("SameSite=None"));
-    assert!(cookie.contains("Secure"));
-
-    let req = test::TestRequest::post().uri("/logout").to_request();
-    let resp = test::call_service(&app, req).await;
-    assert!(resp.status().is_success());
-    let cookie = set_cookie_header(&resp);
-    assert!(cookie.starts_with("session="));
-    assert!(cookie.contains("Max-Age=0"));
-    assert!(cookie.contains("SameSite=None"));
-    assert!(cookie.contains("Secure"));
-}
-
-#[actix_web::test]
-async fn test_register_rejects_duplicate_username() {
-    let ctx = TestCtx::new().await;
-    auth::register_user(&ctx.db, "alice", "hunter2", None)
-        .await
-        .unwrap();
-    let app = test::init_service(
-        App::new()
-            .app_data(web::Data::new(config_with_registration(true)))
-            .configure(|cfg| configure_app(cfg, ctx.deps())),
-    )
-    .await;
-
-    let req = test::TestRequest::post()
-        .uri("/register")
-        .insert_header(ContentType::json())
-        .set_payload(serde_json::json!({"username": "alice", "password": "other"}).to_string())
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-}
-
-#[actix_web::test]
-async fn test_register_rejects_empty_username() {
-    let ctx = TestCtx::new().await;
-    let app = test::init_service(
-        App::new()
-            .app_data(web::Data::new(config_with_registration(true)))
-            .configure(|cfg| configure_app(cfg, ctx.deps())),
-    )
-    .await;
-
-    let req = test::TestRequest::post()
-        .uri("/register")
-        .insert_header(ContentType::json())
-        .set_payload(serde_json::json!({"username": "", "password": "hunter2"}).to_string())
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-}
-
-#[actix_web::test]
-async fn test_register_rejects_empty_password() {
-    let ctx = TestCtx::new().await;
-    let app = test::init_service(
-        App::new()
-            .app_data(web::Data::new(config_with_registration(true)))
-            .configure(|cfg| configure_app(cfg, ctx.deps())),
-    )
-    .await;
-
-    let req = test::TestRequest::post()
-        .uri("/register")
-        .insert_header(ContentType::json())
-        .set_payload(serde_json::json!({"username": "alice", "password": ""}).to_string())
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-}
-
-#[actix_web::test]
-async fn test_register_returns_clear_error_when_registration_is_disabled() {
-    let ctx = TestCtx::new().await;
-    let app = test::init_service(
-        App::new()
-            .app_data(web::Data::new(config_with_registration(false)))
-            .configure(|cfg| configure_app(cfg, ctx.deps())),
-    )
-    .await;
-
-    let req = test::TestRequest::post()
-        .uri("/register")
-        .insert_header(ContentType::json())
-        .set_payload(serde_json::json!({"username": "alice", "password": "hunter2"}).to_string())
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    assert!(resp.headers().get("set-cookie").is_none());
-    let body: serde_json::Value = serde_json::from_slice(&test::read_body(resp).await).unwrap();
-    assert_eq!(body["error"]["kind"], "registration_disabled");
-    assert_eq!(body["error"]["message"], "account registration is disabled");
-
-    let created = entity::user::Entity::find()
-        .filter(entity::user::Column::Username.eq("alice"))
-        .one(&ctx.db)
-        .await
-        .unwrap();
-    assert!(created.is_none());
-}
-
-#[actix_web::test]
-async fn test_login_still_works_when_registration_is_disabled() {
-    let ctx = TestCtx::new().await;
-    auth::register_user(&ctx.db, "alice", "hunter2", None)
-        .await
-        .unwrap();
-    let app = test::init_service(
-        App::new()
-            .app_data(web::Data::new(config_with_registration(false)))
-            .configure(|cfg| configure_app(cfg, ctx.deps())),
-    )
-    .await;
-
-    let req = test::TestRequest::post()
-        .uri("/login")
-        .insert_header(ContentType::json())
-        .set_payload(serde_json::json!({"username": "alice", "password": "hunter2"}).to_string())
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-
-    assert!(resp.status().is_success());
-    assert!(resp.headers().get("set-cookie").is_some());
-}
-
-#[actix_web::test]
-async fn test_register_stores_hashed_password() {
-    let ctx = TestCtx::new().await;
-    auth::register_user(&ctx.db, "alice", "hunter2", None)
-        .await
-        .unwrap();
-
-    let credential = entity::credential::Entity::find()
-        .filter(entity::credential::Column::Provider.eq(auth::PASSWORD_PROVIDER))
-        .filter(entity::credential::Column::ExternalId.eq("alice"))
-        .one(&ctx.db)
-        .await
-        .unwrap()
-        .expect("credential should exist");
-
-    let secret = credential
-        .secret
-        .expect("password credential must have a secret");
-    assert_ne!(secret, "hunter2");
-    assert!(secret.starts_with("$argon2"));
-    assert!(auth::verify_password("hunter2", &secret));
-}
-
-// --- login ---
-
-#[actix_web::test]
-async fn test_login_succeeds_with_correct_password() {
-    let ctx = TestCtx::new().await;
-    auth::register_user(&ctx.db, "alice", "hunter2", None)
-        .await
-        .unwrap();
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let req = test::TestRequest::post()
-        .uri("/login")
-        .insert_header(ContentType::json())
-        .set_payload(serde_json::json!({"username": "alice", "password": "hunter2"}).to_string())
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert!(resp.status().is_success());
-}
-
-#[actix_web::test]
-async fn test_login_fails_with_wrong_password() {
-    let ctx = TestCtx::new().await;
-    auth::register_user(&ctx.db, "alice", "hunter2", None)
-        .await
-        .unwrap();
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let req = test::TestRequest::post()
-        .uri("/login")
-        .insert_header(ContentType::json())
-        .set_payload(serde_json::json!({"username": "alice", "password": "nope"}).to_string())
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[actix_web::test]
-async fn test_login_fails_with_nonexistent_username() {
-    let ctx = TestCtx::new().await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let req = test::TestRequest::post()
-        .uri("/login")
-        .insert_header(ContentType::json())
-        .set_payload(serde_json::json!({"username": "ghost", "password": "whatever"}).to_string())
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-}
-
-// --- logout ---
-
-#[actix_web::test]
-async fn test_logout_destroys_session() {
-    let ctx = TestCtx::new().await;
-    let alice = ctx.register("alice", "hunter2").await;
-    let token = alice.token.clone();
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let req = test::TestRequest::post()
-        .uri("/logout")
-        .insert_header(alice.cookie_header())
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert!(resp.status().is_success());
-
-    let remaining = entity::session::Entity::find_by_id(token)
-        .one(&ctx.db)
-        .await
-        .unwrap();
-    assert!(remaining.is_none());
-}
-
-#[actix_web::test]
-async fn test_logout_without_cookie_is_ok_and_clears() {
-    let ctx = TestCtx::new().await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let req = test::TestRequest::post().uri("/logout").to_request();
-    let resp = test::call_service(&app, req).await;
-    assert!(resp.status().is_success());
-    let cookie = set_cookie_header(&resp);
-    assert!(cookie.starts_with("session="));
-    assert!(cookie.contains("Max-Age=0"));
-    assert!(cookie.contains("SameSite=Lax"));
-    assert!(!cookie.contains("Secure"));
-}
-
-#[actix_web::test]
-async fn test_logout_with_bad_cookie_is_ok_and_clears() {
-    let ctx = TestCtx::new().await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let req = test::TestRequest::post()
-        .uri("/logout")
-        .insert_header((
-            "Cookie".to_owned(),
-            format!("{}=not-a-real-token", auth::SESSION_COOKIE),
+    let response = test::call_service(&app, request).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body: Value = test::read_body_json(response).await;
+    assert_eq!(body["user"]["username"], "Alice_1");
+    assert_eq!(body["user"]["id"].as_str().unwrap().len(), 15);
+    let token = body["access_token"].as_str().unwrap();
+    let expiry =
+        chrono::DateTime::parse_from_rfc3339(body["expires_at"].as_str().unwrap()).unwrap();
+    let remaining = expiry.signed_duration_since(chrono::Utc::now());
+    assert!(remaining > chrono::Duration::days(29));
+    assert!(remaining <= chrono::Duration::days(30));
+    let rows = db
+        .db
+        .query_all_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT token_digest FROM sessions",
         ))
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert!(resp.status().is_success());
-}
-
-// --- /me ---
-
-#[actix_web::test]
-async fn test_me_returns_current_user() {
-    let ctx = TestCtx::new().await;
-    let alice = ctx.register("alice", "hunter2").await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let req = test::TestRequest::get()
-        .uri("/me")
-        .insert_header(alice.cookie_header())
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert!(resp.status().is_success());
-    let body = test::read_body(resp).await;
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["username"], "alice");
-}
-
-#[actix_web::test]
-async fn test_me_without_cookie_is_unauthorized() {
-    let ctx = TestCtx::new().await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let req = test::TestRequest::get().uri("/me").to_request();
-    let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[actix_web::test]
-async fn test_me_after_logout_is_unauthorized() {
-    let ctx = TestCtx::new().await;
-    let alice = ctx.register("alice", "hunter2").await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let logout_req = test::TestRequest::post()
-        .uri("/logout")
-        .insert_header(alice.cookie_header())
-        .to_request();
-    assert!(
-        test::call_service(&app, logout_req)
-            .await
-            .status()
-            .is_success()
-    );
-
-    let me_req = test::TestRequest::get()
-        .uri("/me")
-        .insert_header(alice.cookie_header())
-        .to_request();
-    assert_eq!(
-        test::call_service(&app, me_req).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
-}
-
-// --- display name ---
-
-#[actix_web::test]
-async fn test_me_returns_null_display_name_initially() {
-    let ctx = TestCtx::new().await;
-    let alice = ctx.register("alice", "hunter2").await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let req = test::TestRequest::get()
-        .uri("/me")
-        .insert_header(alice.cookie_header())
-        .to_request();
-    let body = test::read_body(test::call_service(&app, req).await).await;
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(json["display_name"].is_null());
-}
-
-#[actix_web::test]
-async fn test_update_me_sets_and_clears_display_name() {
-    let ctx = TestCtx::new().await;
-    let alice = ctx.register("alice", "hunter2").await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    // Set a display name.
-    let req = test::TestRequest::put()
-        .uri("/me")
-        .insert_header(ContentType::json())
-        .insert_header(alice.cookie_header())
-        .set_payload(serde_json::json!({"display_name": "Alice Wonderland"}).to_string())
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert!(resp.status().is_success());
-    let json: serde_json::Value = serde_json::from_slice(&test::read_body(resp).await).unwrap();
-    assert_eq!(json["display_name"], "Alice Wonderland");
-    assert_eq!(json["username"], "alice");
-
-    // /me reflects the new value.
-    let req = test::TestRequest::get()
-        .uri("/me")
-        .insert_header(alice.cookie_header())
-        .to_request();
-    let json: serde_json::Value =
-        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
-            .unwrap();
-    assert_eq!(json["display_name"], "Alice Wonderland");
-
-    // Clear it back to null by sending null.
-    let req = test::TestRequest::put()
-        .uri("/me")
-        .insert_header(ContentType::json())
-        .insert_header(alice.cookie_header())
-        .set_payload(serde_json::json!({"display_name": null}).to_string())
-        .to_request();
-    let json: serde_json::Value =
-        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
-            .unwrap();
-    assert!(json["display_name"].is_null());
-
-    // Whitespace-only is also treated as clear.
-    let req = test::TestRequest::put()
-        .uri("/me")
-        .insert_header(ContentType::json())
-        .insert_header(alice.cookie_header())
-        .set_payload(serde_json::json!({"display_name": "   "}).to_string())
-        .to_request();
-    let json: serde_json::Value =
-        serde_json::from_slice(&test::read_body(test::call_service(&app, req).await).await)
-            .unwrap();
-    assert!(json["display_name"].is_null());
-}
-
-#[actix_web::test]
-async fn test_update_me_rejects_overlong_display_name() {
-    let ctx = TestCtx::new().await;
-    let alice = ctx.register("alice", "hunter2").await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    // 65 chars — one over the 64-char limit.
-    let long = "a".repeat(65);
-    let req = test::TestRequest::put()
-        .uri("/me")
-        .insert_header(ContentType::json())
-        .insert_header(alice.cookie_header())
-        .set_payload(serde_json::json!({"display_name": long}).to_string())
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-}
-
-#[actix_web::test]
-async fn test_update_me_requires_auth() {
-    let ctx = TestCtx::new().await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let req = test::TestRequest::put()
-        .uri("/me")
-        .insert_header(ContentType::json())
-        .set_payload(serde_json::json!({"display_name": "anyone"}).to_string())
-        .to_request();
-    assert_eq!(
-        test::call_service(&app, req).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
-}
-
-// --- password changes ---
-
-#[actix_web::test]
-async fn test_change_password_updates_credential_and_keeps_session() {
-    let ctx = TestCtx::new().await;
-    let alice = ctx.register("alice", "hunter2").await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let req = test::TestRequest::put()
-        .uri("/me/password")
-        .insert_header(ContentType::json())
-        .insert_header(alice.cookie_header())
-        .set_payload(
-            serde_json::json!({"current_password": "hunter2", "new_password": "correct horse"})
-                .to_string(),
-        )
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
-    let me_req = test::TestRequest::get()
-        .uri("/me")
-        .insert_header(alice.cookie_header())
-        .to_request();
-    assert!(test::call_service(&app, me_req).await.status().is_success());
-
-    let old_login_req = test::TestRequest::post()
-        .uri("/login")
-        .insert_header(ContentType::json())
-        .set_payload(serde_json::json!({"username": "alice", "password": "hunter2"}).to_string())
-        .to_request();
-    assert_eq!(
-        test::call_service(&app, old_login_req).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
-
-    let new_login_req = test::TestRequest::post()
-        .uri("/login")
-        .insert_header(ContentType::json())
-        .set_payload(
-            serde_json::json!({"username": "alice", "password": "correct horse"}).to_string(),
-        )
-        .to_request();
-    assert!(
-        test::call_service(&app, new_login_req)
-            .await
-            .status()
-            .is_success()
-    );
-}
-
-#[actix_web::test]
-async fn test_change_password_rejects_wrong_current_password_without_changing_credential() {
-    let ctx = TestCtx::new().await;
-    let alice = ctx.register("alice", "hunter2").await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let req = test::TestRequest::put()
-        .uri("/me/password")
-        .insert_header(ContentType::json())
-        .insert_header(alice.cookie_header())
-        .set_payload(
-            serde_json::json!({"current_password": "wrong", "new_password": "correct horse"})
-                .to_string(),
-        )
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-
-    assert!(
-        auth::authenticate_password(&ctx.db, "alice", "hunter2")
-            .await
-            .is_ok()
-    );
-    assert!(
-        auth::authenticate_password(&ctx.db, "alice", "correct horse")
-            .await
-            .is_err()
-    );
-}
-
-#[actix_web::test]
-async fn test_change_password_rejects_empty_password_fields() {
-    let ctx = TestCtx::new().await;
-    let alice = ctx.register("alice", "hunter2").await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    for body in [
-        serde_json::json!({"current_password": "", "new_password": "newpass"}),
-        serde_json::json!({"current_password": "hunter2", "new_password": ""}),
+        .await
+        .unwrap();
+    let stored: String = rows[0].try_get("", "token_digest").unwrap();
+    assert_ne!(stored, token);
+    assert_eq!(stored.len(), 64);
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/me")
+            .insert_header(("Authorization", format!("Bearer {token}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().contains_key("x-request-id"));
+    let me: Value = test::read_body_json(response).await;
+    assert_eq!(me, body["user"]);
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get().uri("/api/v1/me").to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let error: Value = test::read_body_json(response).await;
+    assert_eq!(error["error"]["code"], "unauthorized");
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/api/v1/auth/signup")
+            .set_json(json!({"username":"aLiCe_1", "password":"other-password"}))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/api/v1/auth/signup")
+            .set_json(json!({"username":"bad!", "password":"other-password"}))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    for invalid in [
+        json!({"username":"ab", "password":"other-password"}),
+        json!({"username":"Bad-Name", "password":"other-password"}),
+        json!({"username":"Alice", "password":"short"}),
+        json!({"username":"Alice", "password":"other-password", "extra":true}),
     ] {
-        let req = test::TestRequest::put()
-            .uri("/me/password")
-            .insert_header(ContentType::json())
-            .insert_header(alice.cookie_header())
-            .set_payload(body.to_string())
-            .to_request();
-        assert_eq!(
-            test::call_service(&app, req).await.status(),
-            StatusCode::BAD_REQUEST
-        );
-    }
-
-    assert!(
-        auth::authenticate_password(&ctx.db, "alice", "hunter2")
-            .await
-            .is_ok()
-    );
-}
-
-#[actix_web::test]
-async fn test_change_password_requires_auth() {
-    let ctx = TestCtx::new().await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let req = test::TestRequest::put()
-        .uri("/me/password")
-        .insert_header(ContentType::json())
-        .set_payload(
-            serde_json::json!({"current_password": "old", "new_password": "new"}).to_string(),
+        let result = test::try_call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/auth/signup")
+                .set_json(invalid)
+                .to_request(),
         )
-        .to_request();
-    assert_eq!(
-        test::call_service(&app, req).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
-}
-
-// --- session expiry ---
-
-#[actix_web::test]
-async fn test_expired_session_is_unauthorized() {
-    let ctx = TestCtx::new().await;
-    let user = auth::register_user(&ctx.db, "alice", "hunter2", None)
+        .await;
+        match result {
+            Ok(response) => assert_eq!(response.status(), StatusCode::BAD_REQUEST),
+            Err(error) => {
+                assert_eq!(
+                    error.as_response_error().status_code(),
+                    StatusCode::BAD_REQUEST
+                );
+                let body = actix_web::body::to_bytes(error.error_response().into_body())
+                    .await
+                    .unwrap();
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["error"]["code"], "bad_request");
+            }
+        }
+    }
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/auth/signup")
+            .insert_header(("Authorization", format!("Bearer {token}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    let body: Value = test::read_body_json(response).await;
+    assert_eq!(body["error"]["code"], "method_not_allowed");
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/me")
+            .insert_header(("Authorization", "Bearer invalid"))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/unknown")
+            .insert_header(("Authorization", format!("Bearer {token}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(response.headers().contains_key("x-request-id"));
+    db.db
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "UPDATE sessions SET expires_at = ?",
+            ["2020-01-01T00:00:00Z".into()],
+        ))
         .await
         .unwrap();
-    entity::session::ActiveModel {
-        token: Set("expired-token".to_owned()),
-        user_id: Set(user.id),
-        created_at: Set(0),
-        expires_at: Set(1),
-    }
-    .insert(&ctx.db)
-    .await
-    .unwrap();
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let req = test::TestRequest::get()
-        .uri("/me")
-        .insert_header((
-            "Cookie".to_owned(),
-            format!("{}=expired-token", auth::SESSION_COOKIE),
-        ))
-        .to_request();
-    assert_eq!(
-        test::call_service(&app, req).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
-}
-
-// --- auth-gated routes ---
-
-#[actix_web::test]
-async fn test_get_channels_requires_auth() {
-    let ctx = TestCtx::new().await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let req = test::TestRequest::get().uri("/channels").to_request();
-    assert_eq!(
-        test::call_service(&app, req).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
-}
-
-#[actix_web::test]
-async fn test_get_messages_requires_auth() {
-    let ctx = TestCtx::new().await;
-    let chan_id = ctx.channel_id;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let req = test::TestRequest::get()
-        .uri(&format!("/messages/{chan_id}"))
-        .to_request();
-    assert_eq!(
-        test::call_service(&app, req).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
-}
-
-#[actix_web::test]
-async fn test_subscribe_requires_auth() {
-    let ctx = TestCtx::new().await;
-    let app = test::init_service(App::new().configure(|cfg| configure_app(cfg, ctx.deps()))).await;
-
-    let req = test::TestRequest::get()
-        .uri("/messages/subscribe")
-        .to_request();
-    assert_eq!(
-        test::call_service(&app, req).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/me")
+            .insert_header(("Authorization", format!("Bearer {token}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    connect_to_database(&url).await.unwrap();
 }

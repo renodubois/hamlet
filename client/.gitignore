@@ -1,11 +1,1 @@
-node_modules
-.vite
-dist
-storybook-static
-dist-electron
-release
-test-results
-playwright-report
-.env
-.env.*
-!.env.example
+target/
