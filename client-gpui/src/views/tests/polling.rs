@@ -6,7 +6,7 @@ struct PollAuth {
     offline: Arc<AtomicBool>,
 }
 impl RequestAdapter for PollAuth {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         let count = match request.url().path() {
             "/api/v1/channels" => Some(&self.channels),
             path if path.ends_with("/messages") => Some(&self.history),
@@ -15,7 +15,7 @@ impl RequestAdapter for PollAuth {
         if let Some(count) = count {
             count.fetch_add(1, Ordering::SeqCst);
             if self.offline.load(Ordering::SeqCst) {
-                return Box::pin(async { Err(AuthError::Unavailable) });
+                return Box::pin(async { Err(ApiError::Unavailable) });
             }
         }
         BoundAuth.execute(request)
@@ -28,14 +28,13 @@ fn poll_catches_up_multiple_pages_without_duplicate_work_and_switch_cancels_late
 ) {
     cx.update(gpui_kit::init);
     let (tx, requests) = std::sync::mpsc::channel();
-    let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let stored = saved.clone();
+
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(PagedAuth(tx))));
-        *stored.borrow_mut() = Some(view.clone());
+        let view = open_controlled(window, cx, Arc::new(PagedAuth(tx)));
+
         Root::new(view, window, cx)
     });
-    let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
+
     cx.deactivate_window();
     cx.update(|window, _| window.activate_window());
     cx.run_until_parked();
@@ -49,7 +48,7 @@ fn poll_catches_up_multiple_pages_without_duplicate_work_and_switch_cancels_late
     });
     cx.run_until_parked();
     let (_, initial) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
-    let message = |id: i32| crate::conversation::Message {
+    let message = |id: i32| crate::api::Message {
         id: id.to_string(),
         channel_id: "000000000000001".into(),
         author_id: "42".into(),
@@ -58,7 +57,7 @@ fn poll_catches_up_multiple_pages_without_duplicate_work_and_switch_cancels_late
         created_at: "2026-01-01T00:00:00Z".into(),
     };
     initial
-        .send_blocking(Ok(crate::conversation::Page {
+        .send_blocking(Ok(crate::api::Page {
             items: vec![message(1)],
             next_cursor: None,
         }))
@@ -75,7 +74,7 @@ fn poll_catches_up_multiple_pages_without_duplicate_work_and_switch_cancels_late
     cx.run_until_parked();
     assert!(requests.try_recv().is_err());
     first
-        .send_blocking(Ok(crate::conversation::Page {
+        .send_blocking(Ok(crate::api::Page {
             items: (53..=102).rev().map(message).collect(),
             next_cursor: Some("next".into()),
         }))
@@ -87,7 +86,7 @@ fn poll_catches_up_multiple_pages_without_duplicate_work_and_switch_cancels_late
     cx.run_until_parked();
     assert!(requests.try_recv().is_err());
     second
-        .send_blocking(Ok(crate::conversation::Page {
+        .send_blocking(Ok(crate::api::Page {
             items: (1..=52).rev().map(message).collect(),
             next_cursor: None,
         }))
@@ -96,19 +95,8 @@ fn poll_catches_up_multiple_pages_without_duplicate_work_and_switch_cancels_late
     cx.update(|window, cx| {
         window.render_frame(cx);
         assert_eq!(
-            match view
-                .read(cx)
-                .conversation
-                .as_ref()
-                .unwrap()
-                .read()
-                .history
-                .get("000000000000001")
-            {
-                Some(crate::conversation::Load::Ready(messages)) => messages.len(),
-                _ => panic!("history not ready"),
-            },
-            102
+            window.find("refresh-history").label(),
+            Some("Refresh conversation")
         );
         assert_eq!(window.find("message-102").label(), Some("102"));
     });
@@ -123,24 +111,49 @@ fn poll_catches_up_multiple_pages_without_duplicate_work_and_switch_cancels_late
     let (_, selected) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
     // The common path now cancels the controlled read just as production does.
     assert!(
-        late.send_blocking(Ok(crate::conversation::Page {
+        late.send_blocking(Ok(crate::api::Page {
             items: vec![message(999)],
             next_cursor: None,
         }))
         .is_err()
     );
     selected
-        .send_blocking(Ok(crate::conversation::Page {
+        .send_blocking(Ok(crate::api::Page {
             items: vec![],
             next_cursor: None,
         }))
         .unwrap();
     cx.run_until_parked();
-    cx.update(|_, cx| {
-        assert_eq!(view.read(cx).conversation.as_ref().unwrap().read().selected.as_deref(), Some("000000000000002"));
-        assert!(!view.read(cx).conversation.as_ref().unwrap().read().history.contains_key("000000000000002") ||
-            matches!(view.read(cx).conversation.as_ref().unwrap().read().history.get("000000000000002"), Some(crate::conversation::Load::Ready(items)) if items.is_empty()));
-        assert!(matches!(view.read(cx).conversation.as_ref().unwrap().read().history.get("000000000000001"), Some(crate::conversation::Load::Ready(items)) if items.len() == 102));
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("composer").is_some());
+        assert!(window.try_find("history").is_none());
+        assert!(window.try_find("message-999").is_none());
+        window.click("channel-000000000000001", cx);
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("message-102").label(), Some("102"));
+        // Reselection retains every page, including boundaries and the oldest row.
+        for id in [53, 52, 1] {
+            for _ in 0..200 {
+                if window.try_find(format!("message-{id}")).is_some() {
+                    break;
+                }
+                window.scroll(
+                    "history",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(90.))),
+                    cx,
+                );
+                window.render_frame(cx);
+            }
+            assert_eq!(
+                window.find(format!("message-{id}")).label(),
+                Some(id.to_string().as_str())
+            );
+        }
+        assert!(window.try_find("message-999").is_none());
     });
 }
 
@@ -150,14 +163,13 @@ fn focus_return_during_read_catches_up_once_and_logout_stops_selected_reads(
 ) {
     cx.update(gpui_kit::init);
     let (tx, requests) = std::sync::mpsc::channel();
-    let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let stored = saved.clone();
+
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(PagedAuth(tx))));
-        *stored.borrow_mut() = Some(view.clone());
+        let view = open_controlled(window, cx, Arc::new(PagedAuth(tx)));
+
         Root::new(view, window, cx)
     });
-    let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
+
     cx.deactivate_window();
     cx.update(|window, _| window.activate_window());
     cx.run_until_parked();
@@ -172,7 +184,7 @@ fn focus_return_during_read_catches_up_once_and_logout_stops_selected_reads(
     cx.run_until_parked();
     let (_, initial) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
     initial
-        .send_blocking(Ok(crate::conversation::Page {
+        .send_blocking(Ok(crate::api::Page {
             items: vec![],
             next_cursor: None,
         }))
@@ -189,7 +201,7 @@ fn focus_return_during_read_catches_up_once_and_logout_stops_selected_reads(
         "focus must not overlap an in-flight read"
     );
     pending
-        .send_blocking(Ok(crate::conversation::Page {
+        .send_blocking(Ok(crate::api::Page {
             items: vec![],
             next_cursor: None,
         }))
@@ -200,7 +212,7 @@ fn focus_return_during_read_catches_up_once_and_logout_stops_selected_reads(
     let (_, catchup) = requests.recv_timeout(Duration::from_secs(2)).unwrap();
     assert!(requests.try_recv().is_err(), "only one catch-up read");
     catchup
-        .send_blocking(Ok(crate::conversation::Page {
+        .send_blocking(Ok(crate::api::Page {
             items: vec![],
             next_cursor: None,
         }))
@@ -225,7 +237,7 @@ fn focus_return_during_read_catches_up_once_and_logout_stops_selected_reads(
         "no unselected or overlapping read on switch"
     );
     selected
-        .send_blocking(Ok(crate::conversation::Page {
+        .send_blocking(Ok(crate::api::Page {
             items: vec![],
             next_cursor: None,
         }))
@@ -243,7 +255,7 @@ fn focus_return_during_read_catches_up_once_and_logout_stops_selected_reads(
         window.click("logout", cx);
     });
     // Let the stale result arrive; it must not restore the logged-out session.
-    let _ = late.try_send(Ok(crate::conversation::Page {
+    let _ = late.try_send(Ok(crate::api::Page {
         items: vec![],
         next_cursor: None,
     }));
@@ -252,8 +264,10 @@ fn focus_return_during_read_catches_up_once_and_logout_stops_selected_reads(
         requests.try_recv().is_err(),
         "logout must not read any channel"
     );
-    cx.update(|_, cx| {
-        assert!(view.read(cx).conversation.is_none());
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("login").label(), Some("Log in"));
+        assert!(window.try_find("composer").is_none());
     });
 }
 
@@ -263,24 +277,21 @@ fn focused_polls_pause_resume_and_recover_without_losing_draft(cx: &mut TestAppC
     let channels = Arc::new(AtomicUsize::new(0));
     let history = Arc::new(AtomicUsize::new(0));
     let offline = Arc::new(AtomicBool::new(false));
-    let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let stored = saved.clone();
+
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| {
-            Hamlet::new(
-                window,
-                cx,
-                Arc::new(PollAuth {
-                    channels: channels.clone(),
-                    history: history.clone(),
-                    offline: offline.clone(),
-                }),
-            )
-        });
-        *stored.borrow_mut() = Some(view.clone());
+        let view = open_controlled(
+            window,
+            cx,
+            Arc::new(PollAuth {
+                channels: channels.clone(),
+                history: history.clone(),
+                offline: offline.clone(),
+            }),
+        );
+
         Root::new(view, window, cx)
     });
-    let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
+
     cx.deactivate_window();
     cx.update(|window, _| window.activate_window());
     cx.run_until_parked();
@@ -328,15 +339,7 @@ fn focused_polls_pause_resume_and_recover_without_losing_draft(cx: &mut TestAppC
                 .contains("Connection trouble")
         );
         assert!(window.find("message-000000000000001").label().is_some());
-        assert_eq!(
-            view.read(cx)
-                .conversation
-                .as_ref()
-                .unwrap()
-                .read()
-                .draft("000000000000001"),
-            "keep draft"
-        );
+        assert_eq!(composer_text(window, cx), "keep draft");
     });
     cx.deactivate_window();
     cx.update(|window, cx| {
@@ -362,15 +365,7 @@ fn focused_polls_pause_resume_and_recover_without_losing_draft(cx: &mut TestAppC
             window.find("connection-status").label(),
             Some("Connected. Checking for new messages and channels.")
         );
-        assert_eq!(
-            view.read(cx)
-                .conversation
-                .as_ref()
-                .unwrap()
-                .read()
-                .draft("000000000000001"),
-            "keep draft"
-        );
+        assert_eq!(composer_text(window, cx), "keep draft");
     });
     assert!(history.load(Ordering::SeqCst) > before);
 }

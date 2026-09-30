@@ -6,11 +6,11 @@ use serde_json::json;
 
 struct Contexts {
     requests: Arc<Mutex<Vec<(String, String, String)>>>,
-    old_channels: Mutex<Option<async_channel::Receiver<Result<Response, AuthError>>>>,
+    old_channels: Mutex<Option<async_channel::Receiver<Result<Response, ApiError>>>>,
 }
 
 impl RequestAdapter for Contexts {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         let origin = request.url().origin().ascii_serialization();
         let path = request.url().path().to_owned();
         let token = request
@@ -64,7 +64,7 @@ fn protected_contexts_survive_logout_changed_server_and_late_old_results(cx: &mu
                 window,
                 cx,
                 transport,
-                crate::persistence::Config::default(),
+                crate::storage::Config::default(),
                 None,
                 execution,
             );

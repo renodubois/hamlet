@@ -6,7 +6,7 @@ fn mount(
 ) -> &mut gpui_kit::VisualTestContext {
     cx.update(gpui_kit::init);
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(SendAuth(calls))));
+        let view = open_controlled(window, cx, Arc::new(SendAuth(calls)));
         Root::new(view, window, cx)
     });
     cx.update(|window, cx| {
@@ -66,7 +66,7 @@ fn composer_uses_real_textarea_keyboard_button_focus_and_channel_drafts(cx: &mut
     assert_eq!(calls.lock().unwrap().len(), 1);
     let (_, text, sender) = calls.lock().unwrap().remove(0);
     assert_eq!(text, "first\nsecond");
-    sender.try_send(Err(AuthError::InvalidInput)).unwrap();
+    sender.try_send(Err(ApiError::InvalidInput)).unwrap();
     cx.run_until_parked();
     cx.update(|window, cx| {
         assert_eq!(composer_text(window, cx), "first\nsecond");
@@ -86,7 +86,7 @@ fn composer_uses_real_textarea_keyboard_button_focus_and_channel_drafts(cx: &mut
     let (_, text, sender) = calls.lock().unwrap().remove(0);
     assert_eq!(text, "other");
     sender
-        .try_send(Ok(crate::conversation::Message {
+        .try_send(Ok(crate::api::Message {
             id: "000000000000003".into(),
             channel_id: "000000000000002".into(),
             author_id: "42".into(),
@@ -139,7 +139,7 @@ fn enter_at_mid_caret_and_after_shift_enter_sends_unchanged_text(cx: &mut TestAp
     cx.run_until_parked();
     let (_, text, reply) = calls.lock().unwrap().remove(0);
     assert_eq!(text, "middle");
-    reply.try_send(Err(AuthError::InvalidInput)).unwrap();
+    reply.try_send(Err(ApiError::InvalidInput)).unwrap();
     cx.run_until_parked();
     cx.update(|window, cx| {
         assert_eq!(composer_text(window, cx), "middle");
@@ -158,7 +158,7 @@ fn enter_at_mid_caret_and_after_shift_enter_sends_unchanged_text(cx: &mut TestAp
     cx.run_until_parked();
     let (_, text, reply) = calls.lock().unwrap().remove(0);
     assert_eq!(text, "tail\n");
-    reply.try_send(Err(AuthError::InvalidInput)).unwrap();
+    reply.try_send(Err(ApiError::InvalidInput)).unwrap();
     cx.run_until_parked();
     cx.update(|window, cx| {
         assert_eq!(composer_text(window, cx), "tail\n");
@@ -186,7 +186,7 @@ fn uncertain_send_retains_draft_refreshes_only_selected_channel_and_never_replay
         window.render_frame(cx);
         assert_eq!(window.find("send-message").label(), Some("Send message"));
     });
-    sender.try_send(Err(AuthError::Unavailable)).unwrap();
+    sender.try_send(Err(ApiError::Unavailable)).unwrap();
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -244,7 +244,7 @@ fn stalled_send_times_out_and_late_completion_cannot_clear_the_draft(cx: &mut Te
         );
     });
     let (_, _, sender) = calls.lock().unwrap().remove(0);
-    assert!(sender.try_send(Err(AuthError::AlreadyInvalid)).is_err());
+    assert!(sender.try_send(Err(ApiError::AlreadyInvalid)).is_err());
     cx.run_until_parked();
     cx.update(|window, cx| {
         assert_eq!(composer_text(window, cx), "timeout draft");

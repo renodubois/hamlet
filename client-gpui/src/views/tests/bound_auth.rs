@@ -9,14 +9,9 @@ pub(super) fn bound_api(adapter: impl RequestAdapter + 'static) -> HttpTransport
     HttpTransport::with_adapter(Arc::new(adapter))
 }
 
-// The retained private-view fixture accepts an adapter; lifecycle tests supply a transport.
-pub(super) fn fixture_api(adapter: impl RequestAdapter + 'static) -> Arc<dyn RequestAdapter> {
-    Arc::new(adapter)
-}
-
 pub(super) struct BoundAuth;
 impl RequestAdapter for BoundAuth {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         Box::pin(async move {
             let path = request.url().path();
             let (status, body) = match path {
@@ -57,7 +52,7 @@ impl RequestAdapter for BoundAuth {
                     }], "next_cursor":null}),
                     )
                 }
-                _ => return Err(AuthError::Unavailable),
+                _ => return Err(ApiError::Unavailable),
             };
             Ok(Response::controlled(status, body.to_string()))
         })

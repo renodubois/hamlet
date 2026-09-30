@@ -1,17 +1,13 @@
 //! One conversation lifetime per accepted session. Views issue intentions and read state;
 //! this owner alone dispatches requests, applies completions and schedules selected reads.
 
-pub(crate) mod polling;
+mod polling;
 mod state;
-use crate::api::{ApiError, AuthenticatedClient};
+use crate::api::{ApiError, AuthenticatedClient, Channel, Message, Page};
 use crate::runtime::{Execution, Work};
 use polling::{Polling, Resource};
-#[cfg(not(test))]
-use state::ReadRequest;
-pub(crate) use state::{Channel, Conversation, Load, Message, Older, Page, Refresh};
-use state::{CreateRequest, Identity, SendOutcome, SendRequest};
-#[cfg(test)]
-pub(crate) use state::{Identity as ConversationIdentity, ReadRequest};
+pub(crate) use state::{Conversation, Load, Older, Refresh};
+use state::{CreateRequest, Identity, ReadRequest, SendOutcome, SendRequest};
 use std::{
     cell::{Ref, RefCell},
     collections::HashMap,
@@ -537,3 +533,5 @@ impl Drop for Coordinator {
 
 #[cfg(test)]
 mod coordinator_tests;
+#[cfg(test)]
+mod route_tests;

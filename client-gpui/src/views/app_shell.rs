@@ -16,11 +16,11 @@ pub(crate) fn open(
     config: Config,
     persistence: Option<Persistence>,
     execution: Execution,
-) -> Entity<Hamlet> {
-    cx.new(|cx| Hamlet::with_dependencies(window, cx, api, config, persistence, execution))
+) -> Entity<AppShell> {
+    cx.new(|cx| AppShell::new(window, cx, api, config, persistence, execution))
 }
 
-pub(crate) struct Hamlet {
+pub(crate) struct AppShell {
     session: Entity<SessionCoordinator>,
     login: Entity<LoginView>,
     workspace: Option<Entity<WorkspaceView>>,
@@ -28,8 +28,8 @@ pub(crate) struct Hamlet {
     conversation: Option<ConversationHandle>,
     _window_activation: Subscription,
 }
-impl Hamlet {
-    fn with_dependencies(
+impl AppShell {
+    fn new(
         window: &mut Window,
         cx: &mut Context<Self>,
         api: HttpTransport,
@@ -136,7 +136,7 @@ impl Hamlet {
         }
     }
 }
-impl Render for Hamlet {
+impl Render for AppShell {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity().downgrade();
         let mut surface = div()
@@ -217,7 +217,3 @@ impl Render for Hamlet {
         surface
     }
 }
-
-#[cfg(test)]
-#[path = "tests/legacy_fixture.rs"]
-mod tests;

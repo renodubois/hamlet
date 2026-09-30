@@ -5,7 +5,7 @@ use crate::runtime::Execution;
 
 struct RejectNextHistory(Arc<AtomicBool>);
 impl RequestAdapter for RejectNextHistory {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         if request.url().path().ends_with("/messages") && self.0.swap(false, Ordering::SeqCst) {
             return Box::pin(async { Ok(Response::controlled(StatusCode::UNAUTHORIZED, "{}")) });
         }

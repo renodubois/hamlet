@@ -1,9 +1,82 @@
-# Presentation (#38–#43 conversation, signup, creation, older pages, refresh, send)
+# Presentation — implemented ownership through #61
 
-The pane layout and semantic IDs are in `src/main.rs`, `Hamlet::conversation_panes`; theme colors and bundled icon mapping are in its `theme` module. The #39 signup/login form layout and semantic control IDs (`auth-mode`, `signup`, `login`, `auth-feedback`) are in `Hamlet::render`; signup validation and session decisions are in `src/session.rs` and the wire contract is in `src/http.rs`. The headless tests interact with Kit controls by these IDs and observable labels/feedback, not with colors, spacing, or form layout. Redesign presentation without changing those behaviors. The independent channel and conversation decisions are in `src/conversation.rs`; wire decoding and protected HTTP calls are in `src/http.rs`.
+The client retains the existing Kit Root, basic layout, semantic IDs, labels and
+tooltips. Change presentation at the owning view, not in startup or a feature
+coordinator. [ARCHITECTURE.md](ARCHITECTURE.md) describes the dependency rules.
 
-The #40 creation controls (`channel-name`, `create-channel`, `channel-feedback`) are in `Hamlet::conversation_panes`. The name label, pending state and feedback are part of the presentation surface; creation decisions and server-order insertion are in `src/conversation.rs`, with the text-channel POST adapter in `src/http.rs`. The channel list is in server order and initially selects its first channel; the initial read requests only that channel's newest page. Selecting another channel retains already loaded data for re-selection. #43 adds the per-channel in-memory composer (`composer`, `send-message`, `send-feedback`). Enter submits through the textarea's `submit_on_enter(true)` action without editing the draft; Shift+Enter inserts a line break. Headless tests type into the actual Kit composer and dispatch a real Enter key-down (without GPUI's synthetic IME text injection) at a mid-line caret and after a trailing Shift+Enter newline; this is not a native IME test. Native Linux IME confirmation remains unverified and requires the manual check in `README.md`. Pending sends are read-only only for their channel, and confirmations stay staged until a safe catch-up. A second confirmation during an active catch-up starts another safe read before merging confirmations. #45 polls selected history every 3 seconds and channels every 15 seconds while the native window is focused, with per-resource read backoff on failure and immediate reconciliation on focus return. The schedule lives in `src/polling.rs`, not in the presentation; `connection-status` exposes paused, connected and failed-read states. Older pages load on upward scrolling for the selected channel only, with a deliberate retry button on failure. The `refresh-channels` and `refresh-history` controls request independent manual reads and multi-page catch-up, respectively; `jump-latest` scrolls the variable-height reader to its newest message without changing conversation state. Refresh/catch-up and channel selection decisions live in `src/conversation.rs`, while the view reconciles the GPUI list position. Message rows use Kit `SelectableText` with plain text and line breaks. Conversations remain memory-only. Session lifecycle decisions (login/signup, restoration identity/expiry/rejection versus connectivity retry, logout and invalidation) live in `src/session.rs`. The view in `src/main.rs` dispatches current-user lookup and applies typed restore decisions; `src/persistence.rs` owns the asynchronous Linux Secret Service credential worker and token-free selected-server metadata. Storage save/delete outcomes, including memory-only and unconfirmed-deletion warnings, are displayed by the view. Deletions retain independent retry identities across server changes and newer saves. A headless test injects a controlled persistence worker for save/delete failures and the deletion retry button; that test alone does not establish native Secret Service behavior. An isolated private-bus `ksecretd` native save/restart/restore/logout deletion was subsequently observed (`VERIFY.md`), but a locked/slow real wallet was not tested.
+| Editing responsibility | Location | Stable controls |
+| --- | --- | --- |
+| Startup/window/Kit Root | `src/main.rs` | No feature controls or workflows |
+| Screen composition, shared session/storage feedback and retry | `src/views/app_shell.rs` | `session-status`, `logout`, `auth-feedback`, `storage-status`, `retry-storage` |
+| Login/signup fields, form mode, focus and sensitive cleanup | `src/views/login.rs` | `server-url`, `username`, `password`, `auth-mode`, `login`, `signup`, `auth-feedback` |
+| Pane composition and connection-status presentation | `src/views/workspace.rs`, `src/views/conversation/mod.rs` | `connection-status` |
+| Channel list and creation input | `src/views/channel_sidebar.rs` | `channels`, `channel-{id}`, `channel-name`, `create-channel`, `channel-feedback`, `refresh-channels`, `channels-refresh-error` |
+| List/focus, wheel, viewport anchoring and traversal controls | `src/views/conversation/message_history.rs` | `history-pane`, `history`, `refresh-history`, `catchup-incomplete`, `retry-older`, `jump-latest` |
+| Plain selectable message, author and timestamp | `src/views/conversation/message_row.rs` | `message-{id}`, `message-text-{id}`, `text-{id}` |
+| Textarea, keyboard, focus, displayed-draft synchronization | `src/views/conversation/composer.rs` | `composer-panel`, `composer`, `send-message`, `send-feedback` |
+| Colors and bundled Hash/Send icons | `src/theme.rs` | Keep meaningful labels/tooltips |
 
-`cargo test --locked` exercises the real Kit controls and semantic IDs, including a production-message drag-selection and Ctrl+C preserving line breaks. The initial attempt used a test window without Kit `Root`, which supplies the selection layer and copy action; the test now mounts `Root` just like `main`. The separate #36 feasibility probe also verifies variable-height scrolling and headless copy. The #41 production history pane uses a GPUI variable-height `ListState` (`history` semantic ID) instead of a scrolling div. Chronological rows have stable `message-{id}` IDs. The `history-pane` wrapper owns the title and traversal feedback; `retry-older` is the explicit retry control. `ListState::splice` keeps the same message anchored in the viewport as older messages or a confirmed message in a middle gap are inserted before it. The view diffs chronological stable IDs and splices at the actual gap, not unconditionally at the end; the conversation owns post-read reconciliation policy. The production headless wheel test asserts its actual viewport Y after a controlled overlapping older-page response. A subsequent uinput-driven Linux desktop check traversed variable-height older pages (`VERIFY.md`); precise native pixel anchoring during a delayed prepend remains unmeasured.
+## Behavior boundaries
 
-A subsequent uinput-driven Xwayland desktop check selected and copied an exact multiline message using Wayland's `UTF8_STRING` clipboard representation (`VERIFY.md`). Headless tests alone do not prove native clipboard integration; this was not a physical-human or IME/assistive-technology check.
+Views issue intentions to `SessionCoordinator` or `ConversationHandle`; they do
+not dispatch HTTP, interpret pagination continuity, hold bearer tokens or own
+saved-login deletion identities. `session/` owns login/signup, verified restoration,
+expiry, rejection and independent cleanup/revocation. `session/saved_login.rs`
+retains old-identity cleanup and retry across screens/newer sessions. `storage/`
+owns the ordered blocking provider/configuration protocol; feedback must distinguish
+memory-only, confirmed and unconfirmed outcomes.
+
+`conversation/mod.rs` owns requests, task cancellation and completion identities.
+`conversation/state.rs` owns server-order selection, history continuity, deduplication,
+creation, per-channel drafts and send uncertainty. `conversation/polling.rs` owns
+focused 3s/15s scheduling and independent backoff to 60s. Manual refresh, focus
+return, scheduled reads and safe post-send catch-up share the same workflow;
+neither views nor runtime implement a second dispatch path. `api/` alone builds
+routes/headers and decodes responses. HTTP 8s, protected read/send 9s and combined
+storage/restoration 10s deadlines remain distinct.
+
+Each child owns its input/list entities and subscriptions. Feature invalidations
+also arrive after timer completions and while children are hidden. Recreation
+hydrates current authoritative state without issuing requests. The shell never
+reads a child's password, textarea or list. Invalidation synchronously closes
+protected activity and clears all authoritative history/drafts; retained hidden
+controls then clear through their notification/window-update path. This is not
+memory zeroization.
+
+The history view splices chronological stable row IDs, preserving variable-height
+anchors for prepend and middle insertion. It follows only when appropriate;
+**Jump to latest** explicitly resumes bottom-follow. Selection/copy uses Kit
+`SelectableText` and Root. The composer keeps only its displayed-channel/text
+projection; drafts remain in conversation ownership. Hydration must not overwrite
+queued edits, move the caret on unchanged notifications, or let an old Enter send
+the newly selected channel's draft. Enter sends unchanged text; Shift+Enter adds
+a line. A pending send locks only its originating composer. Uncertain sends retain
+draft/warning and never automatically replay; equal text does not prove delivery.
+
+## Checks and native boundary
+
+Run from `client-gpui/`:
+
+```sh
+cargo test --locked views::
+cargo test --locked history
+cargo test --locked composer
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --locked
+```
+
+Cross-view suites under `src/views/tests/` mount Kit Root and drive real controls,
+keyboard, wheel and clipboard by semantic IDs; they do not navigate private child
+fields or assert a fixed presentation tree. The retired #36 feasibility probes
+are replaced by production wheel/prepend and exact multiline selection/copy
+coverage; [MIGRATION-61.md](MIGRATION-61.md) records equivalents.
+
+[VERIFY.md](VERIFY.md) preserves historical uinput/Xwayland selection, clipboard,
+older-page and isolated `ksecretd` observations. Those pre-migration runs do not
+verify the new entity/subscription wiring. Fresh native smoke remains **pending
+#62**, as do IME candidate/Enter, assistive technology/physical keyboard, precise
+delayed native prepend anchoring and locked/slow real-wallet checks. Headless
+results are not native acceptance. No desktop automation or real-keyring access
+without separate consent.

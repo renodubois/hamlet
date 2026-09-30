@@ -10,7 +10,7 @@ struct PersistentSignupAuth {
     revoked: Arc<AtomicBool>,
 }
 impl RequestAdapter for PersistentSignupAuth {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         assert_eq!(
             request.url().origin().ascii_serialization(),
             crate::session::DEFAULT_SERVER_URL

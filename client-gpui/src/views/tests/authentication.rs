@@ -1,25 +1,9 @@
-use super::bound_auth::fixture_api as bound_api;
 use super::bound_auth::*;
 use super::*;
 
-fn open_auth(
-    window: &mut Window,
-    cx: &mut gpui_kit::App,
-    api: Arc<dyn RequestAdapter>,
-) -> gpui_kit::Entity<Hamlet> {
-    crate::views::app_shell::open(
-        window,
-        cx,
-        HttpTransport::with_adapter(api),
-        crate::storage::Config::default(),
-        None,
-        crate::runtime::Execution::controlled(cx.background_executor().clone(), 1_800_000_000),
-    )
-}
-
 struct PendingAuth(Arc<AtomicUsize>);
 impl RequestAdapter for PendingAuth {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         assert!(request.url().path().starts_with("/api/v1/auth/"));
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(std::future::pending())
@@ -31,7 +15,7 @@ fn login_validation_and_pending_button_are_visible_and_inert(cx: &mut TestAppCon
     cx.update(gpui_kit::init);
     let calls = Arc::new(AtomicUsize::new(0));
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = open_auth(window, cx, bound_api(PendingAuth(calls.clone())));
+        let view = open_controlled(window, cx, Arc::new(PendingAuth(calls.clone())));
         Root::new(view, window, cx)
     });
     cx.update(|window, cx| {
@@ -63,11 +47,11 @@ fn login_validation_and_pending_button_are_visible_and_inert(cx: &mut TestAppCon
 }
 
 struct SignupReject {
-    error: AuthError,
+    error: ApiError,
     submissions: Arc<std::sync::Mutex<Vec<(String, String)>>>,
 }
 impl RequestAdapter for SignupReject {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         assert_eq!(request.url().path(), "/api/v1/auth/signup");
         let body: serde_json::Value =
             serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
@@ -78,7 +62,7 @@ impl RequestAdapter for SignupReject {
         let error = self.error.clone();
         Box::pin(async move {
             match error {
-                AuthError::Conflict => Ok(Response::controlled(
+                ApiError::Conflict => Ok(Response::controlled(
                     StatusCode::CONFLICT,
                     r#"{"error":{"code":"conflict"}}"#,
                 )),
@@ -92,16 +76,16 @@ impl RequestAdapter for SignupReject {
 fn signup_rejection_keeps_form_and_reports_uncertainty(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     for (error, expected) in [
-        (AuthError::Conflict, "already exists"),
-        (AuthError::Unavailable, "may have succeeded"),
+        (ApiError::Conflict, "already exists"),
+        (ApiError::Unavailable, "may have succeeded"),
     ] {
         let submissions = Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured = submissions.clone();
         let (_, cx) = cx.add_window_view(|window, cx| {
-            let view = open_auth(
+            let view = open_controlled(
                 window,
                 cx,
-                bound_api(SignupReject {
+                Arc::new(SignupReject {
                     error,
                     submissions: captured,
                 }),
@@ -151,7 +135,7 @@ fn signup_rejection_keeps_form_and_reports_uncertainty(cx: &mut TestAppContext) 
 fn signup_form_supports_keyboard_focus(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = open_auth(window, cx, bound_api(BoundAuth));
+        let view = open_controlled(window, cx, Arc::new(BoundAuth));
         Root::new(view, window, cx)
     });
     cx.update(|window, cx| {
@@ -170,7 +154,7 @@ fn signup_form_supports_keyboard_focus(cx: &mut TestAppContext) {
 fn signup_controls_validate_and_enter_conversation(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = open_auth(window, cx, bound_api(BoundAuth));
+        let view = open_controlled(window, cx, Arc::new(BoundAuth));
         Root::new(view, window, cx)
     });
     cx.update(|window, cx| {
@@ -235,7 +219,7 @@ fn pending_signup_is_inert_and_preserves_editable_inputs(cx: &mut TestAppContext
     cx.update(gpui_kit::init);
     let calls = Arc::new(AtomicUsize::new(0));
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = open_auth(window, cx, bound_api(PendingAuth(calls.clone())));
+        let view = open_controlled(window, cx, Arc::new(PendingAuth(calls.clone())));
         Root::new(view, window, cx)
     });
     cx.update(|window, cx| {

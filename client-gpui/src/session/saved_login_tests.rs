@@ -1,6 +1,7 @@
 //! Application-lifetime saved-login interface with isolated metadata and a fake provider.
 use super::*;
 use crate::api::ApiFuture;
+use crate::api::User;
 use crate::api::test_support::{RequestAdapter, Response};
 use crate::storage::{Config, Persistence};
 use crate::test_support::storage::{Controlled, Shared};
@@ -10,7 +11,7 @@ use std::sync::{Arc, Condvar, Mutex};
 
 struct SavedAuth;
 impl RequestAdapter for SavedAuth {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         let response = match request.url().path() {
             "/api/v1/auth/login" => Response::controlled(
                 StatusCode::OK,
@@ -119,9 +120,9 @@ fn late_old_cleanup_cannot_acknowledge_logout_of_a_new_identical_selection(
 
 struct UnavailableRestore;
 impl RequestAdapter for UnavailableRestore {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         if request.url().path() == "/api/v1/me" {
-            Box::pin(async { Err(AuthError::Unavailable) })
+            Box::pin(async { Err(ApiError::Unavailable) })
         } else {
             SavedAuth.execute(request)
         }
@@ -182,7 +183,7 @@ fn failed_manual_replacement_after_restore_failure_retains_the_rollback_cleanup_
 
 struct FixtureVerification;
 impl RequestAdapter for FixtureVerification {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         assert_eq!(request.url().path(), "/api/v1/me");
         assert_eq!(request.headers()["authorization"], "Bearer synthetic");
         Box::pin(async {

@@ -37,7 +37,7 @@ struct DelayedLogin {
 }
 
 impl RequestAdapter for DelayedLogin {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         let delay = request
             .url()
             .path()
@@ -66,7 +66,7 @@ fn controlled_login_remains_pending_until_response_then_enters_workspace(cx: &mu
             window,
             cx,
             delayed_login(executor),
-            crate::persistence::Config::default(),
+            crate::storage::Config::default(),
             None,
             execution,
         );
@@ -113,7 +113,7 @@ fn send_times_out_at_nine_seconds_without_replay_or_late_draft_loss(cx: &mut Tes
             window,
             cx,
             bound_api(SendAuth(sends.clone())),
-            crate::persistence::Config::default(),
+            crate::storage::Config::default(),
             None,
             execution,
         );
@@ -180,7 +180,7 @@ fn late_login_cannot_replace_a_newer_server_submission(cx: &mut TestAppContext) 
             window,
             cx,
             delayed_login(executor),
-            crate::persistence::Config::default(),
+            crate::storage::Config::default(),
             None,
             execution,
         );
@@ -235,7 +235,7 @@ fn expiry_uses_controlled_wall_time_and_clears_the_workspace(cx: &mut TestAppCon
             window,
             cx,
             delayed_login(executor),
-            crate::persistence::Config::default(),
+            crate::storage::Config::default(),
             None,
             execution,
         );
@@ -281,7 +281,7 @@ struct ReadCounts {
     history: Arc<AtomicUsize>,
 }
 impl RequestAdapter for ReadCounts {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         match request.url().path() {
             "/api/v1/channels" => {
                 self.channels.fetch_add(1, Ordering::SeqCst);
@@ -309,7 +309,7 @@ fn automatic_polls_follow_focus_and_three_fifteen_second_intervals(cx: &mut Test
                 channels: channels.clone(),
                 history: history.clone(),
             }),
-            crate::persistence::Config::default(),
+            crate::storage::Config::default(),
             None,
             execution,
         );

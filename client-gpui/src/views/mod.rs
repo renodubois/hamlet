@@ -7,6 +7,9 @@ pub(crate) mod login;
 pub(crate) mod workspace;
 
 #[cfg(test)]
+mod tests;
+
+#[cfg(test)]
 #[path = "tests/login.rs"]
 mod login_tests;
 

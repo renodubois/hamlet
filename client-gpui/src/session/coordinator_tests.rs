@@ -1,7 +1,7 @@
 //! Owned session interface, shared controlled execution; no view or real provider.
 use super::*;
 use crate::api::test_support::{RequestAdapter, Response};
-use crate::api::{ApiFuture, HttpTransport};
+use crate::api::{ApiFuture, HttpTransport, User};
 use crate::runtime::Execution;
 use gpui_kit::TestAppContext;
 use reqwest::{Request, StatusCode};
@@ -14,7 +14,7 @@ fn session_loss_closes_surviving_conversation_handles_before_any_host_update(
     for reason in ["logout", "expiry", "server", "rejection"] {
         let (mut session, calls) = controlled(cx);
         let generation = accept(cx, &mut session, &calls, "Old", 1_800_000_100);
-        let old_client = session.client_for(generation).unwrap();
+        let old_client = session.active().map(Session::client).unwrap();
         let activity = session.conversation().unwrap();
         activity.start(false);
         cx.executor().run_until_parked();
@@ -113,7 +113,7 @@ fn session_loss_closes_surviving_conversation_handles_before_any_host_update(
 
 struct Login;
 impl RequestAdapter for Login {
-    fn execute(&self, _: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, _: Request) -> ApiFuture<Result<Response, ApiError>> {
         Box::pin(async {
             Ok(Response::controlled(
                 StatusCode::OK,
@@ -137,24 +137,24 @@ fn application_session_authenticates_and_invalidates_without_a_screen(cx: &mut T
     assert!(session.active().is_none());
     cx.executor().run_until_parked();
     session.apply(updates.try_recv().unwrap());
-    let generation = session.session_generation().unwrap();
+    assert!(session.session_generation().is_some());
     assert_eq!(session.active().unwrap().user.username, "Ada");
     assert_eq!(session.take_lifecycle(), Some(Lifecycle::Authenticated));
     session.logout();
-    assert!(session.client_for(generation).is_none());
+    assert!(session.active().is_none());
     assert_eq!(session.take_lifecycle(), Some(Lifecycle::Invalidated));
 }
 
 struct Call {
     request: Request,
-    reply: async_channel::Sender<Result<Response, AuthError>>,
+    reply: async_channel::Sender<Result<Response, ApiError>>,
 }
 struct Gated(async_channel::Sender<Call>);
 impl RequestAdapter for Gated {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         let (reply, result) = async_channel::bounded(1);
         self.0.try_send(Call { request, reply }).unwrap();
-        Box::pin(async move { result.recv().await.unwrap_or(Err(AuthError::Unavailable)) })
+        Box::pin(async move { result.recv().await.unwrap_or(Err(ApiError::Unavailable)) })
     }
 }
 fn controlled(cx: &TestAppContext) -> (SessionCoordinator, async_channel::Receiver<Call>) {
@@ -223,10 +223,10 @@ fn obsolete_authentication_and_rejection_cannot_replace_a_new_session(cx: &mut T
     assert_eq!(session.active().unwrap().server, "https://new.example");
     assert!(session.take_lifecycle().is_none());
     session.protected_rejected(generation.wrapping_sub(1));
-    assert!(session.client_for(generation).is_some());
+    assert!(session.active().is_some());
     assert!(session.take_lifecycle().is_none());
     session.protected_rejected(generation);
-    assert!(session.client_for(generation).is_none());
+    assert!(session.active().is_none());
     assert_eq!(session.take_lifecycle(), Some(Lifecycle::Invalidated));
     assert!(session.feedback().unwrap().contains("rejected"));
 }
@@ -242,7 +242,7 @@ fn queued_old_expiry_is_inert_but_current_expiry_blocks_protected_dispatch(
     // An already-delivered timer can survive cancellation; identity still gates it.
     let expiry = session.updates().try_recv().unwrap();
     session.logout();
-    assert!(session.client_for(old).is_none());
+    assert!(session.active().is_none());
     assert_eq!(session.take_lifecycle(), Some(Lifecycle::Invalidated));
     cx.executor().run_until_parked();
     let revoke = calls.try_recv().unwrap();
@@ -251,10 +251,12 @@ fn queued_old_expiry_is_inert_but_current_expiry_blocks_protected_dispatch(
         "Bearer synthetic-Old"
     );
     let new = accept(cx, &mut session, &calls, "New", 1_800_000_006);
+    assert_ne!(new, old);
     session.apply(expiry);
-    assert!(session.client_for(new).is_some());
+    assert_eq!(session.session_generation(), Some(new));
+    assert!(session.active().is_some());
     assert!(session.take_lifecycle().is_none());
-    revoke.reply.try_send(Err(AuthError::Unavailable)).unwrap();
+    revoke.reply.try_send(Err(ApiError::Unavailable)).unwrap();
     deliver(cx, &mut session);
     assert!(
         session.feedback().is_none(),
@@ -262,7 +264,7 @@ fn queued_old_expiry_is_inert_but_current_expiry_blocks_protected_dispatch(
     );
     cx.background_executor.advance_clock(Duration::from_secs(3));
     deliver(cx, &mut session);
-    assert!(session.client_for(new).is_none());
+    assert!(session.active().is_none());
     assert_eq!(session.take_lifecycle(), Some(Lifecycle::Invalidated));
     assert!(
         calls.try_recv().is_err(),
@@ -280,7 +282,7 @@ fn form_and_restore_intentions_cannot_orphan_an_active_expiry(cx: &mut TestAppCo
     assert!(!session.restore_pending());
     cx.background_executor.advance_clock(Duration::from_secs(3));
     deliver(cx, &mut session);
-    assert!(session.client_for(generation).is_none());
+    assert!(session.active().is_none());
     assert_eq!(session.take_lifecycle(), Some(Lifecycle::Invalidated));
 }
 
@@ -349,16 +351,17 @@ fn restored_context_uses_the_same_lifetime_and_server_change_invalidates_it(
     deliver(cx, &mut session);
     assert_eq!(session.take_lifecycle(), Some(Lifecycle::Authenticated));
     let generation = session.session_generation().unwrap();
-    assert!(session.client_for(generation).is_some());
+    assert!(session.conversation().is_some());
     session.change_server("https://other.example".into());
     assert!(session.active().is_none());
-    assert!(session.client_for(generation).is_none());
+    assert!(session.conversation().is_none());
     assert_eq!(session.take_lifecycle(), Some(Lifecycle::ServerChanged));
     let current = accept(cx, &mut session, &calls, "New", 1_800_000_100);
+    assert_ne!(generation, current);
     cx.background_executor.advance_clock(Duration::from_secs(3));
     deliver(cx, &mut session);
     assert!(
-        session.client_for(current).is_some(),
+        session.session_generation() == Some(current),
         "old restored expiry is inert"
     );
     assert!(session.take_lifecycle().is_none());
@@ -372,13 +375,13 @@ fn logout_is_local_before_revocation_and_retains_distinct_remote_outcomes(cx: &m
             Ok(Response::controlled(StatusCode::UNAUTHORIZED, "{}")),
             Some("already invalid (401)"),
         ),
-        (Err(AuthError::Unavailable), Some("could not be confirmed")),
+        (Err(ApiError::Unavailable), Some("could not be confirmed")),
     ] {
         let (mut session, calls) = controlled(cx);
-        let generation = accept(cx, &mut session, &calls, "Ada", 1_800_000_100);
+        accept(cx, &mut session, &calls, "Ada", 1_800_000_100);
         session.logout();
         assert!(session.active().is_none());
-        assert!(session.client_for(generation).is_none());
+        assert!(session.conversation().is_none());
         assert_eq!(session.take_lifecycle(), Some(Lifecycle::Invalidated));
         cx.executor().run_until_parked();
         let revoke = calls.try_recv().unwrap();

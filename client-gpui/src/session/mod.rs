@@ -25,11 +25,11 @@ pub(crate) struct SessionUpdate(Update);
 enum Update {
     Authentication(
         LoginRequest,
-        Result<crate::api::Authentication, AuthError>,
+        Result<crate::api::Authentication, ApiError>,
         bool,
     ),
     Expiry(u64),
-    Revocation(u64, Result<(), AuthError>),
+    Revocation(u64, Result<(), ApiError>),
     Saved(SavedUpdate),
 }
 
@@ -93,10 +93,6 @@ impl SessionCoordinator {
     }
     pub fn session_generation(&self) -> Option<u64> {
         self.state.session_generation()
-    }
-    #[cfg(test)]
-    pub fn client_for(&self, generation: u64) -> Option<crate::api::AuthenticatedClient> {
-        self.state.client_for(generation)
     }
     pub fn conversation(&self) -> Option<ConversationHandle> {
         self.conversation.clone()
@@ -274,18 +270,13 @@ impl Drop for SessionCoordinator {
     }
 }
 
-#[cfg(not(test))]
-use state::AppSession;
-use state::LoginRequest;
-pub(crate) use state::{AuthError, DEFAULT_SERVER_URL, RestoreDecision, RestoreResult, Session};
-// Existing pure-transition/adapter fixtures remain available without exposing a
-// second mutable session owner to production callers.
-#[cfg(test)]
-pub(crate) use state::{AppSession, User};
+use crate::api::ApiError;
+use state::{AppSession, LoginRequest, RestoreDecision, RestoreResult};
+pub(crate) use state::{DEFAULT_SERVER_URL, Session};
 
 impl Session {
     /// Credential material goes directly from the accepted context to the ordered worker.
-    pub fn save(
+    fn save(
         &self,
         store: &crate::storage::Persistence,
     ) -> async_channel::Receiver<crate::storage::Outcome> {
@@ -300,21 +291,6 @@ impl Session {
     }
 }
 
-impl AppSession {
-    /// Only accepted contexts are available to protected activity.
-    pub fn active_client(&self) -> Option<crate::api::AuthenticatedClient> {
-        self.active.as_ref().map(Session::client)
-    }
-
-    /// Pure-state integration fixtures capture their originating accepted context.
-    #[cfg(test)]
-    pub fn client_for(&self, generation: u64) -> Option<crate::api::AuthenticatedClient> {
-        (self.session_generation() == Some(generation))
-            .then(|| self.active_client())
-            .flatten()
-    }
-}
-
 impl SessionCoordinator {
     /// The candidate remains inside this future until current-user verification completes.
     /// Identity, expiry and generation still gate activation in the saved-login workflow.
@@ -324,23 +300,15 @@ impl SessionCoordinator {
         };
         match client.current_user().await {
             Ok(user) => RestoreResult::Verified { user, client },
-            Err(AuthError::AlreadyInvalid) => RestoreResult::Rejected,
+            Err(ApiError::AlreadyInvalid) => RestoreResult::Rejected,
             _ => RestoreResult::Unavailable,
         }
     }
 }
 
-// Pure-state integration fixtures keep their existing verification seam during migration.
-#[cfg(test)]
-impl AppSession {
-    pub async fn verify_saved(server: crate::api::ServerClient, token: String) -> RestoreResult {
-        SessionCoordinator::verify_saved(server, token).await
-    }
-}
-
-#[cfg(test)]
-mod binding_tests;
 #[cfg(test)]
 mod coordinator_tests;
+#[cfg(test)]
+mod route_tests;
 #[cfg(test)]
 mod saved_login_tests;

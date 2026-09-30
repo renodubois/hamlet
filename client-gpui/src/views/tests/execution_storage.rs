@@ -1,6 +1,6 @@
 //! Controlled provider work stays on the real serialized worker, never the UI thread.
 use super::*;
-use crate::persistence::{Config, Selection, Store};
+use crate::storage::{Config, Selection, Store};
 
 type ProviderReply = async_channel::Sender<Result<Option<String>, ()>>;
 enum ProviderCall {
@@ -28,9 +28,9 @@ impl Store for GatedStore {
     }
 }
 
-struct VerifyAuth(std::sync::mpsc::Sender<async_channel::Sender<Result<User, AuthError>>>);
+struct VerifyAuth(std::sync::mpsc::Sender<async_channel::Sender<Result<User, ApiError>>>);
 impl RequestAdapter for VerifyAuth {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         if request.url().path() != "/api/v1/me" {
             return BoundAuth.execute(request);
         }
@@ -51,8 +51,8 @@ impl RequestAdapter for VerifyAuth {
 // API request arrives; all application deadlines remain on the controlled clock.
 fn await_verification(
     cx: &mut gpui_kit::VisualTestContext,
-    requests: &std::sync::mpsc::Receiver<async_channel::Sender<Result<User, AuthError>>>,
-) -> async_channel::Sender<Result<User, AuthError>> {
+    requests: &std::sync::mpsc::Receiver<async_channel::Sender<Result<User, ApiError>>>,
+) -> async_channel::Sender<Result<User, ApiError>> {
     let guard = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         cx.run_until_parked();
@@ -306,7 +306,7 @@ fn failed_restoration_can_retry_then_yield_to_manual_login_without_late_activati
         Root::new(view, window, cx)
     });
     let first = await_verification(cx, &requests);
-    first.try_send(Err(AuthError::Unavailable)).unwrap();
+    first.try_send(Err(ApiError::Unavailable)).unwrap();
     wait_status(cx, "Could not verify saved login");
     cx.update(|window, cx| {
         window.render_frame(cx);

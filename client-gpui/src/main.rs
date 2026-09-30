@@ -8,10 +8,6 @@ mod test_support;
 mod theme;
 mod views;
 
-// Temporary import compatibility, not parallel implementations. See MIGRATION-48.md.
-#[cfg(test)]
-use storage as persistence;
-
 use gpui_kit::component::Root;
 use gpui_kit::*;
 

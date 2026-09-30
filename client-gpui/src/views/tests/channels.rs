@@ -1,16 +1,14 @@
 use super::*;
 
 struct CreateAuth {
-    results: Arc<
-        std::sync::Mutex<
-            std::collections::VecDeque<Result<crate::conversation::Channel, AuthError>>,
-        >,
-    >,
+    results:
+        Arc<std::sync::Mutex<std::collections::VecDeque<Result<crate::api::Channel, ApiError>>>>,
     calls: Arc<AtomicUsize>,
+    histories: Arc<Mutex<Vec<String>>>,
     empty: bool,
 }
 impl RequestAdapter for CreateAuth {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         use serde_json::json;
         if request.url().path() == "/api/v1/channels" {
             let result =
@@ -37,6 +35,10 @@ impl RequestAdapter for CreateAuth {
             return Box::pin(async move { result });
         }
         if request.url().path().ends_with("/messages") {
+            self.histories
+                .lock()
+                .unwrap()
+                .push(request.url().path().to_owned());
             return Box::pin(async { Ok(Response::controlled(StatusCode::OK, r#"{"items":[]}"#)) });
         }
         BoundAuth.execute(request)
@@ -48,30 +50,29 @@ fn create_controls_confirm_order_selection_and_empty_history(cx: &mut TestAppCon
     cx.update(gpui_kit::init);
     for empty in [false, true] {
         let results = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from([
-            Ok(crate::conversation::Channel {
+            Ok(crate::api::Channel {
                 id: "3".into(),
                 name: "Middle".into(),
             }),
         ])));
         let calls = Arc::new(AtomicUsize::new(0));
-        let probe = std::rc::Rc::new(std::cell::RefCell::new(None));
-        let stored = probe.clone();
+        let histories = Arc::new(Mutex::new(Vec::new()));
+
         let (_, cx) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|cx| {
-                Hamlet::new(
-                    window,
-                    cx,
-                    Arc::new(CreateAuth {
-                        results: results.clone(),
-                        calls: calls.clone(),
-                        empty,
-                    }),
-                )
-            });
-            *stored.borrow_mut() = Some(view.clone());
+            let view = open_controlled(
+                window,
+                cx,
+                Arc::new(CreateAuth {
+                    results: results.clone(),
+                    calls: calls.clone(),
+                    histories: histories.clone(),
+                    empty,
+                }),
+            );
+
             Root::new(view, window, cx)
         });
-        let view: gpui_kit::Entity<Hamlet> = probe.borrow().as_ref().unwrap().clone();
+
         cx.update(|window, cx| {
             window.render_frame(cx);
             window.click("username", cx);
@@ -92,72 +93,44 @@ fn create_controls_confirm_order_selection_and_empty_history(cx: &mut TestAppCon
                 Some("Creating channel…")
             );
             assert_eq!(window.find("channel-name").value(), Some("  Middle  "));
+            assert_eq!(window.try_find("composer").is_none(), empty);
             assert_eq!(
-                view.read(cx)
-                    .conversation
-                    .as_ref()
-                    .unwrap()
-                    .read()
-                    .selected
-                    .as_deref(),
-                if empty { None } else { Some("1") }
+                histories.lock().unwrap().as_slice(),
+                if empty {
+                    vec![]
+                } else {
+                    vec!["/api/v1/channels/1/messages"]
+                }
             );
             window.click("create-channel", cx);
-            assert_eq!(
-                view.read(cx)
-                    .conversation
-                    .as_ref()
-                    .unwrap()
-                    .read()
-                    .selected
-                    .as_deref(),
-                if empty { None } else { Some("1") }
-            );
+            assert!(window.try_find("channel-3").is_none());
         });
         cx.run_until_parked();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         cx.update(|window, cx| {
             window.render_frame(cx);
             assert_eq!(window.find("channel-name").value(), Some(""));
+            assert!(window.try_find("composer").is_some());
             assert_eq!(
-                view.read(cx)
-                    .conversation
-                    .as_ref()
-                    .unwrap()
-                    .read()
-                    .selected
-                    .as_deref(),
-                Some("3")
+                histories.lock().unwrap().last().map(String::as_str),
+                Some("/api/v1/channels/3/messages")
             );
             assert_eq!(window.find("channel-3").label(), Some("# Middle"));
+            if empty {
+                assert!(window.try_find("channel-1").is_none());
+                assert!(window.try_find("channel-2").is_none());
+            } else {
+                let middle = window.find("channel-3").bounds().origin.y;
+                assert!(window.find("channel-1").bounds().origin.y < middle);
+                assert!(middle < window.find("channel-2").bounds().origin.y);
+            }
             assert_eq!(
-                view.read(cx)
-                    .conversation
-                    .as_ref()
-                    .unwrap()
-                    .read()
-                    .channels
-                    .as_ref()
-                    .and_then(|list| match list {
-                        crate::conversation::Load::Ready(items) =>
-                            Some(items.iter().map(|c| c.id.as_str()).collect::<Vec<_>>()),
-                        _ => None,
-                    }),
-                Some(if empty {
-                    vec!["3"]
-                } else {
-                    vec!["1", "3", "2"]
-                })
+                window.find("refresh-history").label(),
+                Some("Refresh conversation")
             );
             assert!(
-                view.read(cx)
-                    .conversation
-                    .as_ref()
-                    .unwrap()
-                    .read()
-                    .history
-                    .get("3")
-                    == Some(&crate::conversation::Load::Ready(vec![]))
+                window.try_find("history").is_none(),
+                "confirmed empty history has no rows"
             );
         });
     }
@@ -167,28 +140,26 @@ fn create_controls_confirm_order_selection_and_empty_history(cx: &mut TestAppCon
 fn create_controls_keep_input_on_errors_without_replay(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let results = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from([
-        Err(AuthError::Conflict),
-        Err(AuthError::Unavailable),
+        Err(ApiError::Conflict),
+        Err(ApiError::Unavailable),
     ])));
     let calls = Arc::new(AtomicUsize::new(0));
-    let probe = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let stored = probe.clone();
+
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| {
-            Hamlet::new(
-                window,
-                cx,
-                Arc::new(CreateAuth {
-                    results: results.clone(),
-                    calls: calls.clone(),
-                    empty: true,
-                }),
-            )
-        });
-        *stored.borrow_mut() = Some(view.clone());
+        let view = open_controlled(
+            window,
+            cx,
+            Arc::new(CreateAuth {
+                results: results.clone(),
+                calls: calls.clone(),
+                histories: Default::default(),
+                empty: true,
+            }),
+        );
+
         Root::new(view, window, cx)
     });
-    let view: gpui_kit::Entity<Hamlet> = probe.borrow().as_ref().unwrap().clone();
+
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("username", cx);
@@ -247,7 +218,7 @@ fn create_controls_keep_input_on_errors_without_replay(cx: &mut TestAppContext) 
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert!(view.read(cx).conversation.is_none());
+        assert!(window.try_find("composer").is_none());
         assert_eq!(window.find("login").label(), Some("Log in"));
     });
 }
@@ -256,29 +227,27 @@ fn create_controls_keep_input_on_errors_without_replay(cx: &mut TestAppContext) 
 fn create_completion_after_logout_cannot_navigate(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let results = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from([
-        Ok(crate::conversation::Channel {
+        Ok(crate::api::Channel {
             id: "3".into(),
             name: "Late".into(),
         }),
     ])));
-    let probe = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let stored = probe.clone();
+
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| {
-            Hamlet::new(
-                window,
-                cx,
-                Arc::new(CreateAuth {
-                    results,
-                    calls: Arc::new(AtomicUsize::new(0)),
-                    empty: true,
-                }),
-            )
-        });
-        *stored.borrow_mut() = Some(view.clone());
+        let view = open_controlled(
+            window,
+            cx,
+            Arc::new(CreateAuth {
+                results,
+                calls: Arc::new(AtomicUsize::new(0)),
+                histories: Default::default(),
+                empty: true,
+            }),
+        );
+
         Root::new(view, window, cx)
     });
-    let view: gpui_kit::Entity<Hamlet> = probe.borrow().as_ref().unwrap().clone();
+
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("username", cx);
@@ -299,14 +268,18 @@ fn create_completion_after_logout_cannot_navigate(cx: &mut TestAppContext) {
     cx.update(|window, cx| {
         window.render_frame(cx);
         assert_eq!(window.find("login").label(), Some("Log in"));
-        assert!(view.read(cx).conversation.is_none());
+        assert!(window.try_find("channel-3").is_none());
+        assert!(window.try_find("composer").is_none());
     });
 }
 
 #[gpui_kit::test]
 fn refresh_channels_control_keeps_selected_conversation(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
-    let (_, cx) = cx.add_window_view(|window, cx| Hamlet::new(window, cx, Arc::new(TestAuth)));
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = open_controlled(window, cx, Arc::new(BoundAuth));
+        Root::new(view, window, cx)
+    });
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("username", cx);
@@ -360,7 +333,7 @@ fn refresh_channels_control_keeps_selected_conversation(cx: &mut TestAppContext)
 
 struct RemovingChannel(Arc<AtomicBool>);
 impl RequestAdapter for RemovingChannel {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         if request.url().path() == "/api/v1/channels" && self.0.load(Ordering::SeqCst) {
             return Box::pin(async {
                 Ok(Response::controlled(
@@ -381,7 +354,7 @@ fn channel_discovery_shows_cached_fallback_after_selected_channel_disappears(
     let remove = Arc::new(AtomicBool::new(false));
     let removed = remove.clone();
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(RemovingChannel(removed))));
+        let view = open_controlled(window, cx, Arc::new(RemovingChannel(removed)));
         Root::new(view, window, cx)
     });
     cx.update(|window, cx| {

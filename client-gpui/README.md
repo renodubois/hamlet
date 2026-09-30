@@ -1,6 +1,28 @@
 # GPUI client — run-from-source Linux prototype (#36–#46)
 
-For **current** automated and native results, remaining limitations and a reproducible smoke, see [`VERIFY.md`](VERIFY.md). Slice-specific notes below also retain **historical results as of their original commits**; a statement that a native check was not performed *at that earlier gate* does not override the latest verification record.
+## Implemented architecture (#47–#61)
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for implemented module ownership and rules for adding views and server operations, and [PRESENTATION.md](PRESENTATION.md) for editing locations and semantic controls. The full conversion described by the [approved migration plan](../docs/plans/client-gpui-rearchitecture.md) is implemented; [MIGRATION-61.md](MIGRATION-61.md) records the final contraction, ownership audit and scenario equivalents. The original plan is a separately owned planning artifact; its frozen “not started” status is not current implementation status.
+
+`src/main.rs` is startup only. `views/app_shell.rs::AppShell` composes screens and presents session/storage status and retries; child views own controls and subscriptions. `session/` owns authentication, restoration, expiry and cleanup; `conversation/` owns session-scoped requests, polling, history and drafts. `api/` owns the bound HTTP clients, `storage/` the ordered provider/configuration worker, `runtime.rs` the shared execution/time bridge, and `theme.rs` colors/icons. Protected operations take no URL/token arguments.
+
+From `client-gpui/`:
+
+```sh
+cargo run --locked                  # graphical Linux desktop; may access your configured store
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --locked
+cargo test --locked views::
+cargo test --locked production_wheel_requests_older_and_keeps_reader_at_same_viewport_y
+cargo test --locked production_message_is_selectable_and_copyable
+cargo test --locked route_tests
+```
+
+Automated tests use controlled time/HTTP, isolated files/fake providers and disposable loopback rewrite-server databases; building does not launch the desktop client. Do not run native automation or access a real keyring without separate consent.
+
+For **post-migration automated evidence**, historical native results, remaining limitations and the reproducible smoke, see [`VERIFY.md`](VERIFY.md). Fresh native verification is **pending #62**, including IME, accessibility/physical keyboard, precise delayed-prepend anchoring and locked/slow real-wallet checks. The slice-specific notes below retain **historical results and source locations as of their original commits**, not evidence for the migrated entity/subscription wiring. The two #36 probe test commands below are retired; their current production equivalents are the wheel and selection commands above.
 
 ## #45 Focused polling and outage/recovery demonstration
 

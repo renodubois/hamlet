@@ -14,156 +14,12 @@ fn visible_message(
     .expect("a fully visible message")
 }
 
-// This is a real Kit/GPUI history surface, not a simulated scrolling model.
-struct HistoryProbe {
-    list: ListState,
-    messages: Vec<(String, SharedString)>,
-    focus: FocusHandle,
-}
-
-impl HistoryProbe {
-    fn new(cx: &mut Context<Self>) -> Self {
-        let messages = (0..40)
-            .map(|ix| {
-                (
-                    format!("original-{ix}"),
-                    if ix % 2 == 0 {
-                        "first line\nsecond line with enough words to wrap at a narrow width"
-                    } else {
-                        "short line"
-                    }
-                    .into(),
-                )
-            })
-            .collect();
-        Self {
-            list: ListState::new(40, ListAlignment::Top, px(0.)).measure_all(),
-            messages,
-            focus: cx.focus_handle(),
-        }
-    }
-
-    fn prepend(&mut self, cx: &mut Context<Self>) {
-        self.messages.splice(
-            0..0,
-            [
-                ("older-0".into(), "older\nfirst line".into()),
-                ("older-1".into(), "older short".into()),
-            ],
-        );
-        self.list.splice(0..0, 2);
-        cx.notify();
-    }
-}
-
-impl Render for HistoryProbe {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let messages = self.messages.clone();
-        let focus = self.focus.clone();
-        div().w(px(260.)).h(px(180.)).child(
-            div()
-                .id("history")
-                .test_support()
-                .track_focus(&self.focus)
-                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                    window.focus(&focus, cx)
-                })
-                .size_full()
-                .child(
-                    list(self.list.clone(), move |ix, _, _| {
-                        let (id, text) = &messages[ix];
-                        div()
-                            .id(format!("message-{id}"))
-                            .test_support()
-                            .w_full()
-                            .p_2()
-                            .child(SelectableText::new(
-                                format!("selectable-{id}"),
-                                text.clone(),
-                            ))
-                            .into_any_element()
-                    })
-                    .size_full(),
-                ),
-        )
-    }
-}
-
-#[gpui_kit::test]
-fn varied_height_history_preserves_reader_on_prepend(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let probe = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let stored = probe.clone();
-    let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(HistoryProbe::new);
-        *stored.borrow_mut() = Some(view.clone());
-        Root::new(view, window, cx)
-    });
-    let view: gpui_kit::Entity<HistoryProbe> = probe.borrow().as_ref().unwrap().clone();
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        for _ in 0..8 {
-            window.scroll(
-                "history",
-                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
-                    gpui_kit::px(0.),
-                    gpui_kit::px(-90.),
-                )),
-                cx,
-            );
-        }
-        let before = view.read(cx).list.logical_scroll_top();
-        assert!(
-            before.item_ix > 0,
-            "the actual wheel must scroll variable-height rows"
-        );
-        let id = format!("message-original-{}", before.item_ix);
-        let y = window.find(id.clone()).bounds().origin.y;
-        view.update(cx, |view, cx| view.prepend(cx));
-        window.render_frame(cx);
-        let after = view.read(cx).list.logical_scroll_top();
-        assert_eq!(after.item_ix, before.item_ix + 2);
-        assert_eq!(after.offset_in_item, before.offset_in_item);
-        assert_eq!(window.find(id).bounds().origin.y, y);
-    });
-}
-
-#[gpui_kit::test]
-fn selectable_history_copies_line_breaks(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(HistoryProbe::new);
-        Root::new(view, window, cx)
-    });
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        let bounds = window.find("message-original-0").bounds();
-        window.drag(
-            bounds.origin + gpui_kit::point(gpui_kit::px(2.), gpui_kit::px(12.)),
-            bounds.origin
-                + gpui_kit::point(
-                    bounds.size.width - gpui_kit::px(2.),
-                    bounds.size.height - gpui_kit::px(2.),
-                ),
-            cx,
-        );
-        assert!(gpui_kit::base::TextSelection::selected_text(window, cx).contains('\n'));
-        window.press("ctrl-c", cx);
-    });
-    assert!(
-        cx.read_from_clipboard()
-            .and_then(|item| item.text())
-            .unwrap()
-            .contains('\n')
-    );
-}
-
 #[gpui_kit::test]
 fn production_wheel_requests_older_and_keeps_reader_at_same_viewport_y(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (tx, requests) = std::sync::mpsc::channel();
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(PagedAuth(tx))));
+        let view = open_controlled(window, cx, Arc::new(PagedAuth(tx)));
         Root::new(view, window, cx)
     });
     cx.update(|window, cx| {
@@ -179,7 +35,7 @@ fn production_wheel_requests_older_and_keeps_reader_at_same_viewport_y(cx: &mut 
         .recv_timeout(std::time::Duration::from_secs(3))
         .unwrap();
     assert_eq!(cursor, None);
-    let message = |ix: i32| crate::conversation::Message {
+    let message = |ix: i32| crate::api::Message {
         id: ix.to_string(),
         channel_id: "000000000000001".into(),
         author_id: "42".into(),
@@ -192,7 +48,7 @@ fn production_wheel_requests_older_and_keeps_reader_at_same_viewport_y(cx: &mut 
         created_at: "2026-01-01T00:00:00Z".into(),
     };
     reply
-        .send_blocking(Ok(crate::conversation::Page {
+        .send_blocking(Ok(crate::api::Page {
             items: (1..=40).rev().map(message).collect(),
             next_cursor: Some("server cursor only".into()),
         }))
@@ -239,7 +95,7 @@ fn production_wheel_requests_older_and_keeps_reader_at_same_viewport_y(cx: &mut 
         assert!(requests.try_recv().is_err());
         *saved_anchor.borrow_mut() = Some(visible_message(window, 1..=40));
     });
-    reply.send_blocking(Err(AuthError::Unavailable)).unwrap();
+    reply.send_blocking(Err(ApiError::Unavailable)).unwrap();
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -269,7 +125,7 @@ fn production_wheel_requests_older_and_keeps_reader_at_same_viewport_y(cx: &mut 
         *anchor.borrow_mut() = Some(visible_message(window, 1..=40));
     });
     retry
-        .send_blocking(Ok(crate::conversation::Page {
+        .send_blocking(Ok(crate::api::Page {
             items: vec![message(1), message(0), message(-1)],
             next_cursor: None,
         }))
@@ -289,24 +145,21 @@ fn confirmed_middle_insertion_keeps_reader_anchor(cx: &mut TestAppContext) {
     let (tx, requests) = std::sync::mpsc::channel();
     let sends = Arc::new(Mutex::new(Vec::<Sent>::new()));
     let captured = sends.clone();
-    let stored = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let saved = stored.clone();
+
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| {
-            Hamlet::new(
-                window,
-                cx,
-                Arc::new(RaceAuth {
-                    pages: tx,
-                    sends: captured,
-                }),
-            )
-        });
-        *saved.borrow_mut() = Some(view.clone());
+        let view = open_controlled(
+            window,
+            cx,
+            Arc::new(RaceAuth {
+                pages: tx,
+                sends: captured,
+            }),
+        );
+
         Root::new(view, window, cx)
     });
-    let view: gpui_kit::Entity<Hamlet> = stored.borrow().as_ref().unwrap().clone();
-    let m = |ix: i32| crate::conversation::Message {
+
+    let m = |ix: i32| crate::api::Message {
         id: ix.to_string(),
         channel_id: "000000000000001".into(),
         author_id: "42".into(),
@@ -328,7 +181,7 @@ fn confirmed_middle_insertion_keeps_reader_anchor(cx: &mut TestAppContext) {
         .recv_timeout(std::time::Duration::from_secs(3))
         .unwrap();
     initial
-        .send_blocking(Ok(crate::conversation::Page {
+        .send_blocking(Ok(crate::api::Page {
             items: original.clone(),
             next_cursor: None,
         }))
@@ -365,7 +218,7 @@ fn confirmed_middle_insertion_keeps_reader_anchor(cx: &mut TestAppContext) {
         window.find("message-25").bounds().origin.y
     });
     refresh
-        .send_blocking(Ok(crate::conversation::Page {
+        .send_blocking(Ok(crate::api::Page {
             items: original,
             next_cursor: None,
         }))
@@ -374,14 +227,19 @@ fn confirmed_middle_insertion_keeps_reader_anchor(cx: &mut TestAppContext) {
     cx.update(|window, cx| {
         window.render_frame(cx);
         assert_eq!(window.find("message-25").bounds().origin.y, y);
-        let state = view.read(cx).conversation.as_ref().unwrap().read();
-        let crate::conversation::Load::Ready(messages) =
-            state.history.get("000000000000001").unwrap()
-        else {
-            panic!("history not ready")
-        };
-        assert_eq!(messages.len(), 40);
-        assert_eq!(messages.iter().filter(|m| m.id == "20").count(), 1);
+        // The inserted row is observable through the real history, not shell internals.
+        for _ in 0..30 {
+            if window.try_find("message-20").is_some() {
+                break;
+            }
+            window.scroll(
+                "history",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(40.))),
+                cx,
+            );
+            window.render_frame(cx);
+        }
+        assert_eq!(window.find("message-20").label(), Some("message 20"));
     });
 }
 
@@ -389,14 +247,13 @@ fn confirmed_middle_insertion_keeps_reader_anchor(cx: &mut TestAppContext) {
 fn refresh_controls_preserve_reader_and_jump_follows_later_messages(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (tx, requests) = std::sync::mpsc::channel();
-    let stored = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let saved = stored.clone();
+
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(PagedAuth(tx))));
-        *saved.borrow_mut() = Some(view.clone());
+        let view = open_controlled(window, cx, Arc::new(PagedAuth(tx)));
+
         Root::new(view, window, cx)
     });
-    let view: gpui_kit::Entity<Hamlet> = stored.borrow().as_ref().unwrap().clone();
+
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("username", cx);
@@ -409,7 +266,7 @@ fn refresh_controls_preserve_reader_and_jump_follows_later_messages(cx: &mut Tes
     let (_, reply) = requests
         .recv_timeout(std::time::Duration::from_secs(3))
         .unwrap();
-    let m = |ix: i32| crate::conversation::Message {
+    let m = |ix: i32| crate::api::Message {
         id: ix.to_string(),
         channel_id: "000000000000001".into(),
         author_id: "42".into(),
@@ -423,7 +280,7 @@ fn refresh_controls_preserve_reader_and_jump_follows_later_messages(cx: &mut Tes
         created_at: "2026-01-01T00:00:00Z".into(),
     };
     reply
-        .send_blocking(Ok(crate::conversation::Page {
+        .send_blocking(Ok(crate::api::Page {
             items: (1..=40).rev().map(m).collect(),
             next_cursor: Some("older".into()),
         }))
@@ -455,7 +312,7 @@ fn refresh_controls_preserve_reader_and_jump_follows_later_messages(cx: &mut Tes
     assert_eq!(before, None);
     assert!(requests.try_recv().is_err());
     first
-        .send_blocking(Ok(crate::conversation::Page {
+        .send_blocking(Ok(crate::api::Page {
             items: (61..=70).rev().map(m).collect(),
             next_cursor: Some("server opaque".into()),
         }))
@@ -469,19 +326,14 @@ fn refresh_controls_preserve_reader_and_jump_follows_later_messages(cx: &mut Tes
     let saved_anchor = anchor.clone();
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert!(
-            view.read(cx)
-                .conversation
-                .as_ref()
-                .unwrap()
-                .read()
-                .refreshing
-                .contains_key("000000000000001")
+        assert_eq!(
+            window.find("refresh-history").label(),
+            Some("Refreshing conversation…")
         );
         *saved_anchor.borrow_mut() = Some(visible_message(window, 1..=40));
     });
     second
-        .send_blocking(Ok(crate::conversation::Page {
+        .send_blocking(Ok(crate::api::Page {
             items: (39..=60).rev().map(m).collect(),
             next_cursor: Some("unneeded".into()),
         }))
@@ -502,7 +354,7 @@ fn refresh_controls_preserve_reader_and_jump_follows_later_messages(cx: &mut Tes
         .recv_timeout(std::time::Duration::from_secs(3))
         .unwrap();
     latest
-        .send_blocking(Ok(crate::conversation::Page {
+        .send_blocking(Ok(crate::api::Page {
             items: [71, 70, 69].map(m).to_vec(),
             next_cursor: Some("still older".into()),
         }))
@@ -518,7 +370,7 @@ fn refresh_controls_preserve_reader_and_jump_follows_later_messages(cx: &mut Tes
 fn production_message_is_selectable_and_copyable(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Hamlet::new(window, cx, Arc::new(TestAuth)));
+        let view = open_controlled(window, cx, Arc::new(BoundAuth));
         Root::new(view, window, cx)
     });
     cx.update(|window, cx| {

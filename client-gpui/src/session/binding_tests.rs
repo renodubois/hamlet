@@ -7,10 +7,10 @@ use crate::api::{
 use reqwest::{Request, StatusCode};
 use std::sync::{Arc, Mutex};
 
-type Reply = async_channel::Sender<Result<Response, AuthError>>;
+type Reply = async_channel::Sender<Result<Response, ApiError>>;
 struct Controlled(Mutex<Vec<(Request, Reply)>>);
 impl RequestAdapter for Controlled {
-    fn execute(&self, request: Request) -> crate::api::ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> crate::api::ApiFuture<Result<Response, ApiError>> {
         let (tx, rx) = async_channel::bounded(1);
         self.0.lock().unwrap().push((request, tx));
         Box::pin(async move { rx.recv().await.unwrap() })
@@ -86,7 +86,7 @@ async fn old_context_and_revocation_keep_their_binding_without_affecting_new_log
         "{}",
     )
     .await;
-    assert_eq!(rejected.await.unwrap(), Err(AuthError::AlreadyInvalid));
+    assert_eq!(rejected.await.unwrap(), Err(ApiError::AlreadyInvalid));
     session.protected_rejected(old_generation);
     let revoke = tokio::spawn(revocation.client.logout());
     respond(
@@ -151,7 +151,7 @@ async fn restoration_retry_remains_distinct_from_rejection_identity_expiry_and_m
             username: "Ada".into(),
         };
         let generation = session.begin_restore();
-        let verified = tokio::spawn(AppSession::verify_saved(
+        let verified = tokio::spawn(super::super::SessionCoordinator::verify_saved(
             transport.server(DEFAULT_SERVER_URL).unwrap(),
             "saved-secret".into(),
         ));
@@ -177,9 +177,11 @@ async fn restoration_retry_remains_distinct_from_rejection_identity_expiry_and_m
         );
         assert!(session.active_client().is_none());
         let generation = session.begin_restore();
-        let missing =
-            AppSession::verify_saved(transport.server(DEFAULT_SERVER_URL).unwrap(), String::new())
-                .await;
+        let missing = super::super::SessionCoordinator::verify_saved(
+            transport.server(DEFAULT_SERVER_URL).unwrap(),
+            String::new(),
+        )
+        .await;
         assert_eq!(
             session.finish_restore(generation, DEFAULT_SERVER_URL, &expected, 100, missing, 0),
             RestoreDecision::Delete
@@ -231,7 +233,7 @@ async fn pre_rearchitecture_saved_login_restores_only_after_verification() {
     let mut session = AppSession::new();
     session.change_server(config.server.unwrap());
     let generation = session.begin_restore();
-    let verified = tokio::spawn(AppSession::verify_saved(
+    let verified = tokio::spawn(super::super::SessionCoordinator::verify_saved(
         transport.server(&expected.server).unwrap(),
         token,
     ));
@@ -331,7 +333,7 @@ async fn saving_accepted_context_preserves_stored_identity_without_plaintext_met
     let mut restarted = AppSession::new();
     restarted.change_server(expected.server.clone());
     let generation = restarted.begin_restore();
-    let verified = tokio::spawn(AppSession::verify_saved(
+    let verified = tokio::spawn(super::super::SessionCoordinator::verify_saved(
         transport.server(&expected.server).unwrap(),
         token,
     ));
@@ -369,7 +371,7 @@ async fn candidate_stays_private_until_verified_and_late_verification_cannot_act
         username: "Ada".into(),
     };
     let generation = session.begin_restore();
-    let verification = tokio::spawn(AppSession::verify_saved(
+    let verification = tokio::spawn(super::super::SessionCoordinator::verify_saved(
         transport.server(&server).unwrap(),
         "saved-secret".into(),
     ));

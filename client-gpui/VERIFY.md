@@ -110,3 +110,51 @@ Edit pane layout and semantic control wiring in `src/main.rs` (`Hamlet::render`,
 `src/polling.rs` owns the focus/interval/backoff schedule; `Conversation::refresh_history` and `complete_history` own gap-free selected-channel reconciliation and identity merging, while `src/http.rs` owns transport and `src/main.rs` dispatches async effects and preserves the GPUI list anchor. A future push adapter could trigger the existing selected-channel reconciliation without rewriting message rows, **but** the view currently directly owns poll timers/focus and read task cancellation: push subscriptions and reconnect lifecycle need explicit integration there. Unread indicators would need per-channel unread state and read-position policy (currently only selected history is fetched); typing would need ephemeral per-channel presence, transport and view state not represented by `Conversation` or server routes. Reconnect currently means retrying backed-off HTTP **reads**, not socket continuity or queued writes. No speculative push/unread/typing framework was added.
 
 Prototype limitations: unchanged rewrite server; uncertain sends cannot guarantee exactly-once delivery without server idempotency, so there is no automatic write replay. No packaging, cross-platform verification, persistent history/drafts, queued/offline writes, rich message formatting or finished visual identity. Open signup and broad server access are explicitly **not** production readiness.
+
+---
+
+## Post-migration automated verification — #61 (2026-09-30)
+
+**This appended record verifies the migrated client automatically; everything above
+is preserved historical #46 evidence and reproduction guidance, not a fresh native
+run.** Pinned #61 start: `093c9ac76e3889d0c87fc5476854d8227741d303`.
+Ownership/contraction and scenario equivalents: [MIGRATION-61.md](MIGRATION-61.md).
+Current editing locations/commands: [ARCHITECTURE.md](ARCHITECTURE.md),
+[PRESENTATION.md](PRESENTATION.md), [README.md](README.md).
+
+Fresh checks from `client-gpui/`, Linux x86_64, rustc/Cargo 1.95.0, existing
+lockfile/cache (not a cold rebuild):
+
+| Command | UTC start → end | Result |
+| --- | --- | --- |
+| `cargo fmt --check` | 18:24:30 → 18:24:30 | passed |
+| `cargo clippy --locked --all-targets -- -D warnings` | 18:24:30 → 18:24:30 | passed |
+| `cargo test --locked` | 18:24:30 → 18:24:39 | **158 passed, 0 failed, 0 ignored** |
+| `cargo build --locked` | 18:24:39 → 18:24:42 | passed; compiled, not launched |
+
+Targeted view, session, conversation, state, authentication and real-route checks
+also passed; production history, polling views and feature real-route suites each
+passed at `SEED=1,2,3`. All 160 starting scenarios are accounted for: only the two
+redundant #36 `HistoryProbe` cases were retired in favor of their stronger production
+wheel/anchor and exact multiline selection/copy scenarios; the Bob timer journey
+was renamed without losing coverage. The immutable #47 baseline and all prior
+migration records remain unchanged. Complete test names, logs, preservation hashes
+and ownership audit are in `/tmp/hamlet-orchestrator/review-61/`.
+
+Tests exercise production coordinator execution paths with controlled execution/time,
+real Kit controls/stable IDs, bound controlled/loopback HTTP and isolated files/fake
+providers. The saved-login real-route scenario now drives session startup/submission,
+automatic save/verification, logout/deletion/revocation rather than manually dispatching
+those workflows. API tests have no feature dependencies; startup/shell contain no
+feature request workflows or child-private assertions. No server/dependency change,
+transport/deadline relaxation, persisted-format migration or diagnostic logging.
+Metadata remains token/password-free; write cancellation/timeouts remain uncertain,
+not evidence of non-delivery or a reason for automatic replay.
+
+**Native handoff — pending #62, not passed here:** rerun the isolated two-client
+smoke above against the unchanged server with disposable credentials/profiles and
+explicit consent. Historical uinput/Xwayland/private-wallet results do not prove
+the migrated entity/subscription wiring. IME candidate Enter, assistive technology
+and physical keyboard, precise pixel anchoring with delayed older pages, and a
+locked/slow real wallet remain outstanding. No desktop automation, real keyring
+access, native launch, packaging or non-Linux verification occurred in #61.

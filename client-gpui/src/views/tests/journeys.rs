@@ -1,9 +1,9 @@
 use super::*;
-use crate::{runtime::Execution, storage as persistence, views::app_shell::open};
+use crate::{runtime::Execution, storage, views::app_shell::open};
 
 struct ShortLogin(crate::runtime::Execution);
 impl RequestAdapter for ShortLogin {
-    fn execute(&self, request: Request) -> ApiFuture<Result<Response, AuthError>> {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         if request.url().path() == "/api/v1/auth/login" {
             let expiry = chrono::DateTime::from_timestamp(self.0.unix_seconds() + 3, 0)
                 .unwrap()
@@ -29,7 +29,7 @@ fn expiry_wipes_hidden_composer_before_a_new_login(cx: &mut TestAppContext) {
             window,
             cx,
             bound_auth::bound_api(ShortLogin(execution.clone())),
-            persistence::Config::default(),
+            storage::Config::default(),
             None,
             execution,
         );
@@ -91,7 +91,10 @@ fn expiry_wipes_hidden_composer_before_a_new_login(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn real_controls_read_selected_conversation(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
-    let (_, cx) = cx.add_window_view(|window, cx| Hamlet::new(window, cx, Arc::new(TestAuth)));
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = open_controlled(window, cx, Arc::new(BoundAuth));
+        Root::new(view, window, cx)
+    });
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("username", cx);
@@ -137,23 +140,20 @@ fn polling_and_send_confirmation_share_one_headless_history_without_duplicate(
     let (pages_tx, pages) = std::sync::mpsc::channel();
     let sends = Arc::new(Mutex::new(Vec::<Sent>::new()));
     let captured = sends.clone();
-    let saved = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let stored = saved.clone();
+
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| {
-            Hamlet::new(
-                window,
-                cx,
-                Arc::new(RaceAuth {
-                    pages: pages_tx,
-                    sends: captured,
-                }),
-            )
-        });
-        *stored.borrow_mut() = Some(view.clone());
+        let view = open_controlled(
+            window,
+            cx,
+            Arc::new(RaceAuth {
+                pages: pages_tx,
+                sends: captured,
+            }),
+        );
+
         Root::new(view, window, cx)
     });
-    let view: gpui_kit::Entity<Hamlet> = saved.borrow().as_ref().unwrap().clone();
+
     cx.deactivate_window();
     cx.update(|window, _| window.activate_window());
     cx.run_until_parked();
@@ -167,7 +167,7 @@ fn polling_and_send_confirmation_share_one_headless_history_without_duplicate(
     });
     cx.run_until_parked();
     let (_, initial) = pages.recv_timeout(Duration::from_secs(2)).unwrap();
-    let message = |id: &str| crate::conversation::Message {
+    let message = |id: &str| crate::api::Message {
         id: id.into(),
         channel_id: "000000000000001".into(),
         author_id: "42".into(),
@@ -175,7 +175,7 @@ fn polling_and_send_confirmation_share_one_headless_history_without_duplicate(
         text: "same".into(),
         created_at: "2026-01-01T00:00:00Z".into(),
     };
-    let page = |ids: &[&str]| crate::conversation::Page {
+    let page = |ids: &[&str]| crate::api::Page {
         items: ids.iter().map(|id| message(id)).collect(),
         next_cursor: None,
     };
@@ -205,10 +205,8 @@ fn polling_and_send_confirmation_share_one_headless_history_without_duplicate(
         window.render_frame(cx);
         assert_eq!(window.find("message-10").label(), Some("same"));
         assert_eq!(composer_text(window, cx), "");
-        assert!(
-            matches!(view.read(cx).conversation.as_ref().unwrap().read().history.get("000000000000001"),
-            Some(crate::conversation::Load::Ready(items)) if items.len() == 3)
-        );
+        assert_eq!(window.find("message-9").label(), Some("same"));
+        assert_eq!(window.find("message-8").label(), Some("same"));
         assert!(sends.lock().unwrap().is_empty());
         assert!(pages.try_recv().is_err());
     });
@@ -236,7 +234,7 @@ fn await_control(cx: &mut gpui_kit::VisualTestContext, id: String, label: &str) 
 }
 
 #[gpui_kit::test]
-fn bob_activity_arrives_through_hamlet_poll_at_and_real_rewrite_routes(cx: &mut TestAppContext) {
+fn bob_activity_arrives_through_scheduled_polling_and_real_rewrite_routes(cx: &mut TestAppContext) {
     cx.background_executor.allow_parking(); // real loopback I/O on the production executor
     use actix_web::{App, HttpServer, web};
     use std::net::TcpListener;
@@ -288,7 +286,7 @@ fn bob_activity_arrives_through_hamlet_poll_at_and_real_rewrite_routes(cx: &mut 
             window,
             cx,
             HttpTransport::new(),
-            crate::persistence::Config {
+            crate::storage::Config {
                 server: Some(url),
                 ..Default::default()
             },
@@ -316,7 +314,7 @@ fn bob_activity_arrives_through_hamlet_poll_at_and_real_rewrite_routes(cx: &mut 
     let channel = super::runtime()
         .block_on(bob.client.create_channel("Bob room".into()))
         .unwrap();
-    // The actual lifecycle timer drives poll_at; no private state or alternate HTTP wrapper.
+    // The actual lifecycle timer drives polling; no private state or alternate HTTP wrapper.
     cx.background_executor
         .advance_clock(Duration::from_secs(15));
     await_control(cx, format!("channel-{}", channel.id), "# Bob room");
@@ -333,7 +331,10 @@ fn bob_activity_arrives_through_hamlet_poll_at_and_real_rewrite_routes(cx: &mut 
 #[gpui_kit::test]
 fn real_controls_login_and_logout(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
-    let (_, cx) = cx.add_window_view(|window, cx| Hamlet::new(window, cx, Arc::new(TestAuth)));
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = open_controlled(window, cx, Arc::new(BoundAuth));
+        Root::new(view, window, cx)
+    });
     cx.update(|window, cx| {
         window.render_frame(cx);
         assert_eq!(
