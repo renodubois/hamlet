@@ -184,3 +184,156 @@ no scenario was deleted or renamed by this correction. Fresh logs and sensitivit
 evidence are in `/tmp/hamlet-orchestrator/review-61/correction/`. All earlier records
 above are unchanged. Parent re-review remains pending; native #62 and all its
 previously recorded limitations remain unperformed, not passed.
+
+---
+
+## Post-migration native attempt — #62 (2026-09-30, incomplete)
+
+**The two-client smoke is blocked, not passed.** This is fresh post-migration
+preflight/launch evidence, not a substitute for interactive native verification.
+All preceding records are preserved historical evidence. Start pinned to
+`f0aa63e608f76e7d11664d962fa455228be7e38f` on `rewrite`. Live
+[issue #62](https://github.com/renodubois/hamlet/issues/62) was open,
+labelled `ready-for-agent`, with no comments. The issue was not mutated; disposition
+and fresh independent Standards/Spec reviews remain with the parent.
+
+### Consent, isolation and stopping condition
+
+The user explicitly authorized desktop automation and a real provider **only for
+disposable credentials/data, separate client profiles and isolated provider
+resources**, not existing credentials or the user's wallet. No dependency install,
+upgrade, host configuration change or desktop unlock was authorized/performed.
+
+A mode-0700 `mkdtemp` tree under `/tmp/hamlet62-*` contained the disposable database
+and separate client/provider HOME, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME
+and XDG_RUNTIME_DIR directories. A new `dbus-daemon` used a custom configuration
+with a private Unix listener and **no service activation directories**. Both the
+client and manually launched `ksecretd` received only that private bus address.
+The ordinary desktop bus/store was not queried for credentials. Merely changing
+XDG_CONFIG_HOME would **not** have isolated the provider.
+
+The unchanged rewrite server was rebuilt with `cargo build --locked --bin hamlet`
+from `server-rewrite/`, then launched with `RUST_LOG=off`,
+`HAMLET_BIND=127.0.0.1:18081` and
+`HAMLET_DATABASE_URL=sqlite://$RUN/test.db?mode=rwc`. No request/header/body logs
+were collected. One freshly built client used `DISPLAY=:0`,
+`LIBGL_ALWAYS_SOFTWARE=1`, the private bus/profile and no WAYLAND_DISPLAY.
+A disposable uinput device was created, but **no key, click, wheel or clipboard
+input was emitted**. Only the client's PID-verified X11 window was captured using
+`import -window <owned-XID> 01-login.png`; no whole-desktop screenshot was taken.
+
+The client rendered the empty login form (still showing default `:8081`; no
+submission was made). Native focus/move requests had no effect and niri reported
+no focused window. Read-only preflight then established the blocker:
+
+```text
+dms ipc call lock isLocked
+true
+dms ipc call lock status
+sessionLockLocked=true, sessionLockSecure=true, loginctlLocked=true
+NIRI_SOCKET=<existing compositor socket> niri msg -j focused-window
+null
+```
+
+The desktop was **securely locked**. Operations stopped rather than unlocking,
+resetting the locker, injecting credentials or bypassing the lock. The second
+client was not launched. A read-only query on the **private** bus confirmed
+`org.freedesktop.secrets` registration; that does not establish a usable/unlocked
+wallet. No wallet was created/opened, and no provider save/read/delete occurred.
+The disposable database had **0 users and 0 sessions**; the provider profile had
+no files and the client had no `session.json`. This is not a client regression
+reproducer; no interactive behavior could be evaluated.
+
+### Fresh native scenario matrix
+
+| Scenario | #62 outcome / affected prerequisite |
+| --- | --- |
+| Isolated binary launch and login-form rendering | Observed in the real Xwayland session, behind the locked desktop; not an interactive pass |
+| Signup, login, invalid credentials/editable retry | **Blocked** by locked desktop; no credentials submitted |
+| Two-client channel create/discovery, retained selection | **Blocked**; no authenticated clients or channel creation |
+| Multiline send, Enter/Shift+Enter, per-channel drafts | **Blocked**; no input or publication |
+| Focus polling and multi-page burst catch-up | **Blocked**; no focus acquisition, second client or burst seed |
+| Older-page scrolling, reader retention, jump to latest | **Blocked**; no history or scroll input |
+| Native selection/copy and exact multiline clipboard | **Blocked**; clipboard was neither read nor written |
+| Outage/recovery with loaded history/draft | **Blocked**; server cleanup alone is not an outage/recovery test |
+| Pending/uncertain send across navigation | **Blocked**; no POST, response-delay/drop proxy or navigation |
+| Logout, revocation and rejected-session cleanup | **Blocked**; zero sessions, not a logout/rejection test |
+| Secure save after signup/login, restart, verified restore, delete, no-restore restart | **Blocked**; private provider registered, but no wallet operations or authenticated client restart |
+| Native IME candidate/Enter | **Unverified**; no IME composition exercised |
+| Accessibility and physical keyboard inspection | **Unverified**; no assistive technology or human keyboard exercise |
+| Precise delayed-prepend pixel anchoring | **Unverified**; no delayed older-page response or pixel comparison |
+| Locked/slow real-wallet prompt, timeout, responsiveness, deletion retry | **Unverified**; a locked **desktop** is not a locked-wallet test |
+
+No historical #46 observation or headless test is counted as native #62 coverage.
+Packaging and non-Linux behavior also remain unverified.
+
+### Environment, fresh gates and evidence
+
+Linux x86_64 `7.2.7-arch1-1`; rustc `1.95.0 (59807616e 2026-04-14)`;
+Cargo `1.95.0 (f2d3ce0bd 2026-03-21)`; niri `26.04 (8ed0da4)`;
+Xwayland `24.1.13-1`; kwallet/ksecretd `6.30.0-1`. Libraries from pkg-config:
+dbus-1 1.16.2, fontconfig 2.18.3, freetype2 26.6.20, xkbcommon 1.13.2,
+wayland-client 1.26.0, X11 1.8.13, Vulkan 1.4.357. DISPLAY/WAYLAND_DISPLAY
+were unset in the command harness; the isolated native process explicitly used
+the existing Xwayland display. Existing toolchain, lockfile and cache were reused.
+
+Fresh commands from `client-gpui/` on 2026-09-30 (UTC):
+
+| Command | Start → end | Result |
+| --- | --- | --- |
+| `cargo fmt --check` | 19:11:48 → 19:11:48 | passed |
+| `cargo clippy --locked --all-targets -- -D warnings` | 19:11:48 → 19:11:48 | passed |
+| `cargo test --locked` | 19:11:48 → 19:11:57 | **158 passed, 0 failed, 0 ignored** |
+| `cargo build --locked` | 19:11:57 → 19:11:57 | passed |
+
+A final run after the guidance edits also passed all four commands: fmt
+19:19:47 → 19:19:47, strict locked all-target Clippy 19:19:47 → 19:19:48,
+locked tests 19:19:48 → 19:19:56 (**158 passed, 0 failed, 0 ignored**), and
+locked build 19:19:56 → 19:19:57. Its timestamped logs are in `final/` below.
+
+These are automated results only. Native attempt, blocker diagnosis and cleanup
+occurred between the two gate runs (native command record 19:14:08–19:16:29 UTC).
+Local ephemeral evidence is under
+`/tmp/hamlet-orchestrator/review-62/`: `start.txt`, live `issue.json`,
+`environment.txt`, timestamped gate logs, `server-build.log`, `native-driver.py`,
+`native-command.py`, `native-commands.txt`, sanitized `native-outcomes.txt`,
+`desktop-blocker.txt`, `01-login.png`, `cleanup.txt` and preservation hashes.
+The helper scripts record the actual attempt, **not an unattended smoke runner**;
+use the safety gate below before any repeat. Passwords were generated only in
+process memory, never submitted or logged; no bearer tokens were created.
+Unrelated window metadata was omitted from the retained outcome log. This
+committed record is the durable summary; `/tmp` artifacts are not permanent.
+
+Cleanup stopped/reaped only the owned client, provider, server and private bus,
+destroyed/closed the virtual input device, and removed the entire generated
+private tree (including database/profiles), driver socket and driver process.
+A final process check found none of the four children. No real wallet, config or
+existing process was modified. `.gitignore`, `CONTEXT.md` and both separately
+owned plans remained byte-identical and uncommitted. Server source/protocol,
+client source, dependencies and persisted formats were unchanged.
+
+### Safety gate for the next attempt
+
+1. Obtain/confirm explicit consent and an **already unlocked**, dedicated test
+   workspace/session before launching or injecting input. On this DMS/niri setup,
+   run the read-only lock queries above **first**. Stop on a locked/unknown state;
+   a compositor socket and a rendered X11 window do not prove interactive access.
+   Do not use the unlock/reset IPC, existing passwords or an Xvfb/headless result
+   to bypass or satisfy this requirement.
+2. Establish a new private provider bus with no host activation directories,
+   isolated provider HOME/config/data/cache/runtime, and separate A/B client
+   profiles; or use a disposable OS user with its own provider. Never aim these
+   drills at the ordinary wallet. If isolation cannot be demonstrated, stop.
+3. Start the unchanged server on a free loopback port with a fresh temporary
+   database. Explicitly set **both** clients to that URL before signup (the
+   attempted server used `:18081`, not the form's default `:8081`). Use disposable
+   identities only. Retain no passwords/tokens in screenshots, scripts or logs.
+4. Run every scenario in the historical two-client checklist and delay/drop
+   proxy drill above, adapting its ports to the isolated server. Do not count
+   this launch, automated tests or historical passes as completed scenarios.
+   Exercise save after both signup and login, then restart/restore/delete and
+   verify no restoration; record provider item presence/counts without values.
+5. Record remaining native/device-specific cases separately, sanitize evidence,
+   stop only owned processes and remove their private resources. Keep #62 and
+   native completion **open/incomplete** until disposition by the parent; this
+   blocker record does not satisfy the full-smoke criterion.

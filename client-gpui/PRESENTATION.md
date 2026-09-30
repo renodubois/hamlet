@@ -75,8 +75,15 @@ coverage; [MIGRATION-61.md](MIGRATION-61.md) records equivalents.
 
 [VERIFY.md](VERIFY.md) preserves historical uinput/Xwayland selection, clipboard,
 older-page and isolated `ksecretd` observations. Those pre-migration runs do not
-verify the new entity/subscription wiring. Fresh native smoke remains **pending
-#62**, as do IME candidate/Enter, assistive technology/physical keyboard, precise
-delayed native prepend anchoring and locked/slow real-wallet checks. Headless
-results are not native acceptance. No desktop automation or real-keyring access
-without separate consent.
+verify the new entity/subscription wiring. Its appended **#62 attempt is
+blocked/incomplete**: a securely locked desktop prevented interactive two-client
+verification after isolated login-form rendering. Private provider registration
+alone does not verify credential operations. No native input, copy, scrolling,
+focus polling or authenticated workflow was exercised in that attempt.
+
+IME candidate/Enter, assistive technology/physical keyboard, precise delayed
+native prepend anchoring and locked/slow real-wallet checks remain unverified.
+Headless results are not native acceptance. Obtain separate consent, establish
+isolated provider resources/profiles and check the desktop is already unlocked
+**before** launching automation; follow the [safety gate](VERIFY.md#safety-gate-for-the-next-attempt).
+Do not bypass a desktop lock or use the ordinary wallet to complete a demo.
