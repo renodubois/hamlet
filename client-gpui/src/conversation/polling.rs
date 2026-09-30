@@ -135,5 +135,5 @@ impl Polling {
 }
 
 #[cfg(test)]
-#[path = "polling_tests.rs"]
+#[path = "tests/polling.rs"]
 mod tests;

@@ -335,9 +335,9 @@ impl AppSession {
 }
 
 #[cfg(test)]
-#[path = "binding_tests.rs"]
+#[path = "tests/binding.rs"]
 mod binding_tests;
 
 #[cfg(test)]
-#[path = "state_tests.rs"]
+#[path = "tests/state.rs"]
 mod tests;

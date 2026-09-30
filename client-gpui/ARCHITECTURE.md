@@ -156,12 +156,52 @@ A feature may legitimately touch behavior, API, and views. The goal is predictab
 
 ## Tests and verification
 
-- Small tests can stay beside their implementation. Large suites belong in sibling `tests.rs` or `tests/` modules. Pure transitions live in `session/state_tests.rs`, `conversation/state_tests.rs` and `conversation/polling_tests.rs`; binding transitions stay under session state ownership. Real-route feature integration lives in each feature's `route_tests.rs`, not in API tests.
+### Test layout (required)
+
+All in-crate test suites live in a `tests/` directory within their owning feature, regardless of suite size. Do not add inline test suites, sibling `tests.rs` files, or `*_tests.rs` files beside production code. Name suite files for their subject, without a `_tests` suffix.
+
+```text
+src/
+├── session/
+│   ├── mod.rs
+│   ├── state.rs
+│   └── tests/
+│       ├── coordinator.rs
+│       ├── route.rs
+│       ├── saved_login.rs
+│       ├── binding.rs
+│       └── state.rs
+├── conversation/tests/         # coordinator, route, state, polling
+├── api/tests/                  # binding, HTTP
+├── storage/tests/              # compatibility, protocol, persistence
+├── views/tests/                # view and cross-view scenarios
+└── test_support/               # fixtures reused across features
+```
+
+Filesystem placement does not change Rust module ownership. Declare each suite from the production module it tests, with `#[cfg(test)]` and an explicit path when needed. For example, `session/state.rs` declares:
+
+```rust
+#[cfg(test)]
+#[path = "tests/state.rs"]
+mod tests;
+```
+
+This keeps tests as children of their owner with access to private items. Do not move them into an umbrella module or widen production visibility just to accommodate a directory move. A `tests/mod.rs` may group suites that already share the same owner, as in `views/`. Existing Rust module names such as `route_tests` may remain: the filename policy does not require changing test names or Cargo filters.
+
+Keep single-suite helpers in that suite. Helpers shared within a feature belong in its `tests/support/`; fixtures shared across features belong in crate-private `src/test_support/`. Keep all support test-only. Narrow owner-local `#[cfg(test)]` re-exports and dependency-injection hooks may remain in production modules when required by privacy; they are not test suites and must not duplicate production workflows.
+
+Reserve top-level `client-gpui/tests/` for external integration-test crates exercising a library's public API, not as a replacement for these in-crate suites. Feature scenarios using real server routes still belong in their feature's `tests/route.rs`.
+
+When reviewing changes, check suite placement, test-only gating, preserved module ownership, and helper scope alongside behavior and coverage.
+
+### Coverage and execution
+
+- Pure transitions live in `session/tests/state.rs`, `conversation/tests/state.rs` and `conversation/tests/polling.rs`; binding transitions stay under session state ownership. Real-route feature integration lives in each feature's `tests/route.rs`, not in API tests.
 - Feature tests exercise their owned interfaces, with controlled request outcomes and time.
 - Cross-view GPUI tests belong under `views/tests/`, independently of `AppShell`; use real Kit controls, stable semantic IDs, and a Kit `Root`, not private child fields or a fixed presentation tree. Test construction calls the production `app_shell::open`; there is no test-only root constructor.
 - API tests cover loopback HTTP fixtures and the unchanged rewrite-server routes. Keep real decoding/header/redirect/deadline coverage in addition to controlled adapters.
 - Storage tests use isolated files and a controlled provider, preserving worker ordering/race coverage.
-- Shared test fixtures can live in a crate-private, test-only `test_support/` module once multiple suites need them. Production construction explicitly accepts dependencies; tests do not select a different application lifecycle.
+- Production construction explicitly accepts dependencies; tests do not select a different application lifecycle.
 - Preserve meaningful scenario coverage when migrating tests, rather than preserving every private-field assertion or test count.
 
 Use the commands in [README.md](README.md) and the checks/native smoke guidance in [VERIFY.md](VERIFY.md). Only its explicitly identified post-migration record verifies this conversion; the preserved earlier results remain historical evidence. Native IME, accessibility, delayed pixel anchoring, and locked/slow real-wallet limitations remain explicit until independently verified.

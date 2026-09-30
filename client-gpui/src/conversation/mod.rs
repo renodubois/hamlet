@@ -532,6 +532,8 @@ impl Drop for Coordinator {
 }
 
 #[cfg(test)]
+#[path = "tests/coordinator.rs"]
 mod coordinator_tests;
 #[cfg(test)]
+#[path = "tests/route.rs"]
 mod route_tests;

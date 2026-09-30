@@ -307,8 +307,11 @@ impl SessionCoordinator {
 }
 
 #[cfg(test)]
+#[path = "tests/coordinator.rs"]
 mod coordinator_tests;
 #[cfg(test)]
+#[path = "tests/route.rs"]
 mod route_tests;
 #[cfg(test)]
+#[path = "tests/saved_login.rs"]
 mod saved_login_tests;

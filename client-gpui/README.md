@@ -6,6 +6,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for implemented module ownership and rule
 
 `src/main.rs` is startup only. `views/app_shell.rs::AppShell` composes screens and presents session/storage status and retries; child views own controls and subscriptions. `session/` owns authentication, restoration, expiry and cleanup; `conversation/` owns session-scoped requests, polling, history and drafts. `api/` owns the bound HTTP clients, `storage/` the ordered provider/configuration worker, `runtime.rs` the shared execution/time bridge, and `theme.rs` colors/icons. Protected operations take no URL/token arguments.
 
+Test suites live in each feature's `src/<feature>/tests/` directory, with shared cross-feature fixtures in `src/test_support/`. Follow the required [test layout and helper rules](ARCHITECTURE.md#test-layout-required) when adding or moving tests. Directory placement preserves existing Rust module ownership and Cargo test filters.
+
 From `client-gpui/`:
 
 ```sh

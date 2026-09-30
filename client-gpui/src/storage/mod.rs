@@ -254,9 +254,12 @@ impl Persistence {
 }
 
 #[cfg(test)]
+#[path = "tests/compatibility.rs"]
 mod compatibility_tests;
 #[cfg(test)]
+#[path = "tests/protocol.rs"]
 mod protocol_tests;
 
 #[cfg(test)]
+#[path = "tests/persistence.rs"]
 mod tests;

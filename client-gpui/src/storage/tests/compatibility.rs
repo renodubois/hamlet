@@ -5,7 +5,7 @@ use std::sync::{Arc, Condvar, Mutex};
 
 fn fixture(name: &str) -> serde_json::Value {
     let baseline: serde_json::Value =
-        serde_json::from_str(include_str!("../../baseline-47/compatibility.json")).unwrap();
+        serde_json::from_str(include_str!("../../../baseline-47/compatibility.json")).unwrap();
     baseline["configs"]
         .as_array()
         .unwrap()
@@ -18,7 +18,7 @@ fn fixture(name: &str) -> serde_json::Value {
 #[test]
 fn baseline_provider_keys_service_and_configuration_paths_are_unchanged() {
     let baseline: serde_json::Value =
-        serde_json::from_str(include_str!("../../baseline-47/compatibility.json")).unwrap();
+        serde_json::from_str(include_str!("../../../baseline-47/compatibility.json")).unwrap();
     assert_eq!(super::credentials::SERVICE, baseline["provider_service"]);
     for case in baseline["account_key_cases"].as_array().unwrap() {
         let selection = serde_json::from_value(case["selection"].clone()).unwrap();

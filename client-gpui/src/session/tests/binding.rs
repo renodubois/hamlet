@@ -198,7 +198,7 @@ async fn pre_rearchitecture_saved_login_restores_only_after_verification() {
     use crate::storage::{self, Outcome, Persistence};
     use crate::test_support::storage::Controlled as Store;
     let baseline: serde_json::Value =
-        serde_json::from_str(include_str!("../../baseline-47/compatibility.json")).unwrap();
+        serde_json::from_str(include_str!("../../../baseline-47/compatibility.json")).unwrap();
     let config = &baseline["configs"]
         .as_array()
         .unwrap()

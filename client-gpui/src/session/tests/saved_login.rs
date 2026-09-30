@@ -199,7 +199,7 @@ impl RequestAdapter for FixtureVerification {
 fn restart_restores_selected_login_without_losing_old_cleanup_warning(cx: &mut TestAppContext) {
     cx.background_executor.allow_parking();
     let fixtures: serde_json::Value =
-        serde_json::from_str(include_str!("../../baseline-47/compatibility.json")).unwrap();
+        serde_json::from_str(include_str!("../../../baseline-47/compatibility.json")).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.json");
     std::fs::write(
@@ -287,7 +287,7 @@ fn noncandidate_replacement_cleanup_remains_retryable_after_logout_and_restart(
 ) {
     cx.background_executor.allow_parking();
     let fixtures: serde_json::Value =
-        serde_json::from_str(include_str!("../../baseline-47/compatibility.json")).unwrap();
+        serde_json::from_str(include_str!("../../../baseline-47/compatibility.json")).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.json");
     std::fs::write(
@@ -404,7 +404,7 @@ fn noncandidate_replacement_cleanup_remains_retryable_after_logout_and_restart(
 fn legacy_prefill_and_logged_out_restart_fixtures_use_session_startup(cx: &mut TestAppContext) {
     cx.background_executor.allow_parking();
     let fixtures: serde_json::Value =
-        serde_json::from_str(include_str!("../../baseline-47/compatibility.json")).unwrap();
+        serde_json::from_str(include_str!("../../../baseline-47/compatibility.json")).unwrap();
     for index in 1..5 {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("session.json");
