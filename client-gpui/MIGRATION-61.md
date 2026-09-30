@@ -23,7 +23,7 @@ suite replaces the two redundant primitives. Every other starting scenario remai
 | Shell-private draft reads during outage | Actual textarea copy through Kit Root in `focused_polls_pause_resume_and_recover_without_losing_draft`; existing composer lifecycle and owned draft tests retain originating-channel assertions |
 | `bob_activity_arrives_through_hamlet_poll_at_and_real_rewrite_routes` name | Renamed `bob_activity_arrives_through_scheduled_polling_and_real_rewrite_routes`; same actual timer, real route, two-user and control assertions |
 | API-owned manual session/storage workflow fixture | `session::route_tests::signup_uses_shared_persistent_session_and_verified_restore_against_rewrite_routes` now runs production session submission, saving, startup verification, local logout, deletion and revocation through opaque updates, production execution, fake provider and unchanged loopback routes; no manual `finish_restore`, save/delete or revocation dispatch |
-| API-owned conversation/polling integration | Two existing real-route scenarios in `conversation/route_tests.rs`; preserved tied-timestamp/multi-page/order/continuity and two-user scheduling assertions. Bound clients replace the unnecessary mutable session fixture and raw protected POSTs |
+| API-owned conversation/polling integration | Two existing real-route scenarios in `conversation/route_tests.rs` now drive `ConversationHandle` with controlled execution/time and opaque delivery. Production coordination owns initial loading, focused polling, catch-up continuation and older-page traversal against unchanged routes; tied timestamps, identity/order/continuity, pagination exhaustion and two-user discovery remain covered |
 
 Pure suites were mechanically relocated to `session/state_tests.rs`,
 `conversation/state_tests.rs` and `conversation/polling_tests.rs`. Their test bodies
@@ -140,6 +140,33 @@ bound history identities, not by changing production presentation. Intermediate
 checks also caught fixture imports, owned storage-feedback types, noncloneable
 worker construction and unused generation bindings after facade removal; all were
 corrected, no warning waived. Failed and successful command logs are retained.
+
+## Standards P2 correction — 2026-09-30 UTC
+
+Review of candidate `2c8ab83c6974973226982a6a172862ca432ffd7e` found that
+relocating the conversation route tests had left independent state/polling and
+manual continuation dispatch in those tests. Both now use the already-approved
+`ConversationHandle`/execution seam. The host only pumps opaque updates; it never
+interprets request identities, HTTP outcomes or next-page decisions. Real bound
+HTTP, isolated rewrite routes/database and timestamp-tie fixtures are retained.
+Pure supplied-outcome transition tests remain separate and unchanged.
+
+Sensitivity checks omitted production tick polling and catch-up continuation in
+turn: each old route test still passed, while its replacement failed. Both final
+tests also failed with both omissions, then passed with production restored
+byte-for-byte. No production code or new seam was needed. Pagination assertions
+now observe 50 initial messages, 155 after the 105-message burst, then all 158 after
+requesting the remaining three older messages, with unique identities/texts,
+timestamp/ID order and exhausted pagination. Bob's message/channel are discovered
+through actual coordinator timers advanced to 3s/15s, not manual refresh dispatch.
+
+Fresh full format/strict-Clippy/test/build gates passed at 18:45:10–18:45:24 UTC;
+**158 passed, 0 failed/ignored**, unchanged count. See the appended correction
+record in [VERIFY.md](VERIFY.md). Three all-target typechecks, the conversation
+suite (40), feature route suite (3), and both corrected route tests at
+`SEED=1,2,3` passed. Initial failed test-oracle attempts and mutation logs are
+retained separately under `/tmp/hamlet-orchestrator/review-61/correction/`;
+earlier verification records and original document snapshots remain untouched.
 
 ## Preservation, approved documents and handoff
 

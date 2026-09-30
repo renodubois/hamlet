@@ -158,3 +158,29 @@ the migrated entity/subscription wiring. IME candidate Enter, assistive technolo
 and physical keyboard, precise pixel anchoring with delayed older pages, and a
 locked/slow real wallet remain outstanding. No desktop automation, real keyring
 access, native launch, packaging or non-Linux verification occurred in #61.
+
+### #61 Standards P2 correction verification — 2026-09-30
+
+The two conversation real-route integrations now exercise `ConversationHandle`
+with injected execution/time and opaque delivery, replacing independent
+conversation/polling state and manually dispatched catch-up. Production timer
+polling and continuation mutations made the corrected tests fail; the old tests
+had passed with those paths disabled. Production code was restored byte-identically.
+Timestamp ties, identity/order, multi-page continuity, older-page exhaustion and
+two-user message/channel discovery remain covered against actual rewrite routes.
+
+Fresh checks from `client-gpui/`, same toolchain and existing lockfile/cache:
+
+| Command | UTC start → end | Result |
+| --- | --- | --- |
+| `cargo fmt --check` | 18:45:10 → 18:45:10 | passed |
+| `cargo clippy --locked --all-targets -- -D warnings` | 18:45:10 → 18:45:11 | passed |
+| `cargo test --locked` | 18:45:11 → 18:45:22 | **158 passed, 0 failed, 0 ignored** |
+| `cargo build --locked` | 18:45:22 → 18:45:24 | passed; compiled, not launched |
+
+Three all-target typechecks, conversation tests (40), feature route tests (3),
+and both corrected route tests at `SEED=1,2,3` also passed. Count remains 158;
+no scenario was deleted or renamed by this correction. Fresh logs and sensitivity
+evidence are in `/tmp/hamlet-orchestrator/review-61/correction/`. All earlier records
+above are unchanged. Parent re-review remains pending; native #62 and all its
+previously recorded limitations remain unperformed, not passed.
