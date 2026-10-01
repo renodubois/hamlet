@@ -1,6 +1,6 @@
 # GPUI client instructions
 
-Follow [ARCHITECTURE.md](ARCHITECTURE.md) for ownership and dependency rules, including its required [test layout](ARCHITECTURE.md#test-layout-required).
+Follow [the architecture guide](../llm-docs/client/ARCHITECTURE.md) for ownership and dependency rules, including its required [test layout](../llm-docs/client/ARCHITECTURE.md#test-layout-required). Read [the LLM-facing overview](../llm-docs/client/OVERVIEW.md) for setup and verification commands. `README.md` is human-owned; do not edit it. Keep generated documentation under the repository-root `llm-docs/` directory.
 
 ## Tests
 
@@ -14,4 +14,4 @@ Follow [ARCHITECTURE.md](ARCHITECTURE.md) for ownership and dependency rules, in
 
 From `client/`, run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`, and `cargo build --locked`.
 
-Automated checks do not establish native acceptance. Do not launch desktop automation or access a real keyring without separate consent; follow the [native safety gate](VERIFY.md#native-safety-gate).
+Automated checks do not establish native acceptance. Do not launch desktop automation or access a real keyring without separate consent; follow the [native safety gate](../llm-docs/client/VERIFY.md#native-safety-gate).

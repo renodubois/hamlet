@@ -1413,25 +1413,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hamlet-client"
-version = "0.1.0"
-dependencies = [
- "actix-web",
- "anyhow",
- "async-channel",
- "chrono",
- "gpui-kit",
- "hamlet",
- "keyring",
- "reqwest",
- "sea-orm",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "cmov"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3619,6 +3600,25 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "utoipa",
+]
+
+[[package]]
+name = "hamlet-client"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "anyhow",
+ "async-channel",
+ "chrono",
+ "gpui-kit",
+ "hamlet",
+ "keyring",
+ "reqwest",
+ "sea-orm",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

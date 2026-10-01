@@ -4,16 +4,14 @@ How the engineering skills should consume this repo's domain documentation when 
 
 ## Before exploring, read these
 
-Project documentation paths are relative to the repository root.
-
-- **`llm-docs/CONTEXT.md`**: the shared domain glossary.
+- **`llm-docs/CONTEXT.md`** at the repo root.
 - **`llm-docs/adr/OVERVIEW.md`**: the ADR directory convention. Read any numbered ADRs in `llm-docs/adr/` that touch the area you're about to work in.
 
 If there are no relevant ADRs, proceed silently. The `/domain-modeling` skill creates decisions only when they actually get resolved.
 
 ## File structure
 
-This repo uses a single context shared by the client and server:
+Single-context repo:
 
 ```
 llm-docs/

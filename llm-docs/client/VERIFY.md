@@ -40,7 +40,7 @@ A compositor socket or rendered X11 window alone does not prove an unlocked inte
 
 ## Two-client smoke checklist
 
-Install the [Linux prerequisites](README.md#linux-prerequisites), provide an isolated unlocked Secret Service, clipboard and configured IME, and complete the safety gate above. From `server/`, start a disposable database with an explicit bind:
+Install the [Linux prerequisites](OVERVIEW.md#linux-prerequisites), provide an isolated unlocked Secret Service, clipboard and configured IME, and complete the safety gate above. From `server/`, start a disposable database with an explicit bind:
 
 ```sh
 HAMLET_DATABASE_URL='sqlite:///absolute/disposable/test.db?mode=rwc' \

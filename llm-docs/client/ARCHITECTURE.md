@@ -202,7 +202,7 @@ When reviewing changes, check suite placement, test-only gating, preserved modul
 - Production construction explicitly accepts dependencies; tests do not select a different application lifecycle.
 - Preserve meaningful scenario coverage when reorganizing tests, rather than preserving every private-field assertion or test count.
 
-Use the commands in [README.md](README.md) and the checks/native smoke guidance in [VERIFY.md](VERIFY.md). Native IME, accessibility, delayed pixel anchoring, and locked/slow real-wallet limitations remain explicit until independently verified.
+Use the commands in [OVERVIEW.md](OVERVIEW.md) and the checks/native smoke guidance in [VERIFY.md](VERIFY.md). Native IME, accessibility, delayed pixel anchoring, and locked/slow real-wallet limitations remain explicit until independently verified.
 
 ## Scope
 
