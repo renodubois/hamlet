@@ -15,7 +15,7 @@ Sequential order follows native hierarchy among runnable issues: #63, #64, #65, 
 | Issue | Blockers | Status | Acceptance coverage / evidence | Tests / results | Review | Commits |
 | --- | --- | --- | --- | --- | --- | --- |
 | [#63 Shared wire types](https://github.com/renodubois/hamlet/issues/63) | None | Completed; tracker verified CLOSED/COMPLETED | Exact entity/event JSON, 4000-character Unicode/newline body, timestamp/ID/additive fields, unchanged HTTP/OpenAPI artifact, API validation | Protocol 4/5 tests (without/with OpenAPI); server 8 tests; desktop 159 tests; all fmt/clippy/build checks pass | Standards: 0; Spec: 0 actionable findings | `a411f6d` |
-| [#64 Race-safe conversation state](https://github.com/renodubois/hamlet/issues/64) | None | Planned | Entity merging, replacing/older read races, bounded staging, recovery preservation | Not run | Pending | — |
+| [#64 Race-safe conversation state](https://github.com/renodubois/hamlet/issues/64) | None | Completed; tracker verified CLOSED/COMPLETED | Entity merging, replacing/older read races, bounded staging, recovery preservation | Desktop check/fmt/clippy/test/build pass; 171 tests | Standards: no violations, 2 optional cleanups; Spec: 0 findings | `402c872` |
 | [#65 Authenticated bounded SSE](https://github.com/renodubois/hamlet/issues/65) | #63 | Planned | Hub, framing/readiness, authentication lifecycle, bounds, contract | Not run | Pending | — |
 | [#66 Channel publication](https://github.com/renodubois/hamlet/issues/66) | #65 | Planned | Matching channel payloads, write failures, cancellation, safe publication | Not run | Pending | — |
 | [#67 Message publication](https://github.com/renodubois/hamlet/issues/67) | #65 | Planned | Matching message payloads, pre-write author preparation, failures/cancellation | Not run | Pending | — |
@@ -48,7 +48,7 @@ Sequential order follows native hierarchy among runnable issues: #63, #64, #65, 
 
 ## Resume checkpoint
 
-#63 closed with evidence and parent progress comment; next frontier: #64. Parallel read-only Standards and Spec reviewers read the complete committed diff and passed. Initial reviewer attempts lacked command tools; supplied complete diff artifacts for the successful second reviews. All commits remain local/unpushed.
+#63 and #64 closed with evidence and parent progress comments; next frontier: #65. Parallel read-only Standards and Spec reviewers read the complete committed diff and passed. Initial reviewer attempts lacked command tools; supplied complete diff artifacts for the successful second reviews. All commits remain local/unpushed.
 
 ### #63 verification
 
@@ -73,9 +73,9 @@ All commands below passed from the repository root:
 
 Temporary diagnostic logs: `/tmp/hamlet-epic-71/63-*-checks.log` (not needed to resume; command results recorded above). No native automation/keyring access.
 
-### #64 implementation evidence (uncommitted worker handoff)
+### #64 implementation evidence
 
-Baseline: `810b1056fc8fea6c0527ed188130549f461b8876` on `live-updates`. Only conversation state, its owner-local tests, and this ledger changed. No tracker actions or commits performed by the worker; parent owns acceptance/review/commit.
+Baseline: `810b1056fc8fea6c0527ed188130549f461b8876` on `live-updates`; implementation commit `402c872`. Only conversation state, its owner-local tests, and this ledger changed. Parallel committed-diff reviews passed with no material findings. Standards suggested optionally inlining the legacy merge wrapper and sharing similar bounded-staging mechanics; retained owner-specific logic for this prefactor, with legacy reconciliation due for removal in #69. Spec had no findings. Tracker closure verified completed; parent progress posted.
 
 Implemented:
 
