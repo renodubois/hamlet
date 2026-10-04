@@ -4,7 +4,7 @@
 - Branch: `live-updates`.
 - Immutable epic baseline: `f15a69306c9122f318b60ee79940fa96b4b86951`.
 - Working tree at baseline: clean. User committed the previously untracked skill and plan before authorizing discovery; neither is implementation work for this run.
-- Plan status: user approved the full eight-child plan, test seams, local commits/reviews, and tracker closure policy. No implementation yet.
+- Plan status: user approved the full eight-child plan, test seams, local commits/reviews, and tracker closure policy.
 - Discovery: recursively paginated native sub-issues and dependencies; full bodies, paginated comments, states/reasons, labels and assignees retrieved. Eight open, unassigned, `ready-for-agent` leaves. No nested containers, external blockers, cycles, or disagreement with the parent's explicit child list/textual dependencies.
 - Scope: all eight leaves; parent is a container with integrated acceptance auditing, not an additional implementation task. Issue bodies remain authoritative; existing design context: `llm-docs/live-updates-plan.md`.
 
@@ -16,7 +16,7 @@ Sequential order follows native hierarchy among runnable issues: #63, #64, #65, 
 | --- | --- | --- | --- | --- | --- | --- |
 | [#63 Shared wire types](https://github.com/renodubois/hamlet/issues/63) | None | Completed; tracker verified CLOSED/COMPLETED | Exact entity/event JSON, 4000-character Unicode/newline body, timestamp/ID/additive fields, unchanged HTTP/OpenAPI artifact, API validation | Protocol 4/5 tests (without/with OpenAPI); server 8 tests; desktop 159 tests; all fmt/clippy/build checks pass | Standards: 0; Spec: 0 actionable findings | `a411f6d` |
 | [#64 Race-safe conversation state](https://github.com/renodubois/hamlet/issues/64) | None | Completed; tracker verified CLOSED/COMPLETED | Entity merging, replacing/older read races, bounded staging, recovery preservation | Desktop check/fmt/clippy/test/build pass; 171 tests | Standards: no violations, 2 optional cleanups; Spec: 0 findings | `402c872` |
-| [#65 Authenticated bounded SSE](https://github.com/renodubois/hamlet/issues/65) | #63 | Implemented and verified; uncommitted, tracker unchanged | Protected SSE, shared 256-event hub, framing/readiness, priority validation/expiry, bounded lag, cross-worker/disconnect, contract | Server 22 tests; desktop 171 tests; fmt/clippy/build and artifact checks pass | Pending parent reviews | — |
+| [#65 Authenticated bounded SSE](https://github.com/renodubois/hamlet/issues/65) | #63 | Completed; tracker verified CLOSED/COMPLETED | Protected SSE, shared 256-event hub, framing/readiness, priority validation/expiry, bounded lag, cross-worker/disconnect, contract | Server 22 tests; desktop 171 tests; fmt/clippy/build and artifact checks pass | Standards: no violations, 2 optional cleanups; Spec: 0 findings | `44bf5f2` |
 | [#66 Channel publication](https://github.com/renodubois/hamlet/issues/66) | #65 | Planned | Matching channel payloads, write failures, cancellation, safe publication | Not run | Pending | — |
 | [#67 Message publication](https://github.com/renodubois/hamlet/issues/67) | #65 | Planned | Matching message payloads, pre-write author preparation, failures/cancellation | Not run | Pending | — |
 | [#68 Desktop API stream](https://github.com/renodubois/hamlet/issues/68) | #66, #67 | Planned | Verified server gate; bound transport, incremental parsing/validation, deadlines, bounded delivery | Not run | Pending | — |
@@ -48,7 +48,7 @@ Sequential order follows native hierarchy among runnable issues: #63, #64, #65, 
 
 ## Resume checkpoint
 
-#63 and #64 closed with evidence and parent progress comments. #65 is now implemented and verified in the working tree from baseline `3a5a55dd20c3944a07411835e14976c5ec16cc99`, awaiting parent commit/reviews/tracker handling. This worker made no commit or tracker change. Prior parallel read-only Standards and Spec reviewers read the complete committed #63/#64 diffs and passed. Initial reviewer attempts lacked command tools; supplied complete diff artifacts for the successful second reviews. All prior commits remain local/unpushed.
+#63–#65 closed with evidence and parent progress comments. Next frontier: #66. #65 baseline was `3a5a55dd20c3944a07411835e14976c5ec16cc99`. Prior parallel read-only Standards and Spec reviewers read the complete committed #63/#64 diffs and passed. Initial reviewer attempts lacked command tools; supplied complete diff artifacts for the successful second reviews. All prior commits remain local/unpushed.
 
 ### #63 verification
 
@@ -180,4 +180,4 @@ All commands passed from repository root:
 
 Final logs: `/tmp/hamlet-epic-71/65-final-{fmt,clippy,test,check,contract}.log`, `65-final-client-{fmt,clippy,test,build}.log`, `65-repeat-{1,2,3,4,5}.log`; generated comparison artifact `65-final-openapi.json`. Official WHATWG, Tokio and Actix sources are cited in the contract; installed APIs were inspected as well. No native UI automation/keyring access or human-authored/README/legacy-client edits.
 
-Handoff: implementation is uncommitted and ready for parent review/commit. No material design blocker found. #66/#67 must add safe creation publication and cancellation evidence before claiming production changes flow; #68/#69 own client streaming and eventual polling removal. This ticket does not claim measured fanout capacity, durable delivery, or the full epic's server/client cutover.
+Committed as `44bf5f2`; parallel complete-diff Standards/Spec reviews found no material issues. Optional existing status-map and repeated test-fixture duplication retained as non-blocking cleanup suggestions; no Spec findings. Closed as completed and parent progress posted. No material design blocker found. #66/#67 must add safe creation publication and cancellation evidence before claiming production changes flow; #68/#69 own client streaming and eventual polling removal. This ticket does not claim measured fanout capacity, durable delivery, or the full epic's server/client cutover.
