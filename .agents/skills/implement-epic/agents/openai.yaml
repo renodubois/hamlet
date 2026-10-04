@@ -1,0 +1,5 @@
+interface:
+  display_name: "Implement Epic"
+  short_description: "Build a parent issue and its sub-issues"
+policy:
+  allow_implicit_invocation: false
