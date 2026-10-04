@@ -32,31 +32,42 @@ pub fn validate_server(value: &str) -> Result<Url, ApiError> {
 pub struct HttpTransport {
     pub(super) client: Client,
     adapter: Arc<dyn RequestAdapter>,
+    pub(super) stream_client: Client,
+    pub(super) stream_adapter: Arc<dyn super::events::StreamAdapter>,
 }
 
 impl HttpTransport {
     pub fn new() -> Self {
         Self::from_client(
-            Client::builder()
-                .no_proxy()
-                .resolve_to_addrs(
-                    "localhost",
-                    &[
-                        SocketAddr::from(([127, 0, 0, 1], 0)),
-                        SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], 0)),
-                    ],
-                )
-                .redirect(reqwest::redirect::Policy::none())
+            Self::client_builder()
                 .timeout(Duration::from_secs(8))
                 .build()
                 .expect("HTTP client"),
         )
     }
 
+    fn client_builder() -> reqwest::ClientBuilder {
+        Client::builder()
+            .no_proxy()
+            .resolve_to_addrs(
+                "localhost",
+                &[
+                    SocketAddr::from(([127, 0, 0, 1], 0)),
+                    SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], 0)),
+                ],
+            )
+            .redirect(reqwest::redirect::Policy::none())
+    }
+
     pub(super) fn from_client(client: Client) -> Self {
+        // A distinct pool: clearing Request::timeout_mut() falls back to the
+        // client's total timeout. Streaming needs a client with no total deadline.
+        let stream_client = Self::client_builder().build().expect("stream HTTP client");
         Self {
             adapter: Arc::new(client.clone()),
             client,
+            stream_adapter: Arc::new(stream_client.clone()),
+            stream_client,
         }
     }
 
@@ -64,8 +75,16 @@ impl HttpTransport {
     #[cfg(test)]
     pub(crate) fn with_adapter(adapter: Arc<dyn RequestAdapter>) -> Self {
         Self {
-            client: Client::new(),
             adapter,
+            ..Self::new()
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_stream_adapter(adapter: Arc<dyn super::events::StreamAdapter>) -> Self {
+        Self {
+            stream_adapter: adapter,
+            ..Self::new()
         }
     }
 

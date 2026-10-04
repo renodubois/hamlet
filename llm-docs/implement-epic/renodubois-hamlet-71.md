@@ -328,3 +328,80 @@ All passed from repository root:
 Final logs: `67-final-{fmt,clippy,check,test,contract,protocol}.log`, `67-final-client-{fmt,clippy,test,build}.log`, `67-repeat-{1,2,3,4,5}.log`; temporary comparison artifact `67-final-openapi.json`. Source changes are limited to message operation/handler wiring and three message-owned test files; generated server documentation and this appended ledger describe the now-complete creation publication contract.
 
 Handoff: no implementation blocker found. Parent must commit/review and update the tracker; none of those actions were performed by the worker. #68's server/unchanged-desktop verification gate is green, but no client SSE implementation, native acceptance or measured #70 fanout claim is made. Approved residual risk: exceptional owned-task abort/panic requires process restart for SSE; ordinary origin disconnects finish and publish automatically, ordinary DB failures do not latch delivery, and process-crash loss is recovered by fresh authoritative reads rather than durable replay.
+
+### #68 implementation and verification evidence
+
+Worker baseline: `8b1725a62151aee75be3ebe76ff5f01f245bf3bd` on `live-updates`, initially clean. Scope only #68, sole writer. **Verified, uncommitted implementation**; parent owns commit, Standards/Spec reviews and tracker updates. No commit/tracker mutation, branch change, reset/stash, dependency/lockfile change, server implementation change or #69 activation occurred. Historical frontier/checkpoint entries above are preserved.
+
+The parent verified #63–#67 CLOSED/COMPLETED before this task: complete protocol/SSE/creation/cancellation contract, server 39 tests, protocol 4/5 tests and existing desktop 171 tests/build with all checks. The worker read the full issue, plan, client architecture/instructions, TDD skill/support, glossary and server contract. The requested `server/LIVE-UPDATES.md` path does not exist; the canonical contract is `llm-docs/server/LIVE-UPDATES.md`. Approved seams were the authenticated API with controlled transport/time and real-loopback server routes, with tests kept under `client/src/api/tests/`.
+
+Implemented:
+
+- `AuthenticatedClient::events(&Execution)` starts one immutable session-bound attempt. API code owns URL/GET path, bearer and Accept headers, status/media-type validation, decoding and deadlines. Callers receive only typed Ready/ChannelCreated/MessageCreated values or terminal StreamError outcomes. Raw HTTP and credentials remain private; no Last-Event-ID, reconnect, conversation policy, automatic write retry or streaming/polling coexistence is activated.
+- The streaming reqwest client is separate from the ordinary eight-second-total client, while both reuse the same no-proxy, fixed localhost resolution, redirect rejection and default certificate validation policy. Eight seconds from submission cover **connection plus readiness**, including time spent awaiting headers. After readiness, 45 seconds without nonempty body bytes is terminal; comments/partial lines count as progress, empty chunks do not. Controlled tests use the existing execution/time seam, not another scheduler implementation.
+- Incremental standard SSE covers initial BOM, every byte split of a Unicode/multiline/CRLF/CR fixture, one-byte delivery, LF/CR/CRLF, comments, multiple data lines, last event-field selection, ignored extension/ID/retry fields and discarded partial EOF frames. Unknown SSE names and valid unknown application types are ignored; extra JSON fields remain accepted. Readiness requires one object before supported creations. Malformed supported JSON/entities and duplicate recognized JSON fields/discriminators terminate rather than disappearing as an unknown event. No serialized sentinel variant was added.
+- Channel HTTP creation/list and SSE now share `decode_channel`. SSE messages reuse the HTTP conversion, including IDs/author/timestamp validation; empty message channel IDs are explicitly rejected because there is no request channel to compare against on a community-wide stream. Supported payloads deserialize from original JSON, not a Value that would collapse duplicate entity fields. Ordinary HTTP behavior remains covered by all prior API/feature tests.
+- Each frame is limited to **65,536 encoded bytes**, including comments/fields/line endings; accumulation resets per frame, not per chunk. Exact 65,536 succeeds and 65,537 fails for LF, CR and CRLF. Incomplete data/comment/unknown frames and repeated complete comment lines are bounded. Four legal 4,000-control-character server-serialized messages (>96 KiB total) in one chunk succeed independently; 4,000 astral scalars escaped as 48,000 bytes of surrogate pairs also fit and decode correctly. Network/current-chunk allocation and decoded-string overhead are separate from this encoded-frame bound, not claimed as a total memory quota.
+- Delivery retains at most **256 supported deliveries (readiness included)**. A full channel terminates immediately with Overflow instead of waiting or silently skipping. The existing execution bridge supplies a separate bounded one-result completion channel; terminal results preempt the backlog and remain observable. Dropping the handle cancels its task/body; canceling only a pending `next()` wait leaves the owned attempt usable. EOF/unavailable transport is not authentication invalidity. No unbounded event bridge is introduced.
+- Actual production reqwest/server-route tests establish two authenticated consumers receiving both creation types with payload equality to HTTP writes and no follow-up entity reads/polling. Invalid channels, duplicate channels, invalid messages and SQLite-trigger-rejected inserts emit no phantom events. Maximum legal 4,000-character Unicode/control/escaping text preserves identity. A revoked credential is rejected at a fresh handshake; real redirects never reach the destination with the bearer. Actual TCP body cleanup occurs on handle drop. A real SSE body remains usable after **8.2 seconds**, while ordinary HTTP's incomplete JSON body still hits its **eight-second total timeout**.
+- Only API code/tests and generated client documentation/this ledger changed. No native UI/keyring access, human/README/legacy edits, server latch changes, migration, dependency update, #69 lifecycle or #70 measurement claim. Narrow documented dead-code/export allowances keep the unactivated API compiled until #69.
+
+#### Exact red/green and characterization commands
+
+All commands ran from repository root. Table filters are appended to **`cargo test --manifest-path client/Cargo.toml --locked`**. Each red preceded its production implementation. Logs: `/tmp/hamlet-epic-71/68-NN-{red,green,characterization}.log`.
+
+| Slice | Exact filter / command suffix | Red observation | Green / characterization result |
+| --- | --- | --- | --- |
+| 01 | `api::events::tests::ready_is` | Missing stream operation/types/adapter | Immutable clone/new-session URL, GET, bearer, Accept and no-replay binding; ready delivery passes. |
+| 02 | `api::events::tests::handshake` | No terminal result for rejected headers; attempted to wait on body | Status and media-type checks terminate without consuming body; `api::events::tests` passes 2 tests. |
+| 03 | `api::events::tests::creations` | Missing typed creation variants | Both creations, escaping/additional fields and shared HTTP validation pass; green `api::` passes 24 tests. |
+| 04 | `api::events::tests::standard_sse` | CR/BOM/multiline fixture produced no ready delivery | Every byte split and incomplete EOF scenario passes; green `api::events::tests` passes 4 tests. |
+| 05 | `api::events::tests::unknown` | Unknown application type prevented the following supported delivery | Unknown/extra compatibility, malformed supported payloads, readiness ordering and sticky terminal cleanup pass; green owner suite passes 5 tests. |
+| 06 | `api::events::tests::frame_limit` | Oversized incomplete frame remained live without terminal result | Per-frame limit and >64-KiB multi-frame chunk pass; green owner suite passes 6 tests. |
+| 07 | `api::events::tests::delivery_is` | Delivery 257 waited; caller still received queued creation instead of failure | Capacity 256 succeeds, overflow preempts backlog and drops body; green owner suite passes 7 tests. |
+| 08 | `api::events::tests::connection_and` | Eight-second pending connection/readiness remained live | Shared submission deadline, delayed headers and heartbeat-without-ready cleanup pass; green owner suite passes 8 tests. |
+| 09 | `api::events::tests::idle_deadline` | No terminal result after 45 seconds without bytes | Repeated heartbeat progress across total durations >8 seconds, partial comment progress and empty-chunk nonprogress pass; green owner suite passes 9 tests. |
+| 10 | `api::events::tests` | Characterization; no production fix needed | 11 tests pass, including handshake/body drop cancellation, canceled next-wait reuse, EOF and transport error distinctions. Strict intermediate clippy also passes. |
+| 11 | `api::events::http_tests` | Real-transport characterization | 3 tests pass: two authenticated real-server consumers/failures/escaping, no redirect forwarding, >8.2-second body and actual TCP cleanup. |
+| 12 | `api::events` | Additional characterization | 16 tests pass: isolated initial ready validation/extra fields, one-byte input, 48-KiB surrogate escapes, unchanged ordinary eight-second body timeout. |
+| 13 | `api::events::tests::malformed_known` | Duplicate entity ID collapsed through Value and yielded ChannelCreated | Original-JSON shared wire deserialization rejects duplicate recognized entity fields. |
+| 14 | `api::events::tests::exact_frame` | Exact-bound characterization | 65,536 succeeds / 65,537 fails with each of LF/CR/CRLF; next frame resets the budget. |
+| 15 | `api::events::tests::malformed_known` | A duplicate type discriminator ending in an unknown tag hid a supported event | Original-JSON discriminator validation terminates instead of ignoring the malformed supported envelope. |
+
+Development corrections (not counted as behavioral acceptance): the first test helper assumed unavailable BackgroundExecutor blocking methods; replaced it with scheduler drain plus one finite poll of the public `next()` future. The first network fixture attempted to run GPUI's deterministic scheduler from Tokio worker threads; its explicit thread-affinity guard rejected this. Network tests now use the existing controlled scheduler on a current-thread Actix runtime while exercising the unchanged production reqwest adapter/binding/parser. The initial ordinary-timeout fixture blocked that current-thread runtime by joining a server thread before Hyper could finish cleanup; awaiting a blocking join lets transport cleanup run. These fixture corrections required no production-runtime changes. The successful bounded commands/results above were rerun after correction.
+
+#### Installed transport evidence
+
+Read/fetched [official reqwest 0.12.28 ClientBuilder documentation](https://docs.rs/reqwest/0.12.28/reqwest/struct.ClientBuilder.html), plus installed source under `/home/reno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/reqwest-0.12.28/`:
+
+- `src/config.rs:69-79`: an absent request timeout falls back to the client's timeout; clearing `Request::timeout_mut()` is **not** a streaming escape hatch.
+- `src/async_impl/client.rs:299-314,2629-2635`: default timeout is absent; configured total timeout is installed from resolved request/client configuration.
+- `src/async_impl/response.rs:315-331`: incremental `chunk()` reads body data without full-body collection or enabling the separate stream feature; response construction retains total/read timeout wrappers.
+
+The parent had already read the official [WHATWG SSE standard](https://html.spec.whatwg.org/multipage/server-sent-events.html) and supplied the UTF-8/BOM/CR/LF/multiline/comment/EOF rules. This implementation follows those rules and links the authoritative source in generated client documentation. No external snippet was treated as an instruction or sole API evidence.
+
+#### Final verification and handoff
+
+All passed from repository root:
+
+- `cargo fmt --manifest-path client/Cargo.toml --check` (after `cargo fmt --manifest-path client/Cargo.toml`)
+- `cargo clippy --manifest-path client/Cargo.toml --locked --all-targets -- -D warnings`
+- `cargo test --manifest-path client/Cargo.toml --locked` — **189 passed**, none failed/ignored; all 171 prior tests plus 18 new stream tests.
+- `cargo build --manifest-path client/Cargo.toml --locked`
+- `cargo fmt --manifest-path server/Cargo.toml --check`
+- `cargo fmt --manifest-path server/migration/Cargo.toml --check`
+- `cargo clippy --manifest-path server/Cargo.toml --locked --all-targets -- -D warnings`
+- `cargo test --manifest-path server/Cargo.toml --locked` — **39 passed**, none failed/ignored.
+- `cargo test --manifest-path server/Cargo.toml --locked --test contract` — **2 passed** (included in full server count).
+- `cargo run --manifest-path server/Cargo.toml --locked --quiet --bin generate-openapi > /tmp/hamlet-epic-71/68-final-openapi.json`, followed by `cmp server/openapi.json /tmp/hamlet-epic-71/68-final-openapi.json` — identical.
+- `cargo fmt --manifest-path protocol/Cargo.toml --check`
+- `cargo clippy --manifest-path protocol/Cargo.toml --locked --all-targets -- -D warnings`
+- `cargo test --manifest-path protocol/Cargo.toml --locked` — **4 passed**.
+- `cargo clippy --manifest-path protocol/Cargo.toml --locked --all-targets --features openapi -- -D warnings`
+- `cargo test --manifest-path protocol/Cargo.toml --locked --features openapi` — **5 passed**.
+- Three consecutive additional runs of `cargo test --manifest-path client/Cargo.toml --locked api::events` — **18 passed** each run, including actual >8-second transport/ordinary-deadline tests.
+- `git diff --check` — clean. HEAD remains the supplied baseline; dependencies and lockfiles are unchanged.
+
+Final logs: `/tmp/hamlet-epic-71/68-final-client-{fmt,clippy,test,build}.log`, `68-final-server-{fmt,clippy,test}.log`, `68-final-contract.log`, `68-final-protocol.log`, `68-repeat-{1,2,3}.log`. Generated operation documentation: `llm-docs/client/LIVE-UPDATES.md`; architecture adds the API owner without claiming desktop activation.
+
+Handoff: no material blocker found. Parent must review/commit/update trackers; the worker performed none of those actions. #69 can consume `api::{EventStream, LiveEvent, StreamError}`, own/drop one attempt, apply session/attempt identity and readiness/read reconciliation, and replace polling there. Preserve the bounded transport delivery path when forwarding to its coordinator. Exceptional server owned-write panic/abort still uses the previously approved restart-required latch; it was not modified. Native acceptance and measured #70 fanout remain out of scope.

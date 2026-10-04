@@ -29,8 +29,9 @@ async fn decode_created_message(response: Response, channel_id: &str) -> Result<
     }
 }
 
-fn decode_message(wire: WireMessage, channel_id: &str) -> Result<Message, ApiError> {
+pub(super) fn decode_message(wire: WireMessage, channel_id: &str) -> Result<Message, ApiError> {
     if wire.id.is_empty()
+        || wire.channel_id.is_empty()
         || wire.channel_id != channel_id
         || wire.author.id.is_empty()
         || wire.author.display_name.is_empty()

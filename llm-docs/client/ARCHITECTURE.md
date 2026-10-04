@@ -46,6 +46,7 @@ client/src/
 │   ├── auth.rs                 # Login, signup, current user, logout requests
 │   ├── channels.rs             # Channel requests
 │   ├── messages.rs             # History and message requests
+│   ├── events.rs               # Bound SSE attempt, parsing, deadlines and bounded delivery
 │   ├── error.rs                # Typed request failures
 │   ├── types.rs                # Client-facing server data: user, channel, message, page
 │   └── wire.rs                 # Private wire request/response representations
@@ -107,6 +108,8 @@ Only session persistence needs controlled access to credential material; views a
 `types.rs` contains small client-facing server data types, not session state or GPUI types. `wire.rs` remains private and may differ from those types. Consumers use exports from `api/`; the API module must not depend on `session/` or `conversation/` internals. Typed errors describe failures; feature-specific user feedback belongs to the feature, not to an auth-specific catch-all error description.
 
 Keep a substitution seam for controlled request outcomes in tests, alongside the real HTTP adapter. Common client binding rules must apply to both. Do not expose raw transport details to application callers for the sake of tests.
+
+The [authenticated live-update operation](LIVE-UPDATES.md) owns one cancel-on-drop stream attempt, validated ready/creation deliveries, separate stream deadlines and bounded delivery with prioritized terminal outcomes. It uses the same execution/time support and entity conversion as ordinary operations, but a separate HTTP client without a total-body timeout. It does not own reconnection or conversation state. The API exists after #68; production conversation activation/polling removal belongs to #69.
 
 ### Storage
 
@@ -206,4 +209,4 @@ Use the commands in [OVERVIEW.md](OVERVIEW.md) and the checks/native smoke guida
 
 ## Scope
 
-The client supports text conversations over HTTP with in-memory history/drafts and a selected saved login. Push transport, offline storage, queued writes, multi-server navigation, packaging and cross-platform support are not implemented.
+The client supports text conversations over HTTP with in-memory history/drafts and a selected saved login. The authenticated SSE API is implemented but not yet activated in conversations. Offline storage, queued writes, multi-server navigation, packaging and cross-platform support are not implemented.

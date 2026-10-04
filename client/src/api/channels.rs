@@ -9,16 +9,7 @@ async fn decode_created_channel(response: Response) -> Result<Channel, ApiError>
                 .json()
                 .await
                 .map_err(|_| ApiError::InvalidResponse)?;
-            if wire.id.is_empty()
-                || wire.name.is_empty()
-                || !matches!(wire.kind, hamlet_protocol::ChannelType::Text)
-            {
-                return Err(ApiError::InvalidResponse);
-            }
-            Ok(Channel {
-                id: wire.id,
-                name: wire.name,
-            })
+            decode_channel(wire)
         }
         StatusCode::UNAUTHORIZED => Err(ApiError::AlreadyInvalid),
         StatusCode::BAD_REQUEST | StatusCode::CONFLICT => {
@@ -38,6 +29,19 @@ async fn decode_created_channel(response: Response) -> Result<Channel, ApiError>
     }
 }
 
+pub(super) fn decode_channel(wire: WireChannel) -> Result<Channel, ApiError> {
+    if wire.id.is_empty()
+        || wire.name.is_empty()
+        || !matches!(wire.kind, hamlet_protocol::ChannelType::Text)
+    {
+        return Err(ApiError::InvalidResponse);
+    }
+    Ok(Channel {
+        id: wire.id,
+        name: wire.name,
+    })
+}
+
 impl AuthenticatedClient {
     pub fn channels(&self) -> ApiFuture<Result<Vec<Channel>, ApiError>> {
         let client = self.clone();
@@ -45,21 +49,7 @@ impl AuthenticatedClient {
             let request = client.request(Method::GET, client.0.server.endpoint("api/v1/channels"));
             let wire: WireChannels =
                 protected_response(client.0.server.0.transport.send(request).await?).await?;
-            wire.items
-                .into_iter()
-                .map(|item| {
-                    if item.id.is_empty()
-                        || item.name.is_empty()
-                        || !matches!(item.kind, hamlet_protocol::ChannelType::Text)
-                    {
-                        return Err(ApiError::InvalidResponse);
-                    }
-                    Ok(Channel {
-                        id: item.id,
-                        name: item.name,
-                    })
-                })
-                .collect()
+            wire.items.into_iter().map(decode_channel).collect()
         })
     }
 
