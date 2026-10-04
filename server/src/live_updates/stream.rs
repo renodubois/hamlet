@@ -62,7 +62,7 @@ impl LiveStream {
                 self.validate_at = Instant::now() + INTERVAL;
                 continue;
             }
-            if self.subscription.is_lagged() {
+            if self.subscription.is_terminated() {
                 return None;
             }
             if !self.subscription.has_started() {

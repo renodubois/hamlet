@@ -14,11 +14,12 @@ async fn frame(body: &mut actix_web::body::BoxBody) -> Option<web::Bytes> {
     .map(Result::unwrap)
 }
 
-fn change() -> hamlet_protocol::Event {
-    serde_json::from_value(json!({"type":"message_created", "message": {
+fn change() -> hamlet::live_updates::PreparedEvent {
+    let event = serde_json::from_value(json!({"type":"message_created", "message": {
         "id":"100000000000001", "channel_id":"100000000000002", "text":"雪\nnext\rline",
         "author":{"id":"100000000000003", "display_name":"Alice"}, "created_at":"2026-01-01T00:00:00Z"
-    }})).unwrap()
+    }})).unwrap();
+    hamlet::live_updates::PreparedEvent::new(&event).unwrap()
 }
 
 #[actix_web::test]

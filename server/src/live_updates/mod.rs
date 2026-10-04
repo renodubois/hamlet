@@ -2,7 +2,7 @@ use crate::{AppState, http::error::problem};
 use actix_web::{HttpMessage, HttpRequest, HttpResponse, http::StatusCode, web};
 mod hub;
 mod stream;
-pub use hub::{EventHub, Subscription};
+pub use hub::{EventHub, PreparedEvent, Subscription};
 
 pub(crate) fn routes(cfg: &mut web::ServiceConfig) {
     cfg.service(

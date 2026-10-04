@@ -7,14 +7,15 @@ async fn frame(subscription: &mut Subscription) -> Option<Bytes> {
         .expect("bounded hub frame")
 }
 
-pub(super) fn change() -> Event {
-    Event::ChannelCreated {
+pub(super) fn change() -> PreparedEvent {
+    PreparedEvent::new(&Event::ChannelCreated {
         channel: Channel {
             id: "100000000000001".into(),
             name: "general".into(),
             kind: ChannelType::Text,
         },
-    }
+    })
+    .unwrap()
 }
 
 #[tokio::test]

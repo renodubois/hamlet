@@ -18,7 +18,7 @@ pub(crate) async fn create_route(
     let Ok(input) = input else {
         return bad_request();
     };
-    match operations::create(&db.db, &input).await {
+    match operations::create(&db.db, &db.events, &input).await {
         Ok(channel) => HttpResponse::Created().json(channel),
         Err(CreateError::Invalid) => bad_request(),
         Err(CreateError::Duplicate) => {

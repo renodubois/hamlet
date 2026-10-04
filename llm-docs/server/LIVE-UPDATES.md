@@ -1,6 +1,6 @@
 # Live updates: v1 server contract
 
-Implemented by [#65](https://github.com/renodubois/hamlet/issues/65). This ticket supplies subscriptions and the event hub **only**: production channel/message creation does not publish until #66/#67. Desktop polling remains unchanged until the later client tickets. The examples below specify supported wire payloads, not a claim that creation publication is already enabled.
+Subscriptions and the event hub are implemented by [#65](https://github.com/renodubois/hamlet/issues/65); channel creation publication by [#66](https://github.com/renodubois/hamlet/issues/66). Message creation does **not** publish until #67. Desktop polling remains unchanged until the later client tickets. Both wire examples are supported types; only channel creation currently publishes from a production operation.
 
 ## Endpoint and authentication
 
@@ -78,15 +78,25 @@ The response owns its receiver and validation future, with no detached per-subsc
 
 Recovery discards old server history/pages/cursors and reloads newest authoritative state, rather than appending to a potentially stale cache. Preserve local drafts, navigation where valid, pending writes and confirmed/uncertain HTTP outcomes. Writes remain ordinary authenticated requests; neither an event nor matching message text proves an uncertain write succeeded. Do not automatically retry writes. Coordinate channel changes and in-flight read results with the current attempt/selection so stale responses cannot overwrite live updates.
 
+## Channel publication and write lifetime
+
+Channel operations construct the response and serialize a `PreparedEvent` before inserting. A successful insert is followed immediately by synchronous `notify(prepared)` with no intervening await or payload serialization. HTTP responses and events describe the same normalized channel. Invalid input, duplicate names, insert failures, and up to five ID-collision attempts publish no phantom changes. Bootstrap data is recovered by authoritative reads, not replay.
+
+Real loopback testing with installed Actix Web **4.15.0** / Actix HTTP **3.13.6**, SeaORM **2.0.3**, SQLx SQLite **0.9.0**, and Tokio **1.53.1** reproduced a cancellation gap: resetting the originating TCP connection drops the request future while SQLite's separate worker can still commit. An independent subscriber then missed the change with the original inline operation. A deterministic SQLite commit hook held the actual database step; this was not inferred from an in-process request timeout.
+
+Channel creation therefore owns one narrow write-plus-notify task. Dropping the HTTP waiter's join handle does not cancel that task. Its uncertain-write interval has a drop guard: an unexpected panic/abort ends event delivery rather than leaving apparently synchronized subscribers missing a committed change. This guard runs even if the original HTTP waiter has disappeared. Ordinary validation/database errors do not halt delivery.
+
+Unexpected write-task failure **latches the hub closed until server process restart**, including fresh subscriptions. This deliberately conservative behavior matters: a canceled SQLite statement can commit *after* a reconnect's baseline read, so closing only the old streams is insufficient. Existing streams terminate (subject to transport polling/authentication stalls); new ones end before readiness. HTTP reads/writes remain available, but live synchronization cannot succeed until restart. No replay/outbox/global mutation gate is added. Normal origin disconnects do not trigger this failure path: their owned writes complete and publish normally. Process restart clears the hub and clients recover through ready/read/buffer.
+
 ## Bounds and deployment
 
 - Exactly one concrete `EventHub` is created by application-state initialization before the Actix worker factory; clones share it across workers.
-- `notify(Event)` is synchronous and never waits for subscriber/network delivery. No subscribers is normal.
+- `PreparedEvent::new(&Event)` does fallible serialization before the write; `notify(PreparedEvent)` synchronously enqueues shared bytes and never waits for subscriber/network delivery. No subscribers is normal.
 - Initial broadcast retention is **256 events** across the process, not 256 serialized copies per subscriber. Each event is serialized once; immutable reference-counted Bytes storage is shared. The retained ring has an event-count bound, not a separate payload-byte quota. Existing entity validation limits remain owned by creation operations.
 - At exactly 256 pending events a receiver can still read all of them. Falling behind beyond retention closes its stream, including if it has not emitted ready. Tokio's default lag behavior advances a cursor; Hamlet explicitly makes that outcome terminal instead of continuing after skipped events.
 - Dropping a receiver releases its retention claims. The stream keeps no extra event queue or unbounded bridge. Actix/socket/proxy buffers and an in-flight frame are separate from hub retention; this is not a total process-memory or fanout-bandwidth bound.
 - Consumers must also bound frame accumulation and their own delivery/recovery queues. The design proposes a 64 KiB client frame limit and approximately 45-second idle detection; those client limits are not implemented or advertised as server-enforced limits by #65.
-- V1 requires **one write-owning server process**. Multiple write-owning processes and external database writers are unsupported. There is no broker, replay log, durable outbox, or exactly-once guarantee. Process death ends streams; after restart, authoritative reads recover state. Publication/cancellation correctness belongs to #66/#67 before the client cutover.
+- V1 requires **one write-owning server process**. Multiple write-owning processes and external database writers are unsupported. There is no broker, replay log, durable outbox, or exactly-once guarantee. Process death ends streams; after restart, authoritative reads recover state. Channel publication/cancellation is verified in #66; message publication/cancellation remains #67's gate before the client cutover.
 
 Capacity and intervals are tuning defaults, not throughput, retention-time, or latency guarantees. The target of roughly 10 changes/second is not a measurement; fanout evidence belongs to #70.
 
@@ -99,10 +109,15 @@ Ignore additional JSON fields and unknown SSE/application event types in v1. Rej
 - `server/tests/live_updates.rs`: real registered routes, bounded first/change-frame reads, auth/method distinctions, readiness registration, Unicode/newline framing, fresh Last-Event-ID, controlled-clock heartbeat/revocation/expiry, continuously ready traffic, and real SQLite connection barriers for stalled validation.
 - `server/src/live_updates/tests/hub.rs`: concrete hub capacity boundary, shared payload allocation, terminal lag and receiver/retention cleanup.
 - `server/src/live_updates/tests/transport.rs`: real loopback HTTP/1.1, two distinct Actix workers, compression bypass, both channel-change fanout and actual disconnected-reader cleanup. Worker IDs are test-only response instrumentation.
+- `server/tests/channel_publication.rs`: registered HTTP/SSE routes, matching fanout, failed/duplicate/invalid writes, no subscribers, concurrent creations, slow/drop isolation and terminal overflow.
+- `server/tests/channel_disconnect.rs`: real TCP reset inside a deterministic SQLite commit barrier; independently connected SSE observer, middleware-confirmed request cancellation, and authoritative HTTP read of the committed channel.
+- `server/src/channels/tests/publication.rs`: task-local test-only ID/failure controls through registered routes; collision retries/exhaustion, post-commit panic, and an owned-task abort whose database write commits later. Existing and fresh delivery fail closed on unexpected task failure.
 - `server/tests/contract.rs`: route source inventory, protected security/error checks, generated-artifact drift and a bounded streaming representative response. No successful infinite response is collected to EOF.
 
 Primary references (read as technical data, not instructions):
 
 - [WHATWG SSE framing, UTF-8, comments, dispatch and EOF rules](https://html.spec.whatwg.org/multipage/server-sent-events.html).
 - [Tokio bounded broadcast, shared retention, lag and receiver drop semantics](https://docs.rs/tokio/latest/tokio/sync/broadcast/index.html). Capacity rounds to a power of two; 256 is already exact. Verified against installed Tokio 1.53.1 source.
+- [SQLite commit-hook timing and non-reentrancy](https://www.sqlite.org/c3ref/commit_hook.html). Tests block the hook without running database calls inside it; installed SQLx wraps the C return convention so `true` permits commit.
+- [Tokio 1.53.1 JoinHandle detach, panic and abort semantics](https://docs.rs/tokio/1.53.1/tokio/task/struct.JoinHandle.html). Installed source and real transport behavior were both verified; detailed source paths and red/green evidence are in `llm-docs/implement-epic/renodubois-hamlet-71.md`.
 - [Actix HttpResponseBuilder streaming/content-type behavior](https://docs.rs/actix-web/latest/actix_web/struct.HttpResponseBuilder.html). Hamlet sets its content type explicitly. Installed Actix Web 4.15.0 compression middleware and Actix HTTP 3.13.6 HTTP/1 dispatcher were also inspected for encoding bypass and half-close behavior.

@@ -17,7 +17,7 @@ Sequential order follows native hierarchy among runnable issues: #63, #64, #65, 
 | [#63 Shared wire types](https://github.com/renodubois/hamlet/issues/63) | None | Completed; tracker verified CLOSED/COMPLETED | Exact entity/event JSON, 4000-character Unicode/newline body, timestamp/ID/additive fields, unchanged HTTP/OpenAPI artifact, API validation | Protocol 4/5 tests (without/with OpenAPI); server 8 tests; desktop 159 tests; all fmt/clippy/build checks pass | Standards: 0; Spec: 0 actionable findings | `a411f6d` |
 | [#64 Race-safe conversation state](https://github.com/renodubois/hamlet/issues/64) | None | Completed; tracker verified CLOSED/COMPLETED | Entity merging, replacing/older read races, bounded staging, recovery preservation | Desktop check/fmt/clippy/test/build pass; 171 tests | Standards: no violations, 2 optional cleanups; Spec: 0 findings | `402c872` |
 | [#65 Authenticated bounded SSE](https://github.com/renodubois/hamlet/issues/65) | #63 | Completed; tracker verified CLOSED/COMPLETED | Protected SSE, shared 256-event hub, framing/readiness, priority validation/expiry, bounded lag, cross-worker/disconnect, contract | Server 22 tests; desktop 171 tests; fmt/clippy/build and artifact checks pass | Standards: no violations, 2 optional cleanups; Spec: 0 findings | `44bf5f2` |
-| [#66 Channel publication](https://github.com/renodubois/hamlet/issues/66) | #65 | Planned | Matching channel payloads, write failures, cancellation, safe publication | Not run | Pending | — |
+| [#66 Channel publication](https://github.com/renodubois/hamlet/issues/66) | #65 | Implemented and verified, uncommitted; no tracker changes | Matching channel fanout, invalid/duplicate/insert failures, deterministic ID retries, concurrent writes, real TCP reset during SQLite commit, supervised lifetime and fail-closed exceptional delivery | Server 30 tests; strict fmt/clippy/check, unchanged OpenAPI, desktop locked build; five repeated focused runs | Parent review pending | — |
 | [#67 Message publication](https://github.com/renodubois/hamlet/issues/67) | #65 | Planned | Matching message payloads, pre-write author preparation, failures/cancellation | Not run | Pending | — |
 | [#68 Desktop API stream](https://github.com/renodubois/hamlet/issues/68) | #66, #67 | Planned | Verified server gate; bound transport, incremental parsing/validation, deadlines, bounded delivery | Not run | Pending | — |
 | [#69 Desktop live synchronization](https://github.com/renodubois/hamlet/issues/69) | #64, #68 | Planned | One session stream/recovery lifecycle, races, local work preservation, stale UI, polling removal | Not run | Pending | — |
@@ -181,3 +181,74 @@ All commands passed from repository root:
 Final logs: `/tmp/hamlet-epic-71/65-final-{fmt,clippy,test,check,contract}.log`, `65-final-client-{fmt,clippy,test,build}.log`, `65-repeat-{1,2,3,4,5}.log`; generated comparison artifact `65-final-openapi.json`. Official WHATWG, Tokio and Actix sources are cited in the contract; installed APIs were inspected as well. No native UI automation/keyring access or human-authored/README/legacy-client edits.
 
 Committed as `44bf5f2`; parallel complete-diff Standards/Spec reviews found no material issues. Optional existing status-map and repeated test-fixture duplication retained as non-blocking cleanup suggestions; no Spec findings. Closed as completed and parent progress posted. No material design blocker found. #66/#67 must add safe creation publication and cancellation evidence before claiming production changes flow; #68/#69 own client streaming and eventual polling removal. This ticket does not claim measured fanout capacity, durable delivery, or the full epic's server/client cutover.
+
+### #66 implementation and verification evidence
+
+Worker baseline: `6325e493684d3ee4c39a17dbc5e53f19fe7b7bd5`, branch `live-updates`, initially clean. Scope only #66 as sole writer; worker made no commit or tracker mutation. Parent owns commit and Standards/Spec reviews.
+
+User decision: after explanation of the reproduced origin-disconnect gap versus exceptional owned-task panic/abort, the user approved the simplest fail-closed, restart-required safeguard. Ordinary origin disconnects complete write-plus-notify automatically; only unexpected owned-task failure latches delivery closed. Deeper reconnect semantics are deliberately deferred, not a reason to add recovery machinery now.
+
+Implemented:
+
+- Channel operations, not handlers, select `ChannelCreated`. Each attempt constructs the complete normalized channel and serializes `PreparedEvent` before insertion. The success branch synchronously enqueues exactly once before returning that same channel, with no intervening await or serialization. The hub no longer serializes with `expect` after a write. Its prepared bytes remain shared across subscribers.
+- Invalid input, case-insensitive duplicate names, SQLite trigger-induced insert failure, real primary-key collisions/retries and five-attempt exhaustion publish nothing. Ordinary failures leave existing streams usable. Startup bootstrap and pre-subscription creations are not replayed. No subscribers is normal; a dropped receiver and a receiver overflowing during 257 real creations do not delay mutations or lose the healthy receiver's changes.
+- Concurrent paired-name creates on a temporary file database yield eight confirmations, eight conflicts, and exactly the eight corresponding event identities; tests compare sets/payloads, not database commit order.
+- **Actual cancellation gap reproduced before adding lifetime protection.** With the real HTTP/1.1 origin held inside SQLite's commit hook, TCP RST caused Actix to drop its service future. Releasing SQLite committed the channel, verified by ordinary `GET /api/v1/channels`, but the separately connected SSE client received no change. The red log prints confirmation of both request cancellation and the committed HTTP-visible channel before timing out on the event.
+- The fix is one channel-owned Tokio task covering write plus notify. Dropping the request's JoinHandle detaches rather than cancels it. A narrow `PendingChannelWrite` drop guard supervises the uncertain DB/notify interval even when no HTTP waiter remains. It disarms after a known insert error or successful notification; no generic mutation coordinator, global write gate, transaction framework, or outbox was introduced.
+- Unexpected task panic/abort **latches the shared hub closed until process restart**. This is a delivery-only safety latch; HTTP reads/writes remain available. Existing subscribers are woken/ended, and new subscribers end before readiness. Merely ending old streams is unsafe because SQLite can still commit *after* a fresh reconnect baseline. The owned-lifecycle test explicitly aborts a task inside SQLite's commit hook, proves old/fresh delivery is closed before release, then proves the channel committed after abort. A separate post-commit panic test proves HTTP 500, both existing streams ending, fresh delivery closed, and the authoritative read exposing the committed channel. Ordinary origin disconnects are not this exceptional case: the owned task survives and publication succeeds.
+- The tiny random-ID/post-commit-fault seam is `cfg(test)` task-local control under `server/src/channels/tests/`. Registered production routes propagate it only in unit-test builds; no production configuration, public injection API, or global mutable test selector exists. External integration tests use the uninstrumented production build. Fault hooks never log credentials or entity payloads.
+- No message publication, desktop cutover/polling changes, native automation/keyring access, migration, human documentation, README or legacy changes. No dependency/lockfile changes were needed; all Cargo commands retained `--locked`.
+
+#### Installed cancellation evidence and source inspection
+
+Versions read from `server/Cargo.lock`: Actix Web **4.15.0**, Actix HTTP **3.13.6**, SeaORM **2.0.3**, SQLx/SQLx SQLite **0.9.0**, Tokio **1.53.1**. Inspected source root: `/home/reno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/`.
+
+| Installed source | Relevant observed fact |
+| --- | --- |
+| `actix-http-3.13.6/src/h1/dispatcher.rs:1212-1240,1326` | A read error such as a reset with no new partial read propagates through the dispatcher, dropping its service future. FIN/half-close is a different policy and is not evidence of immediate cancellation. The test's middleware drop guard confirms non-completion while the DB barrier is still held. |
+| `sea-orm-2.0.3/src/driver/sqlx_sqlite.rs:162-173` | SeaORM acquires a SQLx connection and directly awaits query execution; it does not own an independent publication lifetime. |
+| `sqlx-sqlite-0.9.0/src/connection/mod.rs:51-59,331-341,470-497` | SQLite is driven by a separate worker thread. The commit-hook callback is inside the database step; SQLx negates its Rust boolean so `true` permits commit. `lock_handle` installs hooks safely without concurrent raw-handle access. |
+| `sqlx-sqlite-0.9.0/src/connection/worker.rs:164-205`; `connection/execute.rs:71-124`; `statement/handle.rs:429` | The worker steps SQLite before sending the result to the async receiver. Dropping that receiver can prevent observing the result without preventing the already-running autocommit. |
+| `tokio-1.53.1/src/runtime/task/join.rs:18-36,357-364`; `src/net/tcp/stream.rs:1325-1354` | JoinHandle drop detaches; `set_zero_linger` makes socket close an actual abortive TCP reset. Used without new dependencies. |
+
+Transport test `server/tests/channel_disconnect.rs` starts a two-worker loopback server and separate authenticated origin/subscriber TCP connections. All five file-database pool connections are acquired before installing the one-shot commit barrier, so the insertion cannot accidentally use an uninstrumented connection. Hook entry and service-future drop are explicit signals; only after confirmed cancellation is the hook released. The subscriber must receive the same entity exposed by authoritative HTTP reads. No timing sleep guesses or in-process timeout stand in for transport cancellation. Five consecutive repeat runs passed after the fix.
+
+Official references searched/fetched and read: [SQLite commit hooks](https://www.sqlite.org/c3ref/commit_hook.html) (non-reentrant, before commit, no database calls from the hook); [Tokio 1.53.1 JoinHandle](https://docs.rs/tokio/1.53.1/tokio/task/struct.JoinHandle.html) (detach, panic, abort). SQLx 0.9.0 docs.rs fetch reported a failed documentation build; installed source, not search snippets, supplied its exact API/return semantics.
+
+#### Exact red/green and characterization commands
+
+All commands below ran from the repository root. Red failures preceded their respective implementation changes. Logs are `/tmp/hamlet-epic-71/66-*`; this ledger preserves the results independently of temporary logs.
+
+| Slice | Exact command | Result |
+| --- | --- | --- |
+| 01 red | `cargo test --manifest-path server/Cargo.toml --locked --test channel_publication channel_creation` | Committed HTTP creation produced no event; bounded SSE frame timed out (`66-01-red.log`). |
+| 01 green | `cargo test --manifest-path server/Cargo.toml --locked --test channel_publication` | Multiple subscribers receive matching payload exactly once (`66-01-green.log`). |
+| 02 red | `cargo test --manifest-path server/Cargo.toml --locked --test channel_disconnect -- --nocapture` | Real RST canceled the request; HTTP read confirmed commit; other real SSE connection timed out (`66-02-red.log`). |
+| 02 green | Same exact disconnect command, then `cargo test --manifest-path server/Cargo.toml --locked --test channel_publication` | Owned task publishes after canceled origin; fanout regression passes (`66-02-green.log`). |
+| 03 red | `cargo test --manifest-path server/Cargo.toml --locked --lib channels::operations::tests::unexpected` | Injected post-commit task panic returned 500 but left subscriber waiting as healthy (`66-03-red.log`). |
+| 03 green | Same exact owner-test command, then `cargo test --manifest-path server/Cargo.toml --locked --test channel_disconnect` | Existing/fresh delivery closes safely on unexpected failure; normal canceled-origin delivery still passes (`66-03-green.log`). |
+| 04 characterization | `cargo test --manifest-path server/Cargo.toml --locked --test channel_publication rejected` | Invalid/duplicate/failed/no-subscriber paths pass without further production change (`66-04-characterization.log`). |
+| 05 characterization | `cargo test --manifest-path server/Cargo.toml --locked --test channel_publication` | All four external publication tests pass, including bounded slow/drop isolation and concurrent paired-name writes (`66-05-characterization.log`). |
+| 06 characterization | `cargo test --manifest-path server/Cargo.toml --locked --lib channels::operations::tests::id_collisions` | Deterministic real primary-key retries and exhaustion pass without further production change (`66-06-characterization.log`). |
+| 07 characterization | `cargo test --manifest-path server/Cargo.toml --locked --lib channels::operations::tests::aborted` | Explicit owned-task abort closes old/new delivery even when SQLite later commits (`66-07-characterization.log`). |
+
+Development correction: the first transport test draft captured only the lifetime guard's boolean field, generating unused-variable warnings and permitting premature guard drop. Added an explicit `drop(lifetime)` inside the future to capture the whole guard, reran the behavioral red, and recorded **that corrected red** above before implementing lifetime protection. No warning-bearing draft is counted as evidence. Slice 03 added the permanent delivery latch rather than permitting unsafe reconnect after an uncertain abort. No fault serialization format or API response changed.
+
+Intermediate checks passed: `cargo check --manifest-path server/Cargo.toml --locked` after slices 01 and 06; `cargo clippy --manifest-path server/Cargo.toml --locked --all-targets -- -D warnings` after slice 03. Each characterization followed the preceding completed vertical slice rather than pre-writing a speculative full suite.
+
+#### Final verification and handoff
+
+All passed from repository root:
+
+- `cargo fmt --manifest-path server/Cargo.toml --check`
+- `cargo fmt --manifest-path server/migration/Cargo.toml --check`
+- `cargo clippy --manifest-path server/Cargo.toml --locked --all-targets -- -D warnings`
+- `cargo check --manifest-path server/Cargo.toml --locked`
+- `cargo test --manifest-path server/Cargo.toml --locked` — **30 passed**, none failed/ignored; all 22 existing tests retained.
+- `cargo test --manifest-path server/Cargo.toml --locked --test contract` — **2 passed** (included in the full 30).
+- `cargo run --manifest-path server/Cargo.toml --locked --quiet --bin generate-openapi > /tmp/hamlet-epic-71/66-final-openapi.json`, then `cmp server/openapi.json /tmp/hamlet-epic-71/66-final-openapi.json` — identical, no artifact edit.
+- Five consecutive runs of `cargo test --manifest-path server/Cargo.toml --locked --test channel_disconnect -- --nocapture`, `cargo test --manifest-path server/Cargo.toml --locked --test channel_publication`, and `cargo test --manifest-path server/Cargo.toml --locked --lib channels::operations::tests` — all **8 focused tests passed** each run.
+- `cargo build --manifest-path client/Cargo.toml --locked` — unchanged desktop still builds; no native execution. Full desktop test/clippy was not repeated for this server-only child.
+- `git diff --check` — clean.
+
+Final logs: `66-final-{fmt,clippy,check,test,contract}.log`, `66-final-client-build.log`, `66-repeat-{1,2,3,4,5}.log`. No material blocker remains. Operational safety trade-off for parent review: an unexpected write-task panic/abort requires server restart to restore SSE; normal disconnects and normal database errors do not. #67 should reuse pre-write `PreparedEvent` plus feature-owned task/uncertain-write guard, with its own author preparation and real cancellation evidence; do not extract a generic coordinator or activate message events in this child.
