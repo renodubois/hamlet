@@ -9,7 +9,10 @@ async fn decode_created_channel(response: Response) -> Result<Channel, ApiError>
                 .json()
                 .await
                 .map_err(|_| ApiError::InvalidResponse)?;
-            if wire.id.is_empty() || wire.name.is_empty() || wire.kind != "text" {
+            if wire.id.is_empty()
+                || wire.name.is_empty()
+                || !matches!(wire.kind, hamlet_protocol::ChannelType::Text)
+            {
                 return Err(ApiError::InvalidResponse);
             }
             Ok(Channel {
@@ -45,7 +48,10 @@ impl AuthenticatedClient {
             wire.items
                 .into_iter()
                 .map(|item| {
-                    if item.id.is_empty() || item.name.is_empty() || item.kind != "text" {
+                    if item.id.is_empty()
+                        || item.name.is_empty()
+                        || !matches!(item.kind, hamlet_protocol::ChannelType::Text)
+                    {
                         return Err(ApiError::InvalidResponse);
                     }
                     Ok(Channel {

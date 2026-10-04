@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+hamlet-protocol = { path = "../protocol", features = ["openapi"] }
 actix-web = "4.14"
 sea-orm = { version = "=2.0.3", default-features = false, features = ["macros", "sqlx-sqlite", "runtime-tokio", "with-chrono"] }
 sea-orm-migration = { version = "=2.0.3", default-features = false, features = ["sqlx-sqlite", "runtime-tokio"] }

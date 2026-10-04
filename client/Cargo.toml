@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+hamlet-protocol = { path = "../protocol" }
 gpui-kit = {version = "0.6", "features" = ["inspector"] }
 anyhow = "1.0"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

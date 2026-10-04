@@ -1,19 +1,6 @@
-use chrono::{DateTime, Utc};
+pub use hamlet_protocol::{Author, Message};
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, utoipa::ToSchema)]
-pub struct Author {
-    pub id: String,
-    pub display_name: String,
-}
-#[derive(Serialize, utoipa::ToSchema)]
-pub struct Message {
-    pub id: String,
-    pub channel_id: String,
-    pub author: Author,
-    pub text: String,
-    pub created_at: DateTime<Utc>,
-}
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateMessage {

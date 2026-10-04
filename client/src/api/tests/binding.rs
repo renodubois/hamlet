@@ -33,6 +33,69 @@ impl RequestAdapter for Controlled {
 }
 
 #[tokio::test]
+async fn shared_wire_entities_still_pass_through_http_validation() {
+    for body in [
+        r#"{"id":"","channel_id":"c","author":{"id":"u","display_name":"Ada"},"text":"hi","created_at":"2026-01-01T00:00:00Z"}"#,
+        r#"{"id":"m","channel_id":"wrong","author":{"id":"u","display_name":"Ada"},"text":"hi","created_at":"2026-01-01T00:00:00Z"}"#,
+        r#"{"id":"m","channel_id":"c","author":{"id":"","display_name":"Ada"},"text":"hi","created_at":"2026-01-01T00:00:00Z"}"#,
+        r#"{"id":"m","channel_id":"c","author":{"id":"u","display_name":""},"text":"hi","created_at":"2026-01-01T00:00:00Z"}"#,
+        r#"{"id":"m","channel_id":"c","author":{"id":"u","display_name":"Ada"},"text":"hi","created_at":"invalid"}"#,
+    ] {
+        let adapter = Controlled::new([(StatusCode::CREATED, body)]);
+        let client = HttpTransport::with_adapter(adapter)
+            .server("https://example.com")
+            .unwrap()
+            .restore_candidate("synthetic".into())
+            .unwrap();
+        assert_eq!(
+            client.send_message("c".into(), "hi".into()).await,
+            Err(ApiError::InvalidResponse)
+        );
+    }
+    for body in [
+        r#"{"id":"","name":"general","type":"text"}"#,
+        r#"{"id":"c","name":"","type":"text"}"#,
+        r#"{"id":"c","name":"general","type":"voice"}"#,
+    ] {
+        let adapter = Controlled::new([(StatusCode::CREATED, body)]);
+        let client = HttpTransport::with_adapter(adapter)
+            .server("https://example.com")
+            .unwrap()
+            .restore_candidate("synthetic".into())
+            .unwrap();
+        assert_eq!(
+            client.create_channel("general".into()).await,
+            Err(ApiError::InvalidResponse)
+        );
+    }
+    let adapter = Controlled::new([
+        (
+            StatusCode::CREATED,
+            r#"{"id":"c","name":"general","type":"text","extra":true}"#,
+        ),
+        (
+            StatusCode::CREATED,
+            r#"{"id":"m","channel_id":"c","author":{"id":"u","display_name":"Ada","extra":true},"text":"世界\nhi","created_at":"2026-01-01T01:00:00+01:00","extra":true}"#,
+        ),
+    ]);
+    let client = HttpTransport::with_adapter(adapter)
+        .server("https://example.com")
+        .unwrap()
+        .restore_candidate("synthetic".into())
+        .unwrap();
+    assert_eq!(
+        client.create_channel("general".into()).await.unwrap().id,
+        "c"
+    );
+    let message = client
+        .send_message("c".into(), "世界\nhi".into())
+        .await
+        .unwrap();
+    assert_eq!(message.text, "世界\nhi");
+    assert_eq!(message.created_at, "2026-01-01T00:00:00+00:00");
+}
+
+#[tokio::test]
 async fn bound_contexts_keep_origins_and_credentials_across_clones_and_new_logins() {
     let adapter = Controlled::new([
         (

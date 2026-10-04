@@ -1,4 +1,4 @@
-use super::types::{Channel, ChannelList, ChannelType, CreateChannel};
+use super::types::{Channel, ChannelList, CreateChannel};
 use crate::new_id;
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, Statement};
 
@@ -75,7 +75,7 @@ pub(super) async fn list(db: &DatabaseConnection) -> Result<ChannelList, DbErr> 
             Ok(Channel {
                 id: row.try_get::<i64>("", "id")?.to_string(),
                 name: row.try_get("", "name")?,
-                kind: ChannelType::parse(&row.try_get::<String>("", "type")?)?,
+                kind: super::types::parse_channel_type(&row.try_get::<String>("", "type")?)?,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;

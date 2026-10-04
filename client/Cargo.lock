@@ -3590,6 +3590,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "hamlet-migration",
+ "hamlet-protocol",
  "rand 0.9.5",
  "sea-orm",
  "sea-orm-migration",
@@ -3612,6 +3613,7 @@ dependencies = [
  "chrono",
  "gpui-kit",
  "hamlet",
+ "hamlet-protocol",
  "keyring",
  "reqwest",
  "sea-orm",
@@ -3626,6 +3628,15 @@ name = "hamlet-migration"
 version = "0.1.0"
 dependencies = [
  "sea-orm-migration",
+]
+
+[[package]]
+name = "hamlet-protocol"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "utoipa",
 ]
 
 [[package]]

@@ -1,3 +1,4 @@
+pub(super) use hamlet_protocol::{Channel as WireChannel, Message as WireMessage};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -25,27 +26,7 @@ pub(super) struct WireChannels {
     pub items: Vec<WireChannel>,
 }
 #[derive(Deserialize)]
-pub(super) struct WireChannel {
-    pub id: String,
-    pub name: String,
-    #[serde(rename = "type")]
-    pub kind: String,
-}
-#[derive(Deserialize)]
 pub(super) struct WireHistory {
     pub items: Vec<WireMessage>,
     pub next_cursor: Option<String>,
-}
-#[derive(Deserialize)]
-pub(super) struct WireMessage {
-    pub id: String,
-    pub channel_id: String,
-    pub author: WireAuthor,
-    pub text: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-}
-#[derive(Deserialize)]
-pub(super) struct WireAuthor {
-    pub id: String,
-    pub display_name: String,
 }
