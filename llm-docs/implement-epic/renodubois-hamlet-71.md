@@ -18,7 +18,7 @@ Sequential order follows native hierarchy among runnable issues: #63, #64, #65, 
 | [#64 Race-safe conversation state](https://github.com/renodubois/hamlet/issues/64) | None | Completed; tracker verified CLOSED/COMPLETED | Entity merging, replacing/older read races, bounded staging, recovery preservation | Desktop check/fmt/clippy/test/build pass; 171 tests | Standards: no violations, 2 optional cleanups; Spec: 0 findings | `402c872` |
 | [#65 Authenticated bounded SSE](https://github.com/renodubois/hamlet/issues/65) | #63 | Completed; tracker verified CLOSED/COMPLETED | Protected SSE, shared 256-event hub, framing/readiness, priority validation/expiry, bounded lag, cross-worker/disconnect, contract | Server 22 tests; desktop 171 tests; fmt/clippy/build and artifact checks pass | Standards: no violations, 2 optional cleanups; Spec: 0 findings | `44bf5f2` |
 | [#66 Channel publication](https://github.com/renodubois/hamlet/issues/66) | #65 | Completed; tracker verified CLOSED/COMPLETED | Matching channel fanout, invalid/duplicate/insert failures, deterministic ID retries, concurrent writes, real TCP reset during SQLite commit, supervised lifetime and approved fail-closed exceptional delivery | Server 30 tests; strict fmt/clippy/check, unchanged OpenAPI, desktop locked build; five repeated focused runs | Standards: no violations, 1 optional fixture cleanup; Spec: 0 findings | `76b736d` |
-| [#67 Message publication](https://github.com/renodubois/hamlet/issues/67) | #65 | Planned | Matching message payloads, pre-write author preparation, failures/cancellation | Not run | Pending | — |
+| [#67 Message publication](https://github.com/renodubois/hamlet/issues/67) | #65 | Completed; tracker verified CLOSED/COMPLETED | Matching message payloads, pre-write author preparation, failures/cancellation, approved exceptional safeguard | Server 39 tests; desktop 171 tests/build; protocol 4/5 tests; all checks pass | Standards: no violations, 1 optional helper cleanup; Spec: 0 findings | `e0bc0a0` |
 | [#68 Desktop API stream](https://github.com/renodubois/hamlet/issues/68) | #66, #67 | Planned | Verified server gate; bound transport, incremental parsing/validation, deadlines, bounded delivery | Not run | Pending | — |
 | [#69 Desktop live synchronization](https://github.com/renodubois/hamlet/issues/69) | #64, #68 | Planned | One session stream/recovery lifecycle, races, local work preservation, stale UI, polling removal | Not run | Pending | — |
 | [#70 Integrated verification](https://github.com/renodubois/hamlet/issues/70) | #69 | Planned | Two-client recovery and races, compatibility, measured bounded fanout, full checks | Not run | Pending | — |
@@ -48,7 +48,7 @@ Sequential order follows native hierarchy among runnable issues: #63, #64, #65, 
 
 ## Resume checkpoint
 
-#63–#66 closed with evidence and parent progress comments. Next frontier: #67. #65 baseline was `3a5a55dd20c3944a07411835e14976c5ec16cc99`. Prior parallel read-only Standards and Spec reviewers read the complete committed #63/#64 diffs and passed. Initial reviewer attempts lacked command tools; supplied complete diff artifacts for the successful second reviews. All prior commits remain local/unpushed.
+#63–#67 closed with evidence and parent progress comments. Next frontier: #68. Server contract/publication/cancellation gate is verified on this branch; protocol and full server/desktop checks passed before starting client transport. #65 baseline was `3a5a55dd20c3944a07411835e14976c5ec16cc99`. Prior parallel read-only Standards and Spec reviewers read the complete committed #63/#64 diffs and passed. Initial reviewer attempts lacked command tools; supplied complete diff artifacts for the successful second reviews. All prior commits remain local/unpushed.
 
 ### #63 verification
 
@@ -254,6 +254,8 @@ All passed from repository root:
 Final logs: `66-final-{fmt,clippy,check,test,contract}.log`, `66-final-client-build.log`, `66-repeat-{1,2,3,4,5}.log`. Committed as `76b736d`; full-diff parallel Standards and Spec reviews found no material issues. Tracker closure verified and parent progress posted. No material blocker remains. Approved operational safety trade-off: an unexpected write-task panic/abort requires server restart to restore SSE; normal disconnects and normal database errors do not. #67 should reuse pre-write `PreparedEvent` plus feature-owned task/uncertain-write guard, with its own author preparation and real cancellation evidence; do not extract a generic coordinator or activate message events in this child.
 
 ### #67 implementation and verification evidence
+
+Parent completion: committed as `e0bc0a0`; complete-diff parallel Standards/Spec reviews found no material issues (one optional test-decoding helper cleanup). Closed as completed with evidence and parent progress posted. Following worker evidence describes the verified implementation before its commit.
 
 Worker baseline: `bd907c26c411be0a1026cedcdd54b0fdaa6a5ade` on `live-updates`, initially clean. Scope only #67, sole writer. Implementation is **verified but uncommitted**; no tracker mutation, branch change, stash/reset, or commit. Parent owns commit and subsequent reviews. This appended checkpoint records implementation progress without rewriting the historical frontier rows.
 
