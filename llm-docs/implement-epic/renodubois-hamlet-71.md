@@ -72,3 +72,50 @@ All commands below passed from the repository root:
 - `cargo build --manifest-path client/Cargo.toml --locked`
 
 Temporary diagnostic logs: `/tmp/hamlet-epic-71/63-*-checks.log` (not needed to resume; command results recorded above). No native automation/keyring access.
+
+### #64 implementation evidence (uncommitted worker handoff)
+
+Baseline: `810b1056fc8fea6c0527ed188130549f461b8876` on `live-updates`. Only conversation state, its owner-local tests, and this ledger changed. No tracker actions or commits performed by the worker; parent owns acceptance/review/commit.
+
+Implemented:
+
+- Shared ID-based message/channel creation merges. Message insertion compares parsed RFC3339 instants then descending numeric IDs; channels retain snapshot order and insert by the existing server name-key order. Remote channels do not select; confirmed local creation still selects and deduplicates event/response races. Unloaded message channels do not allocate histories.
+- Channel-list and replacing-history reads each stage up to 256 distinct concurrent creations. Duplicate delivery consumes no extra capacity. Merges return `Err(ReconciliationOverflow)` on overflow; `reconciliation_overflowed()` also exposes overflow caused by HTTP confirmations. Overflowed snapshots cannot replace state as successful baselines. Retry/reset clears the affected flags. These are per-read creation bounds, not new limits on existing history, local confirmed outcomes, or polling catch-up traversal.
+- Accepted replacing reads reconcile staged creations and pending confirmed entities. Older pages merge into current history, preserving concurrent additions and their own cursor. Existing session/request checks reject obsolete completions.
+- `reset_for_recovery()` discards all history/cursors/older-page state and invalidates read identities, preserving the selected channel, retained channel list, drafts, pending write identities, confirmed outcomes, and uncertainty. It does not cancel write tasks or perform full session teardown. A replacement channel list still validates selection. History is discarded rather than displayed stale in this prefactor.
+- `recovery_reset_revision()` changes on every recovery reset, independently of entity IDs. Recovery, overflow observation, and revision access have narrowly scoped dead-code allowances until #69 wires their consumers. No scheduler, transport, view, or API-validation changes.
+- Polling/manual refresh/uncertain catch-up remain active. Catch-up captures its original head so concurrent merges cannot move the continuity boundary. A separate pending-confirmation boundary preserves polling continuity when an initial snapshot is reconciled with a newer confirmed send.
+
+#### Red/green slices
+
+Commands below ran from `client/`. Each red command preceded that slice's production implementation. Logs: `/tmp/hamlet-epic-71/64-NN-red.log` and `64-NN-green.log`.
+
+| Slice | Red command (`cargo test --locked` filter) | Observed red | Green command (`cargo test --locked` filter) / result |
+| --- | --- | --- | --- |
+| 01 | `conversation::state::live_tests::creations` | Missing shared message merge | Same filter: 1 passed |
+| 02 | `conversation::state::live_tests::remote_channels` | Missing shared channel merge | `conversation::state::live_tests`: 2 passed |
+| 03 | `conversation::state::live_tests::replacing_channel` | Stale list changed selection and lost confirmed channel | `conversation::state::`: 30 passed |
+| 04 | `conversation::state::live_tests::replacing_history` | Replacing history lost concurrent confirmation | `conversation::state::`: 31 passed |
+| 05 | `conversation::state::live_tests::replacing_read_overflow` | Missing bounded staging/explicit overflow result | `conversation::state::`: 32 passed |
+| 06 | `conversation::state::live_tests::older_page` | Older page appended behind an earlier-timestamp live creation | `conversation::state::`: 33 passed |
+| 07 | `conversation::state::live_tests::polling_catchup` | Concurrent creation moved catch-up's head and falsely broke continuity | `conversation::`: 47 passed |
+| 08 | `conversation::state::live_tests::recovery_reset` | Missing reset/revision interface | `conversation::`: 48 passed |
+| 09 | `conversation::state::live_tests::confirmation_during_initial` | Initial-read confirmation prematurely ended polling catch-up before intervening message | `conversation::`: 49 passed |
+
+Three additional preservation/obsolete-read characterizations passed without production changes: canceled staging cannot contaminate new selection; confirmed HTTP outcomes survive overflow/reset; repeated identical-ID baselines still change reset revision and preserve uncertainty. Final focused command: `cargo test --locked conversation::state::live_tests` — 12 passed (159 filtered out).
+
+Intermediate `cargo check --locked` passed after slices 02, 05, 08. Intermediate `cargo clippy --locked --all-targets -- -D warnings` passed after slices 04 and 07. The slice-09 lint run caught one test-only `get(...).is_none()` style warning; changed it to `contains_key` and the final strict lint passed.
+
+#### Final checks
+
+All passed from `client/`:
+
+- `cargo check --locked`
+- `cargo fmt --check` (after `cargo fmt`)
+- `cargo clippy --locked --all-targets -- -D warnings`
+- `cargo test --locked` — **171 passed, 0 failed, 0 ignored** (all 159 pre-existing tests retained)
+- `cargo build --locked`
+
+`git diff --check` passed. Final logs: `/tmp/hamlet-epic-71/64-final-{check,fmt,clippy,test,build}.log`.
+
+Handoff to #69: call reset from the conversation coordinator, cancel/invalidate its read tasks (not writes), route merge errors/HTTP overflow observation into global recovery, and consume the revision in history presentation. This child intentionally does not activate those paths, remove polling-era workflows, or add a second synchronization policy. Existing polling confirmation queues/catch-up behavior remain until cutover. No native automation or real keyring access; no native acceptance claimed.
