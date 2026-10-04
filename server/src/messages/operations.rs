@@ -1,9 +1,18 @@
 use super::types::{Author, History, Message};
-use crate::new_id;
+use crate::{
+    http::auth::UserIdentity,
+    live_updates::{EventHub, PreparedEvent},
+    new_id,
+};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, SecondsFormat, Utc};
+use hamlet_protocol::Event;
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, QueryResult, Statement};
 use serde::{Deserialize, Serialize};
+
+#[cfg(test)]
+#[path = "tests/publication.rs"]
+mod tests;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,8 +83,53 @@ pub(super) enum PostError {
 }
 pub(super) async fn post(
     db: &DatabaseConnection,
+    events: &EventHub,
     channel_id: i64,
-    author_id: i64,
+    author: &UserIdentity,
+    text: &str,
+) -> Result<Message, PostError> {
+    let db = db.clone();
+    let events = events.clone();
+    let author = author.clone();
+    let text = text.to_owned();
+    // A reset HTTP connection can drop its handler while SQLite's worker commits.
+    // Own the message write and synchronous notification independently of that waiter.
+    #[cfg(test)]
+    let control = tests::CONTROL.try_with(Clone::clone).ok();
+    tokio::spawn(async move {
+        #[cfg(test)]
+        if let Some(control) = control {
+            return tests::CONTROL
+                .scope(
+                    control,
+                    post_owned(&db, &events, channel_id, &author, &text),
+                )
+                .await;
+        }
+        post_owned(&db, &events, channel_id, &author, &text).await
+    })
+    .await
+    .unwrap_or(Err(PostError::Internal))
+}
+
+// Supervise the uncertain DB/notify interval even if the HTTP waiter is gone.
+// SQLite can finish a canceled step after a reconnect, so unexpected task loss
+// must halt both existing and fresh delivery until restart (as for channels).
+struct PendingMessageWrite<'a>(Option<&'a EventHub>);
+
+impl Drop for PendingMessageWrite<'_> {
+    fn drop(&mut self) {
+        if let Some(events) = self.0 {
+            events.interrupt();
+        }
+    }
+}
+
+async fn post_owned(
+    db: &DatabaseConnection,
+    events: &EventHub,
+    channel_id: i64,
+    author: &UserIdentity,
     text: &str,
 ) -> Result<Message, PostError> {
     if text.trim().is_empty() || text.chars().count() > 4000 {
@@ -88,19 +142,49 @@ pub(super) async fn post(
         return Err(PostError::Missing);
     }
     for _ in 0..5 {
+        #[cfg(not(test))]
         let id = new_id();
-        let created = Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true);
+        #[cfg(test)]
+        let id = tests::next_id();
+        #[cfg(not(test))]
+        let created_at = Utc::now();
+        #[cfg(test)]
+        let created_at = tests::now();
+        let message = Message {
+            id: id.to_string(),
+            channel_id: channel_id.to_string(),
+            author: Author {
+                id: author.id.to_string(),
+                display_name: author.username.clone(),
+            },
+            text: text.to_owned(),
+            created_at,
+        };
+        let event = PreparedEvent::new(&Event::MessageCreated {
+            message: message.clone(),
+        })
+        .map_err(|_| PostError::Internal)?;
+        let created = message
+            .created_at
+            .to_rfc3339_opts(SecondsFormat::Nanos, true);
+        let mut pending = PendingMessageWrite(Some(events));
         match db.execute_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
             "INSERT INTO messages (id, channel_id, author_id, text, created_at) VALUES (?, ?, ?, ?, ?)",
-            [id.into(), channel_id.into(), author_id.into(), text.to_owned().into(), created.into()])).await {
+            [id.into(), channel_id.into(), author.id.into(), text.to_owned().into(), created.into()])).await {
             Ok(_) => {
-                let row = db.query_one_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
-                    "SELECT m.id, m.channel_id, m.author_id, m.text, m.created_at, u.username FROM messages m JOIN users u ON u.id = m.author_id WHERE m.id = ?",
-                    [id.into()])).await.map_err(|_| PostError::Internal)?.ok_or(PostError::Internal)?;
-                return decode(row).map_err(|_| PostError::Internal);
+                #[cfg(test)]
+                tests::after_insert();
+                events.notify(event);
+                pending.0 = None;
+                return Ok(message);
             }
-            Err(e) if e.to_string().contains("messages.id") => continue,
-            Err(_) => return Err(PostError::Internal),
+            Err(error) => {
+                pending.0 = None;
+                if error.to_string().contains("messages.id") {
+                    continue;
+                }
+                return Err(PostError::Internal);
+            }
         }
     }
     Err(PostError::Internal)

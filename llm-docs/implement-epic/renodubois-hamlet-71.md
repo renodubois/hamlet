@@ -252,3 +252,77 @@ All passed from repository root:
 - `git diff --check` — clean.
 
 Final logs: `66-final-{fmt,clippy,check,test,contract}.log`, `66-final-client-build.log`, `66-repeat-{1,2,3,4,5}.log`. Committed as `76b736d`; full-diff parallel Standards and Spec reviews found no material issues. Tracker closure verified and parent progress posted. No material blocker remains. Approved operational safety trade-off: an unexpected write-task panic/abort requires server restart to restore SSE; normal disconnects and normal database errors do not. #67 should reuse pre-write `PreparedEvent` plus feature-owned task/uncertain-write guard, with its own author preparation and real cancellation evidence; do not extract a generic coordinator or activate message events in this child.
+
+### #67 implementation and verification evidence
+
+Worker baseline: `bd907c26c411be0a1026cedcdd54b0fdaa6a5ade` on `live-updates`, initially clean. Scope only #67, sole writer. Implementation is **verified but uncommitted**; no tracker mutation, branch change, stash/reset, or commit. Parent owns commit and subsequent reviews. This appended checkpoint records implementation progress without rewriting the historical frontier rows.
+
+Approved seams: registered HTTP/SSE routes; real loopback reset with deterministic database barriers; narrow owner-local randomness, clock and exceptional task-lifecycle controls. User explicitly approved reusing #66's restart-required exceptional delivery latch: ordinary origin disconnects finish automatically; unexpected owned-task abort/panic ends old and fresh delivery until restart. No generic coordinator, outbox or global write gate.
+
+Implemented:
+
+- `messages::operations::post` accepts the concrete hub and bearer-validated `UserIdentity`; the handler only extracts and maps responses. Each attempt constructs the full Message (author ID/name, unchanged text, channel/message IDs, creation instant) and serializes PreparedEvent **before insertion**. Successful insertion synchronously enqueues once and returns that same Message, with no post-write author lookup, serialization or await before notification. Existing history still resolves the author's current displayed name.
+- The author-window regression uses a disposable SQLite `AFTER INSERT` trigger to replace the author's stored name with invalid UTF-8. The original post-insert lookup/decode returned HTTP 500; the new operation returns 201 and both Alice's and independently authenticated Bob's subscriptions receive the exact response payload from the already-validated author. After repairing the deliberately corrupted fixture, ordinary authenticated history confirms that same committed entity. This is a real database fault/public-behavior test, not a source-code assertion or mock of an internal function.
+- Message-specific **real TCP reset** independently reproduced the cancellation gap before lifetime protection: the origin's service future was dropped while SQLite was inside its commit hook; releasing the hook made the message visible through HTTP history, but the separate SSE TCP connection timed out. One message-owned task now retains the write/notify lifetime across the dropped HTTP waiter. An owner-local PendingMessageWrite drop guard reuses the channel safety pattern and existing hub latch; no shared hub changes were necessary.
+- Unexpected post-commit panic returns 500, closes both established streams and a fresh HTTP stream, while authoritative history exposes the committed message. Explicit owned-task abort inside the real SQLite commit barrier closes old/fresh delivery **before** the database finishes; releasing SQLite still commits the message, observed through history, and fresh HTTP delivery remains closed. Known insert errors and collision retries disarm the guard and leave delivery usable.
+- Invalid whitespace/oversized text/extra request fields, missing channels, trigger-rejected inserts, real ID collisions and five-attempt exhaustion emit no phantom/duplicate events. A later successful create still delivers after ordinary failures. No subscribers is normal and pre-subscription creations are not replayed. Maximum legal 4000-character Unicode/control-character text survives HTTP/SSE identity checks.
+- A dropped subscriber and a non-consuming subscriber cannot block 257 bounded real writes or healthy delivery; the slow stream ends on overflow. Sixteen concurrent same-text creations across two channels on a file database produce exactly sixteen unique event/response/history identities, compared as sets rather than commit order. A separate owner-local clock fixture delivers independent creations at `.900`, `.100`, `.900` creation instants, retaining those exact HTTP/event values; history sorts them by descending instant and then descending ID. This is controlled out-of-timestamp-order input, not a claim that the concurrency test forces a particular scheduler/commit order.
+- Test controls compile only into the owning module's unit-test build and propagate per task; production route integration tests use the uninstrumented library. No deletion, migration, client streaming/polling change, native execution, real keyring access, README/human-documentation or legacy change. Dependencies, lockfiles, routes, DTO schemas and the checked-in OpenAPI artifact are unchanged.
+
+#### Exact red/green and characterization commands
+
+All commands ran from repository root; logs live under `/tmp/hamlet-epic-71/67-*`. Each behavioral red preceded its production fix. Characterization rows added coverage after the preceding completed slice and required no further production semantics.
+
+| Slice | Exact command | Result |
+| --- | --- | --- |
+| 01 red | `cargo test --manifest-path server/Cargo.toml --locked --test message_publication author_lookup -- --nocapture` | Real post-insert author-decode fault returned **500**, expected 201 (`67-01-red.log`). |
+| 01 green | `cargo test --manifest-path server/Cargo.toml --locked --test message_publication` | Pre-write author/response/event preparation removes the failure window; exact payload reaches both authenticated subscribers (`67-01-green.log`). |
+| 02 red | `cargo test --manifest-path server/Cargo.toml --locked --test message_disconnect -- --nocapture` | Middleware proved request cancellation during SQLite commit; history confirmed the committed message; the separate SSE connection timed out (`67-02-red.log`). |
+| 02 green | Same disconnect command, then `cargo test --manifest-path server/Cargo.toml --locked --test message_publication` | Owned write-plus-notify task survives origin reset; author/fanout regression remains green (`67-02-green.log`). |
+| 03 red | `cargo test --manifest-path server/Cargo.toml --locked --lib messages::operations::tests::unexpected -- --nocapture` | Injected post-commit panic returned 500 but left existing delivery apparently healthy/waiting (`67-03-red.log`). |
+| 03 green | Same owner-test command, then `cargo test --manifest-path server/Cargo.toml --locked --test message_disconnect --test message_publication` | Drop guard ends old/fresh delivery safely on exceptional failure; normal origin reset still publishes (`67-03-green.log`). |
+| 04 characterization | `cargo test --manifest-path server/Cargo.toml --locked --test message_publication rejected` | Invalid/missing/failed writes emit nothing; no-subscriber success, maximum legal escaped text, and delivery after ordinary failure pass (`67-04-characterization.log`). |
+| 05 characterization | `cargo test --manifest-path server/Cargo.toml --locked --test message_publication slow_and_dropped` | 257 bounded writes reach the healthy subscriber, dropped subscriber has no effect, slow receiver terminates (`67-05-characterization.log`). |
+| 06 characterization | `cargo test --manifest-path server/Cargo.toml --locked --test message_publication` | All four external publication scenarios pass, including concurrent multi-channel identity sets (`67-06-characterization.log`). |
+| 07 characterization | `cargo test --manifest-path server/Cargo.toml --locked --lib messages::operations::tests::id_collisions` | Real deterministic primary-key retries/exhaustion emit no extras; subsequent creation/history agree (`67-07-characterization.log`). |
+| 08 characterization | `cargo test --manifest-path server/Cargo.toml --locked --lib messages::operations::tests::aborted -- --nocapture` | Explicit owned-task abort closes old/fresh delivery before SQLite's later commit, then history recovers the entity (`67-08-characterization.log`). |
+| 09 characterization | `cargo test --manifest-path server/Cargo.toml --locked --lib messages::operations::tests::independent` | Nonmonotonic creation instants are delivered unchanged, with tied-ID history ordering (`67-09-characterization.log`). |
+
+Intermediate checks passed: `cargo check --manifest-path server/Cargo.toml --locked` after slices 01 and 06; `cargo clippy --manifest-path server/Cargo.toml --locked --all-targets -- -D warnings` after slices 03 and 08. No compilation-error draft was substituted for a behavioral red.
+
+#### Installed-version and cancellation evidence
+
+Re-read `server/Cargo.lock`: Actix Web **4.15.0**, Actix HTTP **3.13.6**, SeaORM **2.0.3**, SQLx/SQLx SQLite **0.9.0**, Tokio **1.53.1**. Toolchain: `rustc 1.95.0 (59807616e 2026-04-14)`, `cargo 1.95.0 (f2d3ce0bd 2026-03-21)`. No dependency versions changed.
+
+Re-inspected installed sources under `/home/reno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/`: `actix-http-3.13.6/src/h1/dispatcher.rs:1208-1245` propagates reset/read errors (distinct from FIN); `sea-orm-2.0.3/src/driver/sqlx_sqlite.rs:159-173` awaits SQLx execution directly; `sqlx-sqlite-0.9.0/src/connection/worker.rs:163-207` executes SQLite before sending its result; `sqlx-sqlite-0.9.0/src/connection/mod.rs:468-497` documents/implements the commit hook (`true` permits commit).
+
+`server/tests/message_disconnect.rs` starts two real Actix workers and independent authenticated SSE/origin TCP connections. It acquires **all five** file-database pool connections before installing the one-shot hook. An explicit hook-entry signal establishes that SQLite is doing the write; `set_zero_linger` plus socket drop causes actual TCP RST. The middleware drop signal confirms the service future was canceled, not completed, **before** release. The hook runs no database calls; after release, history and the separate SSE connection must expose the identical message. Barriers/transport reads have finite time bounds; no timing sleep guesses substitute for DB entry or cancellation. All five repeated final runs passed.
+
+Primary references searched/fetched/read: [SQLite commit hooks](https://sqlite.org/c3ref/commit_hook.html) (before commit, non-reentrant, no database work from callback) and [Tokio 1.53.1 JoinHandle](https://docs.rs/tokio/1.53.1/tokio/task/struct.JoinHandle.html) (drop detaches, panic is captured, abort is asynchronous). One Tokio fetch initially failed in the fetch tool; retry succeeded. Installed source and behavioral red/green, not search snippets, establish the exact current stack behavior.
+
+#### Final server-to-desktop gate
+
+All passed from repository root:
+
+- `cargo fmt --manifest-path server/Cargo.toml --check`
+- `cargo fmt --manifest-path server/migration/Cargo.toml --check`
+- `cargo clippy --manifest-path server/Cargo.toml --locked --all-targets -- -D warnings`
+- `cargo check --manifest-path server/Cargo.toml --locked`
+- `cargo test --manifest-path server/Cargo.toml --locked` — **39 passed**, none failed/ignored; all 30 prior tests retained.
+- `cargo test --manifest-path server/Cargo.toml --locked --test contract` — **2 passed** (included in full 39).
+- `cargo run --manifest-path server/Cargo.toml --locked --quiet --bin generate-openapi > /tmp/hamlet-epic-71/67-final-openapi.json`, then `cmp server/openapi.json /tmp/hamlet-epic-71/67-final-openapi.json` — identical.
+- Five consecutive runs of `cargo test --manifest-path server/Cargo.toml --locked --test message_disconnect -- --nocapture`, `cargo test --manifest-path server/Cargo.toml --locked --test message_publication`, and `cargo test --manifest-path server/Cargo.toml --locked --lib messages::operations::tests` — **9 focused tests passed** each run.
+- `cargo fmt --manifest-path client/Cargo.toml --check`
+- `cargo clippy --manifest-path client/Cargo.toml --locked --all-targets -- -D warnings`
+- `cargo test --manifest-path client/Cargo.toml --locked` — **171 passed**, none failed/ignored, including current production-server route/polling journeys.
+- `cargo build --manifest-path client/Cargo.toml --locked`
+- `cargo fmt --manifest-path protocol/Cargo.toml --check`
+- `cargo clippy --manifest-path protocol/Cargo.toml --locked --all-targets -- -D warnings`
+- `cargo test --manifest-path protocol/Cargo.toml --locked` — **4 passed**.
+- `cargo clippy --manifest-path protocol/Cargo.toml --locked --all-targets --features openapi -- -D warnings`
+- `cargo test --manifest-path protocol/Cargo.toml --locked --features openapi` — **5 passed**.
+- `git diff --check` — clean.
+
+Final logs: `67-final-{fmt,clippy,check,test,contract,protocol}.log`, `67-final-client-{fmt,clippy,test,build}.log`, `67-repeat-{1,2,3,4,5}.log`; temporary comparison artifact `67-final-openapi.json`. Source changes are limited to message operation/handler wiring and three message-owned test files; generated server documentation and this appended ledger describe the now-complete creation publication contract.
+
+Handoff: no implementation blocker found. Parent must commit/review and update the tracker; none of those actions were performed by the worker. #68's server/unchanged-desktop verification gate is green, but no client SSE implementation, native acceptance or measured #70 fanout claim is made. Approved residual risk: exceptional owned-task abort/panic requires process restart for SSE; ordinary origin disconnects finish and publish automatically, ordinary DB failures do not latch delivery, and process-crash loss is recovered by fresh authoritative reads rather than durable replay.

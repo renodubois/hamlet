@@ -38,7 +38,7 @@ pub(crate) async fn post_route(
         .get::<Identity>()
         .cloned()
         .expect("protected scope");
-    match operations::post(&db.db, channel_id, identity.user.id, &input.text).await {
+    match operations::post(&db.db, &db.events, channel_id, &identity.user, &input.text).await {
         Ok(message) => HttpResponse::Created().json(message),
         Err(PostError::Invalid) => bad_request(),
         Err(PostError::Missing) => problem(StatusCode::NOT_FOUND, "not_found", "Channel not found"),
