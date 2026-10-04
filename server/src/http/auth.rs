@@ -4,20 +4,68 @@ use crate::{
 };
 use actix_web::{Error, HttpMessage, dev::ServiceRequest, middleware::Next, web};
 use chrono::{DateTime, Utc};
-use sea_orm::{ConnectionTrait, DbBackend, Statement};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 
 #[derive(Clone)]
-pub struct Identity {
+pub(crate) struct Identity {
     pub user: UserIdentity,
-    pub token_digest: String,
+    pub session: Session,
 }
 #[derive(Clone)]
-pub struct UserIdentity {
+pub(crate) struct UserIdentity {
     pub id: i64,
     pub username: String,
 }
 
-/// Extracts a bearer token from a request, and validates what user it belongs to
+/// Private credential material retained for validation, never logged or serialized.
+#[derive(Clone)]
+pub(crate) struct Session {
+    token_digest: String,
+    expires_at: DateTime<Utc>,
+}
+
+impl Session {
+    pub(crate) fn token_digest(&self) -> &str {
+        &self.token_digest
+    }
+    pub(crate) fn expires_at(&self) -> DateTime<Utc> {
+        self.expires_at
+    }
+    pub(crate) async fn validate(&self, db: &DatabaseConnection) -> Result<Option<Identity>, ()> {
+        validate_session(db, &self.token_digest).await
+    }
+}
+
+/// One lookup/expiry policy for both HTTP handshakes and open streams.
+async fn validate_session(
+    db: &DatabaseConnection,
+    token_digest: &str,
+) -> Result<Option<Identity>, ()> {
+    let row = db.query_one_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
+        "SELECT u.id, u.username, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_digest = ?",
+        [token_digest.into()])).await.map_err(|_| ())?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let id = row.try_get("", "id").map_err(|_| ())?;
+    let username = row.try_get("", "username").map_err(|_| ())?;
+    let expiry: String = row.try_get("", "expires_at").map_err(|_| ())?;
+    let expires_at = DateTime::parse_from_rfc3339(&expiry)
+        .map_err(|_| ())?
+        .with_timezone(&Utc);
+    if expires_at <= Utc::now() {
+        return Ok(None);
+    }
+    Ok(Some(Identity {
+        user: UserIdentity { id, username },
+        session: Session {
+            token_digest: token_digest.to_owned(),
+            expires_at,
+        },
+    }))
+}
+
+/// Extracts a bearer token from a request, and validates what user it belongs to.
 pub(crate) async fn bearer(
     req: ServiceRequest,
     next: Next<impl actix_web::body::MessageBody + 'static>,
@@ -28,29 +76,15 @@ pub(crate) async fn bearer(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .filter(|t| !t.is_empty() && !t.contains(' '));
-    let identity = if let (Some(token), Some(db)) = (token, req.app_data::<web::Data<AppState>>()) {
-        match db.db.query_one_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
-            "SELECT u.id, u.username, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_digest = ?",
-            [digest(token).into()])).await {
-            Ok(Some(row)) => {
-                let fields = (|| -> Option<(i64, String, DateTime<chrono::FixedOffset>)> {
-                    Some((row.try_get("", "id").ok()?, row.try_get("", "username").ok()?,
-                        DateTime::parse_from_rfc3339(&row.try_get::<String>("", "expires_at").ok()?).ok()?))
-                })();
-                match fields {
-                    Some((id, username, expiry)) if expiry > Utc::now() => Some(Identity {
-                        user: UserIdentity { id, username }, token_digest: digest(token),
-                    }),
-                    Some(_) => None,
-                    None => return Ok(req.into_response(internal())),
-                }
+    let identity =
+        if let (Some(token), Some(state)) = (token, req.app_data::<web::Data<AppState>>()) {
+            match validate_session(&state.db, &digest(token)).await {
+                Ok(identity) => identity,
+                Err(()) => return Ok(req.into_response(internal())),
             }
-            Ok(None) => None,
-            Err(_) => return Ok(req.into_response(internal())),
-        }
-    } else {
-        None
-    };
+        } else {
+            None
+        };
     match identity {
         Some(identity) => {
             req.extensions_mut().insert(identity);

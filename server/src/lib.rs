@@ -15,11 +15,13 @@ mod bootstrap;
 mod channels;
 pub mod contract;
 mod http;
+pub mod live_updates;
 mod messages;
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: DatabaseConnection,
+    pub events: live_updates::EventHub,
 }
 
 pub async fn connect_to_database(url: &str) -> Result<AppState, String> {
@@ -58,7 +60,11 @@ pub async fn connect_to_database(url: &str) -> Result<AppState, String> {
         .await
         .map_err(|e| format!("channel bootstrap failed: {e}"))?;
 
-    Ok(AppState { db })
+    // Construct once before the worker factory; AppState clones share this hub.
+    Ok(AppState {
+        db,
+        events: live_updates::EventHub::default(),
+    })
 }
 
 fn digest(token: &str) -> String {
@@ -129,7 +135,8 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
                                     })),
                             )
                             .configure(channels::routes)
-                            .configure(messages::routes),
+                            .configure(messages::routes)
+                            .configure(live_updates::routes),
                     )
                     .default_service(web::to(|| async {
                         problem(StatusCode::NOT_FOUND, "not_found", "Not found")

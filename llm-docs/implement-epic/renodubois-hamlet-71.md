@@ -16,7 +16,7 @@ Sequential order follows native hierarchy among runnable issues: #63, #64, #65, 
 | --- | --- | --- | --- | --- | --- | --- |
 | [#63 Shared wire types](https://github.com/renodubois/hamlet/issues/63) | None | Completed; tracker verified CLOSED/COMPLETED | Exact entity/event JSON, 4000-character Unicode/newline body, timestamp/ID/additive fields, unchanged HTTP/OpenAPI artifact, API validation | Protocol 4/5 tests (without/with OpenAPI); server 8 tests; desktop 159 tests; all fmt/clippy/build checks pass | Standards: 0; Spec: 0 actionable findings | `a411f6d` |
 | [#64 Race-safe conversation state](https://github.com/renodubois/hamlet/issues/64) | None | Completed; tracker verified CLOSED/COMPLETED | Entity merging, replacing/older read races, bounded staging, recovery preservation | Desktop check/fmt/clippy/test/build pass; 171 tests | Standards: no violations, 2 optional cleanups; Spec: 0 findings | `402c872` |
-| [#65 Authenticated bounded SSE](https://github.com/renodubois/hamlet/issues/65) | #63 | Planned | Hub, framing/readiness, authentication lifecycle, bounds, contract | Not run | Pending | — |
+| [#65 Authenticated bounded SSE](https://github.com/renodubois/hamlet/issues/65) | #63 | Implemented and verified; uncommitted, tracker unchanged | Protected SSE, shared 256-event hub, framing/readiness, priority validation/expiry, bounded lag, cross-worker/disconnect, contract | Server 22 tests; desktop 171 tests; fmt/clippy/build and artifact checks pass | Pending parent reviews | — |
 | [#66 Channel publication](https://github.com/renodubois/hamlet/issues/66) | #65 | Planned | Matching channel payloads, write failures, cancellation, safe publication | Not run | Pending | — |
 | [#67 Message publication](https://github.com/renodubois/hamlet/issues/67) | #65 | Planned | Matching message payloads, pre-write author preparation, failures/cancellation | Not run | Pending | — |
 | [#68 Desktop API stream](https://github.com/renodubois/hamlet/issues/68) | #66, #67 | Planned | Verified server gate; bound transport, incremental parsing/validation, deadlines, bounded delivery | Not run | Pending | — |
@@ -48,7 +48,7 @@ Sequential order follows native hierarchy among runnable issues: #63, #64, #65, 
 
 ## Resume checkpoint
 
-#63 and #64 closed with evidence and parent progress comments; next frontier: #65. Parallel read-only Standards and Spec reviewers read the complete committed diff and passed. Initial reviewer attempts lacked command tools; supplied complete diff artifacts for the successful second reviews. All commits remain local/unpushed.
+#63 and #64 closed with evidence and parent progress comments. #65 is now implemented and verified in the working tree from baseline `3a5a55dd20c3944a07411835e14976c5ec16cc99`, awaiting parent commit/reviews/tracker handling. This worker made no commit or tracker change. Prior parallel read-only Standards and Spec reviewers read the complete committed #63/#64 diffs and passed. Initial reviewer attempts lacked command tools; supplied complete diff artifacts for the successful second reviews. All prior commits remain local/unpushed.
 
 ### #63 verification
 
@@ -119,3 +119,65 @@ All passed from `client/`:
 `git diff --check` passed. Final logs: `/tmp/hamlet-epic-71/64-final-{check,fmt,clippy,test,build}.log`.
 
 Handoff to #69: call reset from the conversation coordinator, cancel/invalidate its read tasks (not writes), route merge errors/HTTP overflow observation into global recovery, and consume the revision in history presentation. This child intentionally does not activate those paths, remove polling-era workflows, or add a second synchronization policy. Existing polling confirmation queues/catch-up behavior remain until cutover. No native automation or real keyring access; no native acceptance claimed.
+
+### #65 implementation and verification evidence
+
+Baseline: `3a5a55dd20c3944a07411835e14976c5ec16cc99` on `live-updates`. Worker scope was only approved #65, as sole writer. No commit, branch change, tracker mutation, or child #66/#67 implementation. Parent owns commit and subsequent Standards/Spec reviews.
+
+Implemented:
+
+- Protected `GET /api/v1/events`, standard bearer/error distinctions and authenticated uniform 405s. Explicit `text/event-stream`, identity encoding, no-cache/no-transform and local proxy buffering hint. Compression bypass is exercised through real loopback with Actix Compress enabled.
+- `AppState` initializes one clone-sharing concrete hub before the existing worker factory. Synchronous `notify(Event)` serializes once into immutable shared Bytes, retains at most 256 events and treats no receivers as normal. Subscription registration precedes ready. Lag before/after readiness is terminal rather than Tokio cursor recovery; drop/terminal body cleanup releases retention.
+- Complete ready `{}`, tagged change JSON, escaped Unicode/newlines and heartbeat-comment frames. No IDs or replay; Last-Event-ID yields a fresh subscription. No channel/message operation publishes yet, and desktop polling/build behavior remains intact.
+- Shared session lookup extracted from bearer middleware; private digest/expiry with no raw-token storage in the stream. Direct deadline checks plus prioritized timers prevent busy events from delaying expiry or due validation. Pending validation suppresses changes and heartbeats. Expiry also interrupts a blocked validation future. Revocation/expiry/missing session/database failure closes the stream body without replacing its already-sent HTTP status.
+- OpenAPI endpoint/Event schema, generated artifact and explicit source inventory updated. Representative contract response reads exactly one bounded frame. Language-neutral contract in `llm-docs/server/LIVE-UPDATES.md` covers framing, recovery, bounds, auth versus EOF, deployment and provisional compatibility; generated overview/architecture links updated.
+- Minimal dependency edges: direct futures-util (std only) and explicit Tokio sync/time/macros plus test clock/I/O features. Deliberate unlocked checks updated both component locks; the final lockfile diffs each add only the hamlet → futures-util edge, with no package version changes. No root workspace or migration.
+
+#### Red/green slices
+
+All commands used `--manifest-path server/Cargo.toml`; `cargo test` commands below also used `--locked`. Raw logs are under `/tmp/hamlet-epic-71/65-*` (the durable evidence is this ledger).
+
+| Slice | Failing seam/test before implementation | Observed red | Green result |
+| --- | --- | --- | --- |
+| 01 | `--test live_updates protected_stream` | Protected events path returned 404 instead of 405 | Protected route and finite ready frame passed |
+| 02 | `--test live_updates subscription_precedes` | AppState had no event hub | Two registered subscribers receive ready then one escaped change; pre-subscription notification is not replayed |
+| 03 | `--test live_updates idle_stream` | Bounded heartbeat read timed out | Controlled 15-second advance yields a comment |
+| 04 | `--test live_updates revoked_session` | Revoked idle stream emitted heartbeat instead of EOF | Idle and queued/busy revocation passed after shared validation extraction and priority checks |
+| 05 | `--test live_updates known_expiry` | Expired idle stream did not end within bounded read | Idle, queued and not-yet-ready expiry all terminate |
+| 06 | `--test live_updates lag_terminates` | Due heartbeat escaped before lag termination | Lagged pre/post-ready bodies terminate without further frames |
+| 08 | `--test live_updates protected_stream` | Missing explicit identity encoding | Header test and real compression-middleware bypass pass |
+| 10 | `--test contract` | New registered endpoint absent from OpenAPI inventory | Artifact/schema/source inventory and bounded HTTP example pass |
+
+Development corrections: the first route-test compilation used unsupported HeaderMap indexing; corrected before its behavioral red run. The initial event fixture used `username` rather than the existing Author `display_name`; corrected without changing the protocol. During slice 04, queued events exposed that biased timer polling alone did not cover timer-wheel granularity; direct deadline checks fixed that priority gap. These are recorded rather than counted as acceptance passes.
+
+Additional characterization (`65-07`, `65-09`, `65-11` logs) proved:
+
+- A real single-connection SQLite transaction blocks revalidation deterministically. No heartbeat/change is delivered while blocked; releasing it resumes only after successful validation, and known expiry terminates even before the barrier releases.
+- Dropping the sessions table closes the existing 200 stream without an error frame; a new handshake returns 500/internal_error, not 401. Logout's subsequent handshake returns the ordinary 401.
+- Fourteen successive clock advances and delivered changes after logout cannot restart the validation interval: the queued change at the fifteenth second is not delivered.
+- Exact capacity 256 remains readable; event 257 causes pre-ready lag. Payload pointer identity demonstrates immutable allocation sharing; retained count stays 256 during a 1024-event burst, then falls to zero when subscribers drop. Terminal HTTP lag releases its receiver even while the caller retains the ended body.
+- Real HTTP/1.1 subscribers on **two distinct Actix workers** (test-only worker response IDs) receive the same exact channel frame. Finite chunk-decoded reads have five-second bounds and a 64 KiB test accumulation limit. Dropping TCP readers and subsequent writes cause receiver/retention counts to reach zero.
+
+The initial loopback characterization expected TCP FIN alone to release an indefinite HTTP/1 response within five seconds; that expectation failed. Installed Actix HTTP 3.13.6 dispatcher source confirms permitted read-half closure. The corrected transport test uses bounded follow-up notifications to detect the vanished reader (idle heartbeats provide such writes in production). This is documented, not claimed as immediate FIN cancellation, and no global transport redesign or cancellation registry was introduced. An indefinitely stalled database suppresses heartbeats/delivery until validation resolves or known expiry; it does not let queued events escape.
+
+#### Final verification
+
+All commands passed from repository root:
+
+- `cargo check --manifest-path server/Cargo.toml --locked`
+- `cargo fmt --manifest-path server/Cargo.toml --check`
+- `cargo fmt --manifest-path server/migration/Cargo.toml --check`
+- `cargo clippy --manifest-path server/Cargo.toml --locked --all-targets -- -D warnings`
+- `cargo test --manifest-path server/Cargo.toml --locked` — **22 passed**, including all 8 prior tests, 10 HTTP lifecycle tests and 4 focused/transport tests; none ignored.
+- `cargo test --manifest-path server/Cargo.toml --locked --test contract` — **2 passed**; also included in the full 22.
+- `cargo run --manifest-path server/Cargo.toml --locked --quiet --bin generate-openapi` to a temporary artifact, then `cmp` against `server/openapi.json` — identical.
+- Five additional consecutive runs of both `--test live_updates` and `--lib live_updates` — all **14 tests passed** on every run.
+- `cargo fmt --manifest-path client/Cargo.toml --check`
+- `cargo clippy --manifest-path client/Cargo.toml --locked --all-targets -- -D warnings`
+- `cargo test --manifest-path client/Cargo.toml --locked` — **171 passed**, polling and existing real-server journeys retained.
+- `cargo build --manifest-path client/Cargo.toml --locked`
+- `git diff --check`
+
+Final logs: `/tmp/hamlet-epic-71/65-final-{fmt,clippy,test,check,contract}.log`, `65-final-client-{fmt,clippy,test,build}.log`, `65-repeat-{1,2,3,4,5}.log`; generated comparison artifact `65-final-openapi.json`. Official WHATWG, Tokio and Actix sources are cited in the contract; installed APIs were inspected as well. No native UI automation/keyring access or human-authored/README/legacy-client edits.
+
+Handoff: implementation is uncommitted and ready for parent review/commit. No material design blocker found. #66/#67 must add safe creation publication and cancellation evidence before claiming production changes flow; #68/#69 own client streaming and eventual polling removal. This ticket does not claim measured fanout capacity, durable delivery, or the full epic's server/client cutover.

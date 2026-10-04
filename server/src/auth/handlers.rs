@@ -56,7 +56,7 @@ pub(crate) async fn logout(db: web::Data<AppState>, req: actix_web::HttpRequest)
         .get::<Identity>()
         .cloned()
         .expect("protected scope");
-    match operations::logout(&db.db, &identity.token_digest).await {
+    match operations::logout(&db.db, identity.session.token_digest()).await {
         Ok(()) => HttpResponse::NoContent().finish(),
         Err(_) => internal(),
     }

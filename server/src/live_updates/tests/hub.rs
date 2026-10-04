@@ -1,0 +1,131 @@
+use super::*;
+use hamlet_protocol::{Channel, ChannelType};
+
+async fn frame(subscription: &mut Subscription) -> Option<Bytes> {
+    tokio::time::timeout(std::time::Duration::from_secs(2), subscription.next_frame())
+        .await
+        .expect("bounded hub frame")
+}
+
+pub(super) fn change() -> Event {
+    Event::ChannelCreated {
+        channel: Channel {
+            id: "100000000000001".into(),
+            name: "general".into(),
+            kind: ChannelType::Text,
+        },
+    }
+}
+
+#[tokio::test]
+async fn retention_is_bounded_and_shared_and_drop_releases_subscriptions() {
+    let hub = EventHub::default();
+    hub.notify(change());
+    assert_eq!(hub.sender.len(), 0);
+    let mut first = hub.subscribe();
+    let mut second = hub.clone().subscribe();
+    assert_eq!(hub.sender.receiver_count(), 2);
+    frame(&mut first).await.unwrap();
+    frame(&mut second).await.unwrap();
+    hub.notify(change());
+    let one = frame(&mut first).await.unwrap();
+    let two = frame(&mut second).await.unwrap();
+    assert_eq!(
+        one.as_ptr(),
+        two.as_ptr(),
+        "immutable payload allocation shared by subscribers"
+    );
+    assert_eq!(hub.sender.len(), 0);
+    for _ in 0..1024 {
+        hub.notify(change());
+    }
+    assert_eq!(hub.sender.len(), 256);
+    assert!(frame(&mut first).await.is_none());
+    hub.notify(change());
+    assert!(
+        frame(&mut first).await.is_none(),
+        "lag is terminal, not cursor recovery"
+    );
+    drop(first);
+    drop(second);
+    assert_eq!(hub.sender.receiver_count(), 0);
+    assert_eq!(hub.sender.len(), 0);
+}
+
+#[actix_web::test]
+async fn terminal_http_bodies_release_lagged_subscription_without_waiting_for_client_drop() {
+    use crate::{connect_to_database, routes};
+    use actix_web::{App, body::MessageBody, test, web};
+    use serde_json::{Value, json};
+    use std::{pin::Pin, time::Duration};
+
+    let state = connect_to_database("sqlite::memory:").await.unwrap();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state.clone()))
+            .configure(routes),
+    )
+    .await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/api/v1/auth/signup")
+            .set_json(json!({"username":"Alice", "password":"long password"}))
+            .to_request(),
+    )
+    .await;
+    let auth: Value = test::read_body_json(response).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/events")
+            .insert_header((
+                "Authorization",
+                format!("Bearer {}", auth["access_token"].as_str().unwrap()),
+            ))
+            .to_request(),
+    )
+    .await;
+    let mut body = response.into_body();
+    assert_eq!(state.events.sender.receiver_count(), 1);
+    for _ in 0..257 {
+        state.events.notify(change());
+    }
+    let terminal = tokio::time::timeout(
+        Duration::from_secs(2),
+        std::future::poll_fn(|cx| Pin::new(&mut body).poll_next(cx)),
+    )
+    .await
+    .unwrap();
+    assert!(terminal.is_none());
+    assert_eq!(state.events.sender.receiver_count(), 0);
+    assert_eq!(state.events.sender.len(), 0);
+    drop(body);
+}
+
+#[tokio::test]
+async fn full_capacity_is_deliverable_but_one_more_before_ready_is_terminal() {
+    let hub = EventHub::default();
+    let mut subscriber = hub.subscribe();
+    for _ in 0..256 {
+        hub.notify(change());
+    }
+    assert_eq!(
+        frame(&mut subscriber).await.unwrap(),
+        "event: ready\ndata: {}\n\n"
+    );
+    for _ in 0..256 {
+        assert!(
+            frame(&mut subscriber)
+                .await
+                .unwrap()
+                .starts_with(b"event: change\n")
+        );
+    }
+    let mut late = hub.subscribe();
+    for _ in 0..257 {
+        hub.notify(change());
+    }
+    assert!(frame(&mut late).await.is_none());
+    assert!(frame(&mut late).await.is_none());
+}

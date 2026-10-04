@@ -1,7 +1,7 @@
-use actix_web::{App, http::StatusCode, test, web};
+use actix_web::{App, body::MessageBody, http::StatusCode, test, web};
 use hamlet::{connect_to_database, contract, routes};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, pin::Pin, time::Duration};
 
 // The explicit API inventory cross-checks annotations against Actix registrations.
 // The source scan below fails if a new GET/POST handler is registered without inventory coverage.
@@ -10,6 +10,7 @@ const INVENTORY: &[(&str, &str, &str, u16, bool)] = &[
     ("post", "/api/v1/auth/login", "login", 200, false),
     ("post", "/api/v1/auth/logout", "logout", 204, true),
     ("get", "/api/v1/me", "me", 200, true),
+    ("get", "/api/v1/events", "events", 200, true),
     ("post", "/api/v1/channels", "create_route", 201, true),
     ("get", "/api/v1/channels", "list_route", 200, true),
     (
@@ -58,6 +59,7 @@ async fn generated_contract_is_current_and_covers_every_registered_handler() {
         include_str!("../src/lib.rs"),
         include_str!("../src/channels/mod.rs"),
         include_str!("../src/messages/mod.rs"),
+        include_str!("../src/live_updates/mod.rs"),
     ];
     assert!(sources[0].contains("web::scope(\"/api/v1\")"));
     let mut registered = Vec::new();
@@ -86,7 +88,7 @@ async fn generated_contract_is_current_and_covers_every_registered_handler() {
         }
     }
     assert_eq!(
-        resource_count, 6,
+        resource_count, 7,
         "new Actix resources require an inventory entry"
     );
     registered.sort();
@@ -115,6 +117,7 @@ async fn generated_contract_is_current_and_covers_every_registered_handler() {
             ("400", "bad_request"),
             ("401", "unauthorized"),
             ("404", "not_found"),
+            ("405", "method_not_allowed"),
             ("409", "conflict"),
             ("500", "internal_error"),
         ] {
@@ -147,6 +150,19 @@ async fn generated_contract_is_current_and_covers_every_registered_handler() {
     assert_eq!(
         doc["components"]["securitySchemes"]["bearer_auth"]["scheme"],
         "bearer"
+    );
+    let stream = &doc["paths"]["/api/v1/events"]["get"];
+    assert_eq!(
+        stream["responses"]["200"]["content"]["text/event-stream"]["schema"]["type"],
+        "string"
+    );
+    assert!(stream["responses"].get("405").is_some());
+    assert_eq!(
+        doc["components"]["schemas"]["Event"]["oneOf"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
     );
     let params = doc["paths"]["/api/v1/channels/{channel_id}/messages"]["get"]["parameters"]
         .as_array()
@@ -237,6 +253,23 @@ async fn documented_security_and_error_shapes_match_http() {
         };
         let response = test::call_service(&app, request.to_request()).await;
         assert_eq!(response.status().as_u16(), success, "{method} {path}");
+        if handler == "events" {
+            assert_eq!(
+                response.headers().get("content-type").unwrap(),
+                "text/event-stream"
+            );
+            let mut body = response.into_body();
+            let frame = tokio::time::timeout(
+                Duration::from_secs(2),
+                std::future::poll_fn(|cx| Pin::new(&mut body).poll_next(cx)),
+            )
+            .await
+            .expect("bounded first frame")
+            .unwrap()
+            .unwrap();
+            assert_eq!(frame, "event: ready\ndata: {}\n\n");
+            // Drop the unbounded response. Never collect an SSE body to EOF.
+        }
     }
     let response = test::call_service(
         &app,

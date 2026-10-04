@@ -3589,6 +3589,7 @@ dependencies = [
  "argon2",
  "base64 0.22.1",
  "chrono",
+ "futures-util",
  "hamlet-migration",
  "hamlet-protocol",
  "rand 0.9.5",
