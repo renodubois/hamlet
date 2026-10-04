@@ -14,7 +14,7 @@ Sequential order follows native hierarchy among runnable issues: #63, #64, #65, 
 
 | Issue | Blockers | Status | Acceptance coverage / evidence | Tests / results | Review | Commits |
 | --- | --- | --- | --- | --- | --- | --- |
-| [#63 Shared wire types](https://github.com/renodubois/hamlet/issues/63) | None | In progress; implementation verified | Exact entity/event JSON, 4000-character Unicode/newline body, timestamp/ID/additive fields, unchanged HTTP/OpenAPI artifact, API validation | Protocol 4/5 tests (without/with OpenAPI); server 8 tests; desktop 159 tests; all fmt/clippy/build checks pass | Pending committed-diff reviews | Pending |
+| [#63 Shared wire types](https://github.com/renodubois/hamlet/issues/63) | None | Completed; tracker verified CLOSED/COMPLETED | Exact entity/event JSON, 4000-character Unicode/newline body, timestamp/ID/additive fields, unchanged HTTP/OpenAPI artifact, API validation | Protocol 4/5 tests (without/with OpenAPI); server 8 tests; desktop 159 tests; all fmt/clippy/build checks pass | Standards: 0; Spec: 0 actionable findings | `a411f6d` |
 | [#64 Race-safe conversation state](https://github.com/renodubois/hamlet/issues/64) | None | Planned | Entity merging, replacing/older read races, bounded staging, recovery preservation | Not run | Pending | — |
 | [#65 Authenticated bounded SSE](https://github.com/renodubois/hamlet/issues/65) | #63 | Planned | Hub, framing/readiness, authentication lifecycle, bounds, contract | Not run | Pending | — |
 | [#66 Channel publication](https://github.com/renodubois/hamlet/issues/66) | #65 | Planned | Matching channel payloads, write failures, cancellation, safe publication | Not run | Pending | — |
@@ -48,7 +48,7 @@ Sequential order follows native hierarchy among runnable issues: #63, #64, #65, 
 
 ## Resume checkpoint
 
-Current issue: #63 claimed and announced; implementation/checks complete, awaiting committed-diff reviews. Next frontier after closure: #64.
+#63 closed with evidence and parent progress comment; next frontier: #64. Parallel read-only Standards and Spec reviewers read the complete committed diff and passed. Initial reviewer attempts lacked command tools; supplied complete diff artifacts for the successful second reviews. All commits remain local/unpushed.
 
 ### #63 verification
 
