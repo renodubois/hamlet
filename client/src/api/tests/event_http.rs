@@ -92,7 +92,7 @@ fn real_stream_redirect_never_forwards_the_bound_bearer(cx: &mut TestAppContext)
     actix_web::rt::System::new().block_on(async {
         let destination = TcpListener::bind("127.0.0.1:0").unwrap();
         destination.set_nonblocking(true).unwrap();
-        let (origin, captured) = super::super::tests::server(format!(
+        let (origin, captured) = super::super::http_support::server(format!(
             "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{}/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", destination.local_addr().unwrap()
         ));
         let client = HttpTransport::new().server(&origin).unwrap().restore_candidate("synthetic-bound".into()).unwrap();

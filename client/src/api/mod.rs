@@ -27,6 +27,10 @@ pub(crate) mod test_support {
 }
 
 #[cfg(test)]
+#[path = "tests/support/http.rs"]
+mod http_support;
+
+#[cfg(test)]
 #[path = "tests/binding.rs"]
 mod binding_tests;
 #[cfg(test)]

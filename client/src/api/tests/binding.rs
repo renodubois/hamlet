@@ -1,5 +1,5 @@
+use super::http_support::{response, server};
 use super::test_support::{RequestAdapter, Response};
-use super::tests::{response, server};
 use super::*;
 use reqwest::{Request, StatusCode};
 use std::{
