@@ -29,9 +29,7 @@ async fn await_conversation(
 }
 
 #[gpui_kit::test]
-fn second_user_creations_arrive_on_unfocused_stream_without_followup_reads(
-    cx: &mut TestAppContext,
-) {
+fn second_user_creations_arrive_on_session_stream_without_followup_reads(cx: &mut TestAppContext) {
     actix_web::rt::System::new().block_on(async {
         use actix_web::{App, HttpServer, web};
         let dir = tempfile::tempdir().unwrap();
@@ -77,7 +75,7 @@ fn second_user_creations_arrive_on_unfocused_stream_without_followup_reads(
             alice.client,
             Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600),
         );
-        activity.start(false);
+        activity.start();
         await_conversation(cx, &activity, |activity| {
             matches!(
                 activity.read().history.get(&channel),
@@ -177,7 +175,7 @@ fn server_history_traverses_multiple_pages_with_timestamp_ties(cx: &mut TestAppC
             login.client.clone(),
             Execution::controlled(cx.background_executor.clone(), login.expires_at - 3600),
         );
-        activity.start(false);
+        activity.start();
         await_conversation(cx, &activity, |activity| {
             matches!(
                 activity.read().history.get(&channel),

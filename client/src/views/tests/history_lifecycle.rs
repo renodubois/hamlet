@@ -88,7 +88,7 @@ fn independent_history_hydrates_cache_recreates_and_clears_when_hidden(cx: &mut 
         client,
         Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
     );
-    activity.start(false);
+    activity.start();
     // Load before constructing the child: construction must hydrate, not initiate reads.
     loop {
         cx.run_until_parked();
@@ -167,7 +167,7 @@ fn history_shutdown_clears_selected_text(cx: &mut TestAppContext) {
         client,
         Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
     );
-    activity.start(false);
+    activity.start();
     let (_, cx) = cx.add_window_view(|window, cx| {
         let history = cx.new(|cx| MessageHistoryView::new(activity.clone(), window, cx));
         let host = cx.new(|_| HistoryHost {
@@ -258,7 +258,7 @@ fn healthy_events_keep_reader_anchor_but_recovery_resets_identical_ids_to_newest
         client,
         Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
     );
-    activity.start(false);
+    activity.start();
     let (_, cx) = cx.add_window_view(|window, cx| {
         let history = cx.new(|cx| MessageHistoryView::new(activity.clone(), window, cx));
         let host = cx.new(|_| HistoryHost {

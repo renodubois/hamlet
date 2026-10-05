@@ -10,7 +10,7 @@ fn independent_observers_receive_intentions_completions_and_shutdown(cx: &mut Te
     let (activity, calls, streams) = fixture(cx);
     let sidebar = activity.notifications();
     let layout = activity.notifications();
-    activity.start(false);
+    activity.start();
     assert!(sidebar.try_recv().is_ok());
     assert!(layout.try_recv().is_ok());
     drain(cx, &activity);
@@ -89,8 +89,7 @@ fn closed_activity_discards_queued_pages_creates_sends_and_rejections(cx: &mut T
         let survivor = activity.clone();
         activity.close();
         drain(cx, &survivor);
-        survivor.start(true);
-        survivor.set_focused(true);
+        survivor.start();
         survivor.select_channel("1");
         survivor.edit_draft("cannot reopen".into());
         survivor.send();
@@ -141,7 +140,7 @@ fn current_read_and_stream_rejections_close_before_host_removes_workspace(cx: &m
 }
 
 #[gpui_kit::test]
-fn expiry_timer_remains_active_while_unfocused_and_retrying(cx: &mut TestAppContext) {
+fn expiry_timer_remains_active_while_retrying(cx: &mut TestAppContext) {
     let (activity, _, streams, stream) = ready(cx);
     stream.body.close();
     drain(cx, &activity);

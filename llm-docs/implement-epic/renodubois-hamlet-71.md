@@ -563,3 +563,46 @@ Exact changed paths (including preserved checkpoint A work):
 - View production: `client/src/views/channel_sidebar.rs`, `client/src/views/conversation/message_history.rs`.
 - View tests: `client/src/views/tests/bound_auth.rs`, `client/src/views/tests/channels.rs`, `client/src/views/tests/composer.rs`, `client/src/views/tests/composer_lifecycle.rs`, `client/src/views/tests/execution.rs`, `client/src/views/tests/history.rs`, `client/src/views/tests/history_lifecycle.rs`, `client/src/views/tests/journeys.rs`, `client/src/views/tests/login.rs`, `client/src/views/tests/mod.rs`, `client/src/views/tests/protected_binding.rs`, `client/src/views/tests/session_lifecycle.rs`, `client/src/views/tests/workspace.rs`, `client/src/views/tests/live_updates.rs` (new), `client/src/views/tests/polling.rs` (deleted/replaced).
 - Generated documentation: `llm-docs/client/ARCHITECTURE.md`, `llm-docs/client/OVERVIEW.md`, `llm-docs/client/LIVE-UPDATES.md`, `llm-docs/implement-epic/renodubois-hamlet-71.md` (this append; historical evidence unchanged).
+
+### #69 review fixes — confirmation retirement, test support, inert focus plumbing
+
+Sole-writer follow-up on committed cutover HEAD `7c75c3b662b4d0dd00f3582ce4bfdd93c7d9a838`. Only #69 review findings addressed. No commit, tracker mutation, dependency/lockfile, server/latch, legacy, human documentation, native automation or real-keyring changes.
+
+#### Precise confirmation-retirement invariant
+
+`Conversation.confirmed` is an unresolved write/read overlay, not a session-long message cache. A valid HTTP confirmation merged directly into `Load::Ready` history (selected or inactive) needs no overlay. A confirmation without authoritative loaded history remains available across failed/overflowed/canceled/obsolete reads, navigation and repeated recovery resets. The originating channel's first current, successful replacing history consumes and merges that overlay, then releases its bodies. Another channel's baseline cannot settle it. Later recovery takes only the new newest page plus genuinely unresolved writes/concurrent creations; reconciled old confirmations are not resurrected outside that page. Pending identities, draft clearing, uncertainty and feedback transitions are unchanged. Inactive unresolved writes remain pending reconciliation until their own first successful baseline or teardown, not as reusable history after reconciliation.
+
+Tests use the existing owner-local pure conversation-state seam. New behavioral regressions cover healthy A falling outside a later newest page; outage A surviving two obsolete-read resets and a failed baseline before reconciliation, then disappearing outside a later page; and confirmations completing while inactive, both loaded/direct-merge and canceled/retargeted-read variants. The pre-existing reset preservation scenario expected a healthy, already-reconciled confirmation absent from its synthetic new snapshot to be resurrected; its expected rows now correctly exclude that entity while preserving pending/outage writes, drafts and uncertainty.
+
+#### Red/green and focused checks
+
+Logs are under `/tmp/hamlet-epic-71/`; focused commands use `cargo test --manifest-path client/Cargo.toml --locked <filter>`.
+
+- `69-review-01-red.log`: `healthy_confirmation_is_not_reinserted_outside_a_later_newest_page` failed with `[100, 10]` instead of `[100]`. `69-review-01-green.log`: passed after stopping overlay retention for direct authoritative merges.
+- `69-review-02-red.log`: `outage_confirmation_survives_repeated_resets_only_until_its_baseline_reconciles` preserved the unresolved write correctly, then failed because the reconciled old entity reappeared in the later page. `69-review-02-green.log`: all **51 conversation tests** pass after consuming the overlay at successful replacement, adding inactive/retarget coverage, and correcting the obsolete healthy-confirmation expectation above. Existing staging-overflow, pending identity, duplicate event/HTTP ordering, uncertainty and route scenarios pass.
+- `69-review-03-views.log`: all **51 view tests** pass after moving only the new shared `open_controlled`/`open_with_streams` helpers into `views/tests/support/mod.rs`. Parent test-module imports retain suite access; support still calls production `app_shell::open`. An unused parent import exposed by this move was removed before strict final lint.
+- Removed the inert `ConversationHandle::set_focused`, the ignored `start` argument, and AppShell's activation subscription/handle field used only by it. Updated callers and misleading coordinator-only focus assertions/names; the real window-focus scenario is unchanged. `69-review-04-focus.log`: actual GPUI window activation/event delivery test passes. `69-review-04-expiry.log`: **7 expiry tests** pass. After import cleanup, `69-review-04-conversation.log`, `69-review-04-views.log`, `69-review-04-session.log`: **51 conversation**, **51 view**, **7 session-coordinator** tests pass.
+
+#### Final verification
+
+All commands passed from `client/` after the last source edit:
+
+- `cargo fmt --check` — `69-review-final-fmt.log`.
+- `cargo clippy --locked --all-targets -- -D warnings` — `69-review-final-clippy.log`.
+- `cargo test --locked` — **186 passed, 0 failed, 0 ignored**, `69-review-final-test.log`.
+- `cargo build --locked` — `69-review-final-build.log`.
+- `git diff --check` — clean. No native acceptance claimed.
+
+Exact changed paths for this follow-up:
+
+- `client/src/conversation/state.rs` — retain only unresolved confirmations; consume reconciled overlays.
+- `client/src/conversation/tests/live_state.rs` — three retirement/race regressions and corrected healthy-confirmation expectation.
+- `client/src/conversation/mod.rs` — remove no-op focus interface.
+- `client/src/conversation/tests/coordinator.rs`, `client/src/conversation/tests/live_coordinator.rs`, `client/src/conversation/tests/route.rs`, `client/src/conversation/tests/support/live.rs` — no-argument start callers; replace assertions/names that implied a nonexistent focus seam.
+- `client/src/session/tests/coordinator.rs` — no-argument start/no-op removal.
+- `client/src/views/app_shell.rs` — remove inert activation subscription and its now-unneeded stored handle; retain session ownership and delivery loop.
+- `client/src/views/tests/composer_lifecycle.rs`, `client/src/views/tests/history_lifecycle.rs`, `client/src/views/tests/workspace.rs` — no-argument start callers.
+- `client/src/views/tests/mod.rs`, `client/src/views/tests/support/mod.rs` (new) — move shared construction helpers into test-only support without widening production visibility.
+- `llm-docs/implement-epic/renodubois-hamlet-71.md` — this append only.
+
+Handoff: verified uncommitted fixes, ready for parent review/commit. No blocker; no broader runtime or recovery redesign.

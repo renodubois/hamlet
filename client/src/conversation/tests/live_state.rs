@@ -50,6 +50,170 @@ fn ids(state: &Conversation) -> Vec<&str> {
 }
 
 #[test]
+fn healthy_confirmation_is_not_reinserted_outside_a_later_newest_page() {
+    let (mut state, mut session, read) = loading();
+    state.complete_history(&mut session, &read, Ok(page(vec![], None)));
+    state.set_draft("1", "accepted".into());
+    let send = state.send(&session).unwrap();
+    assert_eq!(
+        state.complete_send(
+            &mut session,
+            &send,
+            Ok(message("10", "2026-01-01T00:00:00Z")),
+            0,
+        ),
+        SendOutcome::Confirmed
+    );
+    assert_eq!(ids(&state), ["10"]);
+
+    state.reset_for_recovery();
+    let newest = state.select(&session, "1").unwrap();
+    state.complete_history(
+        &mut session,
+        &newest,
+        Ok(page(
+            vec![message("100", "2026-01-02T00:00:00Z")],
+            Some("older"),
+        )),
+    );
+    assert_eq!(
+        ids(&state),
+        ["100"],
+        "recovery loads newest, not old confirmed fragments"
+    );
+    assert_eq!(state.draft("1"), "");
+    assert!(!state.uncertain.contains("1"));
+    assert!(!state.send_pending.contains_key("1"));
+    assert!(!state.send_feedback.contains_key("1"));
+}
+
+#[test]
+fn outage_confirmation_survives_repeated_resets_only_until_its_baseline_reconciles() {
+    let (mut state, mut session, read) = loading();
+    state.complete_history(&mut session, &read, Ok(page(vec![], None)));
+    state.reset_for_recovery();
+    state.set_draft("1", "outage write".into());
+    let send = state.send(&session).unwrap();
+    assert_eq!(
+        state.complete_send(
+            &mut session,
+            &send,
+            Ok(message("10", "2026-01-01T00:00:00Z")),
+            0,
+        ),
+        SendOutcome::Confirmed
+    );
+    state.set_draft("1", "next draft".into());
+    for _ in 0..2 {
+        let obsolete = state.select(&session, "1").unwrap();
+        state.reset_for_recovery();
+        state.complete_history(&mut session, &obsolete, Ok(page(vec![], None)));
+    }
+    let failed = state.select(&session, "1").unwrap();
+    state.complete_history(&mut session, &failed, Err(ApiError::Unavailable));
+    state.reset_for_recovery();
+    let baseline = state.select(&session, "1").unwrap();
+    state.complete_history(&mut session, &baseline, Ok(page(vec![], None)));
+    assert_eq!(
+        ids(&state),
+        ["10"],
+        "unresolved confirmation survives attempt loss"
+    );
+    assert_eq!(state.draft("1"), "next draft");
+    assert!(!state.uncertain.contains("1"));
+
+    state.reset_for_recovery();
+    let later = state.select(&session, "1").unwrap();
+    state.complete_history(
+        &mut session,
+        &later,
+        Ok(page(
+            vec![message("100", "2026-01-02T00:00:00Z")],
+            Some("older"),
+        )),
+    );
+    assert_eq!(
+        ids(&state),
+        ["100"],
+        "reconciled confirmations are not a second history cache"
+    );
+    assert_eq!(state.draft("1"), "next draft");
+    assert_eq!(
+        state.complete_send(&mut session, &send, Err(ApiError::Unavailable), 0),
+        SendOutcome::Stale
+    );
+    assert!(!state.uncertain.contains("1"));
+}
+
+#[test]
+fn inactive_confirmations_retire_after_direct_merge_or_their_own_retargeted_baseline() {
+    for loaded in [false, true] {
+        let (mut state, mut session, original) = loading();
+        if loaded {
+            state.complete_history(&mut session, &original, Ok(page(vec![], None)));
+        }
+        state.set_draft("1", "accepted".into());
+        let send = state.send(&session).unwrap();
+        let other = state.select(&session, "2").unwrap();
+        assert_eq!(
+            state.complete_send(
+                &mut session,
+                &send,
+                Ok(message("10", "2026-01-01T00:00:00Z")),
+                0,
+            ),
+            SendOutcome::Confirmed
+        );
+        state.complete_history(&mut session, &original, Ok(page(vec![], None)));
+        state.complete_history(&mut session, &other, Ok(page(vec![], None)));
+        assert_eq!(state.selected.as_deref(), Some("2"));
+        assert_eq!(state.history.get("2"), Some(&Load::Ready(vec![])));
+        if loaded {
+            assert_eq!(
+                ids(&state),
+                ["10"],
+                "inactive loaded history accepts direct merge"
+            );
+        } else {
+            assert!(
+                !state.history.contains_key("1"),
+                "confirmation must not allocate an inactive cache"
+            );
+            state.reset_for_recovery();
+            let canceled = state.select(&session, "1").unwrap();
+            let other = state.select(&session, "2").unwrap();
+            state.complete_history(&mut session, &canceled, Ok(page(vec![], None)));
+            state.complete_history(&mut session, &other, Ok(page(vec![], None)));
+            let current = state.select(&session, "1").unwrap();
+            state.complete_history(&mut session, &current, Ok(page(vec![], None)));
+            assert_eq!(
+                ids(&state),
+                ["10"],
+                "only the originating channel's current baseline reconciles the write"
+            );
+        }
+        state.select(&session, "2");
+        state.reset_for_recovery();
+        let current = state.select(&session, "1").unwrap();
+        state.complete_history(
+            &mut session,
+            &current,
+            Ok(page(
+                vec![message("100", "2026-01-02T00:00:00Z")],
+                Some("older"),
+            )),
+        );
+        assert_eq!(
+            ids(&state),
+            ["100"],
+            "inactive confirmations must not become permanent caches"
+        );
+        assert_eq!(state.draft("1"), "");
+        assert!(!state.uncertain.contains("1"));
+    }
+}
+
+#[test]
 fn recovery_navigation_discards_the_previous_selections_display_only_rows() {
     let (mut state, mut session, read) = loading();
     state.complete_history(
@@ -336,7 +500,9 @@ fn recovery_reset_invalidates_server_reads_but_preserves_local_work_and_write_id
         &newest,
         Ok(page(vec![message("1", "2026-01-01T00:00:00Z")], None)),
     );
-    assert_eq!(ids(&state), ["4", "3", "2", "1"]);
+    // The healthy confirmation "2" was already authoritative before recovery;
+    // only the unresolved confirmation "3" is overlaid on this newest page.
+    assert_eq!(ids(&state), ["4", "3", "1"]);
     assert_eq!(state.draft("1"), "");
     assert_eq!(state.draft("2"), "uncertain draft");
     assert!(

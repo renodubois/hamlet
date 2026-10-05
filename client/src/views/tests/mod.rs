@@ -23,12 +23,14 @@ mod protected_binding;
 mod saved_login;
 #[path = "session_lifecycle.rs"]
 mod session_lifecycle;
+mod support;
+
+use support::{open_controlled, open_with_streams};
 
 use crate::api::{ApiError, ApiFuture, HttpTransport};
 use crate::runtime::runtime;
 use crate::storage::Persistence;
 use crate::test_support::storage::{Controlled, Shared};
-use crate::views::app_shell::{AppShell, open};
 use bound_auth::{BoundAuth, Request, RequestAdapter, Response, StatusCode};
 use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt as _;
@@ -39,37 +41,6 @@ use std::sync::{
 };
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
-
-fn open_controlled(
-    window: &mut Window,
-    cx: &mut gpui_kit::App,
-    api: Arc<dyn RequestAdapter>,
-) -> gpui_kit::Entity<AppShell> {
-    open_with_streams(
-        window,
-        cx,
-        api,
-        &crate::test_support::live::Streams::default(),
-    )
-}
-
-fn open_with_streams(
-    window: &mut Window,
-    cx: &mut gpui_kit::App,
-    api: Arc<dyn RequestAdapter>,
-    streams: &crate::test_support::live::Streams,
-) -> gpui_kit::Entity<AppShell> {
-    let execution =
-        crate::runtime::Execution::controlled(cx.background_executor().clone(), 1_800_000_000);
-    open(
-        window,
-        cx,
-        streams.transport(api),
-        crate::storage::Config::default(),
-        None,
-        execution,
-    )
-}
 
 // Fixture responses deliberately use wire representations, so decoding remains under API ownership.
 fn message_json(message: crate::api::Message) -> serde_json::Value {

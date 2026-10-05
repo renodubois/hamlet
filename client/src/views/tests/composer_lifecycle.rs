@@ -105,7 +105,7 @@ fn mount(
         client,
         Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
     );
-    activity.start(false);
+    activity.start();
     loop {
         cx.run_until_parked();
         let Ok(update) = activity.updates().try_recv() else {

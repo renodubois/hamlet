@@ -114,7 +114,7 @@ pub fn ready(
     Stream,
 ) {
     let (activity, calls, streams) = fixture(cx);
-    activity.start(false);
+    activity.start();
     drain(cx, &activity);
     let stream = streams.try_recv().unwrap();
     stream.ready();

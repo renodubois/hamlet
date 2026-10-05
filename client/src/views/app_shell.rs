@@ -1,7 +1,6 @@
 //! Screen composition and opaque feature delivery. Children own authenticated presentation.
 use super::{login::LoginView, workspace::WorkspaceView};
 use crate::api::HttpTransport;
-use crate::conversation::ConversationHandle;
 use crate::runtime::Execution;
 use crate::session::{Lifecycle, SessionCoordinator, StorageRetry};
 use crate::storage::{Config, Persistence};
@@ -25,8 +24,6 @@ pub(crate) struct AppShell {
     login: Entity<LoginView>,
     workspace: Option<Entity<WorkspaceView>>,
     _session_subscription: Subscription,
-    conversation: Option<ConversationHandle>,
-    _window_activation: Subscription,
 }
 impl AppShell {
     fn new(
@@ -44,12 +41,6 @@ impl AppShell {
                 view.session_changed(window, cx);
                 cx.notify();
             });
-        let window_activation = cx.observe_window_activation(window, |view, window, cx| {
-            if let Some(activity) = &view.conversation {
-                activity.set_focused(window.is_window_active());
-            }
-            cx.notify();
-        });
         let updates = session.read(cx).updates();
         cx.spawn(async move |weak, cx| {
             while let Ok(update) = updates.recv().await {
@@ -74,8 +65,6 @@ impl AppShell {
             login,
             workspace: None,
             _session_subscription: session_subscription,
-            conversation: None,
-            _window_activation: window_activation,
         }
     }
     fn enter_authenticated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -83,8 +72,7 @@ impl AppShell {
             return;
         };
         let updates = activity.updates();
-        self.conversation = Some(activity.clone());
-        activity.start(window.is_window_active());
+        activity.start();
         self.workspace = Some(cx.new(|cx| WorkspaceView::new(activity.clone(), window, cx)));
         // Opaque delivery only. Views subscribe separately to feature invalidations;
         // recreating a workspace never creates another competing delivery loop.
@@ -129,7 +117,6 @@ impl AppShell {
             Some(Lifecycle::Authenticated) => self.enter_authenticated(window, cx),
             Some(Lifecycle::Invalidated | Lifecycle::ServerChanged) => {
                 // The session already closed protected dispatch and wiped authoritative state.
-                self.conversation = None;
                 self.workspace = None;
             }
             None => {}

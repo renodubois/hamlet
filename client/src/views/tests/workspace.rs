@@ -85,7 +85,7 @@ fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut T
         client,
         Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
     );
-    activity.start(false);
+    activity.start();
     let (_, cx) = cx.add_window_view(|window, cx| {
         let workspace = cx.new(|cx| WorkspaceView::new(activity.clone(), window, cx));
         let host = cx.new(|_| WorkspaceHost {
@@ -220,7 +220,7 @@ fn sidebar_creation_notifications_preserve_edits_and_pending_state_across_recrea
         client,
         Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
     );
-    activity.start(false);
+    activity.start();
     let (_, cx) = cx.add_window_view(|window, cx| {
         let workspace = cx.new(|cx| WorkspaceView::new(activity.clone(), window, cx));
         let host = cx.new(|_| WorkspaceHost {

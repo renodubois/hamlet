@@ -6,7 +6,7 @@ fn queued_a_to_b_to_a_rejection_cannot_settle_new_history_within_same_attempt(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     let (activity, calls, streams) = fixture(cx);
-    activity.start(false);
+    activity.start();
     drain(cx, &activity);
     let stream = streams.try_recv().unwrap();
     stream.ready();
@@ -47,7 +47,7 @@ fn initial_readiness_and_baseline_failures_keep_minimal_connecting_state(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     let (activity, calls, streams) = fixture(cx);
-    activity.start(false);
+    activity.start();
     drain(cx, &activity);
     let timed_out = streams.try_recv().unwrap();
     cx.background_executor.advance_clock(Duration::from_secs(8));
@@ -130,7 +130,7 @@ fn terminal_failures_and_required_reads_share_retry_but_older_failure_stays_loca
         drain(cx, &activity);
     }
     let (activity, calls, streams) = fixture(cx);
-    activity.start(false);
+    activity.start();
     drain(cx, &activity);
     let stream = streams.try_recv().unwrap();
     stream.ready();
@@ -401,7 +401,7 @@ fn readiness_precedes_baseline_and_buffered_creations_reconcile_without_followup
     cx: &mut gpui_kit::TestAppContext,
 ) {
     let (activity, calls, streams) = fixture(cx);
-    activity.start(false);
+    activity.start();
     drain(cx, &activity);
     assert!(calls.is_empty(), "no snapshot before stream readiness");
     let stream = streams.try_recv().expect("one session stream");
@@ -431,17 +431,15 @@ fn readiness_precedes_baseline_and_buffered_creations_reconcile_without_followup
     drain(cx, &activity);
     assert_eq!(ids(&activity), ["11", "10", "9", "8"]);
     assert!(!activity.read().history.contains_key("2"));
-    activity.start(true);
-    activity.set_focused(true);
-    activity.set_focused(false);
+    activity.clone().start();
     cx.background_executor
         .advance_clock(Duration::from_secs(16));
     drain(cx, &activity);
     assert!(
         calls.is_empty(),
-        "healthy live changes and focus never read"
+        "healthy live changes and repeated start never read"
     );
-    assert!(streams.is_empty(), "clones/start/focus never reconnect");
+    assert!(streams.is_empty(), "clones/start never reconnect");
 }
 
 #[gpui_kit::test]
@@ -449,7 +447,7 @@ fn outage_keeps_write_identity_and_retargets_only_history_then_merges_confirmati
     cx: &mut gpui_kit::TestAppContext,
 ) {
     let (activity, calls, streams) = fixture(cx);
-    activity.start(false);
+    activity.start();
     drain(cx, &activity);
     let stream = streams.try_recv().unwrap();
     stream.ready();

@@ -138,7 +138,7 @@ impl ConversationHandle {
         self.0.borrow_mut().observers.push(send);
         receive
     }
-    pub fn start(&self, _focused: bool) {
+    pub fn start(&self) {
         let _notify = Notify(self);
         let mut owner = self.0.borrow_mut();
         if owner.started || owner.client.is_none() {
@@ -152,7 +152,6 @@ impl ConversationHandle {
         let _notify = Notify(self);
         self.0.borrow_mut().close();
     }
-    pub fn set_focused(&self, _focused: bool) {}
     pub fn edit_draft(&self, text: String) {
         let _notify = Notify(self);
         let mut owner = self.0.borrow_mut();

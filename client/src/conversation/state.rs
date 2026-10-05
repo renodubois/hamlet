@@ -108,6 +108,9 @@ pub struct Conversation {
     pub send_feedback: HashMap<String, String>,
     pub uncertain: HashSet<String>,
     uncertain_notice: HashSet<String>,
+    // Only confirmations not yet merged into authoritative loaded history. Keep these
+    // across failed/canceled reads and recovery attempts; consume on that channel's
+    // first successful replacing read, not on reset or another channel's baseline.
     confirmed: HashMap<String, Vec<Message>>,
     send_serial: u64,
     recovery_reset_revision: u64,
@@ -344,7 +347,10 @@ impl Conversation {
                 self.uncertain.remove(id);
                 self.uncertain_notice.remove(id);
                 let _ = self.merge_message(message.clone());
-                self.confirmed.entry(id.clone()).or_default().push(message);
+                // A direct merge into loaded history needs no replay on future baselines.
+                if !matches!(self.history.get(id), Some(Load::Ready(_))) {
+                    self.confirmed.entry(id.clone()).or_default().push(message);
+                }
                 SendOutcome::Confirmed
             }
             Err(ApiError::AlreadyInvalid) => {
@@ -629,8 +635,9 @@ impl Conversation {
                     outcome.added += self.merge_message(message).unwrap_or(0);
                 }
                 if !older {
-                    // HTTP confirmations survive disposable recovery/read lifetimes.
-                    for message in self.confirmed.get(id).cloned().unwrap_or_default() {
+                    // This baseline resolves the read/write race. Retire its overlay so
+                    // later recovery cannot resurrect confirmations outside the newest page.
+                    for message in self.confirmed.remove(id).unwrap_or_default() {
                         outcome.added += self.merge_message(message).unwrap_or(0);
                     }
                     for message in std::mem::take(&mut self.messages_during_read) {

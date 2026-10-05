@@ -16,7 +16,7 @@ fn session_loss_closes_surviving_conversation_handles_before_any_host_update(
         let generation = accept(cx, &mut session, &calls, "Old", 1_800_000_100);
         let old_client = session.active().map(Session::client).unwrap();
         let activity = session.conversation().unwrap();
-        activity.start(false);
+        activity.start();
         cx.executor().run_until_parked();
         assert!(
             activity
@@ -88,8 +88,7 @@ fn session_loss_closes_surviving_conversation_handles_before_any_host_update(
         assert!(activity.read().channels.is_none());
         assert!(activity.read().history.is_empty());
         assert!(activity.read().drafts.is_empty());
-        activity.start(true);
-        activity.set_focused(true);
+        activity.start();
         activity.edit_draft("must stay closed".into());
         activity.send();
         activity.request_older();
