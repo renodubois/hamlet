@@ -4,7 +4,7 @@
 
 Baseline: `d7dc5754b46aef52ad50c4f9941ec10cc4e84e79`, branch `live-updates`.
 Prerequisites #63–#69 are completed/verified in the [historical ledger](implement-epic/renodubois-hamlet-71.md).
-Implemented in local commits `dd21ebc` and `22512a2`; #70 is closed after verification and independent Standards/Spec review. Parent #71 remains pending integrated original-baseline review. This is not merge, deployment, native acceptance or a production capacity claim.
+Implemented in local commits `dd21ebc` and `22512a2`; #70 is closed after verification and independent Standards/Spec review. Parent #71 passed integrated Standards/Spec review from original baseline `f15a693` through `eecde5c`; documentation follow-up `accd9f3` also passed both axes. Final tracker closure is recorded in the execution ledger. This is not merge, deployment, native acceptance or a production capacity claim.
 
 Added two real-route, separately authenticated desktop-coordinator scenarios and one bounded server fanout measurement. Existing correctness/compatibility/headless-view tests were audited and rerun, not deferred to this ticket. No production behavior, dependency, lockfile, OpenAPI artifact, migration, human documentation, README or legacy client changed. Only the client test-module declaration touches a production module. No new production metrics/test-only public APIs were introduced.
 
@@ -175,4 +175,4 @@ Focused route suite: **4 passed**; full desktop suite: **188 passed**, none fail
 - Native two-profile interaction, IME candidate/Enter behavior, physical keyboard/accessibility, exact delayed-prepend pixel anchoring, and locked/slow real-wallet timeout/deletion remain unverified. Packaging/non-Linux are unverified.
 - Removed the stale generated manual whole-body proxy example: collecting upstream SSE to EOF is invalid. A consented native delayed/lost-POST drill needs a separate isolated SSE-aware relay; it was not implemented or run. Automated uncertainty and real response/event barriers are covered above.
 - No external-process kill/crash/power-loss durability drill, real-network fanout saturation, arbitrary socket-buffer memory measurement, production-capacity promise, multi-instance deployment, external database writers, replay log, deletion/permissions or unlimited future-event compatibility.
-- No unresolved automated #70 correctness gap was observed. The #70 Standards route-suite placement finding was fixed and re-reviewed; Spec passed. Parent still owns the final integrated epic review and closure decision.
+- No unresolved automated #70 correctness gap was observed. The #70 Standards route-suite placement finding was fixed and re-reviewed; Spec passed. The original-baseline integrated review and documentation follow-up passed both axes with no material findings. All eight child tracker states are verified completed; final parent closure is recorded in the execution ledger.
