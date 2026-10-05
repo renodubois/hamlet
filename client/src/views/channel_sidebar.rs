@@ -3,7 +3,7 @@ use crate::conversation::{ConversationHandle, Load};
 use crate::theme;
 use gpui_kit::base::Disableable;
 use gpui_kit::base::input::{InputBaseState, InputMode, InputState};
-use gpui_kit::component::{button::Button, input::Input};
+use gpui_kit::component::{ActiveTheme, button::Button, input::Input};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -85,7 +85,8 @@ impl Render for ChannelSidebarView {
             .test_support()
             .w(px(220.))
             .h_full()
-            .bg(rgb(theme::SIDEBAR))
+            .bg(cx.theme().tokens.sidebar.background)
+            .text_color(cx.theme().sidebar_foreground)
             .p_3()
             .flex()
             .flex_col()
@@ -143,7 +144,11 @@ impl Render for ChannelSidebarView {
                                 let _ = target
                                     .update(cx, |view, cx| view.select_channel(&id, window, cx));
                             })
-                            .when(selected, |button| button.bg(rgb(theme::SELECTED))),
+                            .when(selected, |button| {
+                                button
+                                    .bg(cx.theme().tokens.sidebar_accent.background)
+                                    .text_color(cx.theme().sidebar_accent_foreground)
+                            }),
                     );
                 }
             }

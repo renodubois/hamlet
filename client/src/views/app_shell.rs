@@ -5,8 +5,7 @@ use crate::api::HttpTransport;
 use crate::runtime::Execution;
 use crate::session::{Lifecycle, SessionCoordinator, StorageRetry};
 use crate::storage::{Config, Persistence};
-use crate::theme;
-use gpui_kit::component::button::Button;
+use gpui_kit::component::{ActiveTheme, button::Button};
 use gpui_kit::*;
 
 pub(crate) fn open(
@@ -129,11 +128,11 @@ impl Render for AppShell {
         let view = cx.entity().downgrade();
         let mut surface = div()
             .size_full()
-            .bg(rgb(theme::BACKGROUND))
+            .bg(cx.theme().tokens.background.background)
             .flex()
             .flex_col()
             .gap_3()
-            .text_color(rgb(theme::TEXT));
+            .text_color(cx.theme().foreground);
         if let Some(session) = self.session.read(cx).active() {
             let logout_view = view.clone();
             let label = format!(

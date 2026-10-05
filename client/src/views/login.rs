@@ -2,7 +2,7 @@
 use crate::session::SessionCoordinator;
 use gpui_kit::base::Disableable;
 use gpui_kit::base::input::{InputBaseState, InputEvent, InputMode, InputState};
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Input;
 use gpui_kit::*;
 
@@ -12,6 +12,7 @@ pub(crate) struct LoginView {
     username: Entity<InputBaseState<InputMode>>,
     password: Entity<InputBaseState<InputMode>>,
     signup: bool,
+    _submit_subscriptions: Vec<Subscription>,
     _server_subscription: Subscription,
     _session_subscription: Subscription,
 }
@@ -61,12 +62,23 @@ impl LoginView {
                 }
                 cx.notify();
             });
+        let submit_subscriptions = [&server, &username, &password]
+            .into_iter()
+            .map(|field| {
+                cx.subscribe_in(field, window, |view: &mut Self, _, event, window, cx| {
+                    if matches!(event, InputEvent::PressEnter { .. }) {
+                        view.submit(window, cx);
+                    }
+                })
+            })
+            .collect();
         Self {
             session,
             server,
             username,
             password,
             signup: false,
+            _submit_subscriptions: submit_subscriptions,
             _server_subscription: server_subscription,
             _session_subscription: session_subscription,
         }
@@ -115,7 +127,13 @@ impl LoginView {
 
 impl Render for LoginView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut form = div().flex().flex_col().gap_3().items_center();
+        let mut form = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .items_center()
+            .w(px(400.0))
+            .p_1();
         let session = self.session.read(cx);
         if session.active().is_some() {
             return form;
@@ -123,6 +141,23 @@ impl Render for LoginView {
         let pending = session.pending();
         let restoring = session.restore_pending();
         let feedback = session.feedback().map(str::to_owned);
+
+        let submit_button = Button::new(if self.signup { "signup" } else { "login" })
+            .disabled(pending)
+            .label(if pending {
+                if self.signup {
+                    "Creating user…"
+                } else {
+                    "Signing in…"
+                }
+            } else if self.signup {
+                "Create user"
+            } else {
+                "Log in"
+            })
+            .w_full()
+            .on_click(cx.listener(|view, _, window, cx| view.submit(window, cx)));
+
         form = form
             .child(div().text_xl().child(if self.signup {
                 "Sign up for Hamlet"
@@ -130,43 +165,32 @@ impl Render for LoginView {
                 "Log in to Hamlet"
             }))
             .child(
-                div().w(px(360.)).child("Server URL").child(
+                div().w_full().child("Server URL").child(
                     Input::new(&self.server)
                         .id("server-url")
                         .aria_label("Server URL"),
                 ),
             )
             .child(
-                div().w(px(360.)).child("Username").child(
+                div().w_full().child("Username").child(
                     Input::new(&self.username)
                         .id("username")
                         .aria_label("Username"),
                 ),
             )
             .child(
-                div().w(px(360.)).child("Password").child(
+                div().w_full().child("Password").child(
                     Input::new(&self.password)
                         .id("password")
                         .aria_label("Password"),
                 ),
             )
-            .child(
-                Button::new(if self.signup { "signup" } else { "login" })
-                    .disabled(pending)
-                    .label(if pending {
-                        if self.signup {
-                            "Creating user…"
-                        } else {
-                            "Signing in…"
-                        }
-                    } else if self.signup {
-                        "Create user"
-                    } else {
-                        "Log in"
-                    })
-                    .on_click(cx.listener(|view, _, window, cx| view.submit(window, cx))),
-            )
-            .child(
+            .child(if self.signup {
+                submit_button.secondary()
+            } else {
+                submit_button.primary()
+            })
+            .child(if self.signup {
                 Button::new("auth-mode")
                     .disabled(pending)
                     .label(if self.signup {
@@ -174,13 +198,13 @@ impl Render for LoginView {
                     } else {
                         "New user? Sign up"
                     })
-                    .on_click(cx.listener(|view, _, _, cx| view.set_signup(!view.signup, cx))),
-            )
-            .child(div().child(if restoring {
-                "Checking saved login before opening conversations…"
+                    .on_click(cx.listener(|view, _, _, cx| view.set_signup(!view.signup, cx)))
             } else {
-                "Log in to start a session. Secure storage status appears below."
-            }));
+                Button::new("auth-mode")
+                    .disabled(pending)
+                    .label("New user? Sign up")
+                    .on_click(cx.listener(|view, _, _, cx| view.set_signup(!view.signup, cx)))
+            });
         if let Some(feedback) = feedback {
             form = form.child(
                 div()

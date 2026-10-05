@@ -16,6 +16,7 @@ fn main() {
         .with_assets(gpui_kit::assets::Assets)
         .run(|cx: &mut App| {
             gpui_kit::init(cx);
+            theme::init(cx);
 
             let bounds = Bounds::centered(None, size(px(500.), px(500.0)), cx);
 

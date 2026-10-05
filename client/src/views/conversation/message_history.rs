@@ -212,8 +212,8 @@ impl Render for MessageHistoryView {
                     let rows = messages.iter().rev().cloned().collect::<Vec<_>>();
                     history = history.child(
                         div().id("history").test_support().flex_1().min_h_0().child(
-                            list(self.list.clone(), move |ix, _, _| {
-                                message_row(&rows[ix]).into_any_element()
+                            list(self.list.clone(), move |ix, _, cx| {
+                                message_row(&rows[ix], cx).into_any_element()
                             })
                             .size_full(),
                         ),

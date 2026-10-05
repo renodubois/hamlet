@@ -16,7 +16,7 @@ This document is the canonical guide to client module ownership and where to add
 client/src/
 ├── main.rs                     # Startup, dependency construction, window creation
 ├── runtime.rs                  # Internal async execution/timer bridge and task lifetime support
-├── theme.rs                    # Shared colors and bundled icon mappings
+├── theme.rs                    # One Dark theme configuration, palette and bundled icons
 │
 ├── views/                      # Rendering and local interaction state
 │   ├── mod.rs

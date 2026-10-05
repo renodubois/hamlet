@@ -20,6 +20,30 @@ The login form defaults to `http://127.0.0.1:8081`. For that URL, start the serv
 
 Select **New user? Sign up** to create a user and immediately enter a session, or log in with an existing username/password. Usernames accept 3–32 ASCII letters, digits, `_` or `.`; passwords are 8–256 bytes. Invalid credentials remain editable. **Log out** clears local authenticated state immediately and separately requests saved-credential deletion and server revocation.
 
+## Development rebuild/restart
+
+From the repository root:
+
+```sh
+# Install once (or install Watchexec through your package manager).
+cargo install watchexec-cli --locked
+
+./client/dev.sh
+```
+
+`client/dev.sh` requires Bash, Rust/Cargo, Watchexec and `setsid` (util-linux on Linux). It works from any working directory and builds on startup, then watches client source/manifests and shared protocol source/manifest. Saves are debounced; changes during compilation queue another build. The current window remains usable while compiling and after build errors. Only a successful build stops the old client and starts the new one. Restarts reset in-memory state, including drafts. Ctrl+C stops the watcher, build and client processes owned by that invocation. Closing the client window does not stop the watcher; the next successful build opens it again.
+
+The script forces worktree-local configuration at `client/.env.dev-config` and native debug build output under `client/target/<host-target>/debug`, regardless of inherited `XDG_CONFIG_HOME`, `CARGO_TARGET_DIR` or `CARGO_BUILD_TARGET`. It neither starts nor stops the server. Run a separate worktree-local server on an unused loopback port, then set the client's Server URL to that endpoint. Start with fresh configuration; never copy session metadata or pending deletions from another environment. Different endpoints have different credential keys, but configuration isolation alone does not isolate Secret Service. Agent-driven desktop automation or real-keyring access still requires separate consent and the [native safety gate](VERIFY.md#native-safety-gate).
+
+Run the supervisor's automated tests from the repository root:
+
+```sh
+bash -n client/dev.sh
+python3 client/scripts/tests/dev.py
+```
+
+These tests use fake Cargo, watcher and client processes; they do not launch GPUI or access a keyring.
+
 ## Channels and conversations
 
 - Create a text channel with **Channel name** and **Create text channel**. Names are trimmed, accept 1–64 bytes of ASCII letters, digits, spaces, hyphens or underscores, and are unique ignoring ASCII case. Confirmed creation selects the channel; uncertain creation is not replayed automatically.
@@ -41,7 +65,7 @@ Save, restore, deletion and revocation report confirmed, failed or unconfirmed o
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for module ownership and dependency rules, and [PRESENTATION.md](PRESENTATION.md) for editing locations and semantic controls.
 
-`src/main.rs` handles startup. `views/` owns controls and subscriptions; `session/` owns authentication, restoration, expiry and cleanup; `conversation/` owns session-scoped requests, stream reconnect, history and drafts. `api/` owns bound HTTP clients, `storage/` owns the ordered provider/configuration worker, `runtime.rs` provides shared execution/time support, and `theme.rs` defines colors/icons.
+`src/main.rs` handles startup. `views/` owns controls and subscriptions; `session/` owns authentication, restoration, expiry and cleanup; `conversation/` owns session-scoped requests, stream reconnect, history and drafts. `api/` owns bound HTTP clients, `storage/` owns the ordered provider/configuration worker, `runtime.rs` provides shared execution/time support, and `theme.rs` installs the One Dark theme and defines palette constants/icons. Edit `theme.rs`'s `config()` role assignments to tune backgrounds, text, primary/secondary actions, and status colors; unspecified settings use Kit's dark defaults, with hover/pressed colors derived automatically.
 
 Tests live in the owning feature's `src/<feature>/tests/` directory, with cross-feature fixtures in `src/test_support/`. Follow the required [test layout](ARCHITECTURE.md#test-layout-required).
 
