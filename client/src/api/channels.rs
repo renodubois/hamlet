@@ -1,11 +1,12 @@
 use super::{ApiError, ApiFuture, AuthenticatedClient, Channel};
-use super::{auth::protected_response, client::Response, wire::*};
+use super::{auth::protected_response, client::Response, error::ErrorResponse};
+use hamlet_protocol::{Channel as ProtocolChannel, ChannelList, ChannelType, CreateChannel};
 use reqwest::{Method, StatusCode};
 
 async fn decode_created_channel(response: Response) -> Result<Channel, ApiError> {
     match response.status() {
         StatusCode::CREATED => {
-            let wire: WireChannel = response
+            let wire: ProtocolChannel = response
                 .json()
                 .await
                 .map_err(|_| ApiError::InvalidResponse)?;
@@ -14,7 +15,7 @@ async fn decode_created_channel(response: Response) -> Result<Channel, ApiError>
         StatusCode::UNAUTHORIZED => Err(ApiError::AlreadyInvalid),
         StatusCode::BAD_REQUEST | StatusCode::CONFLICT => {
             let status = response.status();
-            let body: WireError = response
+            let body: ErrorResponse = response
                 .json()
                 .await
                 .map_err(|_| ApiError::InvalidResponse)?;
@@ -29,7 +30,7 @@ async fn decode_created_channel(response: Response) -> Result<Channel, ApiError>
     }
 }
 
-pub(super) fn decode_channel(wire: WireChannel) -> Result<Channel, ApiError> {
+pub(super) fn decode_channel(wire: ProtocolChannel) -> Result<Channel, ApiError> {
     if wire.id.is_empty()
         || wire.name.is_empty()
         || !matches!(wire.kind, hamlet_protocol::ChannelType::Text)
@@ -47,7 +48,7 @@ impl AuthenticatedClient {
         let client = self.clone();
         Box::pin(async move {
             let request = client.request(Method::GET, client.0.server.endpoint("api/v1/channels"));
-            let wire: WireChannels =
+            let wire: ChannelList =
                 protected_response(client.0.server.0.transport.send(request).await?).await?;
             wire.items.into_iter().map(decode_channel).collect()
         })
@@ -58,7 +59,10 @@ impl AuthenticatedClient {
         Box::pin(async move {
             let request = client
                 .request(Method::POST, client.0.server.endpoint("api/v1/channels"))
-                .json(&serde_json::json!({"name": name, "type": "text"}));
+                .json(&CreateChannel {
+                    name,
+                    kind: ChannelType::Text,
+                });
             decode_created_channel(client.0.server.0.transport.send(request).await?).await
         })
     }

@@ -1,5 +1,6 @@
 use super::{ApiError, ApiFuture, AuthenticatedClient, Authentication, ServerClient, User};
-use super::{client::Response, wire::*};
+use super::{client::Response, error::ErrorResponse};
+use hamlet_protocol::{AuthResponse, Credentials};
 use reqwest::StatusCode;
 
 pub(super) async fn protected_response<T: serde::de::DeserializeOwned>(
@@ -15,9 +16,9 @@ pub(super) async fn protected_response<T: serde::de::DeserializeOwned>(
     }
 }
 
-async fn decode_auth(response: Response, success: StatusCode) -> Result<WireLogin, ApiError> {
+async fn decode_auth(response: Response, success: StatusCode) -> Result<AuthResponse, ApiError> {
     if response.status() == success {
-        let wire: WireLogin = response
+        let wire: AuthResponse = response
             .json()
             .await
             .map_err(|_| ApiError::InvalidResponse)?;
@@ -32,7 +33,7 @@ async fn decode_auth(response: Response, success: StatusCode) -> Result<WireLogi
         || status == StatusCode::BAD_REQUEST
         || status == StatusCode::CONFLICT
     {
-        let body: WireError = response
+        let body: ErrorResponse = response
             .json()
             .await
             .map_err(|_| ApiError::InvalidResponse)?;
@@ -83,15 +84,12 @@ impl ServerClient {
             .transport
             .client
             .post(self.endpoint(path))
-            .json(&serde_json::json!({"username": username, "password": password}));
+            .json(&Credentials { username, password });
         Box::pin(async move {
             let wire = decode_auth(server.0.transport.send(request).await?, success).await?;
             Ok(Authentication {
                 client: server.restore_candidate(wire.access_token)?,
-                user: User {
-                    id: wire.user.id,
-                    username: wire.user.username,
-                },
+                user: wire.user,
                 expires_at: wire.expires_at.timestamp(),
             })
         })
@@ -104,15 +102,12 @@ impl AuthenticatedClient {
         Box::pin(async move {
             let request =
                 client.request(reqwest::Method::GET, client.0.server.endpoint("api/v1/me"));
-            let wire: WireUser =
+            let wire: User =
                 protected_response(client.0.server.0.transport.send(request).await?).await?;
             if wire.id.is_empty() || wire.username.is_empty() {
                 return Err(ApiError::InvalidResponse);
             }
-            Ok(User {
-                id: wire.id,
-                username: wire.username,
-            })
+            Ok(wire)
         })
     }
 

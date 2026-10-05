@@ -1,10 +1,4 @@
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct User {
-    pub id: String,
-    pub username: String,
-}
+pub use hamlet_protocol::User;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Channel {

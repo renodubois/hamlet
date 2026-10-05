@@ -1,3 +1,16 @@
+use serde::Deserialize;
+
+// Decode only the error fields used by the client.
+#[derive(Deserialize)]
+pub(super) struct ErrorResponse {
+    pub error: ErrorInfo,
+}
+
+#[derive(Deserialize)]
+pub(super) struct ErrorInfo {
+    pub code: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ApiError {
     InvalidCredentials,

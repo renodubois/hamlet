@@ -1,11 +1,12 @@
 use super::{ApiError, ApiFuture, AuthenticatedClient, Message, Page};
-use super::{auth::protected_response, client::Response, wire::*};
+use super::{auth::protected_response, client::Response, error::ErrorResponse};
+use hamlet_protocol::{CreateMessage, History, Message as ProtocolMessage};
 use reqwest::{Method, StatusCode, Url};
 
 async fn decode_created_message(response: Response, channel_id: &str) -> Result<Message, ApiError> {
     match response.status() {
         StatusCode::CREATED => {
-            let wire: WireMessage = response
+            let wire: ProtocolMessage = response
                 .json()
                 .await
                 .map_err(|_| ApiError::InvalidResponse)?;
@@ -14,7 +15,7 @@ async fn decode_created_message(response: Response, channel_id: &str) -> Result<
         StatusCode::UNAUTHORIZED => Err(ApiError::AlreadyInvalid),
         StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND => {
             let status = response.status();
-            let body: WireError = response
+            let body: ErrorResponse = response
                 .json()
                 .await
                 .map_err(|_| ApiError::InvalidResponse)?;
@@ -29,7 +30,7 @@ async fn decode_created_message(response: Response, channel_id: &str) -> Result<
     }
 }
 
-pub(super) fn decode_message(wire: WireMessage, channel_id: &str) -> Result<Message, ApiError> {
+pub(super) fn decode_message(wire: ProtocolMessage, channel_id: &str) -> Result<Message, ApiError> {
     if wire.id.is_empty()
         || wire.channel_id.is_empty()
         || wire.channel_id != channel_id
@@ -74,7 +75,7 @@ impl AuthenticatedClient {
             // One POST only; timeout/malformed success never triggers replay.
             let request = client
                 .request(Method::POST, client.message_url(&channel_id)?)
-                .json(&serde_json::json!({"text": text}));
+                .json(&CreateMessage { text });
             decode_created_message(
                 client.0.server.0.transport.send(request).await?,
                 &channel_id,
@@ -96,7 +97,7 @@ impl AuthenticatedClient {
                 url.query_pairs_mut().append_pair("before", cursor);
             }
             let request = client.request(Method::GET, url);
-            let wire: WireHistory =
+            let wire: History =
                 protected_response(client.0.server.0.transport.send(request).await?).await?;
             let items = wire
                 .items

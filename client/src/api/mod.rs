@@ -7,7 +7,6 @@ mod error;
 mod events;
 mod messages;
 mod types;
-mod wire;
 
 pub use client::{
     AuthenticatedClient, Authentication, HttpTransport, ServerClient, validate_server,

@@ -49,8 +49,7 @@ client/src/
 │   ├── messages.rs             # History and message requests
 │   ├── events.rs               # Bound SSE attempt, parsing, deadlines and bounded delivery
 │   ├── error.rs                # Typed request failures
-│   ├── types.rs                # Client-facing server data: user, channel, message, page
-│   └── wire.rs                 # Private wire request/response representations
+│   └── types.rs                # Client-facing server data: user, channel, message, page
 │
 └── storage/                    # Durable local storage mechanics
     ├── mod.rs                  # Storage interface and serialized worker coordination
@@ -106,7 +105,7 @@ Authenticated clients are immutable with respect to server and credential. Cloni
 
 Only session persistence needs controlled access to credential material; views and conversation state do not. Secret-bearing types must not expose secrets through debug formatting or logging. There is no automatic replay of writes or implicit reauthentication.
 
-`types.rs` contains small client-facing server data types, not session state or GPUI types. `wire.rs` remains private and may differ from those types. Consumers use exports from `api/`; the API module must not depend on `session/` or `conversation/` internals. Typed errors describe failures; feature-specific user feedback belongs to the feature, not to an auth-specific catch-all error description.
+`types.rs` contains small client-facing server data types, not session state or GPUI types. It re-exports the shared protocol `User` because its wire and application shapes are identical. API implementations use shared protocol `Credentials`, `CreateChannel` and `CreateMessage` request types instead of handwritten JSON, and import shared protocol auth, channel, message and collection responses directly, using `ProtocolChannel`/`ProtocolMessage` aliases where client-facing names differ. `error.rs` owns the private minimal error response decoder. Wire types may differ from client-facing types where conversion serves a purpose. Auth decoding still validates identity/token fields before publishing client-facing results; the shared `AuthResponse` remains separate from client-specific `Authentication`, which holds a bound client and Unix expiry. Consumers use exports from `api/`; the API module must not depend on `session/` or `conversation/` internals. Typed errors describe failures; feature-specific user feedback belongs to the feature, not to an auth-specific catch-all error description.
 
 Keep a substitution seam for controlled request outcomes in tests, alongside the real HTTP adapter. Common client binding rules must apply to both. Do not expose raw transport details to application callers for the sake of tests.
 
