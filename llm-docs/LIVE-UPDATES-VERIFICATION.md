@@ -14,7 +14,7 @@ All required checks pass: protocol **4/5** tests without/with OpenAPI; server **
 
 ### Real HTTP/event orders
 
-`client/src/conversation/tests/restart.rs::real_route_http_event_orders_reconcile_once_without_healthy_reads`
+`client/src/conversation/tests/route.rs::real_route_http_event_orders_reconcile_once_without_healthy_reads`
 
 - Two production `ConversationHandle`s use separately signed-up Alice/Bob identities against two real Actix workers, disposable SQLite and real loopback HTTP/SSE.
 - A five-second response barrier holds Alice's actual message POST response: both clients display its event while Alice's draft remains pending. Releasing the response clears only that operation's draft, with one row.
@@ -26,7 +26,7 @@ All required checks pass: protocol **4/5** tests without/with OpenAPI; server **
 
 ### Actual server restart, not a controlled EOF
 
-`client/src/conversation/tests/restart.rs::two_authenticated_coordinators_recover_after_actual_server_restart`
+`client/src/conversation/tests/route.rs::two_authenticated_coordinators_recover_after_actual_server_restart`
 
 - Both coordinators load a 50-row page, traverse to 53 rows and populate an inactive history/draft. Concurrent Alice/Bob sends reconcile HTTP and SSE into the same unique sorted rows, without follow-up reads. Remote channel/message events do not steal selection or allocate unloaded histories.
 - Stops the actual listening Actix server with `stop(false)`, awaits its server task and observes both real TCP stream failures. Both clients expose **Reconnecting… messages may be out of date**, retain selected display rows, discard authoritative histories/older state, and preserve selected/inactive drafts.
@@ -141,14 +141,33 @@ cargo build --manifest-path client/Cargo.toml --locked
 git diff --check
 ```
 
-Focused reproduction (also passed; the two-client filter passed three additional consecutive runs):
+Focused reproduction (current route-suite filter):
 
 ```sh
-cargo test --manifest-path client/Cargo.toml --locked conversation::restart_tests -- --nocapture
+cargo test --manifest-path client/Cargo.toml --locked conversation::route_tests -- --nocapture
 cargo test --manifest-path server/Cargo.toml --locked --lib measured_bounded_fanout -- --nocapture
 ```
 
+Historical two-client runs used `conversation::restart_tests` (two tests, plus three additional consecutive passes). The Standards fix moved both scenarios into `tests/route.rs` and renamed their module filter to `conversation::route_tests`, which also includes the two existing route tests. Historical logs retain the old filter; it no longer selects tests.
+
 The server measurement runs in the ordinary full suite (not ignored); `--nocapture` prints `FANOUT_METRICS` for repeatable capture. There is no generic benchmarking infrastructure. Assertions enforce matching deliveries, bounds and cleanup, not a machine-dependent millisecond performance threshold. The initial cleanup-assumption failure is retained in `70-fanout.log`; successful captures are `70-fanout-green.log` and `70-fanout-repeat.log`. Full logs: `70-{protocol*,server*,migration-fmt,contract,client*}.log`; integrated repeats: `70-integrated-repeat-{1,2,3}.log`.
+
+## #70 Standards follow-up — route-suite ownership
+
+Baseline `dd21ebc`. Both two-client scenarios and their private helpers now live in `client/src/conversation/tests/route.rs`, under the existing test-only `conversation::route_tests` module. Removed `restart_tests` and `tests/restart.rs`; no production visibility or runtime behavior changed. The moved test bodies/helpers are byte-identical to the baseline; the existing second-user route test now reuses the same suite-local GET-counting adapter with its original HTTP client configuration. All four route scenarios/assertions remain covered. This is a test-layout refactor, not a behavioral red/green change.
+
+Passed from repository root after the move:
+
+```sh
+cargo test --manifest-path client/Cargo.toml --locked conversation::route_tests -- --nocapture
+cargo fmt --manifest-path client/Cargo.toml --check
+cargo clippy --manifest-path client/Cargo.toml --locked --all-targets -- -D warnings
+cargo test --manifest-path client/Cargo.toml --locked
+cargo build --manifest-path client/Cargo.toml --locked
+git diff --check
+```
+
+Focused route suite: **4 passed**; full desktop suite: **188 passed**, none failed/ignored. Logs: `/tmp/hamlet-epic-71/70-standards-route.log` and `70-standards-client-{fmt,clippy,test,build}.log`. Prior server/protocol evidence above is historical, not rerun for this client-only move. No native/keyring access, server/README edits, commit or tracker mutation. Verified uncommitted follow-up; manual limitations below remain unchanged.
 
 ## Outstanding consent-dependent/manual checks and limitations
 

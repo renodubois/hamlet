@@ -677,3 +677,35 @@ Exact files changed:
 - `llm-docs/implement-epic/renodubois-hamlet-71.md` — this append, history preserved.
 
 Handoff: verified uncommitted #70 work; no automated blocker found. Parent owns independent review, commits/tracker decisions. Native automation/keyring access and consent-dependent acceptance remain unperformed. No production capacity, external-process crash durability or future deletion compatibility claim.
+
+### #70 Standards follow-up — real-route suite ownership
+
+Baseline `dd21ebc`, initially clean; sole writer. Addressed the review finding that both real-route scenarios belong in the conversation feature's `tests/route.rs`, as required by `client/AGENTS.md` and `llm-docs/client/ARCHITECTURE.md`. This test-move refactor requires no behavioral red; no runtime behavior or production visibility changed.
+
+- Moved `real_route_http_event_orders_reconcile_once_without_healthy_reads` and `two_authenticated_coordinators_recover_after_actual_server_restart`, together with their private helpers, into `client/src/conversation/tests/route.rs`. A byte-for-byte comparison confirmed both moved test bodies and helper implementations were preserved. All four route scenarios/assertions remain.
+- Reused the suite-local `CountReads` adapter in the existing second-user scenario instead of retaining its duplicate function-local implementation; its original `reqwest::Client::new()` configuration remains unchanged. No cross-suite helper dependency or new abstraction.
+- Removed `client/src/conversation/tests/restart.rs` and its test-only `restart_tests` registration in `client/src/conversation/mod.rs`. Existing owner-child privacy and `#[cfg(test)]` gating remain through `route_tests`.
+- Updated current paths/commands and appended results in `llm-docs/LIVE-UPDATES-VERIFICATION.md`.
+
+**Historical evidence annotation:** the preceding #70 paths and command logs intentionally retain `tests/restart.rs` / `conversation::restart_tests`, which were correct when executed. Those scenarios now live in `tests/route.rs` under `conversation::route_tests`; the old filter no longer selects tests. Use the current filter below, which includes the two pre-existing route tests as well as both moved scenarios.
+
+Checks run from repository root, in order, all passed:
+
+- `cargo test --manifest-path client/Cargo.toml --locked conversation::route_tests -- --nocapture` — **4 passed**, none failed/ignored.
+- `cargo fmt --manifest-path client/Cargo.toml --check`
+- `cargo clippy --manifest-path client/Cargo.toml --locked --all-targets -- -D warnings`
+- `cargo test --manifest-path client/Cargo.toml --locked` — **188 passed**, none failed/ignored.
+- `cargo build --manifest-path client/Cargo.toml --locked`
+- `git diff --check` — clean.
+
+Logs: `/tmp/hamlet-epic-71/70-standards-route.log`, `70-standards-client-{fmt,clippy,test,build}.log`. Prior server/protocol measurements/checks were not rerun for this client-only refactor.
+
+Exact files changed:
+
+- `client/src/conversation/mod.rs` — remove obsolete test registration only.
+- `client/src/conversation/tests/route.rs` — own all four real-route scenarios and their private helpers; reuse GET counter.
+- `client/src/conversation/tests/restart.rs` — removed after move.
+- `llm-docs/LIVE-UPDATES-VERIFICATION.md` — current paths/filter and follow-up evidence.
+- `llm-docs/implement-epic/renodubois-hamlet-71.md` — this append; historical evidence unchanged.
+
+Handoff: verified uncommitted Standards fix; no blocker. No commit, tracker mutation, server/README/native change, desktop launch or real keyring access. Native/manual limitations and parent review/commit authority remain unchanged.

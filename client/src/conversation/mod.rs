@@ -583,8 +583,5 @@ mod live_support;
 #[path = "tests/coordinator.rs"]
 mod coordinator_tests;
 #[cfg(test)]
-#[path = "tests/restart.rs"]
-mod restart_tests;
-#[cfg(test)]
 #[path = "tests/route.rs"]
 mod route_tests;
