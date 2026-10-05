@@ -1,4 +1,4 @@
-//! Synthetic provider shared by storage, session, API and headless view scenarios.
+//! In-memory credential provider with controllable failures and blocking for storage/session/view tests.
 use crate::storage::{Selection, Store, account};
 use std::sync::{Arc, Condvar, Mutex};
 

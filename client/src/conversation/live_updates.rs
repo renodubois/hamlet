@@ -1,4 +1,5 @@
-//! Pure session-owned best-effort connection policy. Reads and writes are independent.
+//! Connection readiness and fixed-delay reconnect state for the conversation's SSE stream.
+//! Reconnection does not trigger reads or replay writes; obsolete attempts are ignored.
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

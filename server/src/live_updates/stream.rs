@@ -1,3 +1,6 @@
+//! SSE subscription lifecycle: heartbeats, periodic session revalidation and expiry.
+//! Expiry or failed validation ends delivery, even when changes are queued.
+
 use super::Subscription;
 use crate::http::auth::Session;
 use actix_web::web::Bytes;

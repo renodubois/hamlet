@@ -1,3 +1,5 @@
+//! Validates server origins and binds HTTP transports to immutable server/credential contexts.
+
 use super::{ApiError, ApiFuture, User};
 use reqwest::{Client, Request, RequestBuilder, StatusCode, Url};
 use std::{

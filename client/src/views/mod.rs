@@ -1,5 +1,3 @@
-//! Owned screen composition and independently subscribed child views.
-
 pub(crate) mod app_shell;
 mod channel_sidebar;
 mod conversation;

@@ -1,4 +1,4 @@
-//! Session-scoped composition only. Children observe the one authoritative conversation owner.
+//! Composes the channel sidebar and conversation view against one shared conversation handle.
 use super::{channel_sidebar::ChannelSidebarView, conversation::ConversationView};
 use crate::conversation::ConversationHandle;
 use gpui_kit::*;

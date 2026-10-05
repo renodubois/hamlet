@@ -1,3 +1,6 @@
+//! Authentication state and pure login, restore, logout and expiry transitions.
+//! Generations prevent obsolete results from replacing or invalidating a newer session.
+
 use crate::api::{ApiError, User};
 use crate::api::{AuthenticatedClient, Authentication};
 

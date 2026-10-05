@@ -1,5 +1,3 @@
-//! Shared presentation colors and bundled icon mapping.
-
 pub(crate) const BACKGROUND: u32 = 0xf6f7fb;
 pub(crate) const SIDEBAR: u32 = 0xe9edf5;
 pub(crate) const SELECTED: u32 = 0xcddbf5;

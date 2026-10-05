@@ -1,4 +1,5 @@
-//! History viewport and controls. Continuity, cursors and requests belong to conversation.
+//! Displays history and owns scroll anchoring, selection and jump-to-latest controls.
+//! Conversation owns message data, pagination cursors and request execution.
 use super::message_row::message_row;
 use crate::conversation::{ConversationHandle, Load, Older};
 use gpui_kit::base::Disableable;

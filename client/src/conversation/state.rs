@@ -1,3 +1,6 @@
+//! In-memory channels, histories and per-channel drafts, with pure request/completion transitions.
+//! Request identities reject stale results; HTTP confirmations and live creations merge by entity ID.
+
 use crate::api::ApiError;
 /// Pure originating-session identity and rejection outcome, never mutable auth state.
 pub(super) struct Identity {

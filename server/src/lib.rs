@@ -1,3 +1,5 @@
+//! Reusable server wiring: shared app state, SQLite initialization/migrations and API route assembly.
+
 use actix_web::{http::StatusCode, middleware::from_fn, web};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use http::{

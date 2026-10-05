@@ -1,3 +1,5 @@
+//! Client-facing server data, distinct from wire DTOs where display shapes differ.
+
 pub use hamlet_protocol::User;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

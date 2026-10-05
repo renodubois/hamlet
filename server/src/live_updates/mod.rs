@@ -1,3 +1,5 @@
+//! Protected SSE endpoint and shared best-effort creation fanout; no replay or gap recovery.
+
 use crate::{AppState, http::error::problem};
 use actix_web::{HttpMessage, HttpRequest, HttpResponse, http::StatusCode, web};
 mod hub;
@@ -20,8 +22,8 @@ pub(crate) fn routes(cfg: &mut web::ServiceConfig) {
 
 /// Fresh all-channel subscription: ready with {}, then change with tagged Event JSON;
 /// heartbeat comments keep idle connections alive. No IDs or replay; Last-Event-ID
-/// is ignored. Reconnect with ready/read/buffer reconciliation. EOF is not an
-/// authoritative authentication rejection. See llm-docs/server/LIVE-UPDATES.md.
+/// is ignored. Readiness does not guarantee recovery of missed changes. EOF is not
+/// an authoritative authentication rejection. See llm-docs/server/LIVE-UPDATES.md.
 #[utoipa::path(get, path = "/api/v1/events", tag = "crate::live_updates",
     security(("bearer_auth" = [])),
     responses(

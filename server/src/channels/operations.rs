@@ -1,3 +1,6 @@
+//! Validates, creates and lists channels in SQLite; successful creations notify the live-update hub.
+//! Publication is best-effort and does not await subscriber delivery.
+
 use super::types::{Channel, ChannelList, CreateChannel};
 use crate::{
     live_updates::{EventHub, PreparedEvent},

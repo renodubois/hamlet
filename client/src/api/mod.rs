@@ -1,4 +1,5 @@
-//! Canonical server communication owner. Callers use bound server/authenticated clients.
+//! Server communication: URL/credential binding, HTTP requests, response validation and SSE.
+//! Callers use server-bound or authenticated clients rather than constructing requests.
 
 mod auth;
 mod channels;

@@ -1,5 +1,5 @@
-//! Session-lifetime saved-login policy. Storage alone owns ordered provider/file mechanics.
-//! Auth generations gate restoration; save serials and deletion IDs have separate lifetimes.
+//! Application-lifetime saved-login restoration, saving and retryable deletion workflows.
+//! Cleanup survives logout and replacement logins; storage owns ordered provider/file operations.
 use super::{RestoreDecision, RestoreResult, SessionCoordinator, SessionUpdate, Update};
 use crate::storage::{Config, Outcome, Persistence, Selection, account};
 use std::time::Duration;

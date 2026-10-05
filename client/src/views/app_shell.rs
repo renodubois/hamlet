@@ -1,4 +1,5 @@
-//! Screen composition and opaque feature delivery. Children own authenticated presentation.
+//! Switches between login and workspace, displays session/storage feedback and delivers updates.
+//! Session and conversation coordinators interpret those updates and dispatch requests.
 use super::{login::LoginView, workspace::WorkspaceView};
 use crate::api::HttpTransport;
 use crate::runtime::Execution;

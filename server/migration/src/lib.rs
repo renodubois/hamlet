@@ -1,3 +1,5 @@
+//! Ordered SQLite schema migrations for users, sessions, channels and message history.
+
 use sea_orm_migration::prelude::*;
 
 pub struct Migrator;

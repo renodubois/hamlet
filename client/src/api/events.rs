@@ -1,4 +1,5 @@
-//! One authenticated transport attempt. No reconnect or conversation policy.
+//! Opens and parses one authenticated SSE connection, with deadlines and bounded event delivery.
+//! Dropping the stream cancels it; conversation coordination owns reconnection.
 
 use super::{ApiError, ApiFuture, AuthenticatedClient};
 use crate::runtime::{Execution, Work};

@@ -1,3 +1,6 @@
+//! SQLite message creation and cursor-paginated history, with best-effort creation notifications.
+//! HTTP responses and events share the insertion values and authenticated author identity.
+
 use super::types::{Author, History, Message};
 use crate::{
     http::auth::UserIdentity,

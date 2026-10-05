@@ -1,4 +1,4 @@
-//! Actual reqwest adapter and actual server routes; finite reads only.
+//! Real HTTP coverage for SSE fanout, bearer-safe redirects, stream lifetime and cancellation.
 use super::*;
 use crate::api::HttpTransport;
 use gpui_kit::TestAppContext;
