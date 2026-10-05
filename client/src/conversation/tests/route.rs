@@ -191,7 +191,8 @@ impl RequestAdapter for HeldPost {
 }
 struct HeldStream {
     gate: Arc<Gate>,
-    task: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    tasks: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    attempts: Arc<AtomicUsize>,
 }
 impl crate::api::test_support::StreamAdapter for HeldStream {
     fn open(
@@ -199,7 +200,8 @@ impl crate::api::test_support::StreamAdapter for HeldStream {
         request: reqwest::Request,
     ) -> ApiFuture<Result<crate::api::test_support::StreamResponse, ApiError>> {
         let gate = self.gate.clone();
-        let task = self.task.clone();
+        let tasks = self.tasks.clone();
+        self.attempts.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             let mut response = reqwest::Client::builder()
                 .no_proxy()
@@ -214,12 +216,7 @@ impl crate::api::test_support::StreamAdapter for HeldStream {
                 .unwrap()
                 .to_owned();
             let (send, body) = async_channel::bounded(1);
-            let mut owned = task.lock().unwrap();
-            assert!(
-                owned.is_none(),
-                "exactly one stream in this healthy scenario"
-            );
-            *owned = Some(tokio::spawn(async move {
+            tasks.lock().unwrap().push(tokio::spawn(async move {
                 // Finite relay budget, cancel-on-test-cleanup; no EOF collection.
                 for _ in 0..64 {
                     let chunk = tokio::time::timeout(Duration::from_secs(5), response.chunk())
@@ -242,12 +239,74 @@ impl crate::api::test_support::StreamAdapter for HeldStream {
         })
     }
 }
-struct RelayTask(Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>);
-impl Drop for RelayTask {
+#[derive(Default)]
+struct RelayTasks(Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>);
+impl RelayTasks {
+    fn stream(&self, gate: Arc<Gate>, attempts: Arc<AtomicUsize>) -> HeldStream {
+        HeldStream {
+            gate,
+            tasks: self.0.clone(),
+            attempts,
+        }
+    }
+    fn disconnect(&self) {
+        self.0.lock().unwrap().last().unwrap().abort();
+    }
+    async fn cancel_latest(&self) {
+        let task = self.0.lock().unwrap().pop().unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+    }
+}
+impl Drop for RelayTasks {
     fn drop(&mut self) {
-        if let Some(task) = self.0.lock().unwrap().take() {
+        for task in self.0.lock().unwrap().drain(..) {
             task.abort();
         }
+    }
+}
+
+// Faults/delays at the HTTP boundary still execute the real route first. Losing
+// a successful POST response models an uncertain outcome, not a failed write.
+struct ControlledResponses {
+    inner: CountReads,
+    channels: Arc<Gate>,
+    history: Arc<Gate>,
+    post: Arc<Gate>,
+    fail_history: Arc<std::sync::atomic::AtomicBool>,
+    lose_post: Arc<std::sync::atomic::AtomicBool>,
+    writes: Arc<AtomicUsize>,
+}
+impl RequestAdapter for ControlledResponses {
+    fn execute(&self, request: reqwest::Request) -> ApiFuture<Result<Response, ApiError>> {
+        let get = request.method() == reqwest::Method::GET;
+        let history = get && request.url().path().ends_with("/messages");
+        let post = request.method() == reqwest::Method::POST
+            && request.url().path().ends_with("/messages");
+        let gate = if history {
+            self.history.clone()
+        } else if get {
+            self.channels.clone()
+        } else {
+            self.post.clone()
+        };
+        let fail = (history && self.fail_history.swap(false, Ordering::SeqCst))
+            || (post && self.lose_post.swap(false, Ordering::SeqCst));
+        if post {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+        }
+        let response = self.inner.execute(request);
+        Box::pin(async move {
+            let response = response.await?;
+            if get || post {
+                gate.wait().await;
+            }
+            if fail {
+                Err(ApiError::Unavailable)
+            } else {
+                Ok(response)
+            }
+        })
     }
 }
 
@@ -354,6 +413,122 @@ fn second_user_creations_arrive_on_session_stream_without_followup_reads(cx: &mu
         activity.close();
         cx.executor().run_until_parked();
         handle.stop(true).await;
+    });
+}
+
+#[gpui_kit::test]
+fn real_route_independent_reads_pending_and_uncertain_writes_survive_reconnect(
+    cx: &mut TestAppContext,
+) {
+    actix_web::rt::System::new().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let state = hamlet::connect_to_database(&format!("sqlite://{}?mode=rwc", dir.path().join("local-work.db").display())).await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = serve(listener, state);
+        let handle = server.handle();
+        let task = actix_web::rt::spawn(server);
+        let channels_gate = Gate::new();
+        let history_gate = Gate::new();
+        let post_gate = Gate::new();
+        let stream_gate = Gate::new();
+        let fail_history = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lose_post = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let writes = Arc::new(AtomicUsize::new(0));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let relay = RelayTasks::default();
+        let api = HttpTransport::with_adapters(Arc::new(ControlledResponses {
+            inner: CountReads { reads: reads.clone(), client: reqwest::Client::new() },
+            channels: channels_gate.clone(), history: history_gate.clone(), post: post_gate.clone(),
+            fail_history: fail_history.clone(), lose_post: lose_post.clone(), writes: writes.clone(),
+        }), Arc::new(relay.stream(stream_gate.clone(), attempts.clone()))).server(&url).unwrap();
+        let alice = api.signup("Alice".into(), "long password".into()).await.unwrap();
+        let bob = HttpTransport::new().server(&url).unwrap().signup("Bob".into(), "long password".into()).await.unwrap();
+        let other = bob.client.create_channel("zz-other".into()).await.unwrap();
+        channels_gate.arm();
+        stream_gate.arm();
+        let a = ConversationHandle::new(1, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        a.start();
+        settle(cx, &[&a], || channels_gate.reached.load(Ordering::SeqCst) && stream_gate.reached.load(Ordering::SeqCst)).await;
+        channels_gate.open();
+        settle(cx, &[&a], || a.read().selected.as_ref().is_some_and(|id| matches!(a.read().history.get(id), Some(Load::Ready(_))))).await;
+        let original = a.read().selected.clone().unwrap();
+        assert_ne!(original, other.id);
+        assert_eq!(a.status(), "Connecting…", "initial HTTP loads finish before stream readiness");
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+        stream_gate.open();
+        settle(cx, &[&a], || a.status().is_empty()).await;
+
+        fail_history.store(true, Ordering::SeqCst);
+        a.select_channel(&other.id);
+        settle(cx, &[&a], || matches!(a.read().history.get(&other.id), Some(Load::Failed(_)))).await;
+        assert_eq!(a.status(), "");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1, "a local read failure does not restart live delivery");
+        a.select_channel(&original);
+        history_gate.arm();
+        a.select_channel(&other.id);
+        settle(cx, &[&a], || history_gate.reached.load(Ordering::SeqCst)).await;
+        let overlap = bob.client.send_message(other.id.clone(), "read overlap may be lost".into()).await.unwrap();
+        let barrier = bob.client.send_message(original.clone(), "overlap delivery barrier".into()).await.unwrap();
+        settle(cx, &[&a], || ids(&a, &original).contains(&barrier.id)).await;
+        a.edit_draft("pending across reconnect".into());
+        post_gate.arm();
+        a.send();
+        settle(cx, &[&a], || post_gate.reached.load(Ordering::SeqCst)).await;
+        let before_reads = reads.load(Ordering::SeqCst);
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+        relay.disconnect();
+        settle(cx, &[&a], || a.status() == "Live updates disconnected — reconnecting.").await;
+        cx.background_executor.advance_clock(Duration::from_millis(2999));
+        cx.executor().run_until_parked();
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        cx.background_executor.advance_clock(Duration::from_millis(1));
+        settle(cx, &[&a], || a.status().is_empty()).await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(reads.load(Ordering::SeqCst), before_reads);
+        assert_eq!(writes.load(Ordering::SeqCst), 1, "pending write is not resent");
+        assert_eq!(a.read().selected.as_deref(), Some(other.id.as_str()));
+        assert_eq!(a.read().draft(&other.id), "pending across reconnect");
+        assert!(a.read().send_pending.contains_key(&other.id));
+        assert!(matches!(a.read().history.get(&other.id), Some(Load::Loading)));
+        history_gate.open();
+        settle(cx, &[&a], || matches!(a.read().history.get(&other.id), Some(Load::Ready(_)))).await;
+        assert!(ids(&a, &other.id).is_empty(), "overlap event was not staged into the old HTTP snapshot");
+        assert!(a.read().send_pending.contains_key(&other.id));
+        post_gate.open();
+        settle(cx, &[&a], || a.read().draft(&other.id).is_empty()).await;
+        let confirmed = alice.client.history_page(other.id.clone(), None).await.unwrap().items.into_iter().find(|m| m.text == "pending across reconnect").unwrap();
+        assert_eq!(ids(&a, &other.id), std::slice::from_ref(&confirmed.id));
+        assert!(matches!(a.read().history.get(&other.id), Some(Load::Ready(messages)) if messages == std::slice::from_ref(&confirmed)));
+        assert!(!ids(&a, &other.id).contains(&overlap.id));
+
+        lose_post.store(true, Ordering::SeqCst);
+        a.edit_draft("identical uncertain text".into());
+        a.send();
+        settle(cx, &[&a], || a.read().uncertain.contains(&other.id) && ids(&a, &other.id).len() == 2).await;
+        let feedback = a.read().send_feedback[&other.id].clone();
+        let before_reads = reads.load(Ordering::SeqCst);
+        relay.disconnect();
+        settle(cx, &[&a], || a.status() == "Live updates disconnected — reconnecting.").await;
+        cx.background_executor.advance_clock(Duration::from_secs(3));
+        settle(cx, &[&a], || a.status().is_empty()).await;
+        // Same author and text, distinct entity ID: an event is not an originating
+        // HTTP confirmation, even after reconnect and even if the write did commit.
+        let matching = alice.client.send_message(other.id.clone(), "identical uncertain text".into()).await.unwrap();
+        settle(cx, &[&a], || ids(&a, &other.id).contains(&matching.id)).await;
+        assert_eq!(a.read().draft(&other.id), "identical uncertain text");
+        assert!(a.read().uncertain.contains(&other.id));
+        assert_eq!(a.read().send_feedback[&other.id], feedback);
+        assert_eq!(reads.load(Ordering::SeqCst), before_reads);
+        assert_eq!(writes.load(Ordering::SeqCst), 3, "two deliberate coordinator writes and one explicit API write, no automatic resend");
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        a.close();
+        cx.background_executor.advance_clock(Duration::from_secs(60));
+        cx.executor().run_until_parked();
+        assert_eq!(attempts.load(Ordering::SeqCst), 3, "session teardown cannot reconnect");
+        assert!(a.read().channels.is_none());
+        stop(handle, task).await;
     });
 }
 
@@ -524,11 +699,12 @@ fn real_route_http_event_orders_reconcile_once_without_healthy_reads(cx: &mut Te
         let task = actix_web::rt::spawn(server);
         let post_gate = Gate::new();
         let stream_gate = Gate::new();
-        let relay = RelayTask(Arc::new(std::sync::Mutex::new(None)));
+        let relay = RelayTasks::default();
+        let attempts = Arc::new(AtomicUsize::new(0));
         let a_reads = Arc::new(AtomicUsize::new(0));
         let a_transport = HttpTransport::with_adapters(Arc::new(HeldPost {
             inner: CountReads { reads: a_reads.clone(), client: reqwest::Client::new() }, gate: post_gate.clone(),
-        }), Arc::new(HeldStream { gate: stream_gate.clone(), task: relay.0.clone() }));
+        }), Arc::new(relay.stream(stream_gate.clone(), attempts.clone())));
         let (b_transport, b_reads) = transport();
         let alice = a_transport.server(&url).unwrap().signup("Alice".into(), "long password".into()).await.unwrap();
         let bob = b_transport.server(&url).unwrap().signup("Bob".into(), "long password".into()).await.unwrap();
@@ -540,6 +716,14 @@ fn real_route_http_event_orders_reconcile_once_without_healthy_reads(cx: &mut Te
         settle(cx, &clients, || clients.iter().all(|c| c.status().is_empty() && c.read().selected.as_ref().is_some_and(|id| matches!(c.read().history.get(id), Some(Load::Ready(_)))))).await;
         let channel = a.read().selected.clone().unwrap();
         let reads = [a_reads.load(Ordering::SeqCst), b_reads.load(Ordering::SeqCst)];
+        let Some(Load::Ready(initial_channels)) = a.read().channels.clone() else { panic!("initial channels") };
+        let initial_channel_count = initial_channels.len();
+        // Subsequent successful frames are finite barriers behind these failures.
+        // A phantom creation would change the integrated histories/channel lists.
+        assert_eq!(bob.client.send_message(channel.clone(), " ".into()).await, Err(ApiError::InvalidInput));
+        assert_eq!(bob.client.send_message("999999999999999".into(), "missing channel".into()).await, Err(ApiError::NotFound));
+        assert_eq!(bob.client.create_channel("bad!".into()).await, Err(ApiError::InvalidInput));
+        assert_eq!(bob.client.create_channel(initial_channels[0].name.clone()).await, Err(ApiError::Conflict));
         post_gate.arm();
         a.edit_draft("event before response".into()); a.send();
         settle(cx, &clients, || post_gate.reached.load(Ordering::SeqCst) && clients.iter().all(|c| ids(c, &channel).len() == 1)).await;
@@ -596,12 +780,16 @@ fn real_route_http_event_orders_reconcile_once_without_healthy_reads(cx: &mut Te
             assert_eq!(b.read().selected.as_deref(), Some(channel.as_str()));
             assert!(!b.read().history.contains_key(&selected));
             assert_eq!([a_reads.load(Ordering::SeqCst), b_reads.load(Ordering::SeqCst)], [reads[0] + index + 1, reads[1]], "only local selection loads history; no confirmation/event catch-up reads");
+            for client in clients {
+                assert!(matches!(&client.read().channels, Some(Load::Ready(channels)) if channels.len() == initial_channel_count + index + 2), "failed writes emit no phantom channels");
+                assert_eq!(ids(client, &channel).len(), index + 3, "only confirmed sends and explicit barriers appear");
+                assert!(matches!(client.read().history.get(&channel), Some(Load::Ready(messages)) if messages.contains(&barrier)), "complete HTTP and event entities agree");
+            }
         }
         for client in clients { client.close(); }
         cx.executor().run_until_parked();
-        let forwarder = relay.0.lock().unwrap().take().unwrap();
-        forwarder.abort();
-        assert!(forwarder.await.unwrap_err().is_cancelled());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        relay.cancel_latest().await;
         stop(handle, task).await;
     });
 }
@@ -670,6 +858,9 @@ fn two_authenticated_coordinators_reconnect_without_catchup_after_actual_server_
         let retained = ids(&a, &channel);
         let retained_channels = a.read().channels.clone();
         assert_eq!(retained.len(), 103);
+        cx.background_executor.advance_clock(Duration::from_secs(10));
+        settle(cx, &clients, || clients.iter().all(|c| c.status().is_empty())).await;
+        assert_eq!([a_reads.load(Ordering::SeqCst), b_reads.load(Ordering::SeqCst)], reads, "healthy timer ticks perform no periodic polling");
         assert_eq!([a_attempts.load(Ordering::SeqCst), b_attempts.load(Ordering::SeqCst)], [1, 1]);
         // Stop the actual Actix server/workers and await completion, closing both TCP bodies.
         stop(handle, task).await;
@@ -686,8 +877,9 @@ fn two_authenticated_coordinators_reconnect_without_catchup_after_actual_server_
         let handle = server.handle();
         let task = actix_web::rt::spawn(server);
         // While client policy clocks remain stopped, create more than a newest page.
+        let mut missed = Vec::new();
         for index in 0..55 {
-            bob.client.send_message(channel.clone(), format!("during disconnect {index}")).await.unwrap();
+            missed.push(bob.client.send_message(channel.clone(), format!("during disconnect {index}")).await.unwrap());
         }
         let offline = bob.client.create_channel("Offline room".into()).await.unwrap();
         cx.background_executor.advance_clock(Duration::from_millis(2999));
@@ -730,6 +922,19 @@ fn two_authenticated_coordinators_reconnect_without_catchup_after_actual_server_
         assert_eq!(ids(&a, &channel), ids(&b, &channel));
         assert_eq!([a_reads.load(Ordering::SeqCst), b_reads.load(Ordering::SeqCst)], [reads[0] + 1, reads[1] + 1], "only explicit older-page requests read");
         for client in clients { client.close(); }
+        cx.executor().run_until_parked();
+        // Reopening the conversation is an ordinary initial channel/history load,
+        // not a Refresh control or a special catch-up operation. The newest page
+        // can retrieve missed creations; no promise is made about the whole gap.
+        let reopened = ConversationHandle::new(3, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        reopened.start();
+        settle(cx, &[&reopened], || matches!(&reopened.read().channels, Some(Load::Ready(channels)) if channels.contains(&offline))).await;
+        reopened.select_channel(&channel);
+        settle(cx, &[&reopened], || ids(&reopened, &channel).contains(&missed.last().unwrap().id)).await;
+        assert!(matches!(reopened.read().history.get(&channel), Some(Load::Ready(messages)) if messages.contains(missed.last().unwrap())));
+        assert_eq!(b_reads.load(Ordering::SeqCst), reads[1] + 1, "the other closed client performs no reads");
+        assert_eq!(a_reads.load(Ordering::SeqCst), reads[0] + 3, "one ordinary channel list and one newest history read after reopening");
+        reopened.close();
         cx.executor().run_until_parked();
         stop(handle, task).await;
     });

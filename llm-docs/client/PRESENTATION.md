@@ -28,9 +28,14 @@ memory-only, confirmed and unconfirmed outcomes.
 `conversation/mod.rs` owns requests, task cancellation and completion identities.
 `conversation/state.rs` owns server-order selection, history continuity, deduplication,
 creation, per-channel drafts and send uncertainty. `conversation/live_updates.rs`
-owns one readiness/baseline/live/retry lifecycle. Focus and view recreation do not
-restart the session stream. Creations and HTTP confirmations merge without healthy
-follow-up reads; uncertainty never schedules reads or automatic write retry.
+owns one connecting/connected/waiting-to-retry/closed lifecycle. Initial reads
+start independently of readiness; local read failures do not restart the stream.
+Focus and view recreation do not restart the session stream. Creations merge by
+ID into loaded data only; events for unloaded data or during replacing reads may
+be missed. HTTP confirmations remain operation-aware. Stream failures retry after
+a fixed three seconds without catch-up reads, canceling HTTP work or resetting
+conversation state; readiness resumes future delivery, not synchronization.
+Uncertainty never schedules reads, reconnect or automatic write retry.
 Neither polling nor manual Refresh/Retry connection controls remain. `api/` alone
 builds routes/headers and decodes responses. HTTP 8s, stream readiness 8s/idle 45s,
 protected read/send 9s and combined storage/restoration 10s deadlines remain distinct.
@@ -45,11 +50,12 @@ memory zeroization.
 
 The history view splices chronological stable row IDs, preserving variable-height
 anchors for prepend and middle insertion. It follows only when appropriate;
-**Jump to latest** explicitly resumes bottom-follow. Recovery deliberately resets
-to newest via a revision even when row IDs are unchanged, retaining selected rows
-under **Reconnecting… messages may be out of date** until the authoritative baseline
-succeeds. Selection/copy uses Kit
-`SelectableText` and Root. The composer keeps only its displayed-channel/text
+**Jump to latest** explicitly resumes bottom-follow. Disconnect/reconnect preserves
+reading position, loaded pages/cursors and selection; there is no recovery-reset
+revision. **Connecting…** appears initially; **Live updates disconnected —
+reconnecting.** persists after failure until the replacement stream is ready,
+regardless of cached rows or read outcomes. Neither status promises synchronized
+state. Selection/copy uses Kit `SelectableText` and Root. The composer keeps only its displayed-channel/text
 projection; drafts remain in conversation ownership. Hydration must not overwrite
 queued edits, move the caret on unchanged notifications, or let an old Enter send
 the newly selected channel's draft. Enter sends unchanged text; Shift+Enter adds
