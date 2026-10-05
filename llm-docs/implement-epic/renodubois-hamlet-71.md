@@ -20,7 +20,7 @@ Sequential order follows native hierarchy among runnable issues: #63, #64, #65, 
 | [#66 Channel publication](https://github.com/renodubois/hamlet/issues/66) | #65 | Completed; tracker verified CLOSED/COMPLETED | Matching channel fanout, invalid/duplicate/insert failures, deterministic ID retries, concurrent writes, real TCP reset during SQLite commit, supervised lifetime and approved fail-closed exceptional delivery | Server 30 tests; strict fmt/clippy/check, unchanged OpenAPI, desktop locked build; five repeated focused runs | Standards: no violations, 1 optional fixture cleanup; Spec: 0 findings | `76b736d` |
 | [#67 Message publication](https://github.com/renodubois/hamlet/issues/67) | #65 | Completed; tracker verified CLOSED/COMPLETED | Matching message payloads, pre-write author preparation, failures/cancellation, approved exceptional safeguard | Server 39 tests; desktop 171 tests/build; protocol 4/5 tests; all checks pass | Standards: no violations, 1 optional helper cleanup; Spec: 0 findings | `e0bc0a0` |
 | [#68 Desktop API stream](https://github.com/renodubois/hamlet/issues/68) | #66, #67 | Completed; tracker verified CLOSED/COMPLETED | Verified server gate; bound transport, incremental parsing/validation, deadlines, bounded delivery, actual creations | Desktop 189 tests/build; server39; protocol4/5; all checks pass | Standards fixture-layout finding fixed/re-reviewed; Spec: 0 findings | `108c8a5`, `ca23c7c` |
-| [#69 Desktop live synchronization](https://github.com/renodubois/hamlet/issues/69) | #64, #68 | Planned | One session stream/recovery lifecycle, races, local work preservation, stale UI, polling removal | Not run | Pending | — |
+| [#69 Desktop live synchronization](https://github.com/renodubois/hamlet/issues/69) | #64, #68 | Completed; tracker verified CLOSED/COMPLETED | One session stream/recovery lifecycle, races, local work preservation, stale UI, polling removal, real two-user no-followup-read proof | Desktop186 tests; fmt/strict clippy/build pass | Confirmation-retention and test-layout findings fixed; both axes re-reviewed pass | `7c75c3b`, `6671da9` |
 | [#70 Integrated verification](https://github.com/renodubois/hamlet/issues/70) | #69 | Planned | Two-client recovery and races, compatibility, measured bounded fanout, full checks | Not run | Pending | — |
 | [#71 Parent acceptance](https://github.com/renodubois/hamlet/issues/71) | All children | Planned | Integrated no-polling updates, authoritative recovery, visible failure and measured evidence | Not run | Original-baseline review pending | — |
 
@@ -48,7 +48,7 @@ Sequential order follows native hierarchy among runnable issues: #63, #64, #65, 
 
 ## Resume checkpoint
 
-#63–#68 closed with evidence and parent progress comments. Next frontier: #69. Server contract/publication/cancellation gate is verified on this branch; protocol and full server/desktop checks passed before starting client transport. #65 baseline was `3a5a55dd20c3944a07411835e14976c5ec16cc99`. Prior parallel read-only Standards and Spec reviewers read the complete committed #63/#64 diffs and passed. Initial reviewer attempts lacked command tools; supplied complete diff artifacts for the successful second reviews. All prior commits remain local/unpushed.
+#63–#69 closed with evidence and parent progress comments. Next frontier: #70. Server contract/publication/cancellation gate is verified on this branch; protocol and full server/desktop checks passed before starting client transport. #65 baseline was `3a5a55dd20c3944a07411835e14976c5ec16cc99`. Prior parallel read-only Standards and Spec reviewers read the complete committed #63/#64 diffs and passed. Initial reviewer attempts lacked command tools; supplied complete diff artifacts for the successful second reviews. All prior commits remain local/unpushed.
 
 ### #63 verification
 
@@ -490,7 +490,9 @@ Criterion numbers follow the 13 checkbox bullets in the full #69 issue.
 
 Parent handoff: all changes are uncommitted on the supplied branch/baseline. This checkpoint needs continued implementation, not a completion review/issue closure. The approved restart-required exceptional server latch is unchanged; no design blocker requires user input.
 
-### #69 desktop cutover — verified uncommitted implementation
+### #69 desktop cutover — implementation evidence
+
+Parent completion: committed as `7c75c3b` plus `6671da9` review fixes. Initial full-diff Spec review found permanent confirmed-message retention violating newest-only recovery; regression-first fix retires reconciled overlays. Standards shared view-support placement fixed; inert focus interface removed. Complete fix reviews on both axes passed. All186 desktop tests and required checks passed again. Tracker CLOSED/COMPLETED verified and parent progress posted. Following entries preserve pre-commit worker evidence.
 
 Continued checkpoint A as sole writer on unchanged HEAD `4e59b42ae81984352c9c2adf84b5b81710b9d1b6`. This entry supersedes **the resume frontier**, not the historical evidence above. Production now uses the authenticated stream; this is no longer a foundations-only checkpoint. No commit, tracker mutation, server/legacy/native/keyring/README change, dependency change or lockfile change was made. Ready for the parent's independent reviews and commit; this worker did not close #69.
 
