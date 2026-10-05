@@ -6,7 +6,7 @@ pub(super) use reqwest::{Request, StatusCode};
 use serde_json::json;
 
 pub(super) fn bound_api(adapter: impl RequestAdapter + 'static) -> HttpTransport {
-    HttpTransport::with_adapter(Arc::new(adapter))
+    crate::test_support::live::transport(Arc::new(adapter))
 }
 
 pub(super) struct BoundAuth;

@@ -124,10 +124,7 @@ fn create_controls_confirm_order_selection_and_empty_history(cx: &mut TestAppCon
                 assert!(window.find("channel-1").bounds().origin.y < middle);
                 assert!(middle < window.find("channel-2").bounds().origin.y);
             }
-            assert_eq!(
-                window.find("refresh-history").label(),
-                Some("Refresh conversation")
-            );
+            assert!(window.try_find("refresh-history").is_none());
             assert!(
                 window.try_find("history").is_none(),
                 "confirmed empty history has no rows"
@@ -274,10 +271,13 @@ fn create_completion_after_logout_cannot_navigate(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn refresh_channels_control_keeps_selected_conversation(cx: &mut TestAppContext) {
+fn remote_channel_creation_keeps_selected_conversation_without_refresh_controls(
+    cx: &mut TestAppContext,
+) {
     cx.update(gpui_kit::init);
+    let streams = crate::test_support::live::Streams::default();
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = open_controlled(window, cx, Arc::new(BoundAuth));
+        let view = open_with_streams(window, cx, Arc::new(BoundAuth), &streams);
         Root::new(view, window, cx)
     });
     cx.update(|window, cx| {
@@ -300,26 +300,18 @@ fn refresh_channels_control_keeps_selected_conversation(cx: &mut TestAppContext)
             window.find("message-000000000000002").label(),
             Some("other channel")
         );
-        window.click("refresh-channels", cx);
-        window.render_frame(cx);
-        assert_eq!(
-            window.find("refresh-channels").label(),
-            Some("Refreshing channels…")
-        );
-        window.click("refresh-channels", cx);
+        assert!(window.try_find("refresh-channels").is_none());
     });
+    streams.change(serde_json::json!({"type":"channel_created","channel":{"id":"remote","name":"Remote","type":"text"}}));
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert_eq!(
-            window.find("refresh-channels").label(),
-            Some("Refresh channels")
-        );
+        assert_eq!(window.find("channel-remote").label(), Some("# Remote"));
         assert_eq!(
             window.find("message-000000000000002").label(),
             Some("other channel")
         );
-        window.click("refresh-history", cx);
+        assert!(window.try_find("refresh-history").is_none());
     });
     cx.run_until_parked();
     cx.update(|window, cx| {
@@ -347,14 +339,13 @@ impl RequestAdapter for RemovingChannel {
 }
 
 #[gpui_kit::test]
-fn channel_discovery_shows_cached_fallback_after_selected_channel_disappears(
-    cx: &mut TestAppContext,
-) {
+fn recovery_loads_valid_fallback_after_selected_channel_disappears(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let remove = Arc::new(AtomicBool::new(false));
     let removed = remove.clone();
+    let streams = crate::test_support::live::Streams::default();
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = open_controlled(window, cx, Arc::new(RemovingChannel(removed)));
+        let view = open_with_streams(window, cx, Arc::new(RemovingChannel(removed)), &streams);
         Root::new(view, window, cx)
     });
     cx.update(|window, cx| {
@@ -381,11 +372,9 @@ fn channel_discovery_shows_cached_fallback_after_selected_channel_disappears(
     });
     cx.run_until_parked();
     remove.store(true, Ordering::SeqCst);
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        window.click("refresh-channels", cx);
-    });
+    streams.disconnect();
     cx.run_until_parked();
+    advance(cx, 1);
     cx.update(|window, cx| {
         window.render_frame(cx);
         assert_eq!(

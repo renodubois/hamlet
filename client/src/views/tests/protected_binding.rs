@@ -1,7 +1,6 @@
 //! Bound protected requests through the real controls and shared execution path.
 use super::bound_auth::*;
 use super::*;
-use crate::api::HttpTransport;
 use serde_json::json;
 
 struct Contexts {
@@ -53,7 +52,7 @@ fn protected_contexts_survive_logout_changed_server_and_late_old_results(cx: &mu
     for rejected in [false, true] {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let (reply, pending) = async_channel::bounded(1);
-        let transport = HttpTransport::with_adapter(Arc::new(Contexts {
+        let transport = crate::test_support::live::transport(Arc::new(Contexts {
             requests: requests.clone(),
             old_channels: Mutex::new(Some(pending)),
         }));
@@ -126,8 +125,9 @@ fn protected_contexts_survive_logout_changed_server_and_late_old_results(cx: &mu
                 window.find("message-000000000000001").label(),
                 Some("first line\nsecond line")
             );
-            window.click("refresh-channels", cx);
-            window.click("refresh-history", cx);
+            assert!(window.try_find("refresh-channels").is_none());
+            assert!(window.try_find("refresh-history").is_none());
+            window.click("channel-000000000000002", cx);
         });
         cx.run_until_parked();
         let requests = requests.lock().unwrap();

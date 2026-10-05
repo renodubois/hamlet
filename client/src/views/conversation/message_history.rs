@@ -1,6 +1,6 @@
 //! History viewport and controls. Continuity, cursors and requests belong to conversation.
 use super::message_row::message_row;
-use crate::conversation::{self, ConversationHandle, Load, Older};
+use crate::conversation::{ConversationHandle, Load, Older};
 use gpui_kit::base::Disableable;
 use gpui_kit::component::button::Button;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -38,6 +38,7 @@ pub(crate) struct MessageHistoryView {
     focus: FocusHandle,
     list: ListState,
     presented_channel: Option<String>,
+    presented_reset: u64,
     // Row indices only, never a second history store or continuity model.
     presented_ids: Vec<String>,
     _notifications: Task<()>,
@@ -79,6 +80,7 @@ impl MessageHistoryView {
             focus: cx.focus_handle(),
             list,
             presented_channel: None,
+            presented_reset: 0,
             presented_ids: Vec::new(),
             _notifications: notifications,
         };
@@ -86,12 +88,12 @@ impl MessageHistoryView {
         view
     }
     fn present_history(&mut self) {
-        let (selected, ids) = {
+        let (selected, ids, reset) = {
             let state = self.conversation.read();
             let ids = state
                 .selected
                 .as_ref()
-                .and_then(|id| state.history.get(id))
+                .and_then(|id| state.history_for_display(id))
                 .and_then(|load| {
                     if let Load::Ready(messages) = load {
                         Some(
@@ -106,10 +108,10 @@ impl MessageHistoryView {
                     }
                 })
                 .unwrap_or_default();
-            (state.selected.clone(), ids)
+            (state.selected.clone(), ids, state.recovery_reset_revision())
         };
         let follow = self.list.is_scrolled_to_end() != Some(false);
-        if selected != self.presented_channel {
+        if selected != self.presented_channel || reset != self.presented_reset {
             self.list.reset(ids.len());
             hint_history_row_heights(&self.list);
             self.list.scroll_to_end();
@@ -121,6 +123,7 @@ impl MessageHistoryView {
                 self.list.scroll_to_end();
             }
         }
+        self.presented_reset = reset;
         self.presented_channel = selected;
         self.presented_ids = ids;
     }
@@ -134,7 +137,7 @@ impl Render for MessageHistoryView {
         let has_rows = conversation
             .selected
             .as_ref()
-            .and_then(|id| conversation.history.get(id))
+            .and_then(|id| conversation.history_for_display(id))
             .is_some_and(|load| matches!(load, Load::Ready(messages) if !messages.is_empty()));
         let focus = self.focus.clone();
         let list_for_wheel = self.list.clone();
@@ -173,33 +176,7 @@ impl Render for MessageHistoryView {
                     .font_weight(FontWeight::BOLD)
                     .child(format!("# {name}")),
             );
-            let refreshing = matches!(
-                conversation.refreshing.get(id),
-                Some(conversation::Refresh::Running)
-            );
-            history = history.child(
-                Button::new("refresh-history")
-                    .label(if refreshing {
-                        "Refreshing conversation…"
-                    } else {
-                        "Refresh conversation"
-                    })
-                    .disabled(
-                        refreshing || matches!(conversation.history.get(id), Some(Load::Loading)),
-                    )
-                    .on_click(cx.listener(|view, _, _, _| view.conversation.refresh_history())),
-            );
-            if let Some(conversation::Refresh::Incomplete(error)) = conversation.refreshing.get(id)
-            {
-                history = history.child(
-                    div()
-                        .id("catchup-incomplete")
-                        .aria_label(error.clone())
-                        .test_support()
-                        .child(format!("Catch-up incomplete: {error}")),
-                );
-            }
-            match conversation.history.get(id) {
+            match conversation.history_for_display(id) {
                 None | Some(Load::Loading) => history = history.child("Loading conversation…"),
                 Some(Load::Failed(error)) => {
                     history = history.child(format!("Conversation: {error}"))

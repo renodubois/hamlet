@@ -1,6 +1,4 @@
 //! One authenticated transport attempt. No reconnect or conversation policy.
-// Activated by #69; keep the not-yet-called operation compiled in production.
-#![allow(dead_code, reason = "API stream is wired into conversation by #69")]
 
 use super::{ApiError, ApiFuture, AuthenticatedClient};
 use crate::runtime::{Execution, Work};
@@ -84,7 +82,7 @@ impl AuthenticatedClient {
     }
 }
 
-pub(super) trait StreamAdapter: Send + Sync {
+pub(crate) trait StreamAdapter: Send + Sync {
     fn open(&self, request: Request) -> ApiFuture<Result<StreamResponse, ApiError>>;
 }
 impl StreamAdapter for Client {
@@ -99,7 +97,7 @@ impl StreamAdapter for Client {
         })
     }
 }
-pub(super) enum StreamResponse {
+pub(crate) enum StreamResponse {
     Http(reqwest::Response),
     #[cfg(test)]
     Controlled {

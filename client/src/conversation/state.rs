@@ -39,20 +39,6 @@ pub enum Load<T> {
     Failed(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Refresh {
-    Running,
-    Incomplete(String),
-}
-
-#[derive(Clone, Debug)]
-struct Catchup {
-    id: String,
-    head: Option<String>,
-    items: Vec<Message>,
-    cursors: HashSet<String>,
-}
-
 // Completion identities contain no endpoint or credential; dispatch captures the accepted client.
 #[derive(Clone)]
 pub(super) struct SendRequest {
@@ -73,7 +59,6 @@ pub(super) enum SendOutcome {
 
 pub(super) struct HistoryOutcome {
     pub added: usize,
-    pub next: Option<ReadRequest>,
 }
 
 #[derive(Clone)]
@@ -82,13 +67,6 @@ pub(super) struct ReadRequest {
     pub channel_id: Option<String>,
     pub before: Option<String>,
     pub serial: u64,
-    refresh: bool,
-}
-
-impl ReadRequest {
-    pub fn is_catchup(&self) -> bool {
-        self.refresh
-    }
 }
 
 #[derive(Clone)]
@@ -100,7 +78,7 @@ pub(super) struct CreateRequest {
 
 // Separate bounds for the one channel-list read and one replacing history read.
 const READ_STAGING_CAPACITY: usize = 256;
-const STAGING_OVERFLOW: &str = "Too many concurrent creations; refresh to reload current state.";
+const STAGING_OVERFLOW: &str = "Reconnecting… messages may be out of date";
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct ReconciliationOverflow;
@@ -110,10 +88,10 @@ pub struct Conversation {
     pub channels: Option<Load<Vec<Channel>>>,
     pub selected: Option<String>,
     pub history: HashMap<String, Load<Vec<Message>>>,
+    // Display-only selected content during recovery; never a cache or pagination source.
+    retained_history: Option<(String, Load<Vec<Message>>)>,
     pub older: HashMap<String, Older>,
     cursors: HashMap<String, String>,
-    pub refreshing: HashMap<String, Refresh>,
-    catchup: Option<Catchup>,
     channel_pending: bool,
     channels_during_read: Vec<Channel>,
     channels_read_overflow: bool,
@@ -131,29 +109,37 @@ pub struct Conversation {
     pub uncertain: HashSet<String>,
     uncertain_notice: HashSet<String>,
     confirmed: HashMap<String, Vec<Message>>,
-    // Polling continuity must not use a confirmation merged after the snapshot as its head.
-    confirmed_boundary: HashMap<String, Option<String>>,
-    confirmed_refresh: HashSet<String>,
-    confirmed_during_refresh: HashSet<String>,
     send_serial: u64,
     recovery_reset_revision: u64,
 }
 
 impl Conversation {
-    pub fn channel_refreshing(&self) -> bool {
-        self.channel_pending
+    /// Retained rows are presentation only. Reads, merges and pagination use `history`.
+    pub fn history_for_display(&self, id: &str) -> Option<&Load<Vec<Message>>> {
+        match self.history.get(id) {
+            ready @ Some(Load::Ready(_)) => ready,
+            current => self
+                .retained_history
+                .as_ref()
+                .filter(|(channel, _)| channel == id)
+                .map(|(_, history)| history)
+                .or(current),
+        }
     }
 
     /// A reset is observable even if a replacement returns exactly the same entity IDs.
-    #[allow(dead_code)] // History presentation consumes this at the #69 cutover.
     pub fn recovery_reset_revision(&self) -> u64 {
         self.recovery_reset_revision
     }
 
     /// Invalidate server-derived history, never local drafts or write operation identities.
     /// The retained channel list permits navigation/writes until its authoritative replacement.
-    #[allow(dead_code)] // The live coordinator owns recovery starting in #69.
     pub(super) fn reset_for_recovery(&mut self) {
+        if let Some(id) = &self.selected
+            && matches!(self.history.get(id), Some(Load::Ready(_)))
+        {
+            self.retained_history = self.history.remove(id).map(|history| (id.clone(), history));
+        }
         self.cancel_selected();
         self.channel_serial = self.channel_serial.wrapping_add(1);
         self.channel_pending = false;
@@ -161,13 +147,12 @@ impl Conversation {
         self.channels_read_overflow = false;
         self.history_read_overflow = false;
         self.channel_error = None;
+        if !matches!(self.channels, Some(Load::Ready(_))) {
+            self.channels = Some(Load::Loading);
+        }
         self.history.clear();
         self.cursors.clear();
         self.older.clear();
-        self.refreshing.clear();
-        self.confirmed_boundary.clear();
-        self.confirmed_refresh.clear();
-        self.confirmed_during_refresh.clear();
         self.recovery_reset_revision = self.recovery_reset_revision.wrapping_add(1);
     }
 
@@ -290,7 +275,6 @@ impl Conversation {
 
     /// Sticky until the affected read is retried or recovery resets it. HTTP confirmations
     /// keep their own outcomes even when their concurrent replacing read overflows.
-    #[allow(dead_code)] // Consumed by the live coordinator in #69.
     pub(super) fn reconciliation_overflowed(&self) -> bool {
         self.channels_read_overflow || self.history_read_overflow
     }
@@ -356,16 +340,11 @@ impl Conversation {
         match result {
             Ok(message) if !message.id.is_empty() && message.channel_id == *id => {
                 self.drafts.remove(id);
-                self.send_feedback.insert(id.clone(), "Message accepted by server; waiting for conversation catch-up. Refresh conversation if catch-up is incomplete.".into());
-                // Preserve the previous head as the continuity boundary. A confirmation
-                // must not make catch-up stop before intervening publications are read.
-                if matches!(self.history.get(id), Some(Load::Loading)) {
-                    let _ = self.merge_message(message.clone());
-                }
+                self.send_feedback.remove(id);
+                self.uncertain.remove(id);
+                self.uncertain_notice.remove(id);
+                let _ = self.merge_message(message.clone());
                 self.confirmed.entry(id.clone()).or_default().push(message);
-                if matches!(self.refreshing.get(id), Some(Refresh::Running)) {
-                    self.confirmed_during_refresh.insert(id.clone());
-                }
                 SendOutcome::Confirmed
             }
             Err(ApiError::AlreadyInvalid) => {
@@ -389,38 +368,6 @@ impl Conversation {
                 SendOutcome::Uncertain
             }
         }
-    }
-
-    pub(super) fn reconcile_confirmed(&mut self, session: &Identity) -> Option<ReadRequest> {
-        let id = self.selected.as_ref()?;
-        if !self.confirmed.contains_key(id) || self.confirmed_refresh.contains(id) {
-            return None;
-        }
-        let id = id.clone();
-        let request = self.refresh_history(session);
-        if request.as_ref().is_some_and(|request| request.refresh) {
-            self.confirmed_refresh.insert(id);
-        }
-        request
-    }
-
-    /// After any history read, run only the reconciliation that can safely start now.
-    /// Incomplete catch-up always requires a deliberate retry, never an automatic loop.
-    pub(super) fn after_history_read(
-        &mut self,
-        session: &Identity,
-        succeeded: bool,
-    ) -> Option<ReadRequest> {
-        let id = self.selected.as_ref()?;
-        if !succeeded || matches!(self.refreshing.get(id), Some(Refresh::Incomplete(_))) {
-            return None;
-        }
-        self.reconcile_uncertain(session)
-            .or_else(|| self.reconcile_confirmed(session))
-    }
-
-    fn merge_confirmed(&mut self, _id: &str, message: Message) -> usize {
-        self.merge_message(message).unwrap_or(0)
     }
 
     /// Apply a validated creation to loaded history, or stage it across a replacing read.
@@ -469,18 +416,6 @@ impl Conversation {
         Ok(1)
     }
 
-    pub(super) fn reconcile_uncertain(&mut self, session: &Identity) -> Option<ReadRequest> {
-        let id = self.selected.clone()?;
-        if !self.uncertain.contains(&id) {
-            return None;
-        }
-        let request = self.refresh_history(session);
-        if request.is_some() {
-            self.uncertain.remove(&id);
-        }
-        request
-    }
-
     pub(super) fn start(&mut self, session: &Identity) -> Option<ReadRequest> {
         session.session_generation()?;
         if self.channels.is_some() {
@@ -512,7 +447,6 @@ impl Conversation {
             channel_id: None,
             before: None,
             serial: self.channel_serial,
-            refresh: false,
         })
     }
 
@@ -560,6 +494,9 @@ impl Conversation {
                     .filter(|id| channels.iter().any(|c| &c.id == *id))
                     .cloned();
                 let next = selected.or_else(|| channels.first().map(|c| c.id.clone()));
+                if next.is_none() {
+                    self.retained_history = None;
+                }
                 if self.selected != next {
                     self.cancel_selected();
                     self.selected = None;
@@ -582,7 +519,7 @@ impl Conversation {
         }
     }
 
-    fn cancel_selected(&mut self) {
+    pub(super) fn cancel_selected(&mut self) {
         if let Some(old) = &self.selected {
             if matches!(self.history.get(old), Some(Load::Loading)) {
                 self.history.remove(old);
@@ -590,13 +527,7 @@ impl Conversation {
             if matches!(self.older.get(old), Some(Older::Loading)) {
                 self.older.insert(old.clone(), Older::Available);
             }
-            if matches!(self.refreshing.get(old), Some(Refresh::Running)) {
-                self.refreshing.remove(old);
-                self.confirmed_refresh.remove(old);
-                self.confirmed_during_refresh.remove(old);
-            }
         }
-        self.catchup = None;
         self.messages_during_read.clear();
         self.read_serial = self.read_serial.wrapping_add(1);
     }
@@ -609,15 +540,10 @@ impl Conversation {
             return None;
         }
         if self.selected.as_deref() != Some(id) {
+            self.retained_history = None;
             self.cancel_selected();
         }
         self.selected = Some(id.into());
-        if self.uncertain.contains(id) && matches!(self.history.get(id), Some(Load::Ready(_))) {
-            return self.reconcile_uncertain(session);
-        }
-        if self.confirmed.contains_key(id) && matches!(self.history.get(id), Some(Load::Ready(_))) {
-            return self.reconcile_confirmed(session);
-        }
         if matches!(self.history.get(id), Some(Load::Loading | Load::Ready(_))) {
             return None;
         }
@@ -631,56 +557,13 @@ impl Conversation {
             channel_id: Some(id.into()),
             before: None,
             serial: self.read_serial,
-            refresh: false,
-        })
-    }
-
-    /// Begin a newest-first reconciliation; only commit when overlap or exhaustion proves continuity.
-    pub(super) fn refresh_history(&mut self, session: &Identity) -> Option<ReadRequest> {
-        let id = self.selected.clone()?;
-        if matches!(self.history.get(&id), Some(Load::Loading))
-            || matches!(self.refreshing.get(&id), Some(Refresh::Running))
-        {
-            return None;
-        }
-        if !matches!(self.history.get(&id), Some(Load::Ready(_))) {
-            return self.select(session, &id);
-        }
-        session.session_generation()?;
-        // Cancel an older read before starting reconciliation; its late completion is ignored.
-        if matches!(self.older.get(&id), Some(Older::Loading)) {
-            self.older.insert(id.clone(), Older::Available);
-        }
-        self.read_serial = self.read_serial.wrapping_add(1);
-        self.catchup = Some(Catchup {
-            id: id.clone(),
-            head: self
-                .confirmed_boundary
-                .get(&id)
-                .cloned()
-                .unwrap_or_else(|| match self.history.get(&id) {
-                    Some(Load::Ready(items)) => items.first().map(|item| item.id.clone()),
-                    _ => None,
-                }),
-            items: Vec::new(),
-            cursors: HashSet::new(),
-        });
-        self.refreshing.insert(id.clone(), Refresh::Running);
-        Some(ReadRequest {
-            generation: session.session_generation()?,
-            channel_id: Some(id),
-            before: None,
-            serial: self.read_serial,
-            refresh: true,
         })
     }
 
     /// Begin one deliberate older-page read for the currently selected channel.
     pub(super) fn request_older(&mut self, session: &Identity) -> Option<ReadRequest> {
         let id = self.selected.as_ref()?;
-        if matches!(self.refreshing.get(id), Some(Refresh::Running))
-            || !matches!(self.older.get(id), Some(Older::Available))
-        {
+        if !matches!(self.older.get(id), Some(Older::Available)) {
             return None;
         }
         session.session_generation()?;
@@ -692,15 +575,12 @@ impl Conversation {
             channel_id: Some(id.clone()),
             before: Some(before),
             serial: self.read_serial,
-            refresh: false,
         })
     }
 
     pub(super) fn retry_older(&mut self, session: &Identity) -> Option<ReadRequest> {
         let id = self.selected.as_ref()?;
-        if matches!(self.refreshing.get(id), Some(Refresh::Running))
-            || !matches!(self.older.get(id), Some(Older::Failed(_)))
-        {
+        if !matches!(self.older.get(id), Some(Older::Failed(_))) {
             return None;
         }
         self.older.insert(id.clone(), Older::Available);
@@ -713,27 +593,18 @@ impl Conversation {
         request: &ReadRequest,
         result: Result<Page, ApiError>,
     ) -> HistoryOutcome {
-        let mut outcome = HistoryOutcome {
-            added: 0,
-            next: None,
-        };
+        let mut outcome = HistoryOutcome { added: 0 };
         let Some(id) = &request.channel_id else {
             return outcome;
         };
         if session.session_generation() != Some(request.generation) {
             return outcome;
         }
-        let older = request.before.is_some() && !request.refresh;
+        let older = request.before.is_some();
         if self.selected.as_deref() != Some(id) || self.read_serial != request.serial {
             return outcome;
         }
-        if request.refresh {
-            if !matches!(self.refreshing.get(id), Some(Refresh::Running))
-                || self.catchup.as_ref().is_none_or(|c| c.id != *id)
-            {
-                return outcome;
-            }
-        } else if older {
+        if older {
             if self.cursors.get(id) != request.before.as_ref()
                 || !matches!(self.older.get(id), Some(Older::Loading))
             {
@@ -742,7 +613,7 @@ impl Conversation {
         } else if !matches!(self.history.get(id), Some(Load::Loading)) {
             return outcome;
         }
-        if result.is_ok() && !request.refresh && !older && self.history_read_overflow {
+        if result.is_ok() && !older && self.history_read_overflow {
             self.messages_during_read.clear();
             self.history
                 .insert(id.clone(), Load::Failed(STAGING_OVERFLOW.into()));
@@ -750,89 +621,15 @@ impl Conversation {
         }
         match result {
             Ok(page) => {
-                if request.refresh {
-                    let catchup = self.catchup.as_mut().unwrap();
-                    // Keep the read's original continuity boundary even if a creation
-                    // arrives while catch-up is traversing pages.
-                    let overlap = catchup
-                        .head
-                        .as_ref()
-                        .is_some_and(|head| page.items.iter().any(|m| &m.id == head));
-                    let mut staged_ids: HashSet<_> =
-                        catchup.items.iter().map(|m| m.id.clone()).collect();
-                    for item in page.items {
-                        if staged_ids.insert(item.id.clone()) {
-                            catchup.items.push(item);
-                        }
-                    }
-                    let cursor = page
-                        .next_cursor
-                        .filter(|c| !c.is_empty() && request.before.as_ref() != Some(c));
-                    if overlap || cursor.is_none() {
-                        if overlap || catchup.head.is_none() {
-                            let staged = std::mem::take(&mut catchup.items);
-                            for message in staged {
-                                outcome.added += self.merge_message(message).unwrap_or(0);
-                            }
-                            self.refreshing.remove(id);
-                        } else {
-                            self.refreshing.insert(id.clone(), Refresh::Incomplete("Could not establish continuity with loaded messages. Refresh again to retry.".into()));
-                        }
-                        self.catchup = None;
-                    } else if let Some(cursor) = cursor {
-                        if !catchup.cursors.insert(cursor.clone()) {
-                            self.refreshing.insert(
-                                id.clone(),
-                                Refresh::Incomplete(
-                                    "Server repeated a history cursor. Refresh again to retry."
-                                        .into(),
-                                ),
-                            );
-                            self.catchup = None;
-                        } else {
-                            self.read_serial = self.read_serial.wrapping_add(1);
-                            outcome.next = Some(ReadRequest {
-                                generation: request.generation,
-                                channel_id: Some(id.clone()),
-                                before: Some(cursor),
-                                serial: self.read_serial,
-                                refresh: true,
-                            });
-                        }
-                    }
-                    if outcome.next.is_none() {
-                        let confirmed_refresh = self.confirmed_refresh.remove(id);
-                        if !matches!(self.refreshing.get(id), Some(Refresh::Incomplete(_))) {
-                            // A confirmation after the first page was requested might be absent
-                            // from its snapshot. Start a fresh catch-up against the old head.
-                            let needs_new_catchup = self.confirmed_during_refresh.remove(id);
-                            if confirmed_refresh && !needs_new_catchup {
-                                self.confirmed_boundary.remove(id);
-                                for confirmed in self.confirmed.remove(id).unwrap_or_default() {
-                                    outcome.added += self.merge_confirmed(id, confirmed);
-                                }
-                                self.send_feedback.remove(id);
-                            }
-                        }
-                    }
-                    return outcome;
-                }
                 if !older {
+                    self.retained_history = None;
                     self.history.insert(id.clone(), Load::Ready(Vec::new()));
                 }
                 for message in page.items {
                     outcome.added += self.merge_message(message).unwrap_or(0);
                 }
                 if !older {
-                    if self.confirmed.contains_key(id) {
-                        let head = match self.history.get(id) {
-                            Some(Load::Ready(items)) => items.first().map(|item| item.id.clone()),
-                            _ => None,
-                        };
-                        self.confirmed_boundary.insert(id.clone(), head);
-                    }
-                    // A recovery may have discarded display history while a confirmed
-                    // HTTP outcome still awaits polling-era reconciliation.
+                    // HTTP confirmations survive disposable recovery/read lifetimes.
                     for message in self.confirmed.get(id).cloned().unwrap_or_default() {
                         outcome.added += self.merge_message(message).unwrap_or(0);
                     }
@@ -861,12 +658,7 @@ impl Conversation {
                 outcome
             }
             Err(error) => {
-                if request.refresh {
-                    self.catchup = None;
-                    self.confirmed_refresh.remove(id);
-                    self.refreshing
-                        .insert(id.clone(), Refresh::Incomplete(error.description().into()));
-                } else if older {
+                if older {
                     self.older
                         .insert(id.clone(), Older::Failed(error.description().into()));
                 } else {

@@ -133,22 +133,24 @@ fn real_controls_read_selected_conversation(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn polling_and_send_confirmation_share_one_headless_history_without_duplicate(
+fn event_before_http_confirmation_shares_one_headless_history_without_followup_read(
     cx: &mut TestAppContext,
 ) {
     cx.update(gpui_kit::init);
     let (pages_tx, pages) = std::sync::mpsc::channel();
     let sends = Arc::new(Mutex::new(Vec::<Sent>::new()));
     let captured = sends.clone();
+    let streams = crate::test_support::live::Streams::default();
 
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = open_controlled(
+        let view = open_with_streams(
             window,
             cx,
             Arc::new(RaceAuth {
                 pages: pages_tx,
                 sends: captured,
             }),
+            &streams,
         );
 
         Root::new(view, window, cx)
@@ -189,18 +191,20 @@ fn polling_and_send_confirmation_share_one_headless_history_without_duplicate(
     });
     cx.run_until_parked();
     assert_eq!(sends.lock().unwrap().len(), 1);
-    advance(cx, 1);
-    cx.run_until_parked();
-    let (_, poll) = pages.recv_timeout(Duration::from_secs(2)).unwrap();
-    poll.send_blocking(Ok(page(&["10", "9", "8"]))).unwrap();
+    for id in ["9", "10"] {
+        streams.change(
+            serde_json::json!({"type":"message_created","message":message_json(message(id))}),
+        );
+    }
     cx.run_until_parked();
     let (_, text, confirmation) = sends.lock().unwrap().remove(0);
     assert_eq!(text, "same");
     confirmation.try_send(Ok(message("10"))).unwrap();
     cx.run_until_parked();
-    let (_, read) = pages.recv_timeout(Duration::from_secs(2)).unwrap();
-    read.send_blocking(Ok(page(&["10", "9", "8"]))).unwrap();
-    cx.run_until_parked();
+    assert!(
+        pages.try_recv().is_err(),
+        "event and confirmation cannot trigger another read"
+    );
     cx.update(|window, cx| {
         window.render_frame(cx);
         assert_eq!(window.find("message-10").label(), Some("same"));
@@ -234,7 +238,7 @@ fn await_control(cx: &mut gpui_kit::VisualTestContext, id: String, label: &str) 
 }
 
 #[gpui_kit::test]
-fn bob_activity_arrives_through_scheduled_polling_and_real_server_routes(cx: &mut TestAppContext) {
+fn bob_activity_arrives_through_session_stream_and_real_server_routes(cx: &mut TestAppContext) {
     cx.background_executor.allow_parking(); // real loopback I/O on the production executor
     use actix_web::{App, HttpServer, web};
     use std::net::TcpListener;
@@ -244,7 +248,7 @@ fn bob_activity_arrives_through_scheduled_polling_and_real_server_routes(cx: &mu
             let dir = tempfile::tempdir().unwrap();
             let db = hamlet::connect_to_database(&format!(
                 "sqlite://{}?mode=rwc",
-                dir.path().join("poll-at.db").display()
+                dir.path().join("live-at.db").display()
             ))
             .await
             .unwrap();
@@ -314,9 +318,7 @@ fn bob_activity_arrives_through_scheduled_polling_and_real_server_routes(cx: &mu
     let channel = super::runtime()
         .block_on(bob.client.create_channel("Bob room".into()))
         .unwrap();
-    // The actual lifecycle timer drives polling; no private state or alternate HTTP wrapper.
-    cx.background_executor
-        .advance_clock(Duration::from_secs(15));
+    // Real creations arrive while application time stays fixed: no polling wakeup.
     await_control(cx, format!("channel-{}", channel.id), "# Bob room");
     await_control(cx, format!("message-{}", posted.id), "hello from Bob");
     cx.update(|window, cx| {

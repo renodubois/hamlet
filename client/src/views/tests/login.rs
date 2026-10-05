@@ -287,7 +287,7 @@ fn login_rejection_keeps_editable_password_for_deliberate_retry(cx: &mut TestApp
         let shell = crate::views::app_shell::open(
             window,
             cx,
-            HttpTransport::with_adapter(Arc::new(api.clone())),
+            crate::test_support::live::transport(Arc::new(api.clone())),
             Config::default(),
             None,
             execution,

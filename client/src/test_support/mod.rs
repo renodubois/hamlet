@@ -1,4 +1,5 @@
 //! Crate-private fixtures shared across feature suites; never compiled into the client.
+pub(crate) mod live;
 pub(crate) mod storage;
 
 pub(crate) fn session_fixtures() -> serde_json::Value {

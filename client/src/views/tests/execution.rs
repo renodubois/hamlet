@@ -296,19 +296,20 @@ impl RequestAdapter for ReadCounts {
 }
 
 #[gpui_kit::test]
-fn automatic_polls_follow_focus_and_three_fifteen_second_intervals(cx: &mut TestAppContext) {
+fn focus_and_elapsed_time_never_poll_or_restart_the_session_stream(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let channels = Arc::new(AtomicUsize::new(0));
     let history = Arc::new(AtomicUsize::new(0));
+    let streams = crate::test_support::live::Streams::default();
     let execution = Execution::controlled(cx.background_executor.clone(), 1_800_000_000);
     let (_, cx) = cx.add_window_view(|window, cx| {
         let view = crate::views::app_shell::open(
             window,
             cx,
-            bound_api(ReadCounts {
+            streams.transport(Arc::new(ReadCounts {
                 channels: channels.clone(),
                 history: history.clone(),
-            }),
+            })),
             crate::storage::Config::default(),
             None,
             execution,
@@ -327,35 +328,29 @@ fn automatic_polls_follow_focus_and_three_fifteen_second_intervals(cx: &mut Test
         )
     };
     assert_eq!(counts(), (1, 1));
-    // Preserve the startup focus reconciliation on the first tick after initial history.
-    advance(cx, 1);
-    assert_eq!(counts(), (1, 2));
-    advance(cx, 2);
-    assert_eq!(counts(), (1, 2));
-    advance(cx, 1);
-    assert_eq!(counts(), (1, 3));
-    advance(cx, 11);
-    assert_eq!(counts(), (2, 6)); // history at 1, 4, 7, 10, 13; channels at 15
+    advance(cx, 16);
+    assert_eq!(counts(), (1, 1));
     cx.deactivate_window();
-    advance(cx, 60);
-    assert_eq!(counts(), (2, 6));
+    streams.change(serde_json::json!({"type":"message_created", "message":{"id":"live","channel_id":"000000000000001","author":{"id":"42","display_name":"Ada"},"text":"unfocused creation","created_at":"2027-01-01T00:00:00Z"}}));
+    advance(cx, 16);
+    assert_eq!(counts(), (1, 1));
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert!(
-            window
-                .find("connection-status")
-                .label()
-                .unwrap()
-                .contains("paused")
+        assert_eq!(window.find("connection-status").label(), Some(""));
+        assert_eq!(
+            window.find("message-live").label(),
+            Some("unfocused creation")
         );
         window.activate_window();
     });
     cx.run_until_parked();
-    assert_eq!(counts(), (3, 7));
+    assert_eq!(counts(), (1, 1));
+    assert_eq!(streams.count(), 1);
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("logout", cx);
     });
     advance(cx, 60);
-    assert_eq!(counts(), (3, 7));
+    assert_eq!(counts(), (1, 1));
+    assert_eq!(streams.count(), 1);
 }

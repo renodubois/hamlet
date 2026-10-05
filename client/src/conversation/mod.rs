@@ -1,13 +1,14 @@
 //! One conversation lifetime per accepted session. Views issue intentions and read state;
 //! this owner alone dispatches requests, applies completions and schedules selected reads.
 
-mod polling;
+mod delivery;
+mod live_updates;
 mod state;
-use crate::api::{ApiError, AuthenticatedClient, Channel, Message, Page};
+use crate::api::{ApiError, AuthenticatedClient, Channel, LiveEvent, Message, Page, StreamError};
 use crate::runtime::{Execution, Work};
-use polling::{Polling, Resource};
-pub(crate) use state::{Conversation, Load, Older, Refresh};
-use state::{CreateRequest, Identity, ReadRequest, SendOutcome, SendRequest};
+use live_updates::{Attempt, Delivery, LiveUpdates};
+pub(crate) use state::{Conversation, Load, Older};
+use state::{CreateRequest, Identity, ReadRequest, SendRequest};
 use std::{
     cell::{Ref, RefCell},
     collections::HashMap,
@@ -25,8 +26,9 @@ pub(crate) struct ConversationHandle(Rc<RefCell<Coordinator>>);
 pub(crate) struct ConversationUpdate(Update);
 enum Update {
     Tick,
-    Channels(ReadRequest, Result<Vec<Channel>, ApiError>),
-    History(u64, ReadRequest, Result<Page, ApiError>),
+    Stream(Attempt, Result<LiveEvent, StreamError>),
+    Channels(Attempt, ReadRequest, Result<Vec<Channel>, ApiError>),
+    History(Attempt, u64, ReadRequest, Result<Page, ApiError>),
     Create(CreateRequest, Result<Channel, ApiError>),
     Send(SendRequest, Result<Message, ApiError>),
 }
@@ -43,11 +45,12 @@ struct Coordinator {
     generation: u64,
     client: Option<AuthenticatedClient>,
     execution: Execution,
-    polling: Polling,
+    live: LiveUpdates,
+    stream_task: Option<Work>,
     clock: Instant,
     started: bool,
-    updates: async_channel::Receiver<ConversationUpdate>,
-    deliver: async_channel::Sender<ConversationUpdate>,
+    updates: delivery::Updates,
+    deliver: delivery::Sender,
     timer: Option<Work>,
     channels_task: Option<Work>,
     history_task: Option<Work>,
@@ -80,7 +83,7 @@ impl ConversationHandle {
         client: AuthenticatedClient,
         execution: Execution,
     ) -> Self {
-        let (deliver, updates) = async_channel::unbounded();
+        let (deliver, updates) = delivery::channel();
         Self(Rc::new(RefCell::new(Coordinator {
             state: Conversation::default(),
             identity: Identity {
@@ -92,7 +95,8 @@ impl ConversationHandle {
             client: Some(client),
             clock: execution.now(),
             execution,
-            polling: Polling::default(),
+            live: LiveUpdates::new(generation),
+            stream_task: None,
             started: false,
             updates,
             deliver,
@@ -111,13 +115,20 @@ impl ConversationHandle {
         Ref::map(self.0.borrow(), |owner| &owner.state)
     }
     pub fn status(&self) -> &'static str {
-        self.0.borrow().polling.status()
+        let owner = self.0.borrow();
+        let retained = owner
+            .state
+            .selected
+            .as_deref()
+            .and_then(|id| owner.state.history_for_display(id))
+            .is_some_and(|history| matches!(history, Load::Ready(_)));
+        owner.live.status(retained)
     }
     /// Presentation may clear an unchanged creation input after this confirmed revision.
     pub fn created(&self) -> Option<(u64, String)> {
         self.0.borrow().created.clone()
     }
-    pub fn updates(&self) -> async_channel::Receiver<ConversationUpdate> {
+    pub fn updates(&self) -> delivery::Updates {
         self.0.borrow().updates.clone()
     }
     /// Independent, bounded feature invalidations. Hydrate from `read()` on subscription;
@@ -127,38 +138,21 @@ impl ConversationHandle {
         self.0.borrow_mut().observers.push(send);
         receive
     }
-    pub fn start(&self, focused: bool) {
+    pub fn start(&self, _focused: bool) {
         let _notify = Notify(self);
         let mut owner = self.0.borrow_mut();
         if owner.started || owner.client.is_none() {
             return;
         }
         owner.started = true;
-        let time = owner.time();
-        owner.polling.focus(focused, time);
-        let Coordinator {
-            state, identity, ..
-        } = &mut *owner;
-        if let Some(request) = state.start(identity) {
-            owner.load_channels(request);
-        }
+        owner.open_stream();
         owner.arm_timer();
     }
     pub fn close(&self) {
         let _notify = Notify(self);
         self.0.borrow_mut().close();
     }
-    pub fn set_focused(&self, focused: bool) {
-        let _notify = Notify(self);
-        let mut owner = self.0.borrow_mut();
-        if owner.client.is_none() {
-            return;
-        }
-        let time = owner.time();
-        if owner.polling.focus(focused, time) {
-            owner.poll();
-        }
-    }
+    pub fn set_focused(&self, _focused: bool) {}
     pub fn edit_draft(&self, text: String) {
         let _notify = Notify(self);
         let mut owner = self.0.borrow_mut();
@@ -192,23 +186,6 @@ impl ConversationHandle {
         if let Some(next) = next {
             owner.load_history(next);
         }
-    }
-    pub fn refresh_channels(&self) {
-        let _notify = Notify(self);
-        let mut owner = self.0.borrow_mut();
-        if owner.client.is_none() {
-            return;
-        }
-        let Coordinator {
-            state, identity, ..
-        } = &mut *owner;
-        if let Some(request) = state.refresh_channels(identity) {
-            owner.load_channels(request);
-        }
-    }
-    pub fn refresh_history(&self) {
-        let _notify = Notify(self);
-        self.0.borrow_mut().history(HistoryIntent::Refresh);
     }
     pub fn request_older(&self) {
         let _notify = Notify(self);
@@ -276,7 +253,6 @@ impl ConversationHandle {
 }
 
 enum HistoryIntent {
-    Refresh,
     Older,
     RetryOlder,
 }
@@ -285,9 +261,7 @@ impl Coordinator {
         self.execution.now().duration_since(self.clock)
     }
     fn arm_timer(&mut self) {
-        // Keep the one-second cadence anchored to this activity's clock, not to
-        // delivery latency across executors. A delayed tick must not move the
-        // next 3s/15s resource wakeup past its deadline.
+        // Expiry and the one recovery deadline share a clock-anchored cadence.
         let elapsed = self.time();
         let next_tick = Duration::from_secs(elapsed.as_secs() + 1);
         let timer = self.execution.sleep(next_tick - elapsed);
@@ -298,36 +272,80 @@ impl Coordinator {
         });
         self.timer = Some(task);
     }
-    fn poll(&mut self) {
-        if self.client.is_none() {
+    fn open_stream(&mut self) {
+        let Some(api) = &self.client else { return };
+        let attempt = self.live.attempt();
+        let mut stream = api.events(&self.execution);
+        let deliver = self.deliver.clone();
+        let (task, _) = self.execution.start(async move {
+            loop {
+                let error = match stream.next().await {
+                    Ok(event) => match deliver
+                        .try_send(ConversationUpdate(Update::Stream(attempt, Ok(event))))
+                    {
+                        Ok(()) => continue,
+                        Err(async_channel::TrySendError::Full(())) => StreamError::Overflow,
+                        Err(async_channel::TrySendError::Closed(())) => break,
+                    },
+                    Err(error) => error,
+                };
+                let _ = deliver
+                    .send_terminal(ConversationUpdate(Update::Stream(attempt, Err(error))))
+                    .await;
+                break;
+            }
+        });
+        self.stream_task = Some(task);
+    }
+    fn merge_event(&mut self, event: LiveEvent) {
+        match event {
+            LiveEvent::ChannelCreated(channel) => {
+                let _ = self.state.merge_channel(channel);
+            }
+            LiveEvent::MessageCreated(message) => {
+                let _ = self.state.merge_message(message);
+            }
+            LiveEvent::Ready => {}
+        }
+    }
+    fn synchronize(&mut self) {
+        let attempt = self.live.attempt();
+        if let Some(events) = self.live.finish_baseline(attempt) {
+            for event in events {
+                self.merge_event(event);
+            }
+            if self.state.reconciliation_overflowed() {
+                self.recover();
+            } else {
+                self.live.synchronized(attempt);
+            }
+        }
+    }
+    fn recover(&mut self) {
+        if !self
+            .live
+            .fail(self.live.attempt(), self.time(), self.execution.jitter())
+        {
             return;
         }
-        let time = self.time();
-        if self.polling.due(Resource::Channels, time)
-            && let Some(request) = self.state.refresh_channels(&self.identity)
-        {
-            self.load_channels(request);
+        if let Some(task) = self.stream_task.take() {
+            task.abort();
         }
-        if self.polling.due(Resource::History, time)
-            && let Some(id) = self.state.selected.as_deref()
-            && !matches!(self.state.older.get(id), Some(Older::Loading))
-        {
-            self.history(HistoryIntent::Refresh);
+        if let Some(task) = self.channels_task.take() {
+            task.abort();
         }
+        self.cancel_history();
+        self.state.reset_for_recovery();
     }
     fn history(&mut self, intent: HistoryIntent) {
         if self.client.is_none() {
             return;
         }
         let request = match intent {
-            HistoryIntent::Refresh => self.state.refresh_history(&self.identity),
             HistoryIntent::Older => self.state.request_older(&self.identity),
             HistoryIntent::RetryOlder => self.state.retry_older(&self.identity),
         };
         if let Some(request) = request {
-            if matches!(intent, HistoryIntent::Refresh) {
-                self.polling.started(Resource::History);
-            }
             self.load_history(request);
         }
     }
@@ -335,7 +353,7 @@ impl Coordinator {
         let Some(api) = self.client.clone() else {
             return;
         };
-        self.polling.started(Resource::Channels);
+        let attempt = self.live.attempt();
         let deliver = self.deliver.clone();
         let timeout = self.execution.sleep(READ_SEND_DEADLINE);
         let (task, _) = self.execution.start(async move {
@@ -345,7 +363,9 @@ impl Coordinator {
                 result = api.channels() => result,
             };
             let _ = deliver
-                .send(ConversationUpdate(Update::Channels(request, result)))
+                .send(ConversationUpdate(Update::Channels(
+                    attempt, request, result,
+                )))
                 .await;
         });
         self.channels_task = Some(task);
@@ -359,11 +379,17 @@ impl Coordinator {
     fn selection_changed(&mut self, previous: Option<String>) {
         if previous != self.state.selected {
             self.cancel_history();
-            self.polling.reset_history(self.time());
+            self.live
+                .retarget(self.live.attempt(), self.state.selected.as_deref());
         }
     }
-    /// The sole selected-history dispatch path, including traversal and post-send catch-up.
+    /// The sole selected-history dispatch path, for baselines and older pages.
     fn load_history(&mut self, request: ReadRequest) {
+        if !self.live.can_read_history() {
+            self.state.cancel_selected();
+            return;
+        }
+        let attempt = self.live.attempt();
         self.cancel_history();
         let serial = self.history_serial;
         let Some(api) = self.client.clone() else {
@@ -379,16 +405,12 @@ impl Coordinator {
                 result = api.history_page(work.channel_id.unwrap(), work.before) => result,
             };
             let _ = deliver
-                .send(ConversationUpdate(Update::History(serial, request, result)))
+                .send(ConversationUpdate(Update::History(
+                    attempt, serial, request, result,
+                )))
                 .await;
         });
         self.history_task = Some(task);
-    }
-    fn completed(&mut self, resource: Resource, succeeded: bool) {
-        let time = self.time();
-        if self.polling.completed(resource, succeeded, time) {
-            self.polling.recover_other(resource, time);
-        }
     }
     fn apply(&mut self, update: Update) -> Option<SessionEnd> {
         self.client.as_ref()?;
@@ -400,11 +422,41 @@ impl Coordinator {
         match update {
             Update::Tick => {
                 self.timer = None;
-                self.poll();
+                if self.live.retry(self.time()).is_some() {
+                    self.open_stream();
+                }
                 self.arm_timer();
             }
-            Update::Channels(request, result) => {
-                if !self.state.is_current_channels(&request)
+            Update::Stream(attempt, result) => {
+                if !self.live.accepts(attempt) {
+                    return None;
+                }
+                match result {
+                    Ok(LiveEvent::Ready) if self.live.ready(attempt) => {
+                        let request = if self.state.channels.is_none() {
+                            self.state.start(&self.identity)
+                        } else {
+                            self.state.refresh_channels(&self.identity)
+                        };
+                        if let Some(request) = request {
+                            self.load_channels(request);
+                        }
+                    }
+                    Ok(event) => match self.live.creation(attempt, event) {
+                        Delivery::Apply(event) => self.merge_event(event),
+                        Delivery::Recover => self.recover(),
+                        Delivery::Buffered | Delivery::Discard => {}
+                    },
+                    Err(StreamError::Api(ApiError::AlreadyInvalid)) => {
+                        self.close();
+                        return Some(SessionEnd::Rejected(self.generation));
+                    }
+                    Err(_) => self.recover(),
+                }
+            }
+            Update::Channels(attempt, request, result) => {
+                if !self.live.accepts(attempt)
+                    || !self.state.is_current_channels(&request)
                     || request.generation != self.generation
                 {
                     return None;
@@ -415,40 +467,37 @@ impl Coordinator {
                 let next = self
                     .state
                     .complete_channels(&mut self.identity, &request, result);
-                self.completed(Resource::Channels, succeeded);
                 self.selection_changed(previous);
-                if let Some(next) = next {
-                    self.load_history(next);
+                if succeeded && !self.state.reconciliation_overflowed() {
+                    self.live
+                        .channels_loaded(attempt, self.state.selected.as_deref());
+                    if let Some(next) = next {
+                        self.load_history(next);
+                    }
+                    self.synchronize();
+                } else {
+                    self.recover();
                 }
             }
-            Update::History(serial, request, result) => {
-                if serial != self.history_serial || request.generation != self.generation {
+            Update::History(attempt, serial, request, result) => {
+                if !self.live.accepts(attempt)
+                    || serial != self.history_serial
+                    || request.generation != self.generation
+                {
                     return None;
                 }
                 self.history_task = None;
                 let succeeded = result.is_ok();
-                let is_older = request.before.is_some() && !request.is_catchup();
-                let outcome = self
-                    .state
+                let is_older = request.before.is_some();
+                self.state
                     .complete_history(&mut self.identity, &request, result);
-                if !is_older && outcome.next.is_none() {
-                    let complete = succeeded
-                        && !matches!(
-                            request
-                                .channel_id
-                                .as_ref()
-                                .and_then(|id| self.state.refreshing.get(id)),
-                            Some(Refresh::Incomplete(_))
-                        );
-                    self.completed(Resource::History, complete);
-                }
-                if let Some(next) = outcome.next {
-                    self.load_history(next);
-                }
-                // Failure retains contiguous history and needs a deliberate/scheduled retry;
-                // it must not spin while a confirmation waits for continuity.
-                if let Some(next) = self.state.after_history_read(&self.identity, succeeded) {
-                    self.load_history(next);
+                if !is_older {
+                    if !succeeded || self.state.reconciliation_overflowed() {
+                        self.recover();
+                    } else if let Some(id) = &request.channel_id {
+                        self.live.history_loaded(attempt, id);
+                        self.synchronize();
+                    }
                 }
             }
             Update::Create(request, result) => {
@@ -477,28 +526,20 @@ impl Coordinator {
                     return None;
                 }
                 self.sends.remove(&request.channel_id);
-                let selected = self.state.selected.as_deref() == Some(&request.channel_id);
-                let outcome = self.state.complete_send(
+                self.state.complete_send(
                     &mut self.identity,
                     &request,
                     result,
                     self.execution.unix_seconds(),
                 );
-                if selected {
-                    let next = match outcome {
-                        SendOutcome::Confirmed => self.state.reconcile_confirmed(&self.identity),
-                        SendOutcome::Uncertain => self.state.reconcile_uncertain(&self.identity),
-                        _ => None,
-                    };
-                    if let Some(next) = next {
-                        self.load_history(next);
-                    }
-                }
             }
         }
         if let Some(generation) = self.identity.rejected.take() {
             self.close();
             return Some(SessionEnd::Rejected(generation));
+        }
+        if self.state.reconciliation_overflowed() {
+            self.recover();
         }
         None
     }
@@ -506,12 +547,13 @@ impl Coordinator {
         self.client = None;
         self.identity.generation = None;
         self.state.clear();
-        self.polling = Polling::default();
+        self.live.close();
         self.created = None;
         self.deliver.close();
         self.cancel_history();
         for task in [
             self.timer.take(),
+            self.stream_task.take(),
             self.channels_task.take(),
             self.create_task.take(),
         ]
@@ -530,6 +572,13 @@ impl Drop for Coordinator {
         self.close();
     }
 }
+
+#[cfg(test)]
+#[path = "tests/live_coordinator.rs"]
+mod live_coordinator_tests;
+#[cfg(test)]
+#[path = "tests/support/live.rs"]
+mod live_support;
 
 #[cfg(test)]
 #[path = "tests/coordinator.rs"]

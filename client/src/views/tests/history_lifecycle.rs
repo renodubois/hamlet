@@ -1,6 +1,6 @@
 //! Independent history lifetime through Kit controls and the owned conversation interface.
 use crate::api::test_support::{RequestAdapter, Response};
-use crate::api::{ApiError, ApiFuture, HttpTransport};
+use crate::api::{ApiError, ApiFuture};
 use crate::conversation::ConversationHandle;
 use crate::runtime::Execution;
 use crate::views::conversation::message_history::MessageHistoryView;
@@ -77,7 +77,7 @@ fn drain(cx: &mut gpui_kit::VisualTestContext, activity: &ConversationHandle) {
 fn independent_history_hydrates_cache_recreates_and_clears_when_hidden(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let calls = Arc::new(AtomicUsize::new(0));
-    let client = HttpTransport::with_adapter(Arc::new(HistoryApi(calls.clone())))
+    let client = crate::test_support::live::transport(Arc::new(HistoryApi(calls.clone())))
         .server("https://history.example")
         .unwrap()
         .restore_candidate("synthetic".into())
@@ -155,11 +155,12 @@ fn independent_history_hydrates_cache_recreates_and_clears_when_hidden(cx: &mut 
 #[gpui_kit::test]
 fn history_shutdown_clears_selected_text(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
-    let client = HttpTransport::with_adapter(Arc::new(HistoryApi(Arc::new(AtomicUsize::new(0)))))
-        .server("https://history.example")
-        .unwrap()
-        .restore_candidate("synthetic".into())
-        .unwrap();
+    let client =
+        crate::test_support::live::transport(Arc::new(HistoryApi(Arc::new(AtomicUsize::new(0)))))
+            .server("https://history.example")
+            .unwrap()
+            .restore_candidate("synthetic".into())
+            .unwrap();
     let activity = ConversationHandle::new(
         1,
         1_800_001_000,
@@ -235,14 +236,18 @@ impl RequestAdapter for EvolvingHistory {
 }
 
 #[gpui_kit::test]
-fn independent_history_observes_polling_incomplete_refresh_and_recovery(cx: &mut TestAppContext) {
+fn healthy_events_keep_reader_anchor_but_recovery_resets_identical_ids_to_newest(
+    cx: &mut TestAppContext,
+) {
     cx.update(gpui_kit::init);
     let api = Arc::new(EvolvingHistory {
-        latest: AtomicUsize::new(1),
+        latest: AtomicUsize::new(40),
         unavailable: AtomicBool::new(false),
         reads: AtomicUsize::new(0),
     });
-    let client = HttpTransport::with_adapter(api.clone())
+    let streams = crate::test_support::live::Streams::default();
+    let client = streams
+        .transport(api.clone())
         .server("https://history.example")
         .unwrap()
         .restore_candidate("synthetic".into())
@@ -266,74 +271,63 @@ fn independent_history_observes_polling_incomplete_refresh_and_recovery(cx: &mut
     drain(cx, &activity);
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert_eq!(
-            window.find("message-1").label(),
-            Some("message 1\nsecond line")
-        );
         window.click("recreate-history", cx);
         window.click("recreate-history", cx);
     });
     drain(cx, &activity);
-    assert_eq!(api.reads.load(Ordering::SeqCst), 1);
-    activity.set_focused(true);
+    let anchor = cx.update(|window, cx| {
+        window.render_frame(cx);
+        for _ in 0..4 {
+            window.scroll(
+                "history",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(90.))),
+                cx,
+            );
+            window.render_frame(cx);
+        }
+        assert!(window.try_find("message-40").is_none());
+        (1..40)
+            .find_map(|id| {
+                window
+                    .try_find(format!("message-{id}"))
+                    .map(|item| (id, item.bounds().origin.y))
+            })
+            .unwrap()
+    });
+    streams.change(serde_json::json!({"type":"message_created","message":{"id":"41","channel_id":"1","author":{"id":"u","display_name":"Ada"},"text":"message 41\nsecond line","created_at":"2026-01-01T00:00:00Z"}}));
     drain(cx, &activity);
-    // Settle the coordinator's existing first-tick focus reconciliation.
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window
+                .find(format!("message-{}", anchor.0))
+                .bounds()
+                .origin
+                .y,
+            anchor.1
+        );
+        assert!(window.try_find("message-41").is_none());
+    });
+    assert_eq!(api.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(streams.count(), 1);
+    api.latest.store(41, Ordering::SeqCst);
+    streams.disconnect();
+    drain(cx, &activity);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.find("message-41").bounds().size.height > gpui_kit::px(0.),
+            "reset must move to newest even though all IDs are retained"
+        );
+    });
     cx.background_executor
         .advance_clock(std::time::Duration::from_secs(1));
     drain(cx, &activity);
-    let before = api.reads.load(Ordering::SeqCst);
-    api.latest.store(2, Ordering::SeqCst);
-    cx.background_executor
-        .advance_clock(std::time::Duration::from_secs(3));
-    drain(cx, &activity);
-    assert_eq!(
-        api.reads.load(Ordering::SeqCst),
-        before + 1,
-        "one poll regardless of recreated observers"
-    );
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert_eq!(
-            window.find("message-2").label(),
-            Some("message 2\nsecond line")
-        );
+        assert!(window.find("message-41").bounds().size.height > gpui_kit::px(0.));
     });
-    api.latest.store(3, Ordering::SeqCst);
-    api.unavailable.store(true, Ordering::SeqCst);
-    cx.background_executor
-        .advance_clock(std::time::Duration::from_secs(3));
-    drain(cx, &activity);
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        assert!(window.find("catchup-incomplete").label().is_some());
-        assert!(window.try_find("message-3").is_none());
-        assert_eq!(
-            window.find("message-2").label(),
-            Some("message 2\nsecond line")
-        );
-        window.click("recreate-history", cx);
-    });
-    drain(cx, &activity);
-    api.unavailable.store(false, Ordering::SeqCst);
-    let before = api.reads.load(Ordering::SeqCst);
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        assert!(window.find("catchup-incomplete").label().is_some());
-        window.click("refresh-history", cx);
-        window.click("refresh-history", cx);
-    });
-    drain(cx, &activity);
-    assert_eq!(
-        api.reads.load(Ordering::SeqCst),
-        before + 1,
-        "manual refresh does not duplicate a pending read"
-    );
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        assert!(window.try_find("catchup-incomplete").is_none());
-        assert_eq!(
-            window.find("message-3").label(),
-            Some("message 3\nsecond line")
-        );
-    });
+    assert_eq!(streams.count(), 2);
+    assert_eq!(api.reads.load(Ordering::SeqCst), 2);
+    assert_eq!(activity.status(), "");
 }

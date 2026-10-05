@@ -13,17 +13,14 @@ pub use client::{
     AuthenticatedClient, Authentication, HttpTransport, ServerClient, validate_server,
 };
 pub use error::ApiError;
-#[allow(
-    unused_imports,
-    reason = "API stream is wired into conversation by #69"
-)]
-pub(crate) use events::{EventStream, LiveEvent, StreamError};
+pub(crate) use events::{LiveEvent, StreamError};
 pub use types::{Channel, Message, Page, User};
 pub type ApiFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 
 #[cfg(test)]
 pub(crate) mod test_support {
     pub(crate) use super::client::{RequestAdapter, Response};
+    pub(crate) use super::events::{StreamAdapter, StreamResponse};
 }
 
 #[cfg(test)]

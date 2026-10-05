@@ -208,21 +208,15 @@ fn confirmed_middle_insertion_keeps_reader_anchor(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let (_, text, confirmation) = sends.lock().unwrap().remove(0);
     assert_eq!(text, "twenty");
-    confirmation.try_send(Ok(m(20))).unwrap();
-    cx.run_until_parked();
-    let (_, refresh) = requests
-        .recv_timeout(std::time::Duration::from_secs(3))
-        .unwrap();
     let y = cx.update(|window, cx| {
         window.render_frame(cx);
         window.find("message-25").bounds().origin.y
     });
-    refresh
-        .send_blocking(Ok(crate::api::Page {
-            items: original,
-            next_cursor: None,
-        }))
-        .unwrap();
+    confirmation.try_send(Ok(m(20))).unwrap();
+    assert!(
+        requests.try_recv().is_err(),
+        "HTTP confirmation requires no read"
+    );
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -244,12 +238,13 @@ fn confirmed_middle_insertion_keeps_reader_anchor(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn refresh_controls_preserve_reader_and_jump_follows_later_messages(cx: &mut TestAppContext) {
+fn live_creations_preserve_reader_and_jump_follows_later_messages(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (tx, requests) = std::sync::mpsc::channel();
+    let streams = crate::test_support::live::Streams::default();
 
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = open_controlled(window, cx, Arc::new(PagedAuth(tx)));
+        let view = open_with_streams(window, cx, Arc::new(PagedAuth(tx)), &streams);
 
         Root::new(view, window, cx)
     });
@@ -297,68 +292,30 @@ fn refresh_controls_preserve_reader_and_jump_follows_later_messages(cx: &mut Tes
             window.render_frame(cx);
         }
         assert!(window.try_find("message-40").is_none());
-        window.click("refresh-history", cx);
-        window.render_frame(cx);
-        assert_eq!(
-            window.find("refresh-history").label(),
-            Some("Refreshing conversation…")
-        );
-        window.click("refresh-history", cx);
+        assert!(window.try_find("refresh-history").is_none());
     });
-    cx.run_until_parked();
-    let (before, first) = requests
-        .recv_timeout(std::time::Duration::from_secs(3))
-        .unwrap();
-    assert_eq!(before, None);
-    assert!(requests.try_recv().is_err());
-    first
-        .send_blocking(Ok(crate::api::Page {
-            items: (61..=70).rev().map(m).collect(),
-            next_cursor: Some("server opaque".into()),
-        }))
-        .unwrap();
-    cx.run_until_parked();
-    let (before, second) = requests
-        .recv_timeout(std::time::Duration::from_secs(3))
-        .unwrap();
-    assert_eq!(before.as_deref(), Some("server opaque"));
-    let anchor = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let saved_anchor = anchor.clone();
-    cx.update(|window, cx| {
+    let anchor = cx.update(|window, cx| {
         window.render_frame(cx);
-        assert_eq!(
-            window.find("refresh-history").label(),
-            Some("Refreshing conversation…")
-        );
-        *saved_anchor.borrow_mut() = Some(visible_message(window, 1..=40));
+        visible_message(window, 1..=40)
     });
-    second
-        .send_blocking(Ok(crate::api::Page {
-            items: (39..=60).rev().map(m).collect(),
-            next_cursor: Some("unneeded".into()),
-        }))
-        .unwrap();
+    for id in 41..=70 {
+        streams.change(serde_json::json!({"type":"message_created","message":message_json(m(id))}));
+    }
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
-        let (id, y) = anchor.borrow().clone().unwrap();
+        let (id, y) = anchor.clone();
         assert_eq!(window.find(id).bounds().origin.y, y);
         assert!(window.try_find("message-70").is_none());
         window.click("jump-latest", cx);
         window.render_frame(cx);
         assert!(window.find("message-70").bounds().size.height > px(0.));
-        window.click("refresh-history", cx);
     });
-    cx.run_until_parked();
-    let (_, latest) = requests
-        .recv_timeout(std::time::Duration::from_secs(3))
-        .unwrap();
-    latest
-        .send_blocking(Ok(crate::api::Page {
-            items: [71, 70, 69].map(m).to_vec(),
-            next_cursor: Some("still older".into()),
-        }))
-        .unwrap();
+    assert!(
+        requests.try_recv().is_err(),
+        "live creations cannot fetch history"
+    );
+    streams.change(serde_json::json!({"type":"message_created","message":message_json(m(71))}));
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);

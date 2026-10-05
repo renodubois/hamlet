@@ -29,13 +29,15 @@ async fn await_conversation(
 }
 
 #[gpui_kit::test]
-fn second_user_activity_is_found_by_focused_polling_against_server_routes(cx: &mut TestAppContext) {
+fn second_user_creations_arrive_on_unfocused_stream_without_followup_reads(
+    cx: &mut TestAppContext,
+) {
     actix_web::rt::System::new().block_on(async {
         use actix_web::{App, HttpServer, web};
         let dir = tempfile::tempdir().unwrap();
         let db = hamlet::connect_to_database(&format!(
             "sqlite://{}?mode=rwc",
-            dir.path().join("polling.db").display()
+            dir.path().join("live.db").display()
         ))
         .await
         .unwrap();
@@ -51,7 +53,15 @@ fn second_user_activity_is_found_by_focused_polling_against_server_routes(cx: &m
         .run();
         let handle = server.handle();
         actix_web::rt::spawn(server);
-        let api = HttpTransport::new().server(&url).unwrap();
+        struct CountReads(std::sync::Arc<std::sync::atomic::AtomicUsize>, reqwest::Client);
+        impl crate::api::test_support::RequestAdapter for CountReads {
+            fn execute(&self, request: reqwest::Request) -> crate::api::ApiFuture<Result<crate::api::test_support::Response, crate::api::ApiError>> {
+                if request.method() == reqwest::Method::GET { self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
+                crate::api::test_support::RequestAdapter::execute(&self.1, request)
+            }
+        }
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let api = HttpTransport::with_adapter(std::sync::Arc::new(CountReads(reads.clone(), reqwest::Client::new()))).server(&url).unwrap();
         let alice = api
             .signup("Alice".into(), "long password".into())
             .await
@@ -67,7 +77,7 @@ fn second_user_activity_is_found_by_focused_polling_against_server_routes(cx: &m
             alice.client,
             Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600),
         );
-        activity.start(true);
+        activity.start(false);
         await_conversation(cx, &activity, |activity| {
             matches!(
                 activity.read().history.get(&channel),
@@ -75,6 +85,8 @@ fn second_user_activity_is_found_by_focused_polling_against_server_routes(cx: &m
             )
         })
         .await;
+        let baseline_reads = reads.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(activity.status(), "");
         let posted = bob
             .client
             .send_message(
@@ -84,7 +96,6 @@ fn second_user_activity_is_found_by_focused_polling_against_server_routes(cx: &m
             .await
             .unwrap();
         let new_channel = bob.client.create_channel("Bob room".into()).await.unwrap();
-        cx.background_executor.advance_clock(Duration::from_secs(3));
         await_conversation(cx, &activity, |activity| {
             matches!(
                 activity.read().history.get(&channel),
@@ -92,14 +103,6 @@ fn second_user_activity_is_found_by_focused_polling_against_server_routes(cx: &m
             )
         })
         .await;
-        assert!(
-            matches!(
-                activity.read().channels,
-                Some(Load::Ready(ref channels)) if !channels.contains(&new_channel)
-            ),
-            "channel discovery waits for its independent fifteen-second poll"
-        );
-        cx.background_executor.advance_clock(Duration::from_secs(12));
         await_conversation(cx, &activity, |activity| {
             matches!(
                 activity.read().channels,
@@ -107,7 +110,10 @@ fn second_user_activity_is_found_by_focused_polling_against_server_routes(cx: &m
             )
         })
         .await;
+        assert_eq!(activity.read().selected.as_deref(), Some(channel.as_str()));
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), baseline_reads, "both creations delivered without a follow-up HTTP read");
         activity.close();
+        cx.executor().run_until_parked();
         handle.stop(true).await;
     });
 }
@@ -182,8 +188,8 @@ fn server_history_traverses_multiple_pages_with_timestamp_ties(cx: &mut TestAppC
         assert_history(&activity, &channel, 50, 0);
         assert_eq!(activity.read().older.get(&channel), Some(&Older::Available));
 
-        // A burst needs three real pages to reach the loaded segment. Only the
-        // coordinator may follow the opaque server cursors and establish continuity.
+        // A burst larger than two newest pages arrives as creations, without traversal.
+        // The original older cursor must still reach the three oldest messages.
         for ix in 53..158 {
             let text = format!("line {ix}");
             assert_eq!(
@@ -196,16 +202,8 @@ fn server_history_traverses_multiple_pages_with_timestamp_ties(cx: &mut TestAppC
                 text
             );
         }
-        db.db
-            .execute_raw(Statement::from_string(
-                DbBackend::Sqlite,
-                "UPDATE messages SET created_at = '2027-01-01T00:00:00.000000000Z' WHERE created_at != '2026-01-01T00:00:00.000000000Z'",
-            ))
-            .await
-            .unwrap();
-        activity.refresh_history();
         await_conversation(cx, &activity, |activity| {
-            !activity.read().refreshing.contains_key(&channel)
+            matches!(activity.read().history.get(&channel), Some(Load::Ready(items)) if items.len() == 155)
         })
         .await;
         // 105 new plus the 50 initially loaded; the oldest three remain paged.
@@ -218,6 +216,7 @@ fn server_history_traverses_multiple_pages_with_timestamp_ties(cx: &mut TestAppC
         .await;
         assert_history(&activity, &channel, 53, 105);
         activity.close();
+        cx.executor().run_until_parked();
         handle.stop(true).await;
     });
 }
@@ -256,18 +255,13 @@ fn assert_history(activity: &ConversationHandle, channel: &str, old: usize, new:
             .collect::<std::collections::HashSet<_>>()
             .len(),
         messages.len(),
-        "overlapping catch-up pages must not duplicate identities"
+        "live creations and older pages must not duplicate identities"
     );
     assert!(
         messages
             .iter()
-            .all(|message| message.created_at.starts_with(
-                if message.text[5..].parse::<usize>().unwrap() < 53 {
-                    "2026-01-01"
-                } else {
-                    "2027-01-01"
-                }
-            ))
+            .filter(|message| message.text[5..].parse::<usize>().unwrap() < 53)
+            .all(|message| message.created_at.starts_with("2026-01-01"))
     );
     assert!(
         messages
@@ -275,6 +269,6 @@ fn assert_history(activity: &ConversationHandle, channel: &str, old: usize, new:
             .all(|pair| pair[0].created_at > pair[1].created_at
                 || (pair[0].created_at == pair[1].created_at
                     && pair[0].id.parse::<i64>().unwrap() > pair[1].id.parse::<i64>().unwrap())),
-        "server timestamp and ID tie order must survive decoding and catch-up"
+        "server timestamp and ID tie order must survive decoding and live merges"
     );
 }

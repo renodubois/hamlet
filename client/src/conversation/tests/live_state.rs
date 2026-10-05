@@ -50,6 +50,111 @@ fn ids(state: &Conversation) -> Vec<&str> {
 }
 
 #[test]
+fn recovery_navigation_discards_the_previous_selections_display_only_rows() {
+    let (mut state, mut session, read) = loading();
+    state.complete_history(
+        &mut session,
+        &read,
+        Ok(page(vec![message("1", "2026-01-01T00:00:00Z")], None)),
+    );
+    state.reset_for_recovery();
+    assert!(matches!(
+        state.history_for_display("1"),
+        Some(Load::Ready(_))
+    ));
+    state.select(&session, "2");
+    assert!(
+        state.history_for_display("1").is_none(),
+        "inactive retained history is not a cache"
+    );
+    state.select(&session, "1");
+    assert!(matches!(
+        state.history_for_display("1"),
+        Some(Load::Loading)
+    ));
+}
+
+#[test]
+fn recovery_retains_selected_display_until_replacement_without_retaining_server_cache() {
+    let (mut state, mut session, read) = loading();
+    let retained = message("10", "2026-01-01T00:00:00Z");
+    state.complete_history(
+        &mut session,
+        &read,
+        Ok(page(vec![retained.clone()], Some("old"))),
+    );
+    let other = state.select(&session, "2").unwrap();
+    state.complete_history(&mut session, &other, Ok(page(vec![], None)));
+    state.select(&session, "1");
+    state.reset_for_recovery();
+    assert!(state.history.is_empty());
+    assert!(state.older.is_empty());
+    assert_eq!(
+        state.history_for_display("1"),
+        Some(&Load::Ready(vec![retained.clone()]))
+    );
+    assert_eq!(
+        state.history_for_display("2"),
+        None,
+        "inactive cache is discarded"
+    );
+    let obsolete = state.select(&session, "1").unwrap();
+    assert_eq!(
+        state.history_for_display("1"),
+        Some(&Load::Ready(vec![retained.clone()]))
+    );
+    state.reset_for_recovery();
+    state.complete_history(&mut session, &obsolete, Ok(page(vec![], None)));
+    assert_eq!(
+        state.history_for_display("1"),
+        Some(&Load::Ready(vec![retained.clone()]))
+    );
+    let failed = state.select(&session, "1").unwrap();
+    state.complete_history(&mut session, &failed, Err(ApiError::Unavailable));
+    assert_eq!(
+        state.history_for_display("1"),
+        Some(&Load::Ready(vec![retained]))
+    );
+    state.reset_for_recovery();
+    let current = state.select(&session, "1").unwrap();
+    state.complete_history(&mut session, &current, Ok(page(vec![], None)));
+    assert_eq!(
+        state.history_for_display("1"),
+        Some(&Load::Ready(vec![])),
+        "authoritative empty page removes stale rows"
+    );
+    state.clear();
+    assert_eq!(
+        state.history_for_display("1"),
+        None,
+        "session teardown clears retained display too"
+    );
+}
+
+#[test]
+fn recovery_discards_retained_rows_when_authoritative_channels_are_empty() {
+    let (mut state, mut session, read) = loading();
+    state.complete_history(
+        &mut session,
+        &read,
+        Ok(page(vec![message("10", "2026-01-01T00:00:00Z")], None)),
+    );
+    state.reset_for_recovery();
+    let channels = state.refresh_channels(&session).unwrap();
+    assert!(
+        state
+            .complete_channels(&mut session, &channels, Ok(vec![]))
+            .is_none()
+    );
+    assert_eq!(state.selected, None);
+    assert_eq!(
+        state.history_for_display("1"),
+        None,
+        "no selected baseline will follow to clear retention"
+    );
+}
+
+#[test]
 fn canceled_replacing_reads_cannot_contaminate_new_selection_or_reject_its_session() {
     let (mut state, mut session, obsolete) = loading();
     state
@@ -129,7 +234,7 @@ fn reset_revision_changes_even_with_identical_replacement_ids_and_preserves_unce
 }
 
 #[test]
-fn confirmation_during_initial_read_keeps_polling_continuity_before_merged_creations() {
+fn confirmation_during_initial_read_survives_snapshot_and_duplicate_event() {
     let (mut state, mut session, read) = loading();
     state.set_draft("1", "same text".into());
     let send = state.send(&session).unwrap();
@@ -145,31 +250,15 @@ fn confirmation_during_initial_read_keeps_polling_continuity_before_merged_creat
         Ok(page(vec![message("8", "2026-01-01T00:00:00Z")], None)),
     );
     assert_eq!(ids(&state), ["10", "8"]);
-    let catchup = state.after_history_read(&session, true).unwrap();
-    let next = state
-        .complete_history(
-            &mut session,
-            &catchup,
-            Ok(page(
-                vec![message("10", "2026-01-01T00:00:00Z")],
-                Some("middle"),
-            )),
-        )
-        .next
-        .expect("confirmation is not the snapshot's continuity boundary");
-    state.complete_history(
-        &mut session,
-        &next,
-        Ok(page(
-            vec![
-                message("9", "2026-01-01T00:00:00Z"),
-                message("8", "2026-01-01T00:00:00Z"),
-            ],
-            None,
-        )),
-    );
+    state
+        .merge_message(message("10", "2026-01-01T00:00:00Z"))
+        .unwrap();
+    state
+        .merge_message(message("9", "2026-01-01T00:00:00Z"))
+        .unwrap();
     assert_eq!(ids(&state), ["10", "9", "8"]);
-    assert!(state.after_history_read(&session, true).is_none());
+    assert!(state.select(&session, "1").is_none());
+    assert!(!state.send_feedback.contains_key("1"));
 }
 
 #[test]
@@ -259,7 +348,7 @@ fn recovery_reset_invalidates_server_reads_but_preserves_local_work_and_write_id
 }
 
 #[test]
-fn polling_catchup_keeps_its_start_boundary_and_orders_concurrent_creations() {
+fn recovery_replaces_cursors_and_orders_concurrent_creations() {
     let (mut state, mut session, read) = loading();
     state.complete_history(
         &mut session,
@@ -269,11 +358,12 @@ fn polling_catchup_keeps_its_start_boundary_and_orders_concurrent_creations() {
             Some("older"),
         )),
     );
-    let refresh = state.refresh_history(&session).unwrap();
+    state.reset_for_recovery();
+    let refresh = state.select(&session, "1").unwrap();
     state
         .merge_message(message("60", "2026-01-01T00:00:00.6Z"))
         .unwrap();
-    let outcome = state.complete_history(
+    state.complete_history(
         &mut session,
         &refresh,
         Ok(page(
@@ -284,12 +374,10 @@ fn polling_catchup_keeps_its_start_boundary_and_orders_concurrent_creations() {
             None,
         )),
     );
-    assert!(outcome.next.is_none());
-    assert!(!state.refreshing.contains_key("1"));
     assert_eq!(ids(&state), ["60", "55", "50"]);
-    assert_eq!(
-        state.request_older(&session).unwrap().before.as_deref(),
-        Some("older")
+    assert!(
+        state.request_older(&session).is_none(),
+        "old cursor cannot survive recovery"
     );
 }
 

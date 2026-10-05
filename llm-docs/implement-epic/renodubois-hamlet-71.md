@@ -407,3 +407,159 @@ All passed from repository root:
 Final logs: `/tmp/hamlet-epic-71/68-final-client-{fmt,clippy,test,build}.log`, `68-final-server-{fmt,clippy,test}.log`, `68-final-contract.log`, `68-final-protocol.log`, `68-repeat-{1,2,3}.log`. Generated operation documentation: `llm-docs/client/LIVE-UPDATES.md`; architecture adds the API owner without claiming desktop activation.
 
 Handoff: no material blocker found. Parent must review/commit/update trackers; the worker performed none of those actions. #69 can consume `api::{EventStream, LiveEvent, StreamError}`, own/drop one attempt, apply session/attempt identity and readiness/read reconciliation, and replace polling there. Preserve the bounded transport delivery path when forwarding to its coordinator. Exceptional server owned-write panic/abort still uses the previously approved restart-required latch; it was not modified. Native acceptance and measured #70 fanout remain out of scope.
+
+### #69 implementation checkpoint (in progress)
+
+Worker baseline: `4e59b42ae81984352c9c2adf84b5b81710b9d1b6`, initially clean. Sole writer; no commits, tracker mutations, native automation, keyring, server/legacy or human-documentation edits. Read complete #69 issue, plan, root/client instructions, full client architecture, glossary and TDD/tests/mocking guidance. Approved seams: pure owner-local lifecycle/state/coordinator, controlled authenticated API/time, real-route two-client scenarios and semantic headless controls. Prerequisites #64/#68 are verified/closed per parent evidence above.
+
+Implementation proceeds in red/green vertical slices. Polling and its controls are not removed until replacement coverage passes. This appended entry is progress evidence, **not a claim that #69 or the epic is complete**. Logs use `/tmp/hamlet-epic-71/69-*`; later entries record exact checkpoint scope and next steps.
+
+#### #69 checkpoint A — verified foundations, NOT desktop cutover
+
+**Resume required.** Nine red/green slices are implemented and all desktop checks pass, but production still uses polling. The pure live policy is compiled but not instantiated by the coordinator. Do not close #69, claim live synchronization, remove old scenario coverage, or treat this checkpoint as final acceptance. No commits or tracker actions were performed. This is a safe, buildable uncommitted checkpoint rather than an unfinished cutover with broken tests.
+
+Implemented scope:
+
+- `client/src/conversation/live_updates.rs`: owner-local pure connecting/loading-baseline/live/retrying/closed policy. Generation-bearing attempt IDs reject other sessions and abandoned attempts. Readiness is accepted once; channels must complete before the current history can complete recovery; empty channels need no history. Retargeting invalidates only history readiness and preserves the completed channel baseline/attempt. Coordinator request-serial validation remains required, especially selection A→B→A.
+- Recovery buffers at most **256 deliveries**, independently of API and executor queues. Overflow is sticky and cannot yield a synchronized baseline. Before/during-read creations drain only after the current baseline is complete. `finish_baseline()` drains for synchronous merging but deliberately does **not** mark live: call `synchronized()` only after shared entity reconciliation succeeds. That acknowledgement alone resets backoff. The coordinator must not yield between drain, merging and acknowledgement.
+- One pure retry path takes supplied monotonic time and a full-range `u32` jitter sample. Exponential base is **1, 2, 4, 8, 16, 30 seconds**, then capped; equal jitter chooses `[base/2, base]`. Duplicate failure signals cannot extend the retry deadline. Readiness or drained-but-unreconciled baselines do not reset failure count. `retry()` yields one new attempt only when due. Minimal status strings are tested, but the production status still comes from polling until cutover.
+- `client/src/conversation/delivery.rs`: the **actual existing coordinator bridge is now bounded**, replacing its unbounded async channel. Ordinary deliveries have capacity **256**; a separate **one-result terminal lane** is polled first. Existing HTTP completions await capacity, preserving their results. Future stream forwarding must use `try_send()` and end the attempt through `send_terminal()` on Full; it must not await ordinary event capacity or silently continue after dropping a creation. The terminal lane is present/tested but not yet fed by a production stream.
+- `client/src/conversation/state.rs`: recovery preserves only the selected loaded history as display-only retention while clearing authoritative histories, cursors and older-page state. The view reads through `history_for_display()`; loading, failures, repeated resets and obsolete reads do not blank those retained rows. Accepted replacing history removes retention (including an authoritative empty page); an authoritative empty channel list also clears retention because no history request will follow. Full session clear removes retention. This does not alter polling's ordinary behavior; the coordinator does not yet call recovery reset.
+- `client/src/views/conversation/message_history.rs` uses the display accessor for row IDs, layout and rendering. Explicit reset-revision consumption, reconnect notice wiring and Refresh removal are **not implemented** yet. Existing healthy anchoring/select/copy controls still pass.
+- Temporary documented dead-code allowance on the staged lifecycle module and the bridge's stream-only producer methods must be removed during coordinator activation. Existing #68 stream allowances and #64 reset/revision allowances remain because their production consumers are still pending. No API operation/server latch/dependency/lockfile changes.
+
+#### Checkpoint A red/green evidence
+
+All filters below append to `cargo test --manifest-path client/Cargo.toml --locked`. Each red was run before its corresponding implementation. Logs are `/tmp/hamlet-epic-71/69-NN-{red,green}.log`.
+
+| Slice | Red filter / observed failure | Green command/result |
+| --- | --- | --- |
+| 01 | `conversation::live_updates::tests::readiness`: missing lifecycle types/API | Same filter: 1 passed |
+| 02 | `conversation::live_updates::tests::creations`: missing bounded creation delivery API | `conversation::live_updates`: 2 passed |
+| 03 | `conversation::live_updates::tests::navigation`: missing retarget API | `conversation::live_updates`: 3 passed |
+| 04 | `conversation::live_updates::tests::one_capped`: missing retry policy and post-reconciliation acknowledgement | `conversation::live_updates`: 4 passed; strict clippy passed |
+| 05 | `conversation::live_updates::tests::failed_attempts`: missing closed-lifetime gate | `conversation::live_updates`: 5 passed |
+| 06 | `conversation::state::live_tests::recovery_retains`: missing retained-display accessor | `conversation::state::`: 40 passed; `views::tests::history`: 4 passed |
+| 07 | `conversation::delivery`: missing bounded/priority mailbox | Same filter: 1 passed |
+| 08 | `conversation::live_updates::tests::connection_notice`: missing persistent status policy | `conversation::live_updates`: 6 passed |
+| 09 | `conversation::state::live_tests::recovery_discards`: behavioral red, empty channel baseline retained stale rows forever | `conversation::`: 61 passed, including pre-existing route/polling scenarios; strict clippy passed |
+
+Intermediate `cargo check --manifest-path client/Cargo.toml --locked` ran after slices 02 and 07. Slice 07's check found one test-only import warning; gated it. Slice 08's strict lint found a large synchronous `TrySendError<ConversationUpdate>` result; the bounded producer now returns `TrySendError<()>` (the failed stream event is intentionally not retryable), and slice 09/full strict lint pass. These initial warnings are not counted as passing strict checks.
+
+#### Checkpoint A full verification
+
+All passed from repository root:
+
+- `cargo fmt --manifest-path client/Cargo.toml --check`
+- `cargo clippy --manifest-path client/Cargo.toml --locked --all-targets -- -D warnings`
+- `cargo test --manifest-path client/Cargo.toml --locked` — **198 passed, 0 failed, 0 ignored** (all 189 prior tests plus 9 new tests; polling scenarios deliberately retained).
+- `cargo build --manifest-path client/Cargo.toml --locked`
+- `git diff --check`
+
+Logs: `/tmp/hamlet-epic-71/69-checkpoint-{fmt,clippy,test,build}.log`. No native automation/keyring access. Server/protocol checks were not rerun for this client-only checkpoint; their sources and dependencies are unchanged. Existing desktop real-route tests still exercise polling; their success is **not** evidence of #69's no-read streaming acceptance.
+
+#### Acceptance mapping at checkpoint A
+
+Criterion numbers follow the 13 checkbox bullets in the full #69 issue.
+
+| Criterion | Current evidence / remaining work |
+| --- | --- |
+| 1. One session stream and pure lifecycle | Pure policy tested; coordinator stream ownership/activation and lifetime scenarios still missing. |
+| 2. Ready/read/buffer/reconcile | Pure gate/bounded buffer/explicit merge acknowledgement tested; full API/coordinator handoff, entities already in snapshot and empty-list integration still missing. |
+| 3. Recovery navigation | Pure retarget preserves channels/attempt; actual read cancellation and A→B→A request gates still missing. |
+| 4. Common failures/backoff | Pure bounded exponential+jitter and synchronization-only reset tested; all StreamError/baseline/uncached-selection paths still need coordinator routing; older-page local retry remains unchanged. |
+| 5. Separate bounds/terminal delivery | API bound exists from #68; read staging exists from #64; recovery policy bound and production bridge bound now tested. Stream forwarding/overflow-to-recovery integration still missing. |
+| 6. Identities/cancellation/session ending | Pure generation/attempt rejection and closed gates tested; prior request/session coverage preserved. Stream/read cancellation, queued old-attempt and authoritative stream rejection integration still missing. |
+| 7. Recovery/local work/stale display | Existing #64 reset preservation retained; selected stale display now tested and accessor wired to view. Actual coordinator recovery, write-response races and eventual synchronization still missing. |
+| 8. Event merge/order/reset revision | #64 shared merge/ordering coverage retained. No events applied by coordinator; reset revision not yet consumed by history presentation. |
+| 9. HTTP/event/read/reset races | Not cut over; polling confirmation/catch-up still active. Must replace with direct shared merges and retain operation identities across attempt resets. |
+| 10. Outage writes/uncertainty | Existing operations/local work coverage preserved, but no live recovery integration; uncertain-send read scheduling still must be removed. |
+| 11. Focus/polling/Refresh/timers | Not cut over: all polling/manual Refresh/catch-up remains intentionally. Expiry coverage remains green. |
+| 12. Minimal connection UI | Pure strings/status persistence tested; workspace wiring and semantic view assertions still missing. |
+| 13. Replacement coverage/full checks/no-read second user | Current checkpoint checks pass and old coverage is intact. Real-route no-read two-client plus controlled live coordinator/headless replacement scenarios remain required. |
+
+#### Exact resume frontier
+
+1. Start with a test-first **controlled API/coordinator stream-first scenario** under `client/src/conversation/tests/`; shared fixtures go in that owner's `tests/support/`, not production or sibling files. Reuse API's existing `StreamAdapter`/`StreamResponse` test seam and `Execution::controlled`. The current coordinator fixtures only substitute ordinary requests; they must supply stream readiness explicitly during migration. Do not introduce a separate test-only workflow.
+2. Replace `Coordinator.polling` with `LiveUpdates`, own one stream-forwarding `Work`, and add attempt-bearing stream/read updates. Use the new bounded mailbox: readiness/creations via `try_send`; stream terminal/bridge overflow via `send_terminal`. On failure, cancel stream + channel/history reads, invalidate read identities and call `reset_for_recovery`, **not** `clear`; leave `create_task`, sends, operation IDs and local work intact. Check expiry/rejection via existing session-ending behavior. Retain the timer for expiry/retry only. Generate jitter at the execution boundary and supply it to the pure policy.
+3. Dispatch channels only after `ready`; accept their serial/attempt before updating policy. Dispatch only the current selection's newest baseline. Recovery selection changes cancel/invalidate only selected history, with no repeated channels after success. Do not leave a `Load::Loading` request marked pending if navigation/create occurs before readiness and its read is intentionally deferred; adjust the owner-local selection/read transition as necessary. Gate queued late results before handling auth errors. Preserve writes' generation/operation identity independently of stream attempts.
+4. On baseline completion, merge the bounded drained creations using shared state entity merges, check all reconciliation-overflow flags, and only then acknowledge `synchronized`. Healthy creations use the same merges, never follow-up reads; unloaded channels allocate no history and remote channels never select.
+5. Test-first remove polling-specific state: catch-up traversal, Refresh state/entry points, confirmation-boundary queues, confirmed/uncertain follow-up schedulers. HTTP confirmations must merge directly, preserve confirmations across recovery/read races, clear only their own draft/form, and never let matching text/events settle uncertainty. Keep older-page cursor merges/local retry and meaningful session/draft/pagination coverage.
+6. Wire lifecycle status to workspace, remove both Refresh controls/manual entry points, ignore focus for connection lifetime, and consume `recovery_reset_revision()` in MessageHistoryView even when entity IDs are unchanged. Cover healthy anchoring versus recovery reset through semantic headless controls. Remove temporary lifecycle/bridge/API/reset dead-code allowances once consumers exist.
+7. Add real-route two-authenticated-client coordinator scenarios proving creations appear without another healthy-stream read, then full failure/bounds/session/view-lifetime acceptance coverage. Migrate old polling tests rather than simply deleting their useful draft/storage/uncertainty/pagination assertions. Run focused/check/clippy during slices and all four locked desktop verification commands before final completion. Append new evidence to this ledger; do not rewrite historical results.
+
+Parent handoff: all changes are uncommitted on the supplied branch/baseline. This checkpoint needs continued implementation, not a completion review/issue closure. The approved restart-required exceptional server latch is unchanged; no design blocker requires user input.
+
+### #69 desktop cutover — verified uncommitted implementation
+
+Continued checkpoint A as sole writer on unchanged HEAD `4e59b42ae81984352c9c2adf84b5b81710b9d1b6`. This entry supersedes **the resume frontier**, not the historical evidence above. Production now uses the authenticated stream; this is no longer a foundations-only checkpoint. No commit, tracker mutation, server/legacy/native/keyring/README change, dependency change or lockfile change was made. Ready for the parent's independent reviews and commit; this worker did not close #69.
+
+#### Implemented cutover
+
+- `conversation/mod.rs` owns one cancelable stream forwarder and executes `LiveUpdates`. Ready precedes channel/history reads; channel and history completions carry attempt plus request/session identity. Buffered creations are synchronously reconciled before acknowledgement. Remote entities merge directly without healthy-stream follow-up reads or selection changes.
+- Failed attempts cancel stream/channel/history work and invalidate read identities, **not writes**. Required baseline/uncached selection failures, EOF, transport/parser/deadline failure and overflow share one capped exponential/equal-jitter retry path. Jitter is supplied at the execution boundary; controlled execution is deterministic. The remaining one-second timer serves expiry and recovery only. Focus is inert for connection lifetime.
+- Navigation during recovery retargets only history, including A→B→A. Before readiness/channel completion, deferred history is not left stuck Loading. Already-successful channels are not read again. Empty authoritative channels synchronize without history. Queued obsolete read rejection is checked before authentication handling; authoritative current stream/read rejection and expiry still close the session.
+- API delivery, executor bridge, recovery buffering and replacing-read staging have independent bounds. The bridge terminal lane is prioritized; stream events never await capacity. Overflow abandons immediately, including staging overflow while an uncached selected history is loading. HTTP completions can wait for capacity and preserve outcomes.
+- Direct HTTP confirmations and events share entity merges. Pending writes and confirmed/uncertain outcomes survive recovery; new sends/creates remain available during outages. Only their originating confirmed operations clear drafts/forms. Uncertainty causes no history read, reconnect or resend; matching text cannot settle it. Older-page cursor merging and local retry remain.
+- Recovery retains only selected display rows, invalidates server history/cursors and signals an explicit revision. Navigating away discards that display-only retention rather than making it an inactive cache. History presentation consumes the revision even with identical IDs; healthy event/HTTP insertions preserve anchors. Initial Connecting and persistent Reconnecting notices are wired through the existing workspace status surface; initial resource failures do not leak a separate failure taxonomy.
+- Removed polling module/tests, catch-up traversal, confirmation-boundary/refresh queues and schedulers, both Refresh controls and manual-refresh handle entry points. The pure state's internal `refresh_channels` helper now serves only authoritative baselines; it is not a public/manual refresh workflow. Removed the staged lifecycle/API/bridge/reset dead-code allowances.
+- Updated generated client architecture/overview/live-update documentation. Human-authored documentation remains untouched.
+
+#### Red/green and migration evidence after checkpoint A
+
+Commands below use `cargo test --manifest-path client/Cargo.toml --locked`; all log paths start `/tmp/hamlet-epic-71/`.
+
+| Slice | Evidence |
+| --- | --- |
+| 10 | `69-10-red.log`: stream-first coordinator scenario failed because a snapshot was dispatched before readiness. `69-10-green.log`: production stream/read/buffer/reconcile scenario passed, including healthy/focus no-read assertions. An intermediate compile failure in the bridge test's changed delivery shape was fixed; it is not passing evidence. |
+| 11 | `69-11-red.log`: outage/retarget/write race retained the polling catch-up warning. `69-11-green.log`: direct confirmation and recovery scenarios passed. Intermediate check warnings for obsolete scheduling methods were eliminated during removal. |
+| 12–13 | `69-12-route.log`: real second-user message/channel arrived without another GET. `69-13-live.log`: 5 live coordinator scenarios passed, including both HTTP/event orders, uncertainty, terminal priority and separate bridge/recovery overflow. These were additional regression proofs, not invented red runs. |
+| 14 | `69-14-red.log`: unchanged retained IDs failed to move the history viewport to newest after loss. `69-14-green.log`: explicit revision consumption passed the semantic headless anchor/reset scenario. |
+| 15 | `69-15-green.log`: 42 conversation tests passed after obsolete polling/catch-up workflows were removed and useful state/coordinator/route cases migrated. Earlier full-suite migration inventories intentionally failed old polling assumptions; those are not final verification. |
+| 16 | `69-16-red.log`: initial pending history incorrectly displayed Reconnecting. `69-16-green.log`: initial Connecting, persistent retained-content notice through failed/retried baseline, draft/form preservation and no Refresh controls passed. |
+| 17 | View fixture/scenario migration covered remote channels, fallback selection, focus-independent delivery, direct confirmation anchoring, stream/HTTP race, protected binding and session cleanup. `69-17-views.log` initially had one obsolete binding request-count assertion; switched that scenario to a real uncached channel selection, preserving its credential-binding assertions. Strict clippy passed in `69-17-clippy.log`. |
+| 18 | `69-18-red.log`: a live uncached-read staging overflow did not immediately abandon the attempt. `69-18-green.log`: 6 live coordinator tests passed after the shared overflow gate. |
+| 19 | `69-19-red.log`: initial required-read failure leaked resource-specific Failed state into recovery UI. `69-19-green.log`: 9 live coordinator tests passed, also covering readiness timeout, EOF/malformed/transport/idle/uncached failures, older-page local retry, and newly issued outage writes. `69-19-clippy.log`: strict lint passed. |
+| 20 | `69-20-red.log`: navigating away kept inactive display-only rows as a cache. `69-20-green.log`: all 23 state tests passed after dropping that retention on selection change. Additional queued A→B→A rejection coverage passes in final verification. |
+
+The final suite has **183 tests**, not checkpoint A's 198: obsolete polling/catch-up suites and repetitive polling-specific state tests were replaced/consolidated rather than retained as dead workflows. Preserved/replacement coverage includes session and request binding, independent observers/view recreation, drafts and per-channel pending sends, uncertainty, creation inputs, expiration/rejection, older pagination/local retry, copy/selection and variable-height anchoring. There are no ignored tests or duplicate test-only coordinator dispatch paths. Shared controlled SSE fixtures supply bytes to the same authenticated API binding/parser as production.
+
+#### Acceptance mapping after cutover
+
+| #69 criterion | Evidence |
+| --- | --- |
+| 1. Session stream/pure policy | `live_updates` pure suite; `live_coordinator::readiness_precedes_baseline...`; coordinator observer/close tests; focus/recreation view scenarios. |
+| 2. Ready/read/buffer/reconcile | Readiness baseline scenario includes entities before/during a snapshot and already present in it; empty-channel recovery scenario; explicit merge-before-ack policy tests. |
+| 3. Recovery navigation | Outage A→B→A retarget scenario checks canceled reads, one stream/no extra channels; queued same-attempt A→B→A rejection scenario gates obsolete serials. |
+| 4. Common failure/backoff | Pure capped/jitter/backoff-reset suite; coordinator terminal/required-read table, initial readiness/baseline failures and older-page local retry. |
+| 5. Separate bounds/terminal priority | API #68 suites retained; bounded delivery test; bridge/recovery overflow coordinator scenario; uncached replacing-read overflow; state staging overflow tests. |
+| 6. Identities/cancellation/ending | Coordinator queued rejection/close/current rejection/expiry cases; session surviving-handle loss suite; protected-bound-client views; API cancel/drop/binding coverage. |
+| 7. Recovery/local work | Outage in-flight and newly issued writes; state reset preservation and inactive-retention disposal; semantic persistent stale-content/draft/form notice. |
+| 8. Merge/order/reset revision | Shared state dedupe/parsed-time/ID ordering tests, real-route burst plus older pages, remote-channel selection controls; healthy anchors versus identical-ID recovery reset. |
+| 9. HTTP/event/read/reset races | Both event-before-response and response-before-event; confirmation during recovery/read; direct insertion anchor test; real composer race scenario without follow-up GET. |
+| 10. Outage writes/uncertainty | New/pending outage writes remain accepted; matching-text creations never settle uncertainty; per-channel send timeout has no read/replay; direct confirmation clears only origin. |
+| 11. Focus/polling/Refresh/timers | Removed polling/manual controls/schedulers. Semantic focus test keeps read/stream counts unchanged while unfocused events arrive; expiry/session timer tests remain. |
+| 12. Minimal UI | `views/tests/live_updates.rs`: initial Connecting, retained Reconnecting through failure/readiness/loading, draft/form preservation, no Refresh/catch-up controls; clear only after synchronization. |
+| 13. Replacement coverage/no-read proof/full checks | Both real-route coordinator tests and real-route view journey pass. The two-user coordinator proof holds application time fixed and asserts unchanged ordinary GET count while both creations appear. All final checks below pass. |
+
+#### Final verification and remaining handoff
+
+All passed from repository root after the last source change:
+
+- `cargo fmt --manifest-path client/Cargo.toml --check` — `69-cutover-fmt.log`.
+- `cargo clippy --manifest-path client/Cargo.toml --locked --all-targets -- -D warnings` — `69-cutover-clippy.log`.
+- `cargo test --manifest-path client/Cargo.toml --locked` — **183 passed, 0 failed, 0 ignored**, `69-cutover-test.log`.
+- `cargo build --manifest-path client/Cargo.toml --locked` — `69-cutover-build.log`.
+- `git diff --check` — clean. HEAD remains the supplied baseline.
+
+No implementation frontier is knowingly left open for #69. Remaining parent work: independent standards/spec reviews, any resulting fixes, and the parent's explicitly authorized commit/tracker workflow. Native desktop acceptance and real-wallet/IME/accessibility checks remain outside this consent/scope; automated headless/real-route evidence is not native acceptance. Server/protocol checks were not rerun as standalone suites because their code/dependencies are unchanged; desktop real-route tests did run.
+
+Exact changed paths (including preserved checkpoint A work):
+
+- Production/API/runtime: `client/src/api/client.rs`, `client/src/api/events.rs`, `client/src/api/mod.rs`, `client/src/runtime.rs`.
+- Conversation production: `client/src/conversation/mod.rs`, `client/src/conversation/state.rs`, `client/src/conversation/delivery.rs` (new), `client/src/conversation/live_updates.rs` (new), `client/src/conversation/polling.rs` (deleted).
+- Conversation tests: `client/src/conversation/tests/coordinator.rs`, `client/src/conversation/tests/state.rs`, `client/src/conversation/tests/live_state.rs`, `client/src/conversation/tests/route.rs`, `client/src/conversation/tests/delivery.rs` (new), `client/src/conversation/tests/live_coordinator.rs` (new), `client/src/conversation/tests/live_updates.rs` (new), `client/src/conversation/tests/support/live.rs` (new), `client/src/conversation/tests/polling.rs` (deleted).
+- Cross-feature test support/session tests: `client/src/test_support/mod.rs`, `client/src/test_support/live.rs` (new), `client/src/session/tests/coordinator.rs`.
+- View production: `client/src/views/channel_sidebar.rs`, `client/src/views/conversation/message_history.rs`.
+- View tests: `client/src/views/tests/bound_auth.rs`, `client/src/views/tests/channels.rs`, `client/src/views/tests/composer.rs`, `client/src/views/tests/composer_lifecycle.rs`, `client/src/views/tests/execution.rs`, `client/src/views/tests/history.rs`, `client/src/views/tests/history_lifecycle.rs`, `client/src/views/tests/journeys.rs`, `client/src/views/tests/login.rs`, `client/src/views/tests/mod.rs`, `client/src/views/tests/protected_binding.rs`, `client/src/views/tests/session_lifecycle.rs`, `client/src/views/tests/workspace.rs`, `client/src/views/tests/live_updates.rs` (new), `client/src/views/tests/polling.rs` (deleted/replaced).
+- Generated documentation: `llm-docs/client/ARCHITECTURE.md`, `llm-docs/client/OVERVIEW.md`, `llm-docs/client/LIVE-UPDATES.md`, `llm-docs/implement-epic/renodubois-hamlet-71.md` (this append; historical evidence unchanged).

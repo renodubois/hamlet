@@ -1,6 +1,6 @@
 //! Independent composer lifetime through real Kit controls and the conversation interface.
 use crate::api::test_support::{RequestAdapter, Response};
-use crate::api::{ApiError, ApiFuture, HttpTransport};
+use crate::api::{ApiError, ApiFuture};
 use crate::conversation::ConversationHandle;
 use crate::runtime::Execution;
 use crate::views::conversation::composer::ComposerView;
@@ -94,7 +94,7 @@ fn mount(
     api: Arc<ComposerApi>,
 ) -> (ConversationHandle, &mut gpui_kit::VisualTestContext) {
     cx.update(gpui_kit::init);
-    let client = HttpTransport::with_adapter(api)
+    let client = crate::test_support::live::transport(api)
         .server("https://composer.example")
         .unwrap()
         .restore_candidate("synthetic".into())

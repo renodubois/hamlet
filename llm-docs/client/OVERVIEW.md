@@ -1,6 +1,6 @@
 # Hamlet desktop client
 
-Linux desktop client built with GPUI/Kit. It supports signup/login, text channels, paginated conversation history, per-channel drafts, message publication, focused polling and saved sessions through Linux Secret Service.
+Linux desktop client built with GPUI/Kit. It supports signup/login, text channels, paginated conversation history, per-channel drafts, message publication, session-owned live updates and saved sessions through Linux Secret Service.
 
 ## Linux prerequisites
 
@@ -25,8 +25,8 @@ Select **New user? Sign up** to create a user and immediately enter a session, o
 - Create a text channel with **Channel name** and **Create text channel**. Names are trimmed, accept 1–64 bytes of ASCII letters, digits, spaces, hyphens or underscores, and are unique ignoring ASCII case. Confirmed creation selects the channel; uncertain creation is not replayed automatically.
 - Select a channel to load its newest history. Scroll upward for older cursor pages; **Retry older messages**, **Start of conversation** and **Jump to latest** distinguish traversal states. Messages retain line breaks, author and timestamp; text is selectable/copyable.
 - **Enter** sends; **Shift+Enter** inserts a newline. The **Send message** button is another submission path. Drafts are held per channel in memory and cleared on logout, expiry or restart. A pending send locks only its originating composer.
-- Focused clients poll selected-channel history about every 3 seconds and channels about every 15 seconds. Polling pauses while unfocused; focus return reconciles immediately. Read failures back off independently up to 60 seconds. **Refresh conversation** and **Refresh channels** remain available.
-- Catch-up traverses cursor pages, deduplicates by message ID and retains server order for timestamp ties. Loaded history and drafts survive read outages; incomplete catch-up is reported separately.
+- One authenticated stream remains active while unfocused. Creations merge by identity without follow-up reads. No polling, Refresh controls or manual connection retry remain.
+- Delivery loss automatically reconnects with bounded exponential backoff and equal jitter, then replaces channels and the selected newest history after readiness. Navigation and HTTP writes remain available; drafts and write outcomes survive. Selected retained rows display **Reconnecting… messages may be out of date** until synchronization; older caches/cursors and reading position reset. Older-page failures still offer local retry.
 - Writes are never retried automatically. An uncertain send retains its draft and warning: check the conversation before deliberately resending. Exactly-once publication is not guaranteed without server idempotency.
 
 ## Saved sessions
@@ -41,7 +41,7 @@ Save, restore, deletion and revocation report confirmed, failed or unconfirmed o
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for module ownership and dependency rules, and [PRESENTATION.md](PRESENTATION.md) for editing locations and semantic controls.
 
-`src/main.rs` handles startup. `views/` owns controls and subscriptions; `session/` owns authentication, restoration, expiry and cleanup; `conversation/` owns session-scoped requests, polling, history and drafts. `api/` owns bound HTTP clients, `storage/` owns the ordered provider/configuration worker, `runtime.rs` provides shared execution/time support, and `theme.rs` defines colors/icons.
+`src/main.rs` handles startup. `views/` owns controls and subscriptions; `session/` owns authentication, restoration, expiry and cleanup; `conversation/` owns session-scoped requests, stream recovery, history and drafts. `api/` owns bound HTTP clients, `storage/` owns the ordered provider/configuration worker, `runtime.rs` provides shared execution/time support, and `theme.rs` defines colors/icons.
 
 Tests live in the owning feature's `src/<feature>/tests/` directory, with cross-feature fixtures in `src/test_support/`. Follow the required [test layout](ARCHITECTURE.md#test-layout-required).
 
@@ -64,4 +64,4 @@ cargo test --locked route_tests
 
 Tests use controlled execution/time, real Kit controls, loopback HTTP, isolated files/fake providers and disposable server databases. Building does not launch the client. Automated checks are not native desktop acceptance; IME, accessibility, precise delayed-prepend anchoring and locked/slow real-wallet behavior need separate verification. See [VERIFY.md](VERIFY.md) for the native checklist and [safety gate](VERIFY.md#native-safety-gate). Do not launch desktop automation or access a real keyring without separate consent.
 
-No packaging, push transport, offline/queued writes, persistent history/drafts, rich formatting or cross-platform support is provided.
+No packaging, offline/queued writes, persistent history/drafts, rich formatting or cross-platform support is provided.

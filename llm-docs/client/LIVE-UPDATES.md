@@ -1,6 +1,6 @@
-# Desktop authenticated stream API (#68)
+# Desktop authenticated live updates (#68/#69)
 
-The transport is implemented but **not activated by the desktop**. Conversation polling, recovery policy and views remain unchanged until #69. Server framing and deployment constraints remain in [the server contract](../server/LIVE-UPDATES.md).
+The desktop conversation coordinator owns one authenticated stream per accepted session. Creations arrive without polling; failed delivery triggers readiness-gated baseline recovery. Server framing and deployment constraints remain in [the server contract](../server/LIVE-UPDATES.md).
 
 ## Caller boundary
 
@@ -12,7 +12,15 @@ The transport is implemented but **not activated by the desktop**. Conversation 
 
 The handle owns its execution task and response body. Drop it to cancel an attempt, including pending headers or an idle body. Canceling an individual `next()` wait does not cancel the handle. A terminal result invalidates pending deliveries and remains observable on subsequent `next()` calls. Session expiry/logout/replacement and attempt identity are caller responsibilities; cloning the authenticated client never replaces an existing attempt's credentials.
 
-There is no reconnect, replay, write retry, conversation state, selected-channel policy or fallback polling in this operation. #69 must retain one handle per conversation attempt, avoid adding an unbounded forwarding bridge, and drop it on session/attempt abandonment. Narrow dead-code/unused-export allowances identify the unactivated interface and can be removed at cutover.
+There is no reconnect, replay, write retry, conversation state, selected-channel policy or fallback polling in the API operation. The conversation coordinator retains its handle in one cancelable forwarding task and cancels it on session/attempt abandonment. No staged-interface dead-code allowances remain.
+
+## Conversation policy
+
+`conversation/live_updates.rs` is a pure connecting/loading-baseline/live/retrying/closed policy. The coordinator waits for Ready, loads channels and only the current selection's newest history, then synchronously merges buffered creations and acknowledges synchronization. Empty channel lists need no history. Selection changes cancel/invalidate only the selected read; completed channels and stream ownership stay with the same attempt.
+
+API delivery, executor delivery, recovery buffering and replacing-read staging each have independent 256-entity bounds. `conversation/delivery.rs` prioritizes a separate terminal lane; stream forwarding never waits for ordinary capacity. HTTP completions can wait, preserving write outcomes. EOF, transport/parser/deadline errors, overflow, required baselines and uncached selection failures enter one recovery path. Retry bases are 1, 2, 4, 8, 16 and capped 30 seconds with equal jitter; only completed reconciliation resets failure count. The clock-anchored timer remains for retry and expiry, never polling.
+
+Read deliveries carry session, attempt and request identities. Writes carry session/operation identity independently and remain usable during recovery. Recovery invalidates histories/cursors but preserves drafts, selection and write outcomes; only selected stale rows are retained for display. The history view consumes an explicit reset revision. HTTP confirmations and events share ID-based entity merges; only confirmed originating operations clear their input. Uncertainty causes neither reads nor reconnect/resend, and matching text never confirms it. Older-page failure retains local retry. Views show Connecting initially and a persistent Reconnecting notice until baseline success; they have no stream tasks, retry schedulers or Refresh controls.
 
 ## Ownership and bounds
 
@@ -32,6 +40,8 @@ Owner-local suites: `client/src/api/tests/events.rs` (controlled transport/time 
 Coverage includes every two-chunk split of a BOM/CRLF/CR/multiline/Unicode fixture, one-byte input, discarded final frames, exact 65,536/65,537-byte boundaries for each line ending, four maximum server-serialized 4,000-character control-text messages in a single >64-KiB chunk, and 4,000 astral characters encoded as 48,000 bytes of JSON surrogate escapes. These fit independently below the frame bound. Queue capacity 256 succeeds; delivery 257 terminates before queued results are drained. Controlled heartbeat traffic remains live across multiple ordinary-request deadlines, then ends exactly at the no-progress limit.
 
 Real-loopback tests observe both creation types through independently authenticated consumers without polling or follow-up entity reads; invalid/duplicate/failed writes emit neither. The maximum legal escaped message retains HTTP/event identity. Additional tests prove redirect rejection without bearer forwarding, revoked-handshake rejection, real socket cleanup on handle drop, streaming past 8.2 seconds, and unchanged ordinary HTTP body timeout at approximately eight seconds. The network tests use controlled scheduling on a current-thread runtime, but the production transport/binding/parser are unchanged; they are not native UI acceptance.
+
+Conversation coverage lives in `conversation/tests/{live_updates,live_coordinator,delivery,state,live_state,coordinator,route}.rs`; semantic view coverage includes `views/tests/live_updates.rs` and `history_lifecycle.rs`. The real-route coordinator test records unchanged ordinary GET counts while a second authenticated user's message and channel appear, with application time held fixed. View tests cover unfocused delivery, recreation, input preservation, healthy anchoring and identical-ID recovery reset.
 
 Exact red/green and final check results: [epic ledger](../implement-epic/renodubois-hamlet-71.md). No dependency or lockfile changes were required.
 

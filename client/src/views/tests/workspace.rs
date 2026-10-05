@@ -1,6 +1,6 @@
 //! Composition journeys through Kit Root, semantic controls and the owned conversation seam.
 use crate::api::test_support::{RequestAdapter, Response};
-use crate::api::{ApiError, ApiFuture, HttpTransport};
+use crate::api::{ApiError, ApiFuture};
 use crate::conversation::ConversationHandle;
 use crate::runtime::Execution;
 use crate::views::workspace::WorkspaceView;
@@ -74,7 +74,7 @@ fn drain(cx: &mut gpui_kit::VisualTestContext, activity: &ConversationHandle) {
 fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let calls = Arc::new(AtomicUsize::new(0));
-    let client = HttpTransport::with_adapter(Arc::new(Channels(calls.clone())))
+    let client = crate::test_support::live::transport(Arc::new(Channels(calls.clone())))
         .server("https://workspace.example")
         .unwrap()
         .restore_candidate("synthetic".into())
@@ -175,7 +175,7 @@ fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut T
                 .value()
                 .is_none_or(str::is_empty)
         );
-        window.click("refresh-channels", cx);
+        assert!(window.try_find("refresh-channels").is_none());
     });
     drain(cx, &activity);
     assert_eq!(
@@ -209,7 +209,7 @@ fn sidebar_creation_notifications_preserve_edits_and_pending_state_across_recrea
 ) {
     cx.update(gpui_kit::init);
     let api = Arc::new(DelayedCreation(std::sync::Mutex::new(Vec::new())));
-    let client = HttpTransport::with_adapter(api.clone())
+    let client = crate::test_support::live::transport(api.clone())
         .server("https://workspace.example")
         .unwrap()
         .restore_candidate("synthetic".into())

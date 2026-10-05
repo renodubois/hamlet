@@ -18,6 +18,12 @@ fn session_loss_closes_surviving_conversation_handles_before_any_host_update(
         let activity = session.conversation().unwrap();
         activity.start(false);
         cx.executor().run_until_parked();
+        assert!(
+            activity
+                .apply(activity.updates().try_recv().unwrap())
+                .is_none()
+        );
+        cx.executor().run_until_parked();
         calls
             .try_recv()
             .unwrap()
@@ -40,7 +46,7 @@ fn session_loss_closes_surviving_conversation_handles_before_any_host_update(
             .reply
             .try_send(Ok(Response::controlled(
                 StatusCode::OK,
-                r#"{"items":[],"next_cursor":null}"#,
+                r#"{"items":[],"next_cursor":"older"}"#,
             )))
             .unwrap();
         cx.executor().run_until_parked();
@@ -50,7 +56,7 @@ fn session_loss_closes_surviving_conversation_handles_before_any_host_update(
                 .is_none()
         );
         activity.edit_draft("private draft".into());
-        activity.refresh_history();
+        activity.request_older();
         activity.send();
         activity.create_channel("Room");
         cx.executor().run_until_parked();
@@ -86,8 +92,7 @@ fn session_loss_closes_surviving_conversation_handles_before_any_host_update(
         activity.set_focused(true);
         activity.edit_draft("must stay closed".into());
         activity.send();
-        activity.refresh_channels();
-        activity.refresh_history();
+        activity.request_older();
         activity.create_channel("Must stay closed");
         cx.executor().run_until_parked();
         while let Ok(call) = calls.try_recv() {
@@ -161,7 +166,7 @@ fn controlled(cx: &TestAppContext) -> (SessionCoordinator, async_channel::Receiv
     let (calls, requests) = async_channel::unbounded();
     (
         SessionCoordinator::new(
-            HttpTransport::with_adapter(Arc::new(Gated(calls))),
+            crate::test_support::live::transport(Arc::new(Gated(calls))),
             Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
             Config::default(),
             None,

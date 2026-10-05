@@ -73,6 +73,18 @@ impl Execution {
             .as_secs() as i64
     }
 
+    /// Equal-jitter sample at the execution boundary; deterministic under controlled time.
+    pub(crate) fn jitter(&self) -> u32 {
+        #[cfg(test)]
+        if self.controlled.is_some() {
+            return 0;
+        }
+        use std::hash::{BuildHasher, Hasher};
+        std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish() as u32
+    }
+
     pub(crate) fn sleep(&self, duration: Duration) -> gpui_kit::Task<()> {
         self.executor.timer(duration)
     }

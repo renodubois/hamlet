@@ -64,10 +64,6 @@ impl ChannelSidebarView {
             }
         }
     }
-    fn refresh_channels(&mut self, cx: &mut Context<Self>) {
-        self.conversation.refresh_channels();
-        cx.notify();
-    }
     fn create_channel(&mut self, cx: &mut Context<Self>) {
         self.conversation
             .create_channel(&self.channel_name.read(cx).text().to_string());
@@ -84,7 +80,6 @@ impl Render for ChannelSidebarView {
         let conversation = self.conversation.read();
         let view = cx.entity().downgrade();
         let create_view = view.clone();
-        let refresh_channels_view = view.clone();
         let mut sidebar = div()
             .id("channels")
             .test_support()
@@ -97,21 +92,6 @@ impl Render for ChannelSidebarView {
             .gap_2()
             .overflow_y_scroll()
             .child(div().font_weight(FontWeight::BOLD).child("Text channels"))
-            .child(
-                Button::new("refresh-channels")
-                    .label(
-                        if conversation.channels.is_some() && conversation.channel_refreshing() {
-                            "Refreshing channels…"
-                        } else {
-                            "Refresh channels"
-                        },
-                    )
-                    .disabled(conversation.channel_refreshing())
-                    .on_click(move |_, _, cx| {
-                        let _ =
-                            refresh_channels_view.update(cx, |view, cx| view.refresh_channels(cx));
-                    }),
-            )
             .child(
                 div().child("Channel name").child(
                     Input::new(&self.channel_name)
@@ -141,15 +121,6 @@ impl Render for ChannelSidebarView {
                     .aria_label(feedback.clone())
                     .test_support()
                     .child(feedback.clone()),
-            );
-        }
-        if let Some(error) = &conversation.channel_error {
-            sidebar = sidebar.child(
-                div()
-                    .id("channels-refresh-error")
-                    .aria_label(error.clone())
-                    .test_support()
-                    .child(format!("Channel refresh: {error}")),
             );
         }
         match &conversation.channels {

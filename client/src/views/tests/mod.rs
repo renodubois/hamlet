@@ -15,8 +15,8 @@ mod execution;
 mod history;
 #[path = "journeys.rs"]
 mod journeys;
-#[path = "polling.rs"]
-mod polling;
+#[path = "live_updates.rs"]
+mod live_updates;
 #[path = "protected_binding.rs"]
 mod protected_binding;
 #[path = "saved_login.rs"]
@@ -45,12 +45,26 @@ fn open_controlled(
     cx: &mut gpui_kit::App,
     api: Arc<dyn RequestAdapter>,
 ) -> gpui_kit::Entity<AppShell> {
+    open_with_streams(
+        window,
+        cx,
+        api,
+        &crate::test_support::live::Streams::default(),
+    )
+}
+
+fn open_with_streams(
+    window: &mut Window,
+    cx: &mut gpui_kit::App,
+    api: Arc<dyn RequestAdapter>,
+    streams: &crate::test_support::live::Streams,
+) -> gpui_kit::Entity<AppShell> {
     let execution =
         crate::runtime::Execution::controlled(cx.background_executor().clone(), 1_800_000_000);
     open(
         window,
         cx,
-        HttpTransport::with_adapter(api),
+        streams.transport(api),
         crate::storage::Config::default(),
         None,
         execution,

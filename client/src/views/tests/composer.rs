@@ -166,9 +166,7 @@ fn enter_at_mid_caret_and_after_shift_enter_sends_unchanged_text(cx: &mut TestAp
 }
 
 #[gpui_kit::test]
-fn uncertain_send_retains_draft_refreshes_only_selected_channel_and_never_replays(
-    cx: &mut TestAppContext,
-) {
+fn uncertain_send_retains_originating_draft_and_never_replays(cx: &mut TestAppContext) {
     let calls = Arc::new(Mutex::new(Vec::<Sent>::new()));
     let cx = mount(cx, calls.clone());
     cx.update(|window, cx| {
@@ -191,10 +189,7 @@ fn uncertain_send_retains_draft_refreshes_only_selected_channel_and_never_replay
     cx.update(|window, cx| {
         window.render_frame(cx);
         assert!(window.try_find("send-feedback").is_none());
-        assert_eq!(
-            window.find("refresh-history").label(),
-            Some("Refresh conversation")
-        );
+        assert!(window.try_find("refresh-history").is_none());
         window.click("channel-000000000000001", cx);
     });
     cx.run_until_parked();
@@ -207,13 +202,10 @@ fn uncertain_send_retains_draft_refreshes_only_selected_channel_and_never_replay
                 .unwrap()
                 .contains("may already")
         );
-        assert_eq!(
-            window.find("refresh-history").label(),
-            Some("Refresh conversation")
-        );
+        assert!(window.try_find("refresh-history").is_none());
         assert!(
             calls.lock().unwrap().is_empty(),
-            "refresh must not replay the write"
+            "navigation must not replay the write"
         );
     });
 }

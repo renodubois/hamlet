@@ -88,6 +88,18 @@ impl HttpTransport {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_adapters(
+        adapter: Arc<dyn RequestAdapter>,
+        stream_adapter: Arc<dyn super::events::StreamAdapter>,
+    ) -> Self {
+        Self {
+            adapter,
+            stream_adapter,
+            ..Self::new()
+        }
+    }
+
     pub fn server(&self, origin: &str) -> Result<ServerClient, ApiError> {
         Ok(ServerClient(Arc::new(ServerContext {
             url: validate_server(origin)?,
