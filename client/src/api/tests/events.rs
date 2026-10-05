@@ -302,12 +302,47 @@ fn malformed_known_json_cannot_hide_duplicate_entity_fields(cx: &mut TestAppCont
             "\"type\":\"channel_created\"",
             "\"type\":\"channel_created\",\"type\":\"future\"",
         ),
+        CHANNEL.replace(
+            "\"type\":\"channel_created\"",
+            "\"type\":\"future\",\"type\":\"channel_created\"",
+        ),
+        r#"{"type":"future","type":"future"}"#.into(),
     ] {
         let (mut stream, body) = opened(cx);
         body.try_send(Ok(change(&duplicate))).unwrap();
         assert_eq!(
             next(cx, &mut stream),
             Err(StreamError::Api(ApiError::InvalidResponse))
+        );
+    }
+}
+
+#[gpui_kit::test]
+fn unknown_changes_are_ignored_without_blocking_supported_deliveries(cx: &mut TestAppContext) {
+    let (mut stream, body) = opened(cx);
+    let mut input = change(r#"{"type":"future","payload":{"nested":[1,null,true]}}"#);
+    input.extend(change(
+        r#"{"type":"unknown","message":"not a known payload"}"#,
+    ));
+    input.extend(change(CHANNEL));
+    body.try_send(Ok(input)).unwrap();
+    assert!(matches!(
+        next(cx, &mut stream),
+        Ok(LiveEvent::ChannelCreated(_))
+    ));
+
+    for invalid in [
+        r#"{}"#,
+        r#"{"type":null}"#,
+        r#"{"type":"future","payload":}"#,
+        r#"{"type":"message_created"}"#,
+    ] {
+        let (mut stream, body) = opened(cx);
+        body.try_send(Ok(change(invalid))).unwrap();
+        assert_eq!(
+            next(cx, &mut stream),
+            Err(StreamError::Api(ApiError::InvalidResponse)),
+            "{invalid}"
         );
     }
 }

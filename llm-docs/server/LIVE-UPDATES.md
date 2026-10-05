@@ -102,7 +102,7 @@ Capacity and intervals are tuning defaults, not throughput, retention-time, or l
 
 ## Provisional compatibility policy
 
-Ignore additional JSON fields and unknown SSE/application event types in v1. Malformed **known** changes terminate the desktop stream attempt rather than being silently ignored; fixed-delay reconnect resumes future delivery without repairing missed updates. This is a provisional policy, **not unlimited additive compatibility**. Before adding events that modify already-supported state (such as message deletion), revisit older-client behavior, ordering, and snapshot reconciliation: ignoring such events could leave stale data. The shared Rust enum intentionally has no serialized unknown/sentinel variant.
+Ignore additional JSON fields and unknown SSE/application event types in v1. Malformed **known** changes terminate the desktop stream attempt rather than being silently ignored; fixed-delay reconnect resumes future delivery without repairing missed updates. This is a provisional policy, **not unlimited additive compatibility**. Before adding events that modify already-supported state (such as message deletion), revisit older-client behavior, ordering, and snapshot reconciliation: ignoring such events could leave stale data. The shared Rust enum uses `#[serde(other, skip_serializing)] Unknown` as a receive-only fallback for unsupported type tags. It cannot be serialized or prepared for publication and is omitted from the OpenAPI Event union; it is not a server-emitted event type.
 
 ## Verification and sources
 

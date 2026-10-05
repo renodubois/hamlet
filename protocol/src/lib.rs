@@ -24,8 +24,15 @@ pub struct Message {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
-    MessageCreated { message: Message },
-    ChannelCreated { channel: Channel },
+    MessageCreated {
+        message: Message,
+    },
+    ChannelCreated {
+        channel: Channel,
+    },
+    /// Receive-only fallback for event types this version does not support.
+    #[serde(other, skip_serializing)]
+    Unknown,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

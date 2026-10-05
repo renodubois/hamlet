@@ -18,6 +18,11 @@ pub(super) fn change() -> PreparedEvent {
     .unwrap()
 }
 
+#[test]
+fn unknown_events_cannot_be_prepared_for_publication() {
+    assert!(PreparedEvent::new(&Event::Unknown).is_err());
+}
+
 #[tokio::test]
 async fn no_subscribers_is_normal_and_fanout_shares_payload_storage() {
     let hub = EventHub::default();

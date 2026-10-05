@@ -91,8 +91,40 @@ fn unsupported_channel_types_and_malformed_timestamps_are_not_valid_wire_entitie
         }))
         .is_err()
     );
-    // Unknown SSE types are handled by transport, not a serialized sentinel variant.
-    assert!(serde_json::from_value::<Event>(json!({"type": "unknown"})).is_err());
+}
+
+#[test]
+fn unknown_event_types_deserialize_but_cannot_be_serialized() {
+    for wire in [
+        json!({"type": "future"}),
+        json!({"type": "unknown", "payload": {"nested": [1, null, true]}}),
+        json!({"type": "future", "message": "not a known payload"}),
+    ] {
+        let event: Event = serde_json::from_value(wire).unwrap();
+        assert!(matches!(event, Event::Unknown));
+        assert!(serde_json::to_value(&event).is_err());
+        assert!(serde_json::to_string(&event).is_err());
+    }
+}
+
+#[test]
+fn malformed_events_do_not_fall_back_to_unknown() {
+    for wire in [
+        r#"{"type":"message_created"}"#,
+        r#"{"type":"channel_created","channel":null}"#,
+        r#"{"type":"channel_created","channel":{"id":"c","id":"d","name":"general","type":"text"}}"#,
+        r#"{"type":"channel_created","type":"future"}"#,
+        r#"{"type":"future","type":"channel_created"}"#,
+        r#"{"type":"future","type":"future"}"#,
+        r#"{"type":null}"#,
+        r#"{"type":1}"#,
+        r#"{}"#,
+        r#"[]"#,
+        r#"null"#,
+        r#"{"type":"future","payload":}"#,
+    ] {
+        assert!(serde_json::from_str::<Event>(wire).is_err(), "{wire}");
+    }
 }
 
 #[cfg(feature = "openapi")]

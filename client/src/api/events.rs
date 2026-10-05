@@ -284,12 +284,6 @@ impl Parser {
     }
 }
 
-#[derive(serde::Deserialize)]
-struct ChangeTag {
-    #[serde(rename = "type")]
-    kind: String,
-}
-
 fn decode(kind: &str, data: &str) -> Result<Option<LiveEvent>, ApiError> {
     match kind {
         "ready" => {
@@ -301,20 +295,8 @@ fn decode(kind: &str, data: &str) -> Result<Option<LiveEvent>, ApiError> {
             Ok(Some(LiveEvent::Ready))
         }
         "change" => {
-            let value: serde_json::Value =
-                serde_json::from_str(data).map_err(|_| ApiError::InvalidResponse)?;
-            if !value.is_object() {
-                return Err(ApiError::InvalidResponse);
-            }
-            // Probe the original tag so duplicate discriminators cannot hide a
-            // supported change behind an unknown last value.
-            let tag: ChangeTag =
-                serde_json::from_str(data).map_err(|_| ApiError::InvalidResponse)?;
-            if !matches!(tag.kind.as_str(), "channel_created" | "message_created") {
-                return Ok(None);
-            }
             // Decode the original JSON, not Value: Value collapses duplicate fields
-            // that the shared HTTP wire deserializer correctly rejects.
+            // and discriminators that the shared wire deserializer rejects.
             let event: hamlet_protocol::Event =
                 serde_json::from_str(data).map_err(|_| ApiError::InvalidResponse)?;
             Ok(Some(match event {
@@ -325,6 +307,7 @@ fn decode(kind: &str, data: &str) -> Result<Option<LiveEvent>, ApiError> {
                     let channel = message.channel_id.clone();
                     LiveEvent::MessageCreated(super::messages::decode_message(message, &channel)?)
                 }
+                hamlet_protocol::Event::Unknown => return Ok(None),
             }))
         }
         _ => Ok(None),
