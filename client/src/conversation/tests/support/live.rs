@@ -64,6 +64,17 @@ pub fn fixture(
     async_channel::Receiver<Call>,
     async_channel::Receiver<Stream>,
 ) {
+    fixture_for_session(cx, 7)
+}
+
+pub fn fixture_for_session(
+    cx: &TestAppContext,
+    generation: u64,
+) -> (
+    ConversationHandle,
+    async_channel::Receiver<Call>,
+    async_channel::Receiver<Stream>,
+) {
     let (send, calls) = async_channel::unbounded();
     let (open, streams) = async_channel::unbounded();
     let client = HttpTransport::with_adapters(Arc::new(Requests(send)), Arc::new(Streams(open)))
@@ -73,7 +84,7 @@ pub fn fixture(
         .unwrap();
     (
         ConversationHandle::new(
-            7,
+            generation,
             1_800_001_000,
             client,
             Execution::controlled(cx.background_executor.clone(), 1_800_000_000),

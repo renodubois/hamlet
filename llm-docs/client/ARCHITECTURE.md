@@ -38,7 +38,7 @@ client/src/
 ├── conversation/               # Conversation behavior and in-memory state
 │   ├── mod.rs                  # Coordinates requests and applies their results
 │   ├── state.rs                # Channels, history, drafts, send/reconciliation rules
-│   ├── live_updates.rs         # Pure readiness, reconciliation and retry policy
+│   ├── live_updates.rs         # Pure readiness and fixed reconnect policy
 │   └── delivery.rs             # Bounded executor bridge with terminal priority
 │
 ├── api/                        # Canonical home for server communication
@@ -66,7 +66,7 @@ Test files/directories are omitted from this tree; their placement is described 
 
 A view owns its rendering and local interaction state: GPUI input entities, focus, subscriptions, selection, scroll position, and local display choices. A substantial stateful view normally has its own file and entity. A rendering helper such as a message row does not need its own entity merely because it has a file.
 
-- `AppShell` observes session status and creates/removes the appropriate screen. Window activation does not affect live synchronization. It displays session/storage feedback, including retries that remain relevant after logout. Its small delivery loops apply opaque session/conversation updates; only the coordinators interpret results or decide subsequent requests. Workspace recreation does not create a second delivery loop.
+- `AppShell` observes session status and creates/removes the appropriate screen. Window activation does not affect live delivery. It displays session/storage feedback, including retries that remain relevant after logout. Its small delivery loops apply opaque session/conversation updates; only the coordinators interpret results or decide subsequent requests. Workspace recreation does not create a second delivery loop.
 - `LoginView` owns editable server/username/password inputs and login/signup mode. It submits values through the session interface; it does not own authentication, bearer tokens, or secure storage.
 - `WorkspaceView` composes authenticated UI against a session-scoped conversation module. It does not implement HTTP dispatch or history merging.
 - `ChannelSidebarView` owns its creation input and presents channel state. Selection, ordering, and creation policy belong to conversation behavior.
@@ -87,7 +87,7 @@ Saved-login workflows outlive the login view and authenticated workspace. A dele
 
 The conversation module owns loaded channels, selected channel, history, drafts, pending operations, uncertainty, and reconciliation. It belongs to one authenticated session, not to the currently selected channel's view. `ConversationHandle` clones share one coordinator; `read()` gives a read-only state borrow. Pure transition methods and request identities are visible only inside conversation ownership, not exported to views. API data comes directly from `api/`.
 
-Its coordinator owns one session stream, waits for readiness before authoritative channels/current history, buffers creations until baseline reconciliation, and applies HTTP confirmations directly. Failed attempts cancel stream/read tasks, not writes; retry uses one capped exponential/equal-jitter policy. Selection retargets only history within an attempt. Older pages retain local retry; uncertainty causes no reads or resends. There is no polling or manual Refresh path.
+Its coordinator starts initial channel/history reads independently of stream readiness and owns one session stream. Creations merge by identity only into loaded channels/history; creations for unloaded data or during a replacing read are ignored, not staged. HTTP confirmations remain operation-aware. Failed stream attempts reconnect after a fixed three seconds without canceling HTTP work, issuing catch-up reads or resetting histories, pages, cursors, drafts, selection or reading position. Read identities belong to the session/request, not a stream attempt. Read failures remain read failures; older pages retain local retry. Uncertainty causes no reads or resends. Live updates are best-effort: disconnected and read-overlap creations may be missed permanently, while future delivery resumes after readiness. There is no replay, polling or manual Refresh path.
 
 `state.rs` and `live_updates.rs` stay ordinary Rust. The coordinator can use GPUI notifications without moving rendering into this module. It reports authoritative authentication rejection with the originating session identity; it does not mutate session internals.
 
@@ -110,7 +110,7 @@ Only session persistence needs controlled access to credential material; views a
 
 Keep a substitution seam for controlled request outcomes in tests, alongside the real HTTP adapter. Common client binding rules must apply to both. Do not expose raw transport details to application callers for the sake of tests.
 
-The [authenticated live-update operation](LIVE-UPDATES.md) owns one cancel-on-drop stream attempt, validated ready/creation deliveries, separate stream deadlines and bounded delivery with prioritized terminal outcomes. It uses the same execution/time support and entity conversion as ordinary operations, but a separate HTTP client without a total-body timeout. It does not own reconnection or conversation state. The conversation coordinator owns the handle and executes the pure live lifecycle; views never own streams or recovery decisions.
+The [authenticated live-update operation](LIVE-UPDATES.md) owns one cancel-on-drop stream attempt, validated ready/creation deliveries, separate stream deadlines and bounded delivery with prioritized terminal outcomes. It uses the same execution/time support and entity conversion as ordinary operations, but a separate HTTP client without a total-body timeout. It does not own reconnection or conversation state. The conversation coordinator owns the handle and executes the pure live lifecycle; views never own streams or reconnect decisions.
 
 ### Storage
 
@@ -122,7 +122,7 @@ Store bearer credentials only in Secret Service; configuration files contain pub
 
 `main.rs` constructs dependencies, initializes GPUI/Kit, creates the window/root, and starts the application. It contains neither workflows nor feature tests.
 
-`runtime.rs` is a small internal home for the existing Tokio-to-GPUI execution bridge and controllable execution/time support. It knows nothing about login, messages, or views. Feature coordinators own tasks and decide what results mean. HTTP deadline policy belongs to `api/`, secure-store deadlines to saved-login coordination, and recovery backoff to `conversation/live_updates.rs`.
+`runtime.rs` is a small internal home for the existing Tokio-to-GPUI execution bridge and controllable execution/time support. It knows nothing about login, messages, or views. Feature coordinators own tasks and decide what results mean. HTTP deadline policy belongs to `api/`, secure-store deadlines to saved-login coordination, and the fixed reconnect delay to `conversation/live_updates.rs`.
 
 Use injected execution/time support where required for deterministic headless tests. Production and tests must exercise the same workflow code rather than maintain separate `cfg(test)` request-dispatch implementations. Do not expand this into a general event bus or command framework.
 
@@ -148,7 +148,7 @@ Cross-feature coordination uses narrow session-status/rejection interfaces. Do n
 | Truly reused presentation | `views/shared/`, when there are actual users |
 | Message layout or composer shortcuts | Relevant file in `views/conversation/` |
 | History continuity or send uncertainty | `conversation/state.rs` |
-| Stream synchronization, recovery, or older-page reads | Conversation coordinator/live updates |
+| Stream lifecycle, reconnect, or older-page reads | Conversation coordinator/live updates |
 | Server operation | Relevant `api/` request file and client interface |
 | Authentication/restoration policy | `session/` |
 | Credential provider or configuration mechanics | `storage/` |
@@ -198,7 +198,7 @@ When reviewing changes, check suite placement, test-only gating, preserved modul
 
 ### Coverage and execution
 
-- Pure transitions live in `session/tests/state.rs`, `conversation/tests/state.rs` and `conversation/tests/live_updates.rs`; binding transitions stay under session state ownership. Real-route feature integration lives in each feature's `tests/route.rs`, not in API tests.
+- Pure transitions live in `session/tests/state.rs` and `conversation/tests/{state,live_state}.rs`; binding transitions stay under session state ownership. The best-effort connection policy is exercised through `ConversationHandle` in `conversation/tests/live_coordinator.rs`. Real-route feature integration lives in each feature's `tests/route.rs`, not in API tests.
 - Feature tests exercise their owned interfaces, with controlled request outcomes and time.
 - Cross-view GPUI tests belong under `views/tests/`, independently of `AppShell`; use real Kit controls, stable semantic IDs, and a Kit `Root`, not private child fields or a fixed presentation tree. Test construction calls the production `app_shell::open`; there is no test-only root constructor.
 - API tests cover loopback HTTP fixtures and the server routes. Keep real decoding/header/redirect/deadline coverage in addition to controlled adapters.
@@ -210,4 +210,4 @@ Use the commands in [OVERVIEW.md](OVERVIEW.md) and the checks/native smoke guida
 
 ## Scope
 
-The client supports HTTP writes/history and authenticated SSE creations with automatic baseline recovery, in-memory history/drafts and a selected saved login. Offline storage, queued writes, multi-server navigation, packaging and cross-platform support are not implemented.
+The client supports HTTP writes/history and best-effort authenticated SSE creations with automatic reconnect, in-memory history/drafts and a selected saved login. Offline storage, queued writes, multi-server navigation, packaging and cross-platform support are not implemented.

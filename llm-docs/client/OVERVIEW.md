@@ -25,8 +25,8 @@ Select **New user? Sign up** to create a user and immediately enter a session, o
 - Create a text channel with **Channel name** and **Create text channel**. Names are trimmed, accept 1–64 bytes of ASCII letters, digits, spaces, hyphens or underscores, and are unique ignoring ASCII case. Confirmed creation selects the channel; uncertain creation is not replayed automatically.
 - Select a channel to load its newest history. Scroll upward for older cursor pages; **Retry older messages**, **Start of conversation** and **Jump to latest** distinguish traversal states. Messages retain line breaks, author and timestamp; text is selectable/copyable.
 - **Enter** sends; **Shift+Enter** inserts a newline. The **Send message** button is another submission path. Drafts are held per channel in memory and cleared on logout, expiry or restart. A pending send locks only its originating composer.
-- One authenticated stream remains active while unfocused. Creations merge by identity without follow-up reads. No polling, Refresh controls or manual connection retry remain.
-- Delivery loss automatically reconnects with bounded exponential backoff and equal jitter, then replaces channels and the selected newest history after readiness. Navigation and HTTP writes remain available; drafts and write outcomes survive. Selected retained rows display **Reconnecting… messages may be out of date** until synchronization; older caches/cursors and reading position reset. Older-page failures still offer local retry.
+- One authenticated stream remains active while unfocused. Initial reads do not wait for stream readiness. Creations merge by identity into loaded channels/history without follow-up reads; events for unloaded data or during a replacing read are ignored. No polling, Refresh controls or manual connection retry remain.
+- Delivery loss reconnects after a fixed three seconds, without catch-up reads or state resets. Loaded history, older pages/cursors, drafts, selection and reading position remain; navigation and HTTP writes stay available. **Live updates disconnected — reconnecting.** persists until the new stream is ready. This is best-effort delivery: creations missed while disconnected or overlapping a replacing read may remain absent permanently; readiness resumes future delivery, not synchronization. Older-page failures still offer local retry.
 - Writes are never retried automatically. An uncertain send retains its draft and warning: check the conversation before deliberately resending. Exactly-once publication is not guaranteed without server idempotency.
 
 ## Saved sessions
@@ -41,7 +41,7 @@ Save, restore, deletion and revocation report confirmed, failed or unconfirmed o
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for module ownership and dependency rules, and [PRESENTATION.md](PRESENTATION.md) for editing locations and semantic controls.
 
-`src/main.rs` handles startup. `views/` owns controls and subscriptions; `session/` owns authentication, restoration, expiry and cleanup; `conversation/` owns session-scoped requests, stream recovery, history and drafts. `api/` owns bound HTTP clients, `storage/` owns the ordered provider/configuration worker, `runtime.rs` provides shared execution/time support, and `theme.rs` defines colors/icons.
+`src/main.rs` handles startup. `views/` owns controls and subscriptions; `session/` owns authentication, restoration, expiry and cleanup; `conversation/` owns session-scoped requests, stream reconnect, history and drafts. `api/` owns bound HTTP clients, `storage/` owns the ordered provider/configuration worker, `runtime.rs` provides shared execution/time support, and `theme.rs` defines colors/icons.
 
 Tests live in the owning feature's `src/<feature>/tests/` directory, with cross-feature fixtures in `src/test_support/`. Follow the required [test layout](ARCHITECTURE.md#test-layout-required).
 

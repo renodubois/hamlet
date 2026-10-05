@@ -14,7 +14,6 @@ async fn terminal_delivery_remains_available_when_the_executor_bridge_is_full() 
     for _ in 0..DELIVERY_CAPACITY {
         assert!(
             send.try_send(ConversationUpdate(Update::Channels(
-                crate::conversation::live_updates::LiveUpdates::new(7).attempt(),
                 request.clone(),
                 Err(crate::api::ApiError::Unavailable),
             )))

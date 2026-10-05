@@ -76,30 +76,16 @@ pub(super) struct CreateRequest {
     serial: u64,
 }
 
-// Separate bounds for the one channel-list read and one replacing history read.
-const READ_STAGING_CAPACITY: usize = 256;
-const STAGING_OVERFLOW: &str = "Reconnecting… messages may be out of date";
-
-#[derive(Debug, PartialEq, Eq)]
-pub(super) struct ReconciliationOverflow;
-
 #[derive(Default)]
 pub struct Conversation {
     pub channels: Option<Load<Vec<Channel>>>,
     pub selected: Option<String>,
     pub history: HashMap<String, Load<Vec<Message>>>,
-    // Display-only selected content during recovery; never a cache or pagination source.
-    retained_history: Option<(String, Load<Vec<Message>>)>,
     pub older: HashMap<String, Older>,
     cursors: HashMap<String, String>,
     channel_pending: bool,
-    channels_during_read: Vec<Channel>,
-    channels_read_overflow: bool,
     channel_serial: u64,
-    pub channel_error: Option<String>,
     read_serial: u64,
-    messages_during_read: Vec<Message>,
-    history_read_overflow: bool,
     pub create_pending: bool,
     pub create_feedback: Option<String>,
     create_serial: u64,
@@ -108,59 +94,19 @@ pub struct Conversation {
     pub send_feedback: HashMap<String, String>,
     pub uncertain: HashSet<String>,
     uncertain_notice: HashSet<String>,
-    // Only confirmations not yet merged into authoritative loaded history. Keep these
-    // across failed/canceled reads and recovery attempts; consume on that channel's
-    // first successful replacing read, not on reset or another channel's baseline.
+    // Originating HTTP confirmations awaiting loaded history. Retain across failed or
+    // canceled reads, then consume on this channel's first successful history load.
     confirmed: HashMap<String, Vec<Message>>,
     send_serial: u64,
-    recovery_reset_revision: u64,
 }
 
 impl Conversation {
-    /// Retained rows are presentation only. Reads, merges and pagination use `history`.
     pub fn history_for_display(&self, id: &str) -> Option<&Load<Vec<Message>>> {
-        match self.history.get(id) {
-            ready @ Some(Load::Ready(_)) => ready,
-            current => self
-                .retained_history
-                .as_ref()
-                .filter(|(channel, _)| channel == id)
-                .map(|(_, history)| history)
-                .or(current),
-        }
-    }
-
-    /// A reset is observable even if a replacement returns exactly the same entity IDs.
-    pub fn recovery_reset_revision(&self) -> u64 {
-        self.recovery_reset_revision
-    }
-
-    /// Invalidate server-derived history, never local drafts or write operation identities.
-    /// The retained channel list permits navigation/writes until its authoritative replacement.
-    pub(super) fn reset_for_recovery(&mut self) {
-        if let Some(id) = &self.selected
-            && matches!(self.history.get(id), Some(Load::Ready(_)))
-        {
-            self.retained_history = self.history.remove(id).map(|history| (id.clone(), history));
-        }
-        self.cancel_selected();
-        self.channel_serial = self.channel_serial.wrapping_add(1);
-        self.channel_pending = false;
-        self.channels_during_read.clear();
-        self.channels_read_overflow = false;
-        self.history_read_overflow = false;
-        self.channel_error = None;
-        if !matches!(self.channels, Some(Load::Ready(_))) {
-            self.channels = Some(Load::Loading);
-        }
-        self.history.clear();
-        self.cursors.clear();
-        self.older.clear();
-        self.recovery_reset_revision = self.recovery_reset_revision.wrapping_add(1);
+        self.history.get(id)
     }
 
     pub(super) fn clear(&mut self) {
-        // Keep serials distinct even when the same session remains active after a reset.
+        // Keep obsolete completions distinct even if the same session remains active.
         let next = self.create_serial.wrapping_add(1);
         let read_next = self.read_serial.wrapping_add(1);
         let channel_next = self.channel_serial.wrapping_add(1);
@@ -218,8 +164,7 @@ impl Conversation {
         match result {
             Ok(channel) => {
                 let id = channel.id.clone();
-                // Overflow is retained on the read and prevents a lossy replacement.
-                let _ = self.merge_channel(channel);
+                self.merge_channel(channel);
                 self.create_feedback = None;
                 (true, self.select(session, &id))
             }
@@ -241,45 +186,19 @@ impl Conversation {
     }
 
     /// Remote creations never change selection or allocate history.
-    pub(super) fn merge_channel(
-        &mut self,
-        channel: Channel,
-    ) -> Result<usize, ReconciliationOverflow> {
-        if self.channel_pending
-            && !self
-                .channels_during_read
-                .iter()
-                .any(|item| item.id == channel.id)
-        {
-            if self.channels_during_read.len() == READ_STAGING_CAPACITY {
-                self.channels_read_overflow = true;
-            } else {
-                self.channels_during_read.push(channel.clone());
-            }
-        }
-        let result = if self.channels_read_overflow {
-            Err(ReconciliationOverflow)
-        } else {
-            Ok(0)
-        };
+    pub(super) fn merge_channel(&mut self, channel: Channel) -> usize {
         let Some(Load::Ready(channels)) = &mut self.channels else {
-            return result;
+            return 0;
         };
         if channels.iter().any(|item| item.id == channel.id) {
-            return result;
+            return 0;
         }
         // Match ORDER BY name_key ASC, id ASC without reordering the server snapshot.
         let key = (channel.name.to_ascii_lowercase(), channel.id.clone());
         let position = channels
             .partition_point(|item| (item.name.to_ascii_lowercase(), item.id.clone()) < key);
         channels.insert(position, channel);
-        result.map(|_| 1)
-    }
-
-    /// Sticky until the affected read is retried or recovery resets it. HTTP confirmations
-    /// keep their own outcomes even when their concurrent replacing read overflows.
-    pub(super) fn reconciliation_overflowed(&self) -> bool {
-        self.channels_read_overflow || self.history_read_overflow
+        1
     }
 
     pub fn draft(&self, id: &str) -> &str {
@@ -346,8 +265,8 @@ impl Conversation {
                 self.send_feedback.remove(id);
                 self.uncertain.remove(id);
                 self.uncertain_notice.remove(id);
-                let _ = self.merge_message(message.clone());
-                // A direct merge into loaded history needs no replay on future baselines.
+                self.merge_message(message.clone());
+                // Loaded history accepts the confirmation directly, without an overlay.
                 if !matches!(self.history.get(id), Some(Load::Ready(_))) {
                     self.confirmed.entry(id.clone()).or_default().push(message);
                 }
@@ -376,35 +295,14 @@ impl Conversation {
         }
     }
 
-    /// Apply a validated creation to loaded history, or stage it across a replacing read.
-    /// Never allocate history just because an unloaded channel receives a creation.
-    pub(super) fn merge_message(
-        &mut self,
-        message: Message,
-    ) -> Result<usize, ReconciliationOverflow> {
-        if matches!(self.history.get(&message.channel_id), Some(Load::Loading)) {
-            if !self
-                .messages_during_read
-                .iter()
-                .any(|item| item.id == message.id)
-            {
-                if self.messages_during_read.len() == READ_STAGING_CAPACITY {
-                    self.history_read_overflow = true;
-                } else {
-                    self.messages_during_read.push(message);
-                }
-            }
-            return if self.history_read_overflow {
-                Err(ReconciliationOverflow)
-            } else {
-                Ok(0)
-            };
-        }
+    /// Apply a validated creation only to loaded history. Events overlapping a history
+    /// load may be missed; never allocate history for an unloaded channel's creation.
+    pub(super) fn merge_message(&mut self, message: Message) -> usize {
         let Some(Load::Ready(messages)) = self.history.get_mut(&message.channel_id) else {
-            return Ok(0);
+            return 0;
         };
         if messages.iter().any(|m| m.id == message.id) {
-            return Ok(0);
+            return 0;
         }
         // The server orders by created_at DESC, id DESC. Compare parsed instants because
         // RFC3339 can spell UTC with differing fractional-second precision.
@@ -419,7 +317,7 @@ impl Conversation {
                     })
         });
         messages.insert(at, message);
-        Ok(1)
+        1
     }
 
     pub(super) fn start(&mut self, session: &Identity) -> Option<ReadRequest> {
@@ -428,25 +326,7 @@ impl Conversation {
             return None;
         }
         self.channels = Some(Load::Loading);
-        self.read_channels(session)
-    }
-
-    pub(super) fn refresh_channels(&mut self, session: &Identity) -> Option<ReadRequest> {
-        if self.channel_pending {
-            return None;
-        }
-        if !matches!(self.channels, Some(Load::Ready(_))) {
-            self.channels = Some(Load::Loading);
-        }
-        self.read_channels(session)
-    }
-
-    fn read_channels(&mut self, session: &Identity) -> Option<ReadRequest> {
-        session.session_generation()?;
         self.channel_pending = true;
-        self.channels_during_read.clear();
-        self.channels_read_overflow = false;
-        self.channel_error = None;
         self.channel_serial = self.channel_serial.wrapping_add(1);
         Some(ReadRequest {
             generation: session.session_generation()?,
@@ -476,21 +356,9 @@ impl Conversation {
             return None;
         }
         self.channel_pending = false;
-        let staged = std::mem::take(&mut self.channels_during_read);
-        if result.is_ok() && self.channels_read_overflow {
-            if matches!(self.channels, Some(Load::Ready(_))) {
-                self.channel_error = Some(STAGING_OVERFLOW.into());
-            } else {
-                self.channels = Some(Load::Failed(STAGING_OVERFLOW.into()));
-            }
-            return None;
-        }
         match result {
             Ok(channels) => {
                 self.channels = Some(Load::Ready(channels));
-                for channel in staged {
-                    let _ = self.merge_channel(channel);
-                }
                 let Some(Load::Ready(channels)) = &self.channels else {
                     unreachable!();
                 };
@@ -500,9 +368,6 @@ impl Conversation {
                     .filter(|id| channels.iter().any(|c| &c.id == *id))
                     .cloned();
                 let next = selected.or_else(|| channels.first().map(|c| c.id.clone()));
-                if next.is_none() {
-                    self.retained_history = None;
-                }
                 if self.selected != next {
                     self.cancel_selected();
                     self.selected = None;
@@ -515,11 +380,7 @@ impl Conversation {
                 None
             }
             Err(error) => {
-                if matches!(self.channels, Some(Load::Ready(_))) {
-                    self.channel_error = Some(error.description().into());
-                } else {
-                    self.channels = Some(Load::Failed(error.description().into()));
-                }
+                self.channels = Some(Load::Failed(error.description().into()));
                 None
             }
         }
@@ -534,7 +395,6 @@ impl Conversation {
                 self.older.insert(old.clone(), Older::Available);
             }
         }
-        self.messages_during_read.clear();
         self.read_serial = self.read_serial.wrapping_add(1);
     }
 
@@ -546,7 +406,6 @@ impl Conversation {
             return None;
         }
         if self.selected.as_deref() != Some(id) {
-            self.retained_history = None;
             self.cancel_selected();
         }
         self.selected = Some(id.into());
@@ -555,8 +414,6 @@ impl Conversation {
         }
         session.session_generation()?;
         self.history.insert(id.into(), Load::Loading);
-        self.messages_during_read.clear();
-        self.history_read_overflow = false;
         self.read_serial = self.read_serial.wrapping_add(1);
         Some(ReadRequest {
             generation: session.session_generation()?,
@@ -619,29 +476,19 @@ impl Conversation {
         } else if !matches!(self.history.get(id), Some(Load::Loading)) {
             return outcome;
         }
-        if result.is_ok() && !older && self.history_read_overflow {
-            self.messages_during_read.clear();
-            self.history
-                .insert(id.clone(), Load::Failed(STAGING_OVERFLOW.into()));
-            return outcome;
-        }
         match result {
             Ok(page) => {
                 if !older {
-                    self.retained_history = None;
                     self.history.insert(id.clone(), Load::Ready(Vec::new()));
                 }
                 for message in page.items {
-                    outcome.added += self.merge_message(message).unwrap_or(0);
+                    outcome.added += self.merge_message(message);
                 }
                 if !older {
-                    // This baseline resolves the read/write race. Retire its overlay so
-                    // later recovery cannot resurrect confirmations outside the newest page.
+                    // HTTP confirmations belong to the originating write, unlike remote
+                    // events. Consume the overlay once its history is loaded.
                     for message in self.confirmed.remove(id).unwrap_or_default() {
-                        outcome.added += self.merge_message(message).unwrap_or(0);
-                    }
-                    for message in std::mem::take(&mut self.messages_during_read) {
-                        outcome.added += self.merge_message(message).unwrap_or(0);
+                        outcome.added += self.merge_message(message);
                     }
                 }
                 match page
@@ -669,7 +516,6 @@ impl Conversation {
                     self.older
                         .insert(id.clone(), Older::Failed(error.description().into()));
                 } else {
-                    self.messages_during_read.clear();
                     self.history
                         .insert(id.clone(), Load::Failed(error.description().into()));
                 }

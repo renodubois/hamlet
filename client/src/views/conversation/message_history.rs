@@ -38,7 +38,6 @@ pub(crate) struct MessageHistoryView {
     focus: FocusHandle,
     list: ListState,
     presented_channel: Option<String>,
-    presented_reset: u64,
     // Row indices only, never a second history store or continuity model.
     presented_ids: Vec<String>,
     _notifications: Task<()>,
@@ -80,7 +79,6 @@ impl MessageHistoryView {
             focus: cx.focus_handle(),
             list,
             presented_channel: None,
-            presented_reset: 0,
             presented_ids: Vec::new(),
             _notifications: notifications,
         };
@@ -88,7 +86,7 @@ impl MessageHistoryView {
         view
     }
     fn present_history(&mut self) {
-        let (selected, ids, reset) = {
+        let (selected, ids) = {
             let state = self.conversation.read();
             let ids = state
                 .selected
@@ -108,10 +106,10 @@ impl MessageHistoryView {
                     }
                 })
                 .unwrap_or_default();
-            (state.selected.clone(), ids, state.recovery_reset_revision())
+            (state.selected.clone(), ids)
         };
         let follow = self.list.is_scrolled_to_end() != Some(false);
-        if selected != self.presented_channel || reset != self.presented_reset {
+        if selected != self.presented_channel {
             self.list.reset(ids.len());
             hint_history_row_heights(&self.list);
             self.list.scroll_to_end();
@@ -123,7 +121,6 @@ impl MessageHistoryView {
                 self.list.scroll_to_end();
             }
         }
-        self.presented_reset = reset;
         self.presented_channel = selected;
         self.presented_ids = ids;
     }

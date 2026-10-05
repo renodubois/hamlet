@@ -48,6 +48,41 @@ fn transport() -> (HttpTransport, Arc<AtomicUsize>) {
         reads,
     )
 }
+struct CountStreams {
+    attempts: Arc<AtomicUsize>,
+    client: reqwest::Client,
+}
+impl crate::api::test_support::StreamAdapter for CountStreams {
+    fn open(
+        &self,
+        request: reqwest::Request,
+    ) -> ApiFuture<Result<crate::api::test_support::StreamResponse, ApiError>> {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        crate::api::test_support::StreamAdapter::open(&self.client, request)
+    }
+}
+fn restart_transport() -> (HttpTransport, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    (
+        HttpTransport::with_adapters(
+            Arc::new(CountReads {
+                reads: reads.clone(),
+                client: reqwest::Client::builder()
+                    .no_proxy()
+                    .timeout(Duration::from_secs(8))
+                    .build()
+                    .unwrap(),
+            }),
+            Arc::new(CountStreams {
+                attempts: attempts.clone(),
+                client: reqwest::Client::builder().no_proxy().build().unwrap(),
+            }),
+        ),
+        reads,
+        attempts,
+    )
+}
 fn serve(listener: TcpListener, state: hamlet::AppState) -> Server {
     HttpServer::new(move || {
         App::new()
@@ -283,7 +318,7 @@ fn second_user_creations_arrive_on_session_stream_without_followup_reads(cx: &mu
         );
         activity.start();
         await_conversation(cx, &activity, |activity| {
-            matches!(
+            activity.status().is_empty() && matches!(
                 activity.read().history.get(&channel),
                 Some(Load::Ready(messages)) if messages.is_empty()
             )
@@ -383,7 +418,7 @@ fn server_history_traverses_multiple_pages_with_timestamp_ties(cx: &mut TestAppC
         );
         activity.start();
         await_conversation(cx, &activity, |activity| {
-            matches!(
+            activity.status().is_empty() && matches!(
                 activity.read().history.get(&channel),
                 Some(Load::Ready(messages)) if messages.len() == 50
             )
@@ -502,7 +537,7 @@ fn real_route_http_event_orders_reconcile_once_without_healthy_reads(cx: &mut Te
         let b = ConversationHandle::new(2, bob.expires_at, bob.client.clone(), Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
         let clients = [&a, &b];
         a.start(); b.start();
-        settle(cx, &clients, || clients.iter().all(|c| c.status().is_empty())).await;
+        settle(cx, &clients, || clients.iter().all(|c| c.status().is_empty() && c.read().selected.as_ref().is_some_and(|id| matches!(c.read().history.get(id), Some(Load::Ready(_)))))).await;
         let channel = a.read().selected.clone().unwrap();
         let reads = [a_reads.load(Ordering::SeqCst), b_reads.load(Ordering::SeqCst)];
         post_gate.arm();
@@ -572,7 +607,9 @@ fn real_route_http_event_orders_reconcile_once_without_healthy_reads(cx: &mut Te
 }
 
 #[gpui_kit::test]
-fn two_authenticated_coordinators_recover_after_actual_server_restart(cx: &mut TestAppContext) {
+fn two_authenticated_coordinators_reconnect_without_catchup_after_actual_server_restart(
+    cx: &mut TestAppContext,
+) {
     actix_web::rt::System::new().block_on(async {
         let dir = tempfile::tempdir().unwrap();
         let database = format!("sqlite://{}?mode=rwc", dir.path().join("restart.db").display());
@@ -582,14 +619,14 @@ fn two_authenticated_coordinators_recover_after_actual_server_restart(cx: &mut T
         let server = serve(listener, hamlet::connect_to_database(&database).await.unwrap());
         let handle = server.handle();
         let task = actix_web::rt::spawn(server);
-        let (a_transport, a_reads) = transport();
-        let (b_transport, b_reads) = transport();
+        let (a_transport, a_reads, a_attempts) = restart_transport();
+        let (b_transport, b_reads, b_attempts) = restart_transport();
         let alice = a_transport.server(&url).unwrap().signup("Alice".into(), "long password".into()).await.unwrap();
         let bob = b_transport.server(&url).unwrap().signup("Bob".into(), "long password".into()).await.unwrap();
         assert_ne!(alice.user.id, bob.user.id);
         let channel = alice.client.channels().await.unwrap()[0].id.clone();
         let inactive = alice.client.create_channel("Other room".into()).await.unwrap();
-        for index in 0..53 {
+        for index in 0..103 {
             alice.client.send_message(channel.clone(), format!("before restart {index}")).await.unwrap();
         }
         let a = ConversationHandle::new(1, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
@@ -597,13 +634,14 @@ fn two_authenticated_coordinators_recover_after_actual_server_restart(cx: &mut T
         let clients = [&a, &b];
         a.start(); b.start();
         settle(cx, &clients, || clients.iter().all(|c| c.status().is_empty())).await;
-        // Populate an inactive cache and an old page: recovery must not retain either.
+        // Load an older page and an inactive cache. Both, including the still-usable
+        // cursor to the oldest three messages, must survive stream failure.
         for client in clients {
             client.select_channel(&channel);
         }
         settle(cx, &clients, || clients.iter().all(|c| ids(c, &channel).len() == 50)).await;
         for client in clients { client.request_older(); }
-        settle(cx, &clients, || clients.iter().all(|c| ids(c, &channel).len() == 53)).await;
+        settle(cx, &clients, || clients.iter().all(|c| ids(c, &channel).len() == 100)).await;
         for client in clients { client.select_channel(&inactive.id); }
         settle(cx, &clients, || clients.iter().all(|c| matches!(c.read().history.get(&inactive.id), Some(Load::Ready(_))))).await;
         for client in clients {
@@ -615,7 +653,7 @@ fn two_authenticated_coordinators_recover_after_actual_server_restart(cx: &mut T
         // Independently authenticated concurrent writes, real HTTP confirmations plus events.
         a.edit_draft("Alice concurrent".into()); a.send();
         b.edit_draft("Bob concurrent".into()); b.send();
-        settle(cx, &clients, || clients.iter().all(|c| ids(c, &channel).len() == 55 && c.read().draft(&channel).is_empty())).await;
+        settle(cx, &clients, || clients.iter().all(|c| ids(c, &channel).len() == 102 && c.read().draft(&channel).is_empty())).await;
         assert_eq!(ids(&a, &channel), ids(&b, &channel), "same sorted identities, no duplicate HTTP/event entities");
         let remote = bob.client.create_channel("Remote room".into()).await.unwrap();
         let ignored = bob.client.send_message(remote.id.clone(), "unloaded history".into()).await.unwrap();
@@ -629,14 +667,19 @@ fn two_authenticated_coordinators_recover_after_actual_server_restart(cx: &mut T
             client.edit_draft(format!("unsent draft {index}"));
         }
         assert_eq!([a_reads.load(Ordering::SeqCst), b_reads.load(Ordering::SeqCst)], reads, "healthy message/channel creations cause zero follow-up reads");
-        let revisions = [a.read().recovery_reset_revision(), b.read().recovery_reset_revision()];
+        let retained = ids(&a, &channel);
+        let retained_channels = a.read().channels.clone();
+        assert_eq!(retained.len(), 103);
+        assert_eq!([a_attempts.load(Ordering::SeqCst), b_attempts.load(Ordering::SeqCst)], [1, 1]);
         // Stop the actual Actix server/workers and await completion, closing both TCP bodies.
         stop(handle, task).await;
-        settle(cx, &clients, || clients.iter().all(|c| c.status() == "Reconnecting… messages may be out of date")).await;
+        let disconnected = "Live updates disconnected — reconnecting.";
+        settle(cx, &clients, || clients.iter().all(|c| c.status() == disconnected)).await;
         for client in clients {
-            assert!(client.read().history.is_empty());
-            assert!(matches!(client.read().history_for_display(&channel), Some(Load::Ready(items)) if items.len() == 56));
-            assert!(client.read().older.is_empty());
+            assert_eq!(ids(client, &channel), retained);
+            assert_eq!(client.read().history.len(), 2);
+            assert!(matches!(client.read().history.get(&inactive.id), Some(Load::Ready(items)) if items.is_empty()));
+            assert_eq!(client.read().older.get(&channel), Some(&Older::Available));
         }
         // A fresh AppState/pool/hub and listener, same persisted database/credentials/origin.
         let server = serve(TcpListener::bind(address).unwrap(), hamlet::connect_to_database(&database).await.unwrap());
@@ -647,27 +690,45 @@ fn two_authenticated_coordinators_recover_after_actual_server_restart(cx: &mut T
             bob.client.send_message(channel.clone(), format!("during disconnect {index}")).await.unwrap();
         }
         let offline = bob.client.create_channel("Offline room".into()).await.unwrap();
-        cx.background_executor.advance_clock(Duration::from_secs(1));
+        cx.background_executor.advance_clock(Duration::from_millis(2999));
+        cx.executor().run_until_parked();
+        assert!(clients.iter().all(|c| c.status() == disconnected));
+        assert_eq!([a_attempts.load(Ordering::SeqCst), b_attempts.load(Ordering::SeqCst)], [1, 1], "no reconnect before three seconds");
+        cx.background_executor.advance_clock(Duration::from_millis(1));
         settle(cx, &clients, || clients.iter().all(|c| c.status().is_empty())).await;
-        assert_eq!(ids(&a, &channel), ids(&b, &channel));
+        assert_eq!([a_attempts.load(Ordering::SeqCst), b_attempts.load(Ordering::SeqCst)], [2, 2]);
         for (index, client) in clients.iter().enumerate() {
             let state = client.read();
-            let Some(Load::Ready(messages)) = state.history.get(&channel) else { panic!("newest history") };
-            assert_eq!(messages.len(), 50);
-            assert!(messages.iter().all(|m| m.text.starts_with("during disconnect")));
-            assert_eq!(state.history.len(), 1, "inactive histories discarded");
+            let Some(Load::Ready(messages)) = state.history.get(&channel) else { panic!("retained history") };
+            assert_eq!(ids(client, &channel), retained, "offline creations are accepted losses, not replayed");
+            assert!(messages.iter().all(|m| !m.text.starts_with("during disconnect")));
+            assert_eq!(state.history.len(), 2, "inactive histories retained");
             assert_eq!(state.older.get(&channel), Some(&Older::Available));
             assert_eq!(state.draft(&channel), format!("unsent draft {index}"));
             assert_eq!(state.draft(&inactive.id), "inactive draft");
             assert_eq!(state.selected.as_deref(), Some(channel.as_str()));
-            assert!(state.recovery_reset_revision() > revisions[index]);
-            assert!(matches!(&state.channels, Some(Load::Ready(channels)) if channels.contains(&offline)));
+            assert_eq!(state.channels, retained_channels);
+            assert!(matches!(&state.channels, Some(Load::Ready(channels)) if !channels.contains(&offline)));
         }
-        assert_eq!([a_reads.load(Ordering::SeqCst), b_reads.load(Ordering::SeqCst)], [reads[0] + 2, reads[1] + 2], "one fresh channels/newest baseline per reconnected client");
-        // New cursors traverse the current dataset, not the pre-restart exhausted cursor.
-        for client in clients { client.request_older(); }
-        settle(cx, &clients, || clients.iter().all(|c| ids(c, &channel).len() == 100)).await;
+        assert_eq!([a_reads.load(Ordering::SeqCst), b_reads.load(Ordering::SeqCst)], reads, "reconnect performs no catch-up GETs");
+        // Delivery resumes for future creations without backfilling the offline gap.
+        let resumed = bob.client.send_message(channel.clone(), "after reconnect".into()).await.unwrap();
+        let resumed_channel = bob.client.create_channel("After reconnect room".into()).await.unwrap();
+        let inactive_message = bob.client.send_message(inactive.id.clone(), "inactive cache still live".into()).await.unwrap();
+        settle(cx, &clients, || clients.iter().all(|c| ids(c, &channel).contains(&resumed.id) && ids(c, &inactive.id).contains(&inactive_message.id) && matches!(&c.read().channels, Some(Load::Ready(channels)) if channels.contains(&resumed_channel)))).await;
         assert_eq!(ids(&a, &channel), ids(&b, &channel));
+        assert_eq!([a_reads.load(Ordering::SeqCst), b_reads.load(Ordering::SeqCst)], reads);
+        // Explicit pagination uses the retained pre-restart cursor, reaching only
+        // the oldest three messages, not the newer offline gap.
+        for client in clients { client.request_older(); }
+        settle(cx, &clients, || clients.iter().all(|c| c.read().older.get(&channel) == Some(&Older::Exhausted))).await;
+        for client in clients {
+            assert_eq!(ids(client, &channel).len(), 107);
+            assert!(matches!(client.read().history.get(&channel), Some(Load::Ready(messages)) if messages.iter().all(|m| !m.text.starts_with("during disconnect"))));
+            assert_eq!(client.read().selected.as_deref(), Some(channel.as_str()));
+        }
+        assert_eq!(ids(&a, &channel), ids(&b, &channel));
+        assert_eq!([a_reads.load(Ordering::SeqCst), b_reads.load(Ordering::SeqCst)], [reads[0] + 1, reads[1] + 1], "only explicit older-page requests read");
         for client in clients { client.close(); }
         cx.executor().run_until_parked();
         stop(handle, task).await;

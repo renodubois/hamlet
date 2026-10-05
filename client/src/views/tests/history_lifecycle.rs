@@ -12,7 +12,7 @@ use gpui_kit::{
 };
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicUsize, Ordering},
 };
 
 struct HistoryApi(Arc<AtomicUsize>);
@@ -205,22 +205,17 @@ fn history_shutdown_clears_selected_text(cx: &mut TestAppContext) {
     });
 }
 
-struct EvolvingHistory {
-    latest: AtomicUsize,
-    unavailable: AtomicBool,
+struct ReaderHistory {
     reads: AtomicUsize,
 }
-impl RequestAdapter for EvolvingHistory {
+impl RequestAdapter for ReaderHistory {
     fn execute(&self, request: reqwest::Request) -> ApiFuture<Result<Response, ApiError>> {
         assert_eq!(request.method(), reqwest::Method::GET);
+        self.reads.fetch_add(1, Ordering::SeqCst);
         let body = if request.url().path() == "/api/v1/channels" {
             serde_json::json!({"items":[{"id":"1","name":"General","type":"text"}]})
         } else {
-            self.reads.fetch_add(1, Ordering::SeqCst);
-            if self.unavailable.load(Ordering::SeqCst) {
-                return Box::pin(async { Err(ApiError::Unavailable) });
-            }
-            serde_json::json!({"items":(1..=self.latest.load(Ordering::SeqCst)).rev().map(|id| {
+            serde_json::json!({"items":(1..=40).rev().map(|id| {
                 serde_json::json!({"id":id.to_string(),"channel_id":"1",
                     "author":{"id":"u","display_name":"Ada"},"text":format!("message {id}\nsecond line"),
                     "created_at":"2026-01-01T00:00:00Z"})
@@ -236,13 +231,9 @@ impl RequestAdapter for EvolvingHistory {
 }
 
 #[gpui_kit::test]
-fn healthy_events_keep_reader_anchor_but_recovery_resets_identical_ids_to_newest(
-    cx: &mut TestAppContext,
-) {
+fn healthy_events_and_reconnect_keep_reader_anchor_without_http_reads(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
-    let api = Arc::new(EvolvingHistory {
-        latest: AtomicUsize::new(40),
-        unavailable: AtomicBool::new(false),
+    let api = Arc::new(ReaderHistory {
         reads: AtomicUsize::new(0),
     });
     let streams = crate::test_support::live::Streams::default();
@@ -269,12 +260,6 @@ fn healthy_events_keep_reader_anchor_but_recovery_resets_identical_ids_to_newest
         Root::new(host, window, cx)
     });
     drain(cx, &activity);
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        window.click("recreate-history", cx);
-        window.click("recreate-history", cx);
-    });
-    drain(cx, &activity);
     let anchor = cx.update(|window, cx| {
         window.render_frame(cx);
         for _ in 0..4 {
@@ -296,7 +281,7 @@ fn healthy_events_keep_reader_anchor_but_recovery_resets_identical_ids_to_newest
     });
     streams.change(serde_json::json!({"type":"message_created","message":{"id":"41","channel_id":"1","author":{"id":"u","display_name":"Ada"},"text":"message 41\nsecond line","created_at":"2026-01-01T00:00:00Z"}}));
     drain(cx, &activity);
-    cx.update(|window, cx| {
+    let assert_anchor = |window: &mut Window, cx: &mut gpui_kit::App| {
         window.render_frame(cx);
         assert_eq!(
             window
@@ -307,27 +292,30 @@ fn healthy_events_keep_reader_anchor_but_recovery_resets_identical_ids_to_newest
             anchor.1
         );
         assert!(window.try_find("message-41").is_none());
-    });
-    assert_eq!(api.reads.load(Ordering::SeqCst), 1);
+    };
+    cx.update(assert_anchor);
+    assert_eq!(api.reads.load(Ordering::SeqCst), 2);
     assert_eq!(streams.count(), 1);
-    api.latest.store(41, Ordering::SeqCst);
     streams.disconnect();
     drain(cx, &activity);
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        assert!(
-            window.find("message-41").bounds().size.height > gpui_kit::px(0.),
-            "reset must move to newest even though all IDs are retained"
-        );
-    });
+    assert_eq!(
+        activity.status(),
+        "Live updates disconnected — reconnecting."
+    );
+    cx.update(assert_anchor);
     cx.background_executor
-        .advance_clock(std::time::Duration::from_secs(1));
+        .advance_clock(std::time::Duration::from_secs(3));
     drain(cx, &activity);
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        assert!(window.find("message-41").bounds().size.height > gpui_kit::px(0.));
-    });
+    cx.update(assert_anchor);
     assert_eq!(streams.count(), 2);
     assert_eq!(api.reads.load(Ordering::SeqCst), 2);
     assert_eq!(activity.status(), "");
+    cx.update(|window, cx| {
+        window.click("jump-latest", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("message-41").label(),
+            Some("message 41\nsecond line")
+        );
+    });
 }

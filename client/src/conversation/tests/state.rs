@@ -63,7 +63,7 @@ fn drafts_and_write_identities_are_independent_of_navigation_and_matching_events
     state.complete_history(&mut session, &other, Ok(page(&[], None)));
     state.set_draft("a", "other draft".into());
     let second = state.send(&session).unwrap();
-    state.merge_message(message("9", "z")).unwrap();
+    state.merge_message(message("9", "z"));
     assert_eq!(state.draft("z"), "same text");
     assert_eq!(
         state.complete_send(&mut session, &first, Err(ApiError::Unavailable), 0),
@@ -78,7 +78,7 @@ fn drafts_and_write_identities_are_independent_of_navigation_and_matching_events
         state.select(&session, "z").is_none(),
         "uncertainty cannot cause a read"
     );
-    state.merge_message(message("10", "z")).unwrap();
+    state.merge_message(message("10", "z"));
     assert!(state.uncertain.contains("z"));
     assert!(state.send_feedback["z"].contains("may already"));
     let deliberate = state.send(&session).unwrap();
@@ -111,7 +111,7 @@ fn confirmed_entities_merge_immediately_and_only_originating_draft_is_cleared() 
         state.complete_send(&mut session, &send, Ok(message("10", "z")), 0),
         SendOutcome::Confirmed
     );
-    state.merge_message(message("10", "z")).unwrap();
+    state.merge_message(message("10", "z"));
     assert_eq!(ids(&state), ["10", "8"]);
     assert_eq!(state.draft("z"), "");
     assert_eq!(state.draft("a"), "different");
@@ -153,14 +153,14 @@ fn authority_and_session_replacement_gate_reads_and_writes_before_rejection() {
     let (mut state, mut session) = ready();
     state.set_draft("z", "private".into());
     let send = state.send(&session).unwrap();
-    let old = state.refresh_channels(&session).unwrap();
+    let old = state.request_older(&session).unwrap();
     assert_eq!(
         state.complete_send(&mut session, &send, Err(ApiError::AlreadyInvalid), 0),
         SendOutcome::Invalidated
     );
     assert!(session.generation.is_none());
     assert!(state.drafts.is_empty());
-    state.complete_channels(&mut session, &old, Ok(channels()));
+    state.complete_history(&mut session, &old, Ok(page(&["7"], None)));
     assert!(state.channels.is_none());
 }
 
@@ -201,7 +201,7 @@ fn channel_creation_validates_names_selects_only_on_confirmation_and_rejects_lat
         id: "new".into(),
         name: "New".into(),
     };
-    state.merge_channel(channel.clone()).unwrap();
+    state.merge_channel(channel.clone());
     assert_eq!(state.selected.as_deref(), Some("z"));
     let (confirmed, read) = state.complete_create(&mut session, &create, Ok(channel), 0);
     assert!(confirmed);
@@ -236,7 +236,7 @@ fn older_pages_keep_cursor_and_entities_through_local_failure_retry_and_duplicat
     let older = state.request_older(&session).unwrap();
     assert_eq!(older.before.as_deref(), Some("opaque older"));
     assert!(state.request_older(&session).is_none());
-    state.merge_message(message("9", "z")).unwrap();
+    state.merge_message(message("9", "z"));
     state.complete_history(&mut session, &older, Err(ApiError::Unavailable));
     assert_eq!(ids(&state), ["9", "8"]);
     assert!(matches!(state.older.get("z"), Some(Older::Failed(_))));
@@ -295,23 +295,4 @@ fn navigation_and_local_creation_cancel_older_identity_without_losing_cursor() {
     assert!(session.generation.is_none());
     assert!(state.history.is_empty());
     assert!(state.older.is_empty());
-}
-
-#[test]
-fn replacing_channel_list_keeps_valid_selection_and_empty_snapshot_deselects() {
-    let (mut state, mut session) = ready();
-    state.select(&session, "a");
-    let failed = state.refresh_channels(&session).unwrap();
-    assert!(state.refresh_channels(&session).is_none());
-    state.complete_channels(&mut session, &failed, Err(ApiError::Unavailable));
-    assert_eq!(state.selected.as_deref(), Some("a"));
-    assert!(matches!(state.channels, Some(Load::Ready(_))));
-    let replaced = state.refresh_channels(&session).unwrap();
-    state.complete_channels(&mut session, &replaced, Ok(vec![channels()[1].clone()]));
-    assert_eq!(state.selected.as_deref(), Some("a"));
-    let empty = state.refresh_channels(&session).unwrap();
-    state.complete_channels(&mut session, &empty, Ok(vec![]));
-    assert!(state.selected.is_none());
-    state.complete_channels(&mut session, &replaced, Err(ApiError::AlreadyInvalid));
-    assert_eq!(session.generation, Some(1));
 }

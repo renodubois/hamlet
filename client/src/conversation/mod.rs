@@ -6,7 +6,7 @@ mod live_updates;
 mod state;
 use crate::api::{ApiError, AuthenticatedClient, Channel, LiveEvent, Message, Page, StreamError};
 use crate::runtime::{Execution, Work};
-use live_updates::{Attempt, Delivery, LiveUpdates};
+use live_updates::{Attempt, LiveUpdates};
 pub(crate) use state::{Conversation, Load, Older};
 use state::{CreateRequest, Identity, ReadRequest, SendRequest};
 use std::{
@@ -27,8 +27,8 @@ pub(crate) struct ConversationUpdate(Update);
 enum Update {
     Tick,
     Stream(Attempt, Result<LiveEvent, StreamError>),
-    Channels(Attempt, ReadRequest, Result<Vec<Channel>, ApiError>),
-    History(Attempt, u64, ReadRequest, Result<Page, ApiError>),
+    Channels(ReadRequest, Result<Vec<Channel>, ApiError>),
+    History(u64, ReadRequest, Result<Page, ApiError>),
     Create(CreateRequest, Result<Channel, ApiError>),
     Send(SendRequest, Result<Message, ApiError>),
 }
@@ -115,14 +115,7 @@ impl ConversationHandle {
         Ref::map(self.0.borrow(), |owner| &owner.state)
     }
     pub fn status(&self) -> &'static str {
-        let owner = self.0.borrow();
-        let retained = owner
-            .state
-            .selected
-            .as_deref()
-            .and_then(|id| owner.state.history_for_display(id))
-            .is_some_and(|history| matches!(history, Load::Ready(_)));
-        owner.live.status(retained)
+        self.0.borrow().live.status()
     }
     /// Presentation may clear an unchanged creation input after this confirmed revision.
     pub fn created(&self) -> Option<(u64, String)> {
@@ -146,6 +139,12 @@ impl ConversationHandle {
         }
         owner.started = true;
         owner.open_stream();
+        let Coordinator {
+            state, identity, ..
+        } = &mut *owner;
+        if let Some(request) = state.start(identity) {
+            owner.load_channels(request);
+        }
         owner.arm_timer();
     }
     pub fn close(&self) {
@@ -260,10 +259,17 @@ impl Coordinator {
         self.execution.now().duration_since(self.clock)
     }
     fn arm_timer(&mut self) {
-        // Expiry and the one recovery deadline share a clock-anchored cadence.
+        // Expiry keeps its cadence; reconnect wakes at the exact fixed-delay deadline.
+        if let Some(task) = self.timer.take() {
+            task.abort();
+        }
         let elapsed = self.time();
         let next_tick = Duration::from_secs(elapsed.as_secs() + 1);
-        let timer = self.execution.sleep(next_tick - elapsed);
+        let deadline = self
+            .live
+            .retry_at()
+            .map_or(next_tick, |retry| retry.min(next_tick));
+        let timer = self.execution.sleep(deadline.saturating_sub(elapsed));
         let deliver = self.deliver.clone();
         let (task, _) = self.execution.start(async move {
             timer.await;
@@ -307,34 +313,14 @@ impl Coordinator {
             LiveEvent::Ready => {}
         }
     }
-    fn synchronize(&mut self) {
-        let attempt = self.live.attempt();
-        if let Some(events) = self.live.finish_baseline(attempt) {
-            for event in events {
-                self.merge_event(event);
-            }
-            if self.state.reconciliation_overflowed() {
-                self.recover();
-            } else {
-                self.live.synchronized(attempt);
-            }
-        }
-    }
-    fn recover(&mut self) {
-        if !self
-            .live
-            .fail(self.live.attempt(), self.time(), self.execution.jitter())
-        {
+    fn disconnect(&mut self) {
+        if !self.live.fail(self.live.attempt(), self.time()) {
             return;
         }
         if let Some(task) = self.stream_task.take() {
             task.abort();
         }
-        if let Some(task) = self.channels_task.take() {
-            task.abort();
-        }
-        self.cancel_history();
-        self.state.reset_for_recovery();
+        self.arm_timer();
     }
     fn history(&mut self, intent: HistoryIntent) {
         if self.client.is_none() {
@@ -352,7 +338,6 @@ impl Coordinator {
         let Some(api) = self.client.clone() else {
             return;
         };
-        let attempt = self.live.attempt();
         let deliver = self.deliver.clone();
         let timeout = self.execution.sleep(READ_SEND_DEADLINE);
         let (task, _) = self.execution.start(async move {
@@ -362,9 +347,7 @@ impl Coordinator {
                 result = api.channels() => result,
             };
             let _ = deliver
-                .send(ConversationUpdate(Update::Channels(
-                    attempt, request, result,
-                )))
+                .send(ConversationUpdate(Update::Channels(request, result)))
                 .await;
         });
         self.channels_task = Some(task);
@@ -378,17 +361,10 @@ impl Coordinator {
     fn selection_changed(&mut self, previous: Option<String>) {
         if previous != self.state.selected {
             self.cancel_history();
-            self.live
-                .retarget(self.live.attempt(), self.state.selected.as_deref());
         }
     }
-    /// The sole selected-history dispatch path, for baselines and older pages.
+    /// The sole selected-history dispatch path, independent of connection status.
     fn load_history(&mut self, request: ReadRequest) {
-        if !self.live.can_read_history() {
-            self.state.cancel_selected();
-            return;
-        }
-        let attempt = self.live.attempt();
         self.cancel_history();
         let serial = self.history_serial;
         let Some(api) = self.client.clone() else {
@@ -404,9 +380,7 @@ impl Coordinator {
                 result = api.history_page(work.channel_id.unwrap(), work.before) => result,
             };
             let _ = deliver
-                .send(ConversationUpdate(Update::History(
-                    attempt, serial, request, result,
-                )))
+                .send(ConversationUpdate(Update::History(serial, request, result)))
                 .await;
         });
         self.history_task = Some(task);
@@ -431,73 +405,38 @@ impl Coordinator {
                     return None;
                 }
                 match result {
-                    Ok(LiveEvent::Ready) if self.live.ready(attempt) => {
-                        let request = if self.state.channels.is_none() {
-                            self.state.start(&self.identity)
-                        } else {
-                            self.state.refresh_channels(&self.identity)
-                        };
-                        if let Some(request) = request {
-                            self.load_channels(request);
-                        }
-                    }
-                    Ok(event) => match self.live.creation(attempt, event) {
-                        Delivery::Apply(event) => self.merge_event(event),
-                        Delivery::Recover => self.recover(),
-                        Delivery::Buffered | Delivery::Discard => {}
-                    },
+                    Ok(LiveEvent::Ready) => self.live.ready(attempt),
+                    Ok(event) => self.merge_event(event),
                     Err(StreamError::Api(ApiError::AlreadyInvalid)) => {
                         self.close();
                         return Some(SessionEnd::Rejected(self.generation));
                     }
-                    Err(_) => self.recover(),
+                    Err(_) => self.disconnect(),
                 }
             }
-            Update::Channels(attempt, request, result) => {
-                if !self.live.accepts(attempt)
-                    || !self.state.is_current_channels(&request)
+            Update::Channels(request, result) => {
+                if !self.state.is_current_channels(&request)
                     || request.generation != self.generation
                 {
                     return None;
                 }
                 self.channels_task = None;
-                let succeeded = result.is_ok();
                 let previous = self.state.selected.clone();
                 let next = self
                     .state
                     .complete_channels(&mut self.identity, &request, result);
                 self.selection_changed(previous);
-                if succeeded && !self.state.reconciliation_overflowed() {
-                    self.live
-                        .channels_loaded(attempt, self.state.selected.as_deref());
-                    if let Some(next) = next {
-                        self.load_history(next);
-                    }
-                    self.synchronize();
-                } else {
-                    self.recover();
+                if let Some(next) = next {
+                    self.load_history(next);
                 }
             }
-            Update::History(attempt, serial, request, result) => {
-                if !self.live.accepts(attempt)
-                    || serial != self.history_serial
-                    || request.generation != self.generation
-                {
+            Update::History(serial, request, result) => {
+                if serial != self.history_serial || request.generation != self.generation {
                     return None;
                 }
                 self.history_task = None;
-                let succeeded = result.is_ok();
-                let is_older = request.before.is_some();
                 self.state
                     .complete_history(&mut self.identity, &request, result);
-                if !is_older {
-                    if !succeeded || self.state.reconciliation_overflowed() {
-                        self.recover();
-                    } else if let Some(id) = &request.channel_id {
-                        self.live.history_loaded(attempt, id);
-                        self.synchronize();
-                    }
-                }
             }
             Update::Create(request, result) => {
                 if request.generation != self.generation {
@@ -536,9 +475,6 @@ impl Coordinator {
         if let Some(generation) = self.identity.rejected.take() {
             self.close();
             return Some(SessionEnd::Rejected(generation));
-        }
-        if self.state.reconciliation_overflowed() {
-            self.recover();
         }
         None
     }
