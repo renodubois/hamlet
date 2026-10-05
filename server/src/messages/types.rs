@@ -1,16 +1,6 @@
-pub use hamlet_protocol::{Author, Message};
-use serde::{Deserialize, Serialize};
+pub use hamlet_protocol::{Author, CreateMessage, History, Message};
+use serde::Deserialize;
 
-#[derive(Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CreateMessage {
-    pub text: String,
-}
-#[derive(Serialize, utoipa::ToSchema)]
-pub struct History {
-    pub items: Vec<Message>,
-    pub next_cursor: Option<String>,
-}
 #[derive(Deserialize, utoipa::IntoParams)]
 #[serde(deny_unknown_fields)]
 #[into_params(parameter_in = Query)]

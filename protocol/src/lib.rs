@@ -1,7 +1,61 @@
-//! Shared message/channel wire contract for Hamlet HTTP and creation updates.
+//! Shared wire contract for Hamlet HTTP and creation updates.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+// No Debug implementation: credentials contain a password.
+#[derive(Deserialize, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Credentials {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct CreateChannel {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: ChannelType,
+}
+
+#[derive(Deserialize, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct CreateMessage {
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct User {
+    pub id: String,
+    pub username: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ChannelList {
+    pub items: Vec<Channel>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct History {
+    pub items: Vec<Message>,
+    pub next_cursor: Option<String>,
+}
+
+// No Debug implementation: this response contains a bearer credential.
+#[derive(Deserialize, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AuthResponse {
+    pub user: User,
+    pub access_token: String,
+    pub expires_at: DateTime<Utc>,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

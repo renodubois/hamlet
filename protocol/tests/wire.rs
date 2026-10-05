@@ -1,5 +1,61 @@
-use hamlet_protocol::{Channel, ChannelType, Event, Message};
+use hamlet_protocol::{
+    AuthResponse, Channel, ChannelList, ChannelType, Event, History, Message, User,
+};
 use serde_json::json;
+
+#[test]
+fn auth_response_and_current_user_match_the_wire_contract() {
+    let user = json!({"id": "user-1", "username": "Alice"});
+    let wire = json!({
+        "user": user,
+        "access_token": "test-token",
+        "expires_at": "2026-01-02T03:04:05Z"
+    });
+    let decoded: AuthResponse = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(decoded.user.id, "user-1");
+    assert_eq!(decoded.user.username, "Alice");
+    assert_eq!(decoded.access_token, "test-token");
+    assert_eq!(decoded.expires_at.timestamp(), 1767323045);
+    assert_eq!(serde_json::to_value(&decoded).unwrap(), wire);
+    let current_user: User = serde_json::from_value(user.clone()).unwrap();
+    assert_eq!(current_user, decoded.user);
+    assert_eq!(serde_json::to_value(current_user).unwrap(), user);
+}
+
+#[test]
+fn collection_envelopes_match_the_wire_contract() {
+    let channels = json!({"items": [{"id": "c", "name": "general", "type": "text"}]});
+    let decoded: ChannelList = serde_json::from_value(channels.clone()).unwrap();
+    assert_eq!(decoded.items[0].id, "c");
+    assert_eq!(serde_json::to_value(decoded).unwrap(), channels);
+
+    for cursor in [json!(null), json!("opaque-cursor")] {
+        let history = json!({
+            "items": [{
+                "id": "m", "channel_id": "c",
+                "author": {"id": "u", "display_name": "Alice"},
+                "text": "hello", "created_at": "2026-01-02T03:04:05Z"
+            }],
+            "next_cursor": cursor
+        });
+        let decoded: History = serde_json::from_value(history.clone()).unwrap();
+        assert_eq!(decoded.items[0].id, "m");
+        assert_eq!(serde_json::to_value(decoded).unwrap(), history);
+    }
+    assert!(serde_json::from_value::<ChannelList>(json!({})).is_err());
+    assert!(serde_json::from_value::<History>(json!({"items": null})).is_err());
+}
+
+#[test]
+fn malformed_auth_responses_are_rejected() {
+    for wire in [
+        json!({"user": {"id": "u"}, "access_token": "t", "expires_at": "2026-01-02T03:04:05Z"}),
+        json!({"user": {"id": "u", "username": "Alice"}, "expires_at": "2026-01-02T03:04:05Z"}),
+        json!({"user": {"id": "u", "username": "Alice"}, "access_token": "t", "expires_at": "invalid"}),
+    ] {
+        assert!(serde_json::from_value::<AuthResponse>(wire).is_err());
+    }
+}
 
 #[test]
 fn message_creation_matches_the_language_neutral_wire_example() {
