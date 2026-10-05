@@ -9,8 +9,8 @@ coordinator. [ARCHITECTURE.md](ARCHITECTURE.md) describes the dependency rules.
 | Screen composition, shared session/storage feedback and retry | `src/views/app_shell.rs` | `session-status`, `logout`, `auth-feedback`, `storage-status`, `retry-storage` |
 | Login/signup fields, form mode, focus and sensitive cleanup | `src/views/login.rs` | `server-url`, `username`, `password`, `auth-mode`, `login`, `signup`, `auth-feedback` |
 | Pane composition and connection-status presentation | `src/views/workspace.rs`, `src/views/conversation/mod.rs` | `connection-status` |
-| Channel list and creation input | `src/views/channel_sidebar.rs` | `channels`, `channel-{id}`, `channel-name`, `create-channel`, `channel-feedback`, `refresh-channels`, `channels-refresh-error` |
-| List/focus, wheel, viewport anchoring and traversal controls | `src/views/conversation/message_history.rs` | `history-pane`, `history`, `refresh-history`, `catchup-incomplete`, `retry-older`, `jump-latest` |
+| Channel list and creation input | `src/views/channel_sidebar.rs` | `channels`, `channel-{id}`, `channel-name`, `create-channel`, `channel-feedback` |
+| List/focus, wheel, viewport anchoring and traversal controls | `src/views/conversation/message_history.rs` | `history-pane`, `history`, `retry-older`, `jump-latest` |
 | Plain selectable message, author and timestamp | `src/views/conversation/message_row.rs` | `message-{id}`, `message-text-{id}`, `text-{id}` |
 | Textarea, keyboard, focus, displayed-draft synchronization | `src/views/conversation/composer.rs` | `composer-panel`, `composer`, `send-message`, `send-feedback` |
 | Colors and bundled Hash/Send icons | `src/theme.rs` | Keep meaningful labels/tooltips |
@@ -27,12 +27,13 @@ memory-only, confirmed and unconfirmed outcomes.
 
 `conversation/mod.rs` owns requests, task cancellation and completion identities.
 `conversation/state.rs` owns server-order selection, history continuity, deduplication,
-creation, per-channel drafts and send uncertainty. `conversation/polling.rs` owns
-focused 3s/15s scheduling and independent backoff to 60s. Manual refresh, focus
-return, scheduled reads and safe post-send catch-up share the same workflow;
-neither views nor runtime implement a second dispatch path. `api/` alone builds
-routes/headers and decodes responses. HTTP 8s, protected read/send 9s and combined
-storage/restoration 10s deadlines remain distinct.
+creation, per-channel drafts and send uncertainty. `conversation/live_updates.rs`
+owns one readiness/baseline/live/retry lifecycle. Focus and view recreation do not
+restart the session stream. Creations and HTTP confirmations merge without healthy
+follow-up reads; uncertainty never schedules reads or automatic write retry.
+Neither polling nor manual Refresh/Retry connection controls remain. `api/` alone
+builds routes/headers and decodes responses. HTTP 8s, stream readiness 8s/idle 45s,
+protected read/send 9s and combined storage/restoration 10s deadlines remain distinct.
 
 Each child owns its input/list entities and subscriptions. Feature invalidations
 also arrive after timer completions and while children are hidden. Recreation
@@ -44,7 +45,10 @@ memory zeroization.
 
 The history view splices chronological stable row IDs, preserving variable-height
 anchors for prepend and middle insertion. It follows only when appropriate;
-**Jump to latest** explicitly resumes bottom-follow. Selection/copy uses Kit
+**Jump to latest** explicitly resumes bottom-follow. Recovery deliberately resets
+to newest via a revision even when row IDs are unchanged, retaining selected rows
+under **Reconnecting… messages may be out of date** until the authoritative baseline
+succeeds. Selection/copy uses Kit
 `SelectableText` and Root. The composer keeps only its displayed-channel/text
 projection; drafts remain in conversation ownership. Hydration must not overwrite
 queued edits, move the caret on unchanged notifications, or let an old Enter send

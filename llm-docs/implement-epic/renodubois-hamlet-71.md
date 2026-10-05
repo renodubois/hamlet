@@ -608,3 +608,72 @@ Exact changed paths for this follow-up:
 - `llm-docs/implement-epic/renodubois-hamlet-71.md` — this append only.
 
 Handoff: verified uncommitted fixes, ready for parent review/commit. No blocker; no broader runtime or recovery redesign.
+
+### #70 integrated verification — verified uncommitted handoff
+
+Baseline `d7dc5754b46aef52ad50c4f9941ec10cc4e84e79`, branch `live-updates`, initially clean. Sole writer; scope only #70. Read full issue/design, historical #63–#69 evidence, repository/component instructions, architectures, glossary, TDD/tests/mocking guidance. Approved seams remain real registered routes/two client coordinators, semantic headless views, controlled policy clocks, deterministic transport barriers, real loopback restart/disconnect and bounded owner-local fanout measurement. No commit, tracker mutation, branch operation, dependency/lockfile change, native automation, real keyring, README/human/legacy edit or production behavioral change.
+
+This append supersedes #70's **Planned** execution status above without rewriting historical evidence. Implementation is verified and ready for parent review; #70/#71 tracker/commit decisions remain with the parent. Complete acceptance mapping, exact commands, version/cancellation findings, measurement method/results and manual limitations are in [`llm-docs/LIVE-UPDATES-VERIFICATION.md`](../LIVE-UPDATES-VERIFICATION.md).
+
+#### New evidence
+
+- `client/src/conversation/tests/restart.rs::real_route_http_event_orders_reconcile_once_without_healthy_reads`: two separately signed-up users/coordinators against real loopback routes. Hold the actual POST response to force event-first; independently hold actual SSE bytes to force HTTP-first. Both message and channel creation exercise both arrival orders. Draft/operation identity, ID deduplication, remote channel/no selection theft/no cache allocation, and **zero healthy follow-up GETs for both clients** are asserted. Local confirmed channel creation deliberately selects its uncached history: exactly one navigation read per local creation is explicitly accounted for, with zero reads/cache allocation/selection change at the remote observer and no extra duplicate-event reads. Test-only transport relay uses a bounded one-chunk queue, finite chunk/read/barrier budgets and explicitly aborted/awaited ownership; it never invents response/event payloads.
+- `two_authenticated_coordinators_recover_after_actual_server_restart`: real Actix server stopped and awaited; new listener/AppState/pool/hub at the same origin/database. Both actual TCP streams fail visibly; controlled clocks hold retries while 55 new messages and a channel are created. Exactly two recovery reads/client rebuild newest 50, discard old pages/inactive histories/cursors, preserve selected/inactive drafts and selection, and advance reset revision. New older cursors reach 100 matching rows. Before restart, concurrent Alice/Bob sends and remote channel/unloaded-history events converge without reads. This is an actual server lifecycle restart, not controlled EOF; no external binary/SIGKILL durability claim.
+- `server/src/live_updates/tests/transport.rs::measured_bounded_fanout_at_ten_changes_per_second`: **8 healthy TCP readers + 1 deterministically paused registered HTTP body**, two workers, real message routes/file SQLite, **270 changes/27 s**. Every healthy reader receives every matching payload, slow body ends on change **257**, and eventual receiver/retention counts are zero. Measures real monotonic time, not accelerated policy time; mutation-side timing starts at the registered route, not a TCP POST.
+- Audited/mapped existing independent literal protocol/HTTP/SSE compatibility fixtures, Last-Event-ID fresh ready/no replay, malformed/unknown/extra-field handling, server publication/nonmonotonic ordering, bounded parser/API/bridge/recovery/staging, baseline/navigation/older-page/write races, pending/uncertain preservation, view/session/credential lifetime and visible status/reset tests. Full suites rerun them. No earlier-child production regression requiring reopening was found.
+- Updated only generated client VERIFY/PRESENTATION to remove obsolete polling/Refresh guidance and the whole-body manual proxy incompatible with SSE. Consent-dependent native relay/IME/accessibility/wallet checks remain explicit, not claimed passes.
+
+#### Development and measurement results
+
+Both new client scenarios are characterization tests of prior behavior and passed first execution; no fictitious behavioral red/green claim. Three additional consecutive runs passed both tests. No new behavior needed production changes.
+
+The first fanout run passed payload/lag/retention assertions but failed an immediate zero-receiver assertion after server completion (four worker bodies had not yet been destroyed). A **test-harness** correction waits at most five seconds for actual worker/body cleanup; two subsequent measured runs and the full server suite pass. No production cancellation fix was needed. Failed diagnostic log: `/tmp/hamlet-epic-71/70-fanout.log`; successful captures: `70-fanout-green.log`, `70-fanout-repeat.log`.
+
+Latest successful captured run:
+
+- **27.000806201 s**, **9.999701416 changes/s**, **2,160** healthy deliveries.
+- Alternating **128/4,000 Unicode scalars**, **128/7,000 UTF-8 bytes**; complete SSE frames **356–14,228 bytes**; **15,750,720** healthy change-frame bytes, excluding ready/heartbeat/HTTP/TCP overhead.
+- Ready times **0.270536–2.635110 ms** (all eight values in report); route-to-complete-frame **p50 2.123006 / p95 6.257348 / max 7.226738 ms**.
+- Write response **p95 2.432203 / max 2.974856 ms**; scheduling lateness max **1.442795 ms**.
+- Shared retained frame payload peak **256 events / 1,866,752 bytes** (~1.78 MiB), counted once per shared allocation rather than per subscriber. Slow body terminal on **257**, retained count thereafter **0**, receiver count after bounded worker cleanup **0**.
+- Earlier successful run: **9.999676811 changes/s**, latency p95 **6.526051 ms**, max **9.274190 ms**, retained peak **1,866,749 bytes**. IDs/timestamps account for small encoded-length variation.
+
+This is not saturation, a total RSS/socket-buffer quota, desktop render latency or verified production capacity. The slow case deterministically pauses an HTTP body; an unread socket may still drain into kernel/Actix buffering. Report separates server 256-event shared retention from client 64-KiB frame and independent 256-delivery/API/bridge/recovery/read-staging bounds, plus the prioritized terminal lanes. 10/s and 256 remain tuning candidates.
+
+#### Final checks
+
+All passed from repository root after source changes:
+
+- `cargo fmt --manifest-path protocol/Cargo.toml --check`
+- `cargo clippy --manifest-path protocol/Cargo.toml --locked --all-targets -- -D warnings`
+- `cargo test --manifest-path protocol/Cargo.toml --locked` — **4 passed**.
+- `cargo clippy --manifest-path protocol/Cargo.toml --locked --all-targets --features openapi -- -D warnings`
+- `cargo test --manifest-path protocol/Cargo.toml --locked --features openapi` — **5 passed**.
+- `cargo fmt --manifest-path server/Cargo.toml --check`
+- `cargo fmt --manifest-path server/migration/Cargo.toml --check`
+- `cargo clippy --manifest-path server/Cargo.toml --locked --all-targets -- -D warnings`
+- `cargo test --manifest-path server/Cargo.toml --locked` — **40 passed**, including the new measurement and existing real RST/SQLite-barrier cancellation tests.
+- `cargo test --manifest-path server/Cargo.toml --locked --test contract` — **2 passed**, included in the 40.
+- `cargo run --manifest-path server/Cargo.toml --locked --quiet --bin generate-openapi > /tmp/hamlet-epic-71/70-openapi.json`; `cmp server/openapi.json /tmp/hamlet-epic-71/70-openapi.json` — identical.
+- `cargo fmt --manifest-path client/Cargo.toml --check`
+- `cargo clippy --manifest-path client/Cargo.toml --locked --all-targets -- -D warnings`
+- `cargo test --manifest-path client/Cargo.toml --locked` — **188 passed** (186 existing + 2 integrated), none ignored/failed.
+- `cargo build --manifest-path client/Cargo.toml --locked`
+- `cargo test --manifest-path client/Cargo.toml --locked conversation::restart_tests -- --nocapture`, plus three repeats without `--nocapture` — **2 passed** each run.
+- `cargo test --manifest-path server/Cargo.toml --locked --lib measured_bounded_fanout -- --nocapture` — successful captures above; also passed within the full suite.
+- `git diff --check` — clean.
+
+Logs: `/tmp/hamlet-epic-71/70-{protocol*,server*,migration-fmt,contract,client*}.log`, `70-integrated.log`, `70-integrated-repeat-{1,2,3}.log`, measurement logs above. Versions unchanged: rustc/cargo **1.95.0**, Actix Web **4.15.0** / HTTP **3.13.6**, SeaORM **2.0.3**, SQLx SQLite **0.9.0**, Tokio **1.53.1**, reqwest **0.12.28**, GPUI Kit **0.6.1** / GPUI-pre **0.3.4**; Linux **7.2.7-arch1-1 x86_64**.
+
+Cancellation conclusion unchanged: feature-owned write-plus-notify survives ordinary request RST even when SQLite commits after service cancellation. Unexpected owned-task panic/abort retains the approved delivery-only **restart-required latch**, including fresh subscriptions; no deeper redesign. Ordinary DB failure/EOF is not authoritative credential rejection. Existing FIN/heartbeat detection and bounded eventual worker cleanup limitations are documented.
+
+Exact files changed:
+
+- `client/src/conversation/mod.rs` — test-only module declaration.
+- `client/src/conversation/tests/restart.rs` — new owner-local real-route orders/restart scenarios and finite helpers.
+- `server/src/live_updates/tests/transport.rs` — owner-local bounded fanout/pressure measurement; existing transport test retained.
+- `llm-docs/LIVE-UPDATES-VERIFICATION.md` — full acceptance evidence/results and limitations.
+- `llm-docs/client/PRESENTATION.md`, `llm-docs/client/VERIFY.md` — correct generated live-update controls/manual guidance.
+- `llm-docs/implement-epic/renodubois-hamlet-71.md` — this append, history preserved.
+
+Handoff: verified uncommitted #70 work; no automated blocker found. Parent owns independent review, commits/tracker decisions. Native automation/keyring access and consent-dependent acceptance remain unperformed. No production capacity, external-process crash durability or future deletion compatibility claim.
