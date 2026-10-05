@@ -1,9 +1,5 @@
 use actix_web::web::Bytes;
 use hamlet_protocol::Event;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
 use tokio::sync::broadcast;
 
 const CAPACITY: usize = 256;
@@ -18,24 +14,14 @@ mod transport_tests;
 /// One process-wide, bounded fanout. Clones share retention, not payload copies.
 #[derive(Clone)]
 pub struct EventHub {
-    sender: broadcast::Sender<Delivery>,
-    interrupted: Arc<AtomicBool>,
+    sender: broadcast::Sender<Bytes>,
 }
 
 impl Default for EventHub {
     fn default() -> Self {
         let (sender, _) = broadcast::channel(CAPACITY);
-        Self {
-            sender,
-            interrupted: Arc::new(AtomicBool::new(false)),
-        }
+        Self { sender }
     }
-}
-
-#[derive(Clone)]
-enum Delivery {
-    Change(Bytes),
-    Interrupted,
 }
 
 /// Serialized before a write so publication needs no fallible payload work.
@@ -54,22 +40,12 @@ impl EventHub {
     /// Synchronous enqueue of a prepared change. No subscribers is normal.
     /// Bytes clones share immutable storage; this never awaits network delivery.
     pub fn notify(&self, event: PreparedEvent) {
-        let _ = self.sender.send(Delivery::Change(event.0));
-    }
-
-    /// An unexpected write-task failure makes delivery unsafe until process restart.
-    /// Latch closed for fresh subscribers too: a canceled SQLite statement might
-    /// still commit *after* a reconnect's baseline read. Ordinary DB errors do not
-    /// take this path. Wake existing idle subscribers without waiting for clients.
-    pub(crate) fn interrupt(&self) {
-        self.interrupted.store(true, Ordering::Release);
-        let _ = self.sender.send(Delivery::Interrupted);
+        let _ = self.sender.send(event.0);
     }
 
     pub fn subscribe(&self) -> Subscription {
         Subscription {
             receiver: self.sender.subscribe(),
-            interrupted: self.interrupted.clone(),
             ready: false,
             closed: false,
         }
@@ -78,8 +54,7 @@ impl EventHub {
 
 /// A fresh subscription; no replay and no broadcast types escape this boundary.
 pub struct Subscription {
-    receiver: broadcast::Receiver<Delivery>,
-    interrupted: Arc<AtomicBool>,
+    receiver: broadcast::Receiver<Bytes>,
     ready: bool,
     closed: bool,
 }
@@ -89,7 +64,7 @@ impl Subscription {
         self.ready
     }
     pub(super) fn is_terminated(&self) -> bool {
-        self.interrupted.load(Ordering::Acquire) || self.receiver.len() > CAPACITY
+        self.receiver.len() > CAPACITY
     }
 
     /// Complete ready/change frames. None is terminal, including any delivery lag.
@@ -103,8 +78,8 @@ impl Subscription {
             return Some(Bytes::from_static(b"event: ready\ndata: {}\n\n"));
         }
         match self.receiver.recv().await {
-            Ok(Delivery::Change(frame)) => Some(frame),
-            Ok(Delivery::Interrupted) | Err(_) => {
+            Ok(frame) => Some(frame),
+            Err(_) => {
                 self.closed = true;
                 None
             }

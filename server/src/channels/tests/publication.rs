@@ -14,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-// Owner-local fault/randomness control, scoped to one request and its owned task.
+// Owner-local fault/randomness control, scoped to one creation request.
 // Never compiled into the production server or exposed over HTTP.
 #[derive(Clone, Default)]
 pub(super) struct Control {
@@ -157,189 +157,71 @@ async fn id_collisions_retry_without_phantoms_and_exhaustion_publishes_nothing()
 }
 
 #[actix_web::test]
-async fn aborted_owned_write_closes_delivery_even_when_sqlite_commits_after_abort() {
+async fn missed_publication_does_not_disable_existing_or_fresh_subscriptions() {
+    use futures_util::FutureExt;
+    use std::panic::AssertUnwindSafe;
+
     let state = connect_to_database("sqlite::memory:").await.unwrap();
-    let app = test::init_service(
-        App::new()
-            .app_data(web::Data::new(state.clone()))
-            .configure(routes),
-    )
+    let mut existing = state.events.subscribe();
+    existing.next_frame().await.unwrap();
+    let input = CreateChannel {
+        name: "Committed without notification".into(),
+        kind: super::super::types::ChannelType::Text,
+    };
+    let outcome = AssertUnwindSafe(CONTROL.scope(
+        Control {
+            panic_after_insert: true,
+            ..Default::default()
+        },
+        create(&state.db, &state.events, &input),
+    ))
+    .catch_unwind()
     .await;
-    let response = test::call_service(
-        &app,
-        test::TestRequest::post()
-            .uri("/api/v1/auth/signup")
-            .set_json(json!({"username":"Alice", "password":"long password"}))
-            .to_request(),
-    )
-    .await;
-    let auth: Value = test::read_body_json(response).await;
-    let bearer = format!("Bearer {}", auth["access_token"].as_str().unwrap());
-    let response = test::call_service(
-        &app,
-        test::TestRequest::get()
-            .uri("/api/v1/events")
-            .insert_header(("Authorization", bearer.clone()))
-            .to_request(),
-    )
-    .await;
-    let mut body = response.into_body();
-    frame(&mut body).await.unwrap();
-    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-    let (release_tx, release_rx) = std::sync::mpsc::channel();
-    let mut connection = state
-        .db
-        .get_sqlite_connection_pool()
-        .acquire()
-        .await
-        .unwrap();
-    let mut entered_tx = Some(entered_tx);
-    connection
-        .lock_handle()
-        .await
-        .unwrap()
-        .set_commit_hook(move || {
-            if let Some(entered_tx) = entered_tx.take() {
-                let _ = entered_tx.send(());
-                let _ = release_rx.recv_timeout(Duration::from_secs(10));
-            }
-            true
-        });
-    drop(connection);
-    let owned_state = state.clone();
-    let task = tokio::spawn(async move {
-        create_owned(
-            &owned_state.db,
-            &owned_state.events,
-            &CreateChannel {
-                name: "Late commit after abort".into(),
-                kind: super::super::types::ChannelType::Text,
-            },
-        )
-        .await
-    });
-    tokio::time::timeout(Duration::from_secs(2), entered_rx)
-        .await
-        .unwrap()
-        .unwrap();
-    task.abort(); // Only this owner-lifecycle test can obtain the inner task's abort handle.
+    assert!(!matches!(outcome, Ok(Ok(_))));
     assert!(
-        tokio::time::timeout(Duration::from_secs(2), task)
+        list(&state.db)
             .await
             .unwrap()
-            .is_err()
+            .items
+            .iter()
+            .any(|channel| channel.name == input.name)
     );
-    assert_eq!(frame(&mut body).await, None);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), existing.next_frame())
+            .await
+            .is_err(),
+        "a missed notification neither publishes nor closes delivery"
+    );
+
     let mut fresh = state.events.subscribe();
     assert_eq!(
-        fresh.next_frame().await,
-        None,
-        "reconnecting before the late commit is unsafe too"
+        fresh.next_frame().await.unwrap(),
+        "event: ready\ndata: {}\n\n"
     );
-    release_tx.send(()).unwrap();
-    let response = tokio::time::timeout(
-        Duration::from_secs(2),
-        test::call_service(
-            &app,
-            test::TestRequest::get()
-                .uri("/api/v1/channels")
-                .insert_header(("Authorization", bearer))
-                .to_request(),
-        ),
+    let channel = create(
+        &state.db,
+        &state.events,
+        &CreateChannel {
+            name: "Next ordinary creation".into(),
+            kind: input.kind,
+        },
     )
     .await
+    .ok()
     .unwrap();
-    let list: Value = test::read_body_json(response).await;
-    assert!(
-        list["items"]
-            .as_array()
+    for subscription in [&mut existing, &mut fresh] {
+        let bytes = tokio::time::timeout(Duration::from_secs(2), subscription.next_frame())
+            .await
             .unwrap()
-            .iter()
-            .any(|c| c["name"] == "Late commit after abort")
-    );
-}
-
-#[actix_web::test]
-async fn unexpected_post_commit_failure_halts_delivery_but_authoritative_reads_recover() {
-    let state = connect_to_database("sqlite::memory:").await.unwrap();
-    let app =
-        test::init_service(App::new().app_data(web::Data::new(state)).configure(routes)).await;
-    let response = test::call_service(
-        &app,
-        test::TestRequest::post()
-            .uri("/api/v1/auth/signup")
-            .set_json(json!({"username":"Alice", "password":"long password"}))
-            .to_request(),
-    )
-    .await;
-    let auth: Value = test::read_body_json(response).await;
-    let bearer = format!("Bearer {}", auth["access_token"].as_str().unwrap());
-    let mut bodies = Vec::new();
-    for _ in 0..2 {
-        let response = test::call_service(
-            &app,
-            test::TestRequest::get()
-                .uri("/api/v1/events")
-                .insert_header(("Authorization", bearer.clone()))
-                .to_request(),
+            .unwrap();
+        let event: Value = serde_json::from_str(
+            std::str::from_utf8(&bytes)
+                .unwrap()
+                .strip_prefix("event: change\ndata: ")
+                .unwrap()
+                .trim(),
         )
-        .await;
-        let mut body = response.into_body();
-        frame(&mut body).await.unwrap();
-        bodies.push(body);
+        .unwrap();
+        assert_eq!(event, json!({"type":"channel_created", "channel":channel}));
     }
-    let response = CONTROL
-        .scope(
-            Control {
-                panic_after_insert: true,
-                ..Default::default()
-            },
-            test::call_service(
-                &app,
-                test::TestRequest::post()
-                    .uri("/api/v1/channels")
-                    .insert_header(("Authorization", bearer.clone()))
-                    .set_json(json!({"name":"Committed before panic", "type":"text"}))
-                    .to_request(),
-            ),
-        )
-        .await;
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    for body in &mut bodies {
-        assert_eq!(
-            frame(body).await,
-            None,
-            "never leave healthy delivery after a lost change"
-        );
-    }
-    let response = test::call_service(
-        &app,
-        test::TestRequest::get()
-            .uri("/api/v1/events")
-            .insert_header(("Authorization", bearer.clone()))
-            .to_request(),
-    )
-    .await;
-    let mut fresh = response.into_body();
-    assert_eq!(
-        frame(&mut fresh).await,
-        None,
-        "new delivery cannot claim safety until restart"
-    );
-    let response = test::call_service(
-        &app,
-        test::TestRequest::get()
-            .uri("/api/v1/channels")
-            .insert_header(("Authorization", bearer))
-            .to_request(),
-    )
-    .await;
-    let channels: Value = test::read_body_json(response).await;
-    assert!(
-        channels["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|c| c["name"] == "Committed before panic")
-    );
 }

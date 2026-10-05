@@ -19,38 +19,65 @@ pub(super) fn change() -> PreparedEvent {
 }
 
 #[tokio::test]
-async fn retention_is_bounded_and_shared_and_drop_releases_subscriptions() {
+async fn no_subscribers_is_normal_and_fanout_shares_payload_storage() {
     let hub = EventHub::default();
     hub.notify(change());
-    assert_eq!(hub.sender.len(), 0);
     let mut first = hub.subscribe();
     let mut second = hub.clone().subscribe();
-    assert_eq!(hub.sender.receiver_count(), 2);
-    frame(&mut first).await.unwrap();
+    assert_eq!(
+        frame(&mut first).await.unwrap(),
+        "event: ready\ndata: {}\n\n"
+    );
     frame(&mut second).await.unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), first.next_frame())
+            .await
+            .is_err(),
+        "no replay of pre-subscription changes"
+    );
     hub.notify(change());
     let one = frame(&mut first).await.unwrap();
     let two = frame(&mut second).await.unwrap();
+    assert_eq!(one, two);
     assert_eq!(
         one.as_ptr(),
         two.as_ptr(),
-        "immutable payload allocation shared by subscribers"
-    );
-    assert_eq!(hub.sender.len(), 0);
-    for _ in 0..1024 {
-        hub.notify(change());
-    }
-    assert_eq!(hub.sender.len(), 256);
-    assert!(frame(&mut first).await.is_none());
-    hub.notify(change());
-    assert!(
-        frame(&mut first).await.is_none(),
-        "lag is terminal, not cursor recovery"
+        "shared immutable payload allocation"
     );
     drop(first);
-    drop(second);
-    assert_eq!(hub.sender.receiver_count(), 0);
-    assert_eq!(hub.sender.len(), 0);
+    hub.notify(change());
+    assert!(
+        frame(&mut second)
+            .await
+            .unwrap()
+            .starts_with(b"event: change\n")
+    );
+}
+
+#[tokio::test]
+async fn lag_closes_only_the_affected_subscription_and_fresh_delivery_remains_available() {
+    let hub = EventHub::default();
+    let mut slow = hub.subscribe();
+    let mut healthy = hub.subscribe();
+    frame(&mut healthy).await.unwrap();
+    for _ in 0..257 {
+        hub.notify(change());
+        assert!(
+            frame(&mut healthy)
+                .await
+                .unwrap()
+                .starts_with(b"event: change\n")
+        );
+    }
+    assert!(frame(&mut slow).await.is_none());
+    let mut fresh = hub.subscribe();
+    assert_eq!(
+        frame(&mut fresh).await.unwrap(),
+        "event: ready\ndata: {}\n\n"
+    );
+    hub.notify(change());
+    assert!(frame(&mut slow).await.is_none(), "lag is terminal");
+    assert_eq!(frame(&mut healthy).await, frame(&mut fresh).await);
 }
 
 #[actix_web::test]

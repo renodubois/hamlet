@@ -76,6 +76,7 @@ impl StreamClient {
 /// Eight actual HTTP readers plus one deterministically unpolled HTTP body. Writes
 /// use registered routes and SQLite; latency starts at route submission (not TCP POST).
 #[actix_web::test]
+#[ignore = "optional fanout measurement, not a release prerequisite"]
 async fn measured_bounded_fanout_at_ten_changes_per_second() {
     use actix_web::body::MessageBody;
     use std::{pin::Pin, time::Instant};

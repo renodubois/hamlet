@@ -14,8 +14,8 @@ use std::{
     time::Duration,
 };
 
-// Owner-local clock/randomness/lifecycle control, scoped to a request and its owned task; never
-// compiled into the production server or exposed as HTTP configuration.
+// Owner-local clock/randomness/fault control, scoped to one creation request;
+// never compiled into the production server or exposed as HTTP configuration.
 #[derive(Clone, Default)]
 pub(super) struct Control {
     ids: Arc<Mutex<VecDeque<i64>>>,
@@ -185,109 +185,6 @@ async fn id_collisions_retry_without_phantoms_and_exhaustion_keeps_delivery_usab
 }
 
 #[actix_web::test]
-async fn aborted_owned_write_closes_delivery_before_sqlite_finishes_its_late_commit() {
-    let (state, bearer, path, author) = fixture().await;
-    let channel_id = path
-        .strip_prefix("/api/v1/channels/")
-        .unwrap()
-        .strip_suffix("/messages")
-        .unwrap()
-        .parse()
-        .unwrap();
-    let app = test::init_service(
-        App::new()
-            .app_data(web::Data::new(state.clone()))
-            .configure(routes),
-    )
-    .await;
-    let response = test::call_service(
-        &app,
-        test::TestRequest::get()
-            .uri("/api/v1/events")
-            .insert_header(("Authorization", bearer.clone()))
-            .to_request(),
-    )
-    .await;
-    let mut body = response.into_body();
-    frame(&mut body).await.unwrap();
-    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-    let (release_tx, release_rx) = std::sync::mpsc::channel();
-    let mut connection = state
-        .db
-        .get_sqlite_connection_pool()
-        .acquire()
-        .await
-        .unwrap();
-    let mut entered_tx = Some(entered_tx);
-    connection
-        .lock_handle()
-        .await
-        .unwrap()
-        .set_commit_hook(move || {
-            if let Some(entered_tx) = entered_tx.take() {
-                let _ = entered_tx.send(());
-                let _ = release_rx.recv_timeout(Duration::from_secs(10));
-            }
-            true
-        });
-    drop(connection);
-    let owned_state = state.clone();
-    let task = tokio::spawn(async move {
-        post_owned(
-            &owned_state.db,
-            &owned_state.events,
-            channel_id,
-            &author,
-            "Late commit after abort",
-        )
-        .await
-    });
-    tokio::time::timeout(Duration::from_secs(2), entered_rx)
-        .await
-        .unwrap()
-        .unwrap();
-    task.abort(); // Only this owner-lifecycle test has access to the inner task handle.
-    assert!(
-        tokio::time::timeout(Duration::from_secs(2), task)
-            .await
-            .unwrap()
-            .is_err()
-    );
-    assert_eq!(frame(&mut body).await, None);
-    let mut fresh = state.events.subscribe();
-    assert_eq!(
-        fresh.next_frame().await,
-        None,
-        "even a new baseline before the late commit could miss the message"
-    );
-    release_tx.send(()).unwrap();
-    let response = tokio::time::timeout(
-        Duration::from_secs(2),
-        test::call_service(
-            &app,
-            test::TestRequest::get()
-                .uri(&path)
-                .insert_header(("Authorization", bearer.clone()))
-                .to_request(),
-        ),
-    )
-    .await
-    .unwrap();
-    let history: Value = test::read_body_json(response).await;
-    assert_eq!(history["items"].as_array().unwrap().len(), 1);
-    assert_eq!(history["items"][0]["text"], "Late commit after abort");
-    let response = test::call_service(
-        &app,
-        test::TestRequest::get()
-            .uri("/api/v1/events")
-            .insert_header(("Authorization", bearer))
-            .to_request(),
-    )
-    .await;
-    assert_eq!(frame(&mut response.into_body()).await, None);
-}
-
-#[actix_web::test]
 async fn independent_creations_arrive_out_of_timestamp_order_but_match_sortable_history() {
     let (state, bearer, path, _) = fixture().await;
     let app =
@@ -362,70 +259,74 @@ async fn independent_creations_arrive_out_of_timestamp_order_but_match_sortable_
 }
 
 #[actix_web::test]
-async fn unexpected_post_commit_failure_halts_old_and_fresh_delivery_but_history_recovers() {
-    let (state, bearer, path, _) = fixture().await;
-    let app =
-        test::init_service(App::new().app_data(web::Data::new(state)).configure(routes)).await;
-    let mut bodies = Vec::new();
-    for _ in 0..2 {
-        let response = test::call_service(
-            &app,
-            test::TestRequest::get()
-                .uri("/api/v1/events")
-                .insert_header(("Authorization", bearer.clone()))
-                .to_request(),
-        )
-        .await;
-        let mut body = response.into_body();
-        frame(&mut body).await.unwrap();
-        bodies.push(body);
-    }
-    let response = CONTROL
-        .scope(
-            Control {
-                panic_after_insert: true,
-                ..Default::default()
-            },
-            test::call_service(
-                &app,
-                test::TestRequest::post()
-                    .uri(&path)
-                    .insert_header(("Authorization", bearer.clone()))
-                    .set_json(json!({"text":"Committed before panic"}))
-                    .to_request(),
-            ),
-        )
-        .await;
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    for body in &mut bodies {
-        assert_eq!(
-            frame(body).await,
-            None,
-            "never retain healthy delivery after a lost change"
-        );
-    }
-    let response = test::call_service(
-        &app,
-        test::TestRequest::get()
-            .uri("/api/v1/events")
-            .insert_header(("Authorization", bearer.clone()))
-            .to_request(),
-    )
+async fn missed_publication_does_not_disable_existing_or_fresh_subscriptions() {
+    use futures_util::FutureExt;
+    use std::panic::AssertUnwindSafe;
+
+    let (state, _, path, author) = fixture().await;
+    let channel_id = path
+        .strip_prefix("/api/v1/channels/")
+        .unwrap()
+        .strip_suffix("/messages")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut existing = state.events.subscribe();
+    existing.next_frame().await.unwrap();
+    let outcome = AssertUnwindSafe(CONTROL.scope(
+        Control {
+            panic_after_insert: true,
+            ..Default::default()
+        },
+        post(
+            &state.db,
+            &state.events,
+            channel_id,
+            &author,
+            "Committed without notification",
+        ),
+    ))
+    .catch_unwind()
     .await;
-    assert_eq!(
-        frame(&mut response.into_body()).await,
-        None,
-        "fresh delivery cannot claim safety until restart"
+    assert!(!matches!(outcome, Ok(Ok(_))));
+    let recovered = history(&state.db, channel_id, 50, None).await.ok().unwrap();
+    assert_eq!(recovered.items.len(), 1);
+    assert_eq!(recovered.items[0].text, "Committed without notification");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), existing.next_frame())
+            .await
+            .is_err(),
+        "a missed notification neither publishes nor closes delivery"
     );
-    let response = test::call_service(
-        &app,
-        test::TestRequest::get()
-            .uri(&path)
-            .insert_header(("Authorization", bearer))
-            .to_request(),
+
+    let mut fresh = state.events.subscribe();
+    assert_eq!(
+        fresh.next_frame().await.unwrap(),
+        "event: ready\ndata: {}\n\n"
+    );
+    let message = post(
+        &state.db,
+        &state.events,
+        channel_id,
+        &author,
+        "Next ordinary creation",
     )
-    .await;
-    let history: Value = test::read_body_json(response).await;
-    assert_eq!(history["items"].as_array().unwrap().len(), 1);
-    assert_eq!(history["items"][0]["text"], "Committed before panic");
+    .await
+    .ok()
+    .unwrap();
+    for subscription in [&mut existing, &mut fresh] {
+        let bytes = tokio::time::timeout(Duration::from_secs(2), subscription.next_frame())
+            .await
+            .unwrap()
+            .unwrap();
+        let event: Value = serde_json::from_str(
+            std::str::from_utf8(&bytes)
+                .unwrap()
+                .strip_prefix("event: change\ndata: ")
+                .unwrap()
+                .trim(),
+        )
+        .unwrap();
+        assert_eq!(event, json!({"type":"message_created", "message":message}));
+    }
 }

@@ -88,50 +88,6 @@ pub(super) async fn post(
     author: &UserIdentity,
     text: &str,
 ) -> Result<Message, PostError> {
-    let db = db.clone();
-    let events = events.clone();
-    let author = author.clone();
-    let text = text.to_owned();
-    // A reset HTTP connection can drop its handler while SQLite's worker commits.
-    // Own the message write and synchronous notification independently of that waiter.
-    #[cfg(test)]
-    let control = tests::CONTROL.try_with(Clone::clone).ok();
-    tokio::spawn(async move {
-        #[cfg(test)]
-        if let Some(control) = control {
-            return tests::CONTROL
-                .scope(
-                    control,
-                    post_owned(&db, &events, channel_id, &author, &text),
-                )
-                .await;
-        }
-        post_owned(&db, &events, channel_id, &author, &text).await
-    })
-    .await
-    .unwrap_or(Err(PostError::Internal))
-}
-
-// Supervise the uncertain DB/notify interval even if the HTTP waiter is gone.
-// SQLite can finish a canceled step after a reconnect, so unexpected task loss
-// must halt both existing and fresh delivery until restart (as for channels).
-struct PendingMessageWrite<'a>(Option<&'a EventHub>);
-
-impl Drop for PendingMessageWrite<'_> {
-    fn drop(&mut self) {
-        if let Some(events) = self.0 {
-            events.interrupt();
-        }
-    }
-}
-
-async fn post_owned(
-    db: &DatabaseConnection,
-    events: &EventHub,
-    channel_id: i64,
-    author: &UserIdentity,
-    text: &str,
-) -> Result<Message, PostError> {
     if text.trim().is_empty() || text.chars().count() > 4000 {
         return Err(PostError::Invalid);
     }
@@ -167,7 +123,6 @@ async fn post_owned(
         let created = message
             .created_at
             .to_rfc3339_opts(SecondsFormat::Nanos, true);
-        let mut pending = PendingMessageWrite(Some(events));
         match db.execute_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
             "INSERT INTO messages (id, channel_id, author_id, text, created_at) VALUES (?, ?, ?, ?, ?)",
             [id.into(), channel_id.into(), author.id.into(), text.to_owned().into(), created.into()])).await {
@@ -175,11 +130,9 @@ async fn post_owned(
                 #[cfg(test)]
                 tests::after_insert();
                 events.notify(event);
-                pending.0 = None;
                 return Ok(message);
             }
             Err(error) => {
-                pending.0 = None;
                 if error.to_string().contains("messages.id") {
                     continue;
                 }
