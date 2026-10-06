@@ -84,6 +84,9 @@ fn create_controls_confirm_order_selection_and_empty_history(cx: &mut TestAppCon
         cx.run_until_parked();
         cx.update(|window, cx| {
             window.render_frame(cx);
+            assert!(window.try_find("channel-name").is_none());
+            window.click("open-create-channel", cx);
+            window.render_frame(cx);
             window.click("channel-name", cx);
             window.input("  Middle  ", cx);
             window.click("create-channel", cx);
@@ -109,7 +112,7 @@ fn create_controls_confirm_order_selection_and_empty_history(cx: &mut TestAppCon
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         cx.update(|window, cx| {
             window.render_frame(cx);
-            assert_eq!(window.find("channel-name").value(), Some(""));
+            assert!(window.try_find("channel-name").is_none());
             assert!(window.try_find("composer").is_some());
             assert_eq!(
                 histories.lock().unwrap().last().map(String::as_str),
@@ -168,9 +171,11 @@ fn create_controls_keep_input_on_errors_without_replay(cx: &mut TestAppContext) 
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
+        window.click("open-create-channel", cx);
+        window.render_frame(cx);
         window.click("channel-name", cx);
         window.input("bad!", cx);
-        window.click("create-channel", cx);
+        window.press("enter", cx);
         window.render_frame(cx);
         assert!(
             window
@@ -210,6 +215,8 @@ fn create_controls_keep_input_on_errors_without_replay(cx: &mut TestAppContext) 
         );
         assert_eq!(window.find("channel-name").value(), Some("Duplicate"));
         assert_eq!(calls.load(Ordering::SeqCst), 2); // no automatic replay
+        window.click("cancel-channel", cx);
+        window.render_frame(cx);
         window.click("logout", cx);
     });
     cx.run_until_parked();
@@ -256,9 +263,13 @@ fn create_completion_after_logout_cannot_navigate(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
+        window.click("open-create-channel", cx);
+        window.render_frame(cx);
         window.click("channel-name", cx);
         window.input("Late", cx);
         window.click("create-channel", cx);
+        window.click("cancel-channel", cx);
+        window.render_frame(cx);
         window.click("logout", cx);
     });
     cx.run_until_parked();
@@ -268,6 +279,108 @@ fn create_completion_after_logout_cannot_navigate(cx: &mut TestAppContext) {
         assert!(window.try_find("channel-3").is_none());
         assert!(window.try_find("composer").is_none());
     });
+}
+
+#[gpui_kit::test]
+fn create_dialog_keeps_bottom_controls_in_place(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = open_controlled(window, cx, Arc::new(BoundAuth));
+        Root::new(view, window, cx)
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("username", cx);
+        window.input("Ada", cx);
+        window.click("password", cx);
+        window.input("pass", cx);
+        window.click("login", cx);
+    });
+    cx.run_until_parked();
+    let before = cx.update(|window, cx| {
+        window.render_frame(cx);
+        [
+            window.find("sidebar-footer").bounds(),
+            window.find("composer-panel").bounds(),
+        ]
+    });
+    cx.update(|window, cx| {
+        window.click("open-create-channel", cx);
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        for _ in 0..3 {
+            window.render_frame(cx);
+            assert!(window.try_find("channel-name").is_some());
+            assert_eq!(
+                window.find("sidebar-footer").bounds(),
+                before[0],
+                "dialog moved footer"
+            );
+            assert_eq!(
+                window.find("composer-panel").bounds(),
+                before[1],
+                "dialog moved composer"
+            );
+        }
+        window.click("cancel-channel", cx);
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("sidebar-footer").bounds(), before[0]);
+        assert_eq!(window.find("composer-panel").bounds(), before[1]);
+    });
+}
+
+#[gpui_kit::test]
+fn create_dialog_cancel_and_escape_discard_input_without_requests(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = open_controlled(
+            window,
+            cx,
+            Arc::new(CreateAuth {
+                results: Default::default(),
+                calls: calls.clone(),
+                histories: Default::default(),
+                empty: true,
+            }),
+        );
+        Root::new(view, window, cx)
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("username", cx);
+        window.input("Ada", cx);
+        window.click("password", cx);
+        window.input("pass", cx);
+        window.click("login", cx);
+    });
+    cx.run_until_parked();
+    for escape in [false, true] {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("channel-name").is_none());
+            window.click("open-create-channel", cx);
+            window.render_frame(cx);
+            assert_eq!(window.find("channel-name").value(), Some(""));
+            window.input("Discard me", cx);
+            assert_eq!(window.find("channel-name").value(), Some("Discard me"));
+            if escape {
+                window.press("escape", cx);
+            } else {
+                window.click("cancel-channel", cx);
+            }
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("channel-name").is_none());
+        });
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
 #[gpui_kit::test]

@@ -1,9 +1,9 @@
-//! Independent history lifetime through Kit controls and the owned conversation interface.
+//! Independent history lifetime through Kit controls and the owned workspace interface.
 use crate::api::test_support::{RequestAdapter, Response};
 use crate::api::{ApiError, ApiFuture};
-use crate::conversation::ConversationHandle;
 use crate::runtime::Execution;
 use crate::views::conversation::message_history::MessageHistoryView;
+use crate::workspace::WorkspaceHandle;
 use gpui_kit::component::{Root, button::Button};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
@@ -35,7 +35,7 @@ impl RequestAdapter for HistoryApi {
     }
 }
 struct HistoryHost {
-    activity: ConversationHandle,
+    activity: WorkspaceHandle,
     history: Entity<MessageHistoryView>,
     visible: bool,
 }
@@ -64,7 +64,7 @@ impl Render for HistoryHost {
         )
     }
 }
-fn drain(cx: &mut gpui_kit::VisualTestContext, activity: &ConversationHandle) {
+fn drain(cx: &mut gpui_kit::VisualTestContext, activity: &WorkspaceHandle) {
     loop {
         cx.run_until_parked();
         let Ok(update) = activity.updates().try_recv() else {
@@ -82,7 +82,7 @@ fn independent_history_hydrates_cache_recreates_and_clears_when_hidden(cx: &mut 
         .unwrap()
         .restore_candidate("synthetic".into())
         .unwrap();
-    let activity = ConversationHandle::new(
+    let activity = WorkspaceHandle::new(
         1,
         1_800_001_000,
         client,
@@ -161,7 +161,7 @@ fn history_shutdown_clears_selected_text(cx: &mut TestAppContext) {
             .unwrap()
             .restore_candidate("synthetic".into())
             .unwrap();
-    let activity = ConversationHandle::new(
+    let activity = WorkspaceHandle::new(
         1,
         1_800_001_000,
         client,
@@ -243,7 +243,7 @@ fn healthy_events_and_reconnect_keep_reader_anchor_without_http_reads(cx: &mut T
         .unwrap()
         .restore_candidate("synthetic".into())
         .unwrap();
-    let activity = ConversationHandle::new(
+    let activity = WorkspaceHandle::new(
         1,
         1_800_001_000,
         client,

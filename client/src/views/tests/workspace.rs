@@ -1,9 +1,9 @@
-//! Composition journeys through Kit Root, semantic controls and the owned conversation seam.
+//! Composition journeys through Kit Root, semantic controls and the owned workspace seam.
 use crate::api::test_support::{RequestAdapter, Response};
 use crate::api::{ApiError, ApiFuture};
-use crate::conversation::ConversationHandle;
 use crate::runtime::Execution;
 use crate::views::workspace::WorkspaceView;
+use crate::workspace::WorkspaceHandle;
 use gpui_kit::component::{Root, button::Button};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
@@ -32,36 +32,38 @@ impl RequestAdapter for Channels {
     }
 }
 struct WorkspaceHost {
-    activity: ConversationHandle,
+    activity: WorkspaceHandle,
     workspace: Entity<WorkspaceView>,
     visible: bool,
 }
 impl Render for WorkspaceHost {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut host = div().size_full().flex().flex_col();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let dialogs = Root::render_dialog_layer(window, cx);
+        let mut host = div().relative().size_full().flex().flex_col();
         if self.visible {
             host = host.child(self.workspace.clone());
         }
-        host.child(
-            Button::new("recreate-workspace")
-                .label("Recreate workspace")
-                .on_click(cx.listener(|host, _, window, cx| {
-                    host.workspace =
-                        cx.new(|cx| WorkspaceView::new(host.activity.clone(), window, cx));
-                    cx.notify();
-                })),
-        )
-        .child(
-            Button::new("toggle-workspace")
-                .label("Toggle workspace")
-                .on_click(cx.listener(|host, _, _, cx| {
-                    host.visible = !host.visible;
-                    cx.notify();
-                })),
-        )
+        host.children(dialogs.map(|layer| div().absolute().inset_0().child(layer)))
+            .child(
+                Button::new("recreate-workspace")
+                    .label("Recreate workspace")
+                    .on_click(cx.listener(|host, _, window, cx| {
+                        host.workspace =
+                            cx.new(|cx| WorkspaceView::new(host.activity.clone(), window, cx));
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("toggle-workspace")
+                    .label("Toggle workspace")
+                    .on_click(cx.listener(|host, _, _, cx| {
+                        host.visible = !host.visible;
+                        cx.notify();
+                    })),
+            )
     }
 }
-fn drain(cx: &mut gpui_kit::VisualTestContext, activity: &ConversationHandle) {
+fn drain(cx: &mut gpui_kit::VisualTestContext, activity: &WorkspaceHandle) {
     loop {
         cx.run_until_parked();
         let Ok(update) = activity.updates().try_recv() else {
@@ -74,12 +76,13 @@ fn drain(cx: &mut gpui_kit::VisualTestContext, activity: &ConversationHandle) {
 fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let calls = Arc::new(AtomicUsize::new(0));
+    let mut host_entity = None;
     let client = crate::test_support::live::transport(Arc::new(Channels(calls.clone())))
         .server("https://workspace.example")
         .unwrap()
         .restore_candidate("synthetic".into())
         .unwrap();
-    let activity = ConversationHandle::new(
+    let activity = WorkspaceHandle::new(
         1,
         1_800_001_000,
         client,
@@ -93,6 +96,7 @@ fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut T
             workspace,
             visible: true,
         });
+        host_entity = Some(host.clone());
         Root::new(host, window, cx)
     });
     drain(cx, &activity);
@@ -117,22 +121,23 @@ fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut T
         window.click("composer", cx);
         window.input("alpha draft", cx);
         assert_eq!(window.find("channel-header").label(), Some("# Alpha"));
+        window.click("open-create-channel", cx);
+        window.render_frame(cx);
         window.click("channel-name", cx);
         window.input("local unsent name", cx);
     });
     cx.run_until_parked();
     cx.update(|window, cx| {
-        window.click("recreate-workspace", cx);
+        // Native modals block background controls; simulate external recreation.
+        host_entity.as_ref().unwrap().update(cx, |host, cx| {
+            host.workspace = cx.new(|cx| WorkspaceView::new(host.activity.clone(), window, cx));
+            cx.notify();
+        });
     });
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert!(
-            window
-                .find("channel-name")
-                .value()
-                .is_none_or(str::is_empty)
-        );
+        assert!(window.try_find("channel-name").is_none());
         assert_eq!(window.find("channel-header").label(), Some("# Alpha"));
         assert_eq!(
             window.find("message-alpha-message").label(),
@@ -161,8 +166,11 @@ fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut T
             cx.read_from_clipboard().unwrap().text().unwrap(),
             "zebra draft"
         );
+        window.click("open-create-channel", cx);
+        window.render_frame(cx);
         window.click("channel-name", cx);
         window.input("clear even when hidden", cx);
+        window.click("cancel-channel", cx);
         window.click("toggle-workspace", cx);
     });
     activity.close();
@@ -173,12 +181,7 @@ fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut T
         assert!(window.try_find("composer").is_none());
         assert!(window.try_find("channel-2").is_none());
         assert!(window.try_find("channel-header").is_none());
-        assert!(
-            window
-                .find("channel-name")
-                .value()
-                .is_none_or(str::is_empty)
-        );
+        assert!(window.try_find("channel-name").is_none());
         assert!(window.try_find("refresh-channels").is_none());
     });
     drain(cx, &activity);
@@ -208,9 +211,7 @@ impl RequestAdapter for DelayedCreation {
 }
 
 #[gpui_kit::test]
-fn sidebar_creation_notifications_preserve_edits_and_pending_state_across_recreation(
-    cx: &mut TestAppContext,
-) {
+fn sidebar_dialog_creation_tracks_pending_state_across_recreation(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let api = Arc::new(DelayedCreation(std::sync::Mutex::new(Vec::new())));
     let client = crate::test_support::live::transport(api.clone())
@@ -218,7 +219,7 @@ fn sidebar_creation_notifications_preserve_edits_and_pending_state_across_recrea
         .unwrap()
         .restore_candidate("synthetic".into())
         .unwrap();
-    let activity = ConversationHandle::new(
+    let activity = WorkspaceHandle::new(
         1,
         1_800_001_000,
         client,
@@ -237,23 +238,38 @@ fn sidebar_creation_notifications_preserve_edits_and_pending_state_across_recrea
     drain(cx, &activity);
     cx.update(|window, cx| {
         window.render_frame(cx);
-        window.click("channel-name", cx);
-        window.input("Room", cx);
-        window.click("create-channel", cx);
+        assert!(window.try_find("channel-name").is_none());
+        window.click("open-create-channel", cx);
+        window.render_frame(cx);
+        window.input("Room", cx); // Opening focuses the input.
         window.click("create-channel", cx);
         window.render_frame(cx);
+        window.click("create-channel", cx);
         assert_eq!(
             window.find("create-channel").label(),
             Some("Creating channel…")
         );
-        assert_eq!(activity.read().selected.as_deref(), Some("2"));
-        window.click("channel-name", cx);
-        window.press("ctrl-a", cx);
-        window.input("Next room", cx);
-        window.click("toggle-workspace", cx);
+        window.click("cancel-channel", cx);
+        window.render_frame(cx);
+        window.click("recreate-workspace", cx);
     });
     drain(cx, &activity);
-    assert_eq!(api.0.lock().unwrap().len(), 1);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("channel-name").is_none());
+        assert_eq!(
+            window.find("open-create-channel").label(),
+            Some("Creating channel…")
+        );
+        window.click("open-create-channel", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("channel-name").is_none());
+    });
+    assert_eq!(
+        api.0.lock().unwrap().len(),
+        1,
+        "recreation cannot replay a pending write"
+    );
     let (name, reply) = api.0.lock().unwrap().remove(0);
     assert_eq!(name, "Room");
     reply
@@ -263,36 +279,16 @@ fn sidebar_creation_notifications_preserve_edits_and_pending_state_across_recrea
         )))
         .unwrap();
     drain(cx, &activity);
-    assert_eq!(activity.read().selected.as_deref(), Some("3"));
     cx.update(|window, cx| {
-        window.click("toggle-workspace", cx);
         window.render_frame(cx);
-        assert_eq!(window.find("channel-name").value(), Some("Next room"));
         assert_eq!(window.find("channel-3").label(), Some("# Room"));
-        window.click("create-channel", cx);
-    });
-    drain(cx, &activity);
-    cx.update(|window, cx| {
-        window.click("recreate-workspace", cx);
+        window.click("open-create-channel", cx);
         window.render_frame(cx);
-        assert_eq!(
-            window.find("create-channel").label(),
-            Some("Creating channel…")
-        );
-        assert!(
-            window
-                .find("channel-name")
-                .value()
-                .is_none_or(str::is_empty)
-        );
+        assert_eq!(window.find("channel-name").value(), Some(""));
+        window.input("Next room", cx);
         window.click("create-channel", cx);
     });
     drain(cx, &activity);
-    assert_eq!(
-        api.0.lock().unwrap().len(),
-        1,
-        "recreation cannot replay a pending write"
-    );
     let (name, reply) = api.0.lock().unwrap().remove(0);
     assert_eq!(name, "Next room");
     reply.try_send(Err(ApiError::Unavailable)).unwrap();
@@ -310,7 +306,14 @@ fn sidebar_creation_notifications_preserve_edits_and_pending_state_across_recrea
                 .unwrap()
                 .contains("may have succeeded")
         );
+        assert_eq!(window.find("channel-name").value(), Some("Next room"));
     });
     assert_eq!(activity.read().selected.as_deref(), Some("3"));
     assert!(api.0.lock().unwrap().is_empty());
+    activity.close();
+    drain(cx, &activity);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("channel-name").is_none());
+    });
 }

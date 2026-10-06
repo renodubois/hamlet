@@ -1,4 +1,4 @@
-//! One conversation lifetime per accepted session. Views issue intentions and read state;
+//! One workspace lifetime per accepted session. Views issue intentions and read state;
 //! this owner alone dispatches requests, applies completions and schedules selected reads.
 
 mod delivery;
@@ -7,8 +7,8 @@ mod state;
 use crate::api::{ApiError, AuthenticatedClient, Channel, LiveEvent, Message, Page, StreamError};
 use crate::runtime::{Execution, Work};
 use live_updates::{Attempt, LiveUpdates};
-pub(crate) use state::{Conversation, Load, Older};
 use state::{CreateRequest, Identity, ReadRequest, SendRequest};
+pub(crate) use state::{Load, Older, WorkspaceState};
 use std::{
     cell::{Ref, RefCell},
     collections::HashMap,
@@ -20,10 +20,10 @@ const READ_SEND_DEADLINE: Duration = Duration::from_secs(9);
 
 /// A clone shares the same closed gate and state; it cannot reopen a lost session.
 #[derive(Clone)]
-pub(crate) struct ConversationHandle(Rc<RefCell<Coordinator>>);
+pub(crate) struct WorkspaceHandle(Rc<RefCell<Coordinator>>);
 
 /// Opaque executor delivery. Hosts never interpret request identities or HTTP results.
-pub(crate) struct ConversationUpdate(Update);
+pub(crate) struct WorkspaceUpdate(Update);
 enum Update {
     Tick,
     Stream(Attempt, Result<LiveEvent, StreamError>),
@@ -40,7 +40,7 @@ pub(crate) enum SessionEnd {
 }
 
 struct Coordinator {
-    state: Conversation,
+    state: WorkspaceState,
     identity: Identity,
     generation: u64,
     client: Option<AuthenticatedClient>,
@@ -64,7 +64,7 @@ struct Coordinator {
 
 // Notify after each intention/completion releases its state borrow, including early returns.
 // Each subscriber gets a coalesced invalidation, never a competing executor delivery.
-struct Notify<'a>(&'a ConversationHandle);
+struct Notify<'a>(&'a WorkspaceHandle);
 impl Drop for Notify<'_> {
     fn drop(&mut self) {
         self.0.0.borrow_mut().observers.retain(|observer| {
@@ -76,7 +76,7 @@ impl Drop for Notify<'_> {
     }
 }
 
-impl ConversationHandle {
+impl WorkspaceHandle {
     pub(crate) fn new(
         generation: u64,
         expires_at: i64,
@@ -85,7 +85,7 @@ impl ConversationHandle {
     ) -> Self {
         let (deliver, updates) = delivery::channel();
         Self(Rc::new(RefCell::new(Coordinator {
-            state: Conversation::default(),
+            state: WorkspaceState::default(),
             identity: Identity {
                 generation: Some(generation),
                 expires_at,
@@ -111,7 +111,7 @@ impl ConversationHandle {
             observers: Vec::new(),
         })))
     }
-    pub fn read(&self) -> Ref<'_, Conversation> {
+    pub fn read(&self) -> Ref<'_, WorkspaceState> {
         Ref::map(self.0.borrow(), |owner| &owner.state)
     }
     pub fn status(&self) -> &'static str {
@@ -210,7 +210,7 @@ impl ConversationHandle {
         let (task, _) = owner.execution.start(async move {
             let result = api.create_channel(work.name).await;
             let _ = deliver
-                .send(ConversationUpdate(Update::Create(request, result)))
+                .send(WorkspaceUpdate(Update::Create(request, result)))
                 .await;
         });
         owner.create_task = Some(task);
@@ -238,13 +238,13 @@ impl ConversationHandle {
                 result = api.send_message(work.channel_id, work.text) => result,
             };
             let _ = deliver
-                .send(ConversationUpdate(Update::Send(request, result)))
+                .send(WorkspaceUpdate(Update::Send(request, result)))
                 .await;
         });
         owner.sends.insert(channel, task);
     }
     /// Applies only this lifetime's opaque delivery, reporting authoritative loss by identity.
-    pub fn apply(&self, update: ConversationUpdate) -> Option<SessionEnd> {
+    pub fn apply(&self, update: WorkspaceUpdate) -> Option<SessionEnd> {
         let _notify = Notify(self);
         self.0.borrow_mut().apply(update.0)
     }
@@ -273,7 +273,7 @@ impl Coordinator {
         let deliver = self.deliver.clone();
         let (task, _) = self.execution.start(async move {
             timer.await;
-            let _ = deliver.send(ConversationUpdate(Update::Tick)).await;
+            let _ = deliver.send(WorkspaceUpdate(Update::Tick)).await;
         });
         self.timer = Some(task);
     }
@@ -286,7 +286,7 @@ impl Coordinator {
             loop {
                 let error = match stream.next().await {
                     Ok(event) => match deliver
-                        .try_send(ConversationUpdate(Update::Stream(attempt, Ok(event))))
+                        .try_send(WorkspaceUpdate(Update::Stream(attempt, Ok(event))))
                     {
                         Ok(()) => continue,
                         Err(async_channel::TrySendError::Full(())) => StreamError::Overflow,
@@ -295,7 +295,7 @@ impl Coordinator {
                     Err(error) => error,
                 };
                 let _ = deliver
-                    .send_terminal(ConversationUpdate(Update::Stream(attempt, Err(error))))
+                    .send_terminal(WorkspaceUpdate(Update::Stream(attempt, Err(error))))
                     .await;
                 break;
             }
@@ -347,7 +347,7 @@ impl Coordinator {
                 result = api.channels() => result,
             };
             let _ = deliver
-                .send(ConversationUpdate(Update::Channels(request, result)))
+                .send(WorkspaceUpdate(Update::Channels(request, result)))
                 .await;
         });
         self.channels_task = Some(task);
@@ -380,7 +380,7 @@ impl Coordinator {
                 result = api.history_page(work.channel_id.unwrap(), work.before) => result,
             };
             let _ = deliver
-                .send(ConversationUpdate(Update::History(serial, request, result)))
+                .send(WorkspaceUpdate(Update::History(serial, request, result)))
                 .await;
         });
         self.history_task = Some(task);

@@ -1,11 +1,11 @@
 //! Switches between login and workspace, displays session/storage feedback and delivers updates.
-//! Session and conversation coordinators interpret those updates and dispatch requests.
-use super::{login::LoginView, workspace::WorkspaceView};
+//! Session and workspace coordinators interpret those updates and dispatch requests.
+use super::{login::LoginView, session_footer::SessionFooterView, workspace::WorkspaceView};
 use crate::api::HttpTransport;
 use crate::runtime::Execution;
 use crate::session::{Lifecycle, SessionCoordinator, StorageRetry};
 use crate::storage::{Config, Persistence};
-use gpui_kit::component::{ActiveTheme, button::Button};
+use gpui_kit::component::{ActiveTheme, Root, button::Button};
 use gpui_kit::*;
 
 pub(crate) fn open(
@@ -68,12 +68,14 @@ impl AppShell {
         }
     }
     fn enter_authenticated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(activity) = self.session.read(cx).conversation() else {
+        let Some(activity) = self.session.read(cx).workspace() else {
             return;
         };
         let updates = activity.updates();
         activity.start();
-        self.workspace = Some(cx.new(|cx| WorkspaceView::new(activity.clone(), window, cx)));
+        let footer = cx.new(|cx| SessionFooterView::new(self.session.clone(), cx));
+        self.workspace =
+            Some(cx.new(|cx| WorkspaceView::new(activity.clone(), window, cx).with_footer(footer)));
         // Opaque delivery only. Views subscribe separately to feature invalidations;
         // recreating a workspace never creates another competing delivery loop.
         cx.spawn(async move |weak, cx| {
@@ -82,7 +84,7 @@ impl AppShell {
                     .update_in(cx, |view, window, cx| {
                         if let Some(end) = activity.apply(update) {
                             view.session.update(cx, |session, cx| {
-                                session.conversation_ended(end);
+                                session.workspace_ended(end);
                                 cx.notify();
                             });
                         }
@@ -96,14 +98,6 @@ impl AppShell {
             }
         })
         .detach();
-    }
-    fn logout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.session.update(cx, |session, cx| {
-            session.logout();
-            cx.notify();
-        });
-        self.session_changed(window, cx);
-        cx.notify();
     }
     fn session_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let lifecycle = self
@@ -124,21 +118,18 @@ impl AppShell {
     }
 }
 impl Render for AppShell {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let dialogs = Root::render_dialog_layer(window, cx);
         let view = cx.entity().downgrade();
         let mut surface = div()
+            .relative()
             .size_full()
             .bg(cx.theme().tokens.background.background)
             .flex()
             .flex_col()
             .gap_3()
             .text_color(cx.theme().foreground);
-        if let Some(session) = self.session.read(cx).active() {
-            let logout_view = view.clone();
-            let label = format!(
-                "Logged in as {} at {}",
-                session.user.username, session.server
-            );
+        if self.session.read(cx).active().is_some() {
             if let Some(workspace) = &self.workspace {
                 surface = surface.child(workspace.clone());
             }
@@ -167,6 +158,8 @@ impl Render for AppShell {
                     }),
             );
         }
-        surface
+        // Kit's dialog layer has an in-flow wrapper. Keep it out of the flex
+        // column so opening a modal cannot add a gap or shrink the workspace.
+        surface.children(dialogs.map(|layer| div().absolute().inset_0().child(layer)))
     }
 }

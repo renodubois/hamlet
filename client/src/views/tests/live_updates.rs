@@ -117,6 +117,8 @@ fn reconnect_notice_retains_rows_draft_and_creation_input_without_http_reads(
         window.render_frame(cx);
         window.click("composer", cx);
         window.input("draft survives", cx);
+        window.click("open-create-channel", cx);
+        window.render_frame(cx);
         window.click("channel-name", cx);
         window.input("unfinished room", cx);
     });

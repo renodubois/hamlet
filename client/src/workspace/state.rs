@@ -80,7 +80,7 @@ pub(super) struct CreateRequest {
 }
 
 #[derive(Default)]
-pub struct Conversation {
+pub struct WorkspaceState {
     pub channels: Option<Load<Vec<Channel>>>,
     pub selected: Option<String>,
     pub history: HashMap<String, Load<Vec<Message>>>,
@@ -103,7 +103,15 @@ pub struct Conversation {
     send_serial: u64,
 }
 
-impl Conversation {
+impl WorkspaceState {
+    pub fn selected_channel(&self) -> Option<&Channel> {
+        let id = self.selected.as_deref()?;
+        let Some(Load::Ready(channels)) = &self.channels else {
+            return None;
+        };
+        channels.iter().find(|channel| channel.id == id)
+    }
+
     pub fn history_for_display(&self, id: &str) -> Option<&Load<Vec<Message>>> {
         self.history.get(id)
     }
@@ -292,7 +300,7 @@ impl Conversation {
             _ => {
                 self.uncertain.insert(id.clone());
                 self.uncertain_notice.insert(id.clone());
-                self.send_feedback.insert(id.clone(), "Could not confirm publication; this message may already have been published. Check the conversation before resending.".into());
+                self.send_feedback.insert(id.clone(), "Could not confirm publication; this message may already have been published. Check the workspace before resending.".into());
                 SendOutcome::Uncertain
             }
         }

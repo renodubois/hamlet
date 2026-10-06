@@ -46,7 +46,7 @@ These tests use fake Cargo, watcher and client processes; they do not launch GPU
 
 ## Channels and conversations
 
-- Create a text channel with **Channel name** and **Create text channel**. Names are trimmed, accept 1–64 bytes of ASCII letters, digits, spaces, hyphens or underscores, and are unique ignoring ASCII case. Confirmed creation selects the channel; uncertain creation is not replayed automatically.
+- Choose **Create text channel** to open a dialog, enter **Channel name**, then create it. The dialog stays open while creating and on errors, and closes on confirmed success; **Cancel** or Escape discards its input without canceling an already submitted request. Names are trimmed, accept 1–64 bytes of ASCII letters, digits, spaces, hyphens or underscores, and are unique ignoring ASCII case. Confirmed creation selects the channel; uncertain creation is not replayed automatically.
 - Select a channel to load its newest history. Scroll upward for older cursor pages; **Retry older messages**, **Start of conversation** and **Jump to latest** distinguish traversal states. Messages retain line breaks, author and timestamp; text is selectable/copyable.
 - **Enter** sends; **Shift+Enter** inserts a newline. Drafts are held per channel in memory and cleared on logout, expiry or restart. A pending send locks only its originating composer.
 - One authenticated stream remains active while unfocused. Initial reads do not wait for stream readiness. Creations merge by identity into loaded channels/history without follow-up reads; events for unloaded data or during a replacing read are ignored. No polling, Refresh controls or manual connection retry remain.
@@ -65,7 +65,7 @@ Save, restore, deletion and revocation report confirmed, failed or unconfirmed o
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for module ownership and dependency rules, and [PRESENTATION.md](PRESENTATION.md) for editing locations and semantic controls.
 
-`src/main.rs` handles startup. `views/` owns controls and subscriptions; `session/` owns authentication, restoration, expiry and cleanup; `conversation/` owns session-scoped requests, stream reconnect, history and drafts. `api/` owns bound HTTP clients, `storage/` owns the ordered provider/configuration worker, `runtime.rs` provides shared execution/time support, and `theme.rs` installs the One Dark theme and defines palette constants/icons. Edit `theme.rs`'s `config()` role assignments to tune backgrounds, text, primary/secondary actions, and status colors; unspecified settings use Kit's dark defaults, with hover/pressed colors derived automatically.
+`src/main.rs` handles startup. `views/` owns controls and subscriptions; `session/` owns authentication, restoration, expiry and cleanup; `workspace/` owns session-scoped requests, stream reconnect, history and drafts. `api/` owns bound HTTP clients, `storage/` owns the ordered provider/configuration worker, `runtime.rs` provides shared execution/time support, and `theme.rs` installs the One Dark theme and defines palette constants/icons. Edit `theme.rs`'s `config()` role assignments to tune backgrounds, text, primary/secondary actions, and status colors; unspecified settings use Kit's dark defaults, with hover/pressed colors derived automatically.
 
 Tests live in the owning feature's `src/<feature>/tests/` directory, with cross-feature fixtures in `src/test_support/`. Follow the required [test layout](ARCHITECTURE.md#test-layout-required).
 

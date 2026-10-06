@@ -1,5 +1,5 @@
-//! Real-route conversation verification, including two-client orders and server restart.
-use super::{ConversationHandle, Load, Older};
+//! Real-route workspace verification, including two-client orders and server restart.
+use super::{Load, Older, WorkspaceHandle};
 use crate::{
     api::{
         ApiError, ApiFuture, HttpTransport,
@@ -105,11 +105,7 @@ async fn stop(handle: ServerHandle, task: actix_web::rt::task::JoinHandle<std::i
         .unwrap()
         .unwrap();
 }
-async fn settle(
-    cx: &mut TestAppContext,
-    clients: &[&ConversationHandle],
-    ready: impl Fn() -> bool,
-) {
+async fn settle(cx: &mut TestAppContext, clients: &[&WorkspaceHandle], ready: impl Fn() -> bool) {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             cx.executor().run_until_parked();
@@ -127,7 +123,7 @@ async fn settle(
     .await
     .expect("bounded real-route convergence");
 }
-fn ids(client: &ConversationHandle, channel: &str) -> Vec<String> {
+fn ids(client: &WorkspaceHandle, channel: &str) -> Vec<String> {
     let state = client.read();
     let Some(Load::Ready(messages)) = state.history.get(channel) else {
         return Vec::new();
@@ -312,10 +308,10 @@ impl RequestAdapter for ControlledResponses {
 
 // The host only delivers opaque updates. All HTTP dispatch, completion policy and
 // continuation/scheduling decisions stay in the production coordinator.
-async fn await_conversation(
+async fn await_workspace(
     cx: &mut TestAppContext,
-    activity: &ConversationHandle,
-    ready: impl Fn(&ConversationHandle) -> bool,
+    activity: &WorkspaceHandle,
+    ready: impl Fn(&WorkspaceHandle) -> bool,
 ) {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
@@ -328,7 +324,7 @@ async fn await_conversation(
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "conversation workflow did not complete"
+            "workspace workflow did not complete"
         );
         // Yield only for real loopback I/O; application time advances explicitly.
         tokio::time::sleep(Duration::from_millis(1)).await;
@@ -369,14 +365,14 @@ fn second_user_creations_arrive_on_session_stream_without_followup_reads(cx: &mu
             .await
             .unwrap();
         let channel = alice.client.channels().await.unwrap()[0].id.clone();
-        let activity = ConversationHandle::new(
+        let activity = WorkspaceHandle::new(
             1,
             alice.expires_at,
             alice.client,
             Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600),
         );
         activity.start();
-        await_conversation(cx, &activity, |activity| {
+        await_workspace(cx, &activity, |activity| {
             activity.status().is_empty() && matches!(
                 activity.read().history.get(&channel),
                 Some(Load::Ready(messages)) if messages.is_empty()
@@ -394,14 +390,14 @@ fn second_user_creations_arrive_on_session_stream_without_followup_reads(cx: &mu
             .await
             .unwrap();
         let new_channel = bob.client.create_channel("Bob room".into()).await.unwrap();
-        await_conversation(cx, &activity, |activity| {
+        await_workspace(cx, &activity, |activity| {
             matches!(
                 activity.read().history.get(&channel),
                 Some(Load::Ready(messages)) if messages.iter().any(|m| m.id == posted.id && m.author_name == "Bob")
             )
         })
         .await;
-        await_conversation(cx, &activity, |activity| {
+        await_workspace(cx, &activity, |activity| {
             matches!(
                 activity.read().channels,
                 Some(Load::Ready(ref channels)) if channels.contains(&new_channel)
@@ -448,7 +444,7 @@ fn real_route_independent_reads_pending_and_uncertain_writes_survive_reconnect(
         let other = bob.client.create_channel("zz-other".into()).await.unwrap();
         channels_gate.arm();
         stream_gate.arm();
-        let a = ConversationHandle::new(1, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let a = WorkspaceHandle::new(1, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
         a.start();
         settle(cx, &[&a], || channels_gate.reached.load(Ordering::SeqCst) && stream_gate.reached.load(Ordering::SeqCst)).await;
         channels_gate.open();
@@ -585,14 +581,14 @@ fn server_history_traverses_multiple_pages_with_timestamp_ties(cx: &mut TestAppC
             ))
             .await
             .unwrap();
-        let activity = ConversationHandle::new(
+        let activity = WorkspaceHandle::new(
             1,
             login.expires_at,
             login.client.clone(),
             Execution::controlled(cx.background_executor.clone(), login.expires_at - 3600),
         );
         activity.start();
-        await_conversation(cx, &activity, |activity| {
+        await_workspace(cx, &activity, |activity| {
             activity.status().is_empty() && matches!(
                 activity.read().history.get(&channel),
                 Some(Load::Ready(messages)) if messages.len() == 50
@@ -616,7 +612,7 @@ fn server_history_traverses_multiple_pages_with_timestamp_ties(cx: &mut TestAppC
                 text
             );
         }
-        await_conversation(cx, &activity, |activity| {
+        await_workspace(cx, &activity, |activity| {
             matches!(activity.read().history.get(&channel), Some(Load::Ready(items)) if items.len() == 155)
         })
         .await;
@@ -624,7 +620,7 @@ fn server_history_traverses_multiple_pages_with_timestamp_ties(cx: &mut TestAppC
         assert_history(&activity, &channel, 50, 105);
         assert_eq!(activity.read().older.get(&channel), Some(&Older::Available));
         activity.request_older();
-        await_conversation(cx, &activity, |activity| {
+        await_workspace(cx, &activity, |activity| {
             activity.read().older.get(&channel) == Some(&Older::Exhausted)
         })
         .await;
@@ -635,7 +631,7 @@ fn server_history_traverses_multiple_pages_with_timestamp_ties(cx: &mut TestAppC
     });
 }
 
-fn assert_history(activity: &ConversationHandle, channel: &str, old: usize, new: usize) {
+fn assert_history(activity: &WorkspaceHandle, channel: &str, old: usize, new: usize) {
     let state = activity.read();
     let Some(Load::Ready(messages)) = state.history.get(channel) else {
         panic!("history missing");
@@ -709,8 +705,8 @@ fn real_route_http_event_orders_reconcile_once_without_healthy_reads(cx: &mut Te
         let alice = a_transport.server(&url).unwrap().signup("Alice".into(), "long password".into()).await.unwrap();
         let bob = b_transport.server(&url).unwrap().signup("Bob".into(), "long password".into()).await.unwrap();
         assert_ne!(alice.user.id, bob.user.id);
-        let a = ConversationHandle::new(1, alice.expires_at, alice.client, Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
-        let b = ConversationHandle::new(2, bob.expires_at, bob.client.clone(), Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
+        let a = WorkspaceHandle::new(1, alice.expires_at, alice.client, Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let b = WorkspaceHandle::new(2, bob.expires_at, bob.client.clone(), Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
         let clients = [&a, &b];
         a.start(); b.start();
         settle(cx, &clients, || clients.iter().all(|c| c.status().is_empty() && c.read().selected.as_ref().is_some_and(|id| matches!(c.read().history.get(id), Some(Load::Ready(_)))))).await;
@@ -755,7 +751,7 @@ fn real_route_http_event_orders_reconcile_once_without_healthy_reads(cx: &mut Te
             let previous_confirmation = a.created();
             if event_first { post_gate.arm(); } else { stream_gate.arm(); }
             a.create_channel(name);
-            let has_channel = |client: &ConversationHandle| matches!(&client.read().channels, Some(Load::Ready(channels)) if channels.iter().any(|c| c.name == name));
+            let has_channel = |client: &WorkspaceHandle| matches!(&client.read().channels, Some(Load::Ready(channels)) if channels.iter().any(|c| c.name == name));
             if event_first {
                 settle(cx, &clients, || post_gate.reached.load(Ordering::SeqCst) && clients.iter().all(|c| has_channel(c))).await;
                 assert_eq!(a.read().selected, previous_selection, "event alone cannot select or confirm local creation");
@@ -817,8 +813,8 @@ fn two_authenticated_coordinators_reconnect_without_catchup_after_actual_server_
         for index in 0..103 {
             alice.client.send_message(channel.clone(), format!("before restart {index}")).await.unwrap();
         }
-        let a = ConversationHandle::new(1, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
-        let b = ConversationHandle::new(2, bob.expires_at, bob.client.clone(), Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
+        let a = WorkspaceHandle::new(1, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let b = WorkspaceHandle::new(2, bob.expires_at, bob.client.clone(), Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
         let clients = [&a, &b];
         a.start(); b.start();
         settle(cx, &clients, || clients.iter().all(|c| c.status().is_empty())).await;
@@ -923,10 +919,10 @@ fn two_authenticated_coordinators_reconnect_without_catchup_after_actual_server_
         assert_eq!([a_reads.load(Ordering::SeqCst), b_reads.load(Ordering::SeqCst)], [reads[0] + 1, reads[1] + 1], "only explicit older-page requests read");
         for client in clients { client.close(); }
         cx.executor().run_until_parked();
-        // Reopening the conversation is an ordinary initial channel/history load,
+        // Reopening the workspace is an ordinary initial channel/history load,
         // not a Refresh control or a special catch-up operation. The newest page
         // can retrieve missed creations; no promise is made about the whole gap.
-        let reopened = ConversationHandle::new(3, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let reopened = WorkspaceHandle::new(3, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
         reopened.start();
         settle(cx, &[&reopened], || matches!(&reopened.read().channels, Some(Load::Ready(channels)) if channels.contains(&offline))).await;
         reopened.select_channel(&channel);

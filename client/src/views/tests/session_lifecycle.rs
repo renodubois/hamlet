@@ -2,6 +2,61 @@
 use super::bound_auth::*;
 use super::*;
 use crate::runtime::Execution;
+use serde_json::json;
+
+struct ManyChannels;
+impl RequestAdapter for ManyChannels {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
+        if request.url().path() == "/api/v1/channels" {
+            let items: Vec<_> = (1..=60)
+                .map(|id| json!({"id":format!("{id:015}"), "name":format!("Channel {id}"), "type":"text"}))
+                .collect();
+            return Box::pin(async move {
+                Ok(Response::controlled(
+                    StatusCode::OK,
+                    json!({"items":items}).to_string(),
+                ))
+            });
+        }
+        BoundAuth.execute(request)
+    }
+}
+
+#[gpui_kit::test]
+fn account_footer_stays_fixed_when_channels_scroll(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = open_controlled(window, cx, Arc::new(ManyChannels));
+        Root::new(view, window, cx)
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("username", cx);
+        window.input("Ada", cx);
+        window.click("password", cx);
+        window.input("password", cx);
+        window.click("login", cx);
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        let footer = window.find("sidebar-footer").bounds();
+        let first = window.find("channel-000000000000001").bounds();
+        window.scroll(
+            "channels",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-500.))),
+            cx,
+        );
+        window.render_frame(cx);
+        assert!(window.find("channel-000000000000001").bounds().origin.y < first.origin.y);
+        assert_eq!(window.find("sidebar-footer").bounds(), footer);
+        assert!(window.find("logout").bounds().origin.y >= footer.origin.y);
+        window.click("logout", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("sidebar-footer").is_none());
+        assert_eq!(window.find("login").label(), Some("Log in"));
+    });
+}
 
 struct RejectNextHistory(Arc<AtomicBool>);
 impl RequestAdapter for RejectNextHistory {

@@ -1,4 +1,4 @@
-//! Connection readiness and fixed-delay reconnect state for the conversation's SSE stream.
+//! Connection readiness and fixed-delay reconnect state for the workspace's SSE stream.
 //! Reconnection does not trigger reads or replay writes; obsolete attempts are ignored.
 use std::time::Duration;
 

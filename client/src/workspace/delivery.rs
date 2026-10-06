@@ -2,7 +2,7 @@
 //! Stream producers must use `try_send`: overflow ends the attempt through `send_terminal`.
 //! Ordinary HTTP completions may wait for capacity; they are not disposable stream events.
 
-use super::ConversationUpdate;
+use super::WorkspaceUpdate;
 #[cfg(test)]
 use async_channel::TryRecvError;
 use async_channel::{RecvError, SendError, TrySendError};
@@ -11,15 +11,15 @@ const DELIVERY_CAPACITY: usize = 256;
 
 #[derive(Clone)]
 pub(super) struct Sender {
-    ordinary: async_channel::Sender<ConversationUpdate>,
-    terminal: async_channel::Sender<ConversationUpdate>,
+    ordinary: async_channel::Sender<WorkspaceUpdate>,
+    terminal: async_channel::Sender<WorkspaceUpdate>,
 }
 
 /// Hosts consume opaque updates; terminal results never wait behind the event backlog.
 #[derive(Clone)]
 pub(crate) struct Updates {
-    ordinary: async_channel::Receiver<ConversationUpdate>,
-    terminal: async_channel::Receiver<ConversationUpdate>,
+    ordinary: async_channel::Receiver<WorkspaceUpdate>,
+    terminal: async_channel::Receiver<WorkspaceUpdate>,
 }
 
 pub(super) fn channel() -> (Sender, Updates) {
@@ -35,14 +35,11 @@ pub(super) fn channel() -> (Sender, Updates) {
 }
 
 impl Sender {
-    pub async fn send(
-        &self,
-        update: ConversationUpdate,
-    ) -> Result<(), SendError<ConversationUpdate>> {
+    pub async fn send(&self, update: WorkspaceUpdate) -> Result<(), SendError<WorkspaceUpdate>> {
         self.ordinary.send(update).await
     }
 
-    pub fn try_send(&self, update: ConversationUpdate) -> Result<(), TrySendError<()>> {
+    pub fn try_send(&self, update: WorkspaceUpdate) -> Result<(), TrySendError<()>> {
         self.ordinary.try_send(update).map_err(|error| match error {
             TrySendError::Full(_) => TrySendError::Full(()),
             TrySendError::Closed(_) => TrySendError::Closed(()),
@@ -53,8 +50,8 @@ impl Sender {
     // producers; this lane deliberately bounds even terminal delivery rather than accumulating it.
     pub async fn send_terminal(
         &self,
-        update: ConversationUpdate,
-    ) -> Result<(), SendError<ConversationUpdate>> {
+        update: WorkspaceUpdate,
+    ) -> Result<(), SendError<WorkspaceUpdate>> {
         self.terminal.send(update).await
     }
 
@@ -65,7 +62,7 @@ impl Sender {
 }
 
 impl Updates {
-    pub async fn recv(&self) -> Result<ConversationUpdate, RecvError> {
+    pub async fn recv(&self) -> Result<WorkspaceUpdate, RecvError> {
         tokio::select! {
             biased;
             terminal = self.terminal.recv() => match terminal {
@@ -80,7 +77,7 @@ impl Updates {
     }
 
     #[cfg(test)]
-    pub fn try_recv(&self) -> Result<ConversationUpdate, TryRecvError> {
+    pub fn try_recv(&self) -> Result<WorkspaceUpdate, TryRecvError> {
         self.terminal
             .try_recv()
             .or_else(|_| self.ordinary.try_recv())

@@ -368,8 +368,16 @@ fn real_controls_login_and_logout(cx: &mut TestAppContext) {
                 .unwrap()
                 .contains("Ada")
         );
+        let footer = window.find("sidebar-footer").bounds();
+        let channels = window.find("channels").bounds();
+        assert!(footer.origin.y >= channels.origin.y + channels.size.height);
+        assert_eq!(footer.origin.x, channels.origin.x);
+        assert_eq!(footer.size.width, channels.size.width);
+        assert!(window.find("logout").bounds().origin.y >= footer.origin.y);
         window.click("logout", cx);
         window.render_frame(cx);
+        assert!(window.try_find("sidebar-footer").is_none());
+        assert!(window.try_find("session-status").is_none());
         assert!(window.find("password").value().is_none_or(str::is_empty));
         assert_eq!(window.find("login").label(), Some("Log in"));
     });

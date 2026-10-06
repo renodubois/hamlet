@@ -99,17 +99,17 @@ fn signup_uses_shared_persistent_session_and_verified_restore_against_server_rou
         )),
     );
     assert!(restarted.active().is_none());
-    assert!(restarted.conversation().is_none());
+    assert!(restarted.workspace().is_none());
     await_session(cx, &mut restarted, |session| session.active().is_some());
     assert_eq!(restarted.active().unwrap().user, selected.user);
     assert_eq!(
         restarted.storage_feedback().as_deref(),
         Some("Login restored from Secret Service.")
     );
-    assert!(restarted.conversation().is_some());
+    assert!(restarted.workspace().is_some());
     restarted.logout();
     assert!(restarted.active().is_none());
-    assert!(restarted.conversation().is_none());
+    assert!(restarted.workspace().is_none());
     await_session(cx, &mut restarted, |session| {
         session.storage_feedback().as_deref() == Some("Saved login removed from Secret Service.")
     });

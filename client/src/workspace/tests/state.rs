@@ -34,9 +34,9 @@ fn page(ids: &[&str], cursor: Option<&str>) -> Page {
         next_cursor: cursor.map(str::to_owned),
     }
 }
-fn ready() -> (Conversation, Identity) {
+fn ready() -> (WorkspaceState, Identity) {
     let mut session = logged_in();
-    let mut state = Conversation::default();
+    let mut state = WorkspaceState::default();
     let list = state.start(&session).unwrap();
     let read = state
         .complete_channels(&mut session, &list, Ok(channels()))
@@ -44,11 +44,32 @@ fn ready() -> (Conversation, Identity) {
     state.complete_history(&mut session, &read, Ok(page(&["8"], Some("opaque older"))));
     (state, session)
 }
-fn ids(state: &Conversation) -> Vec<&str> {
+fn ids(state: &WorkspaceState) -> Vec<&str> {
     let Some(Load::Ready(items)) = state.history.get("z") else {
         panic!("history not ready")
     };
     items.iter().map(|item| item.id.as_str()).collect()
+}
+
+#[test]
+fn selected_channel_resolves_only_loaded_matching_selection() {
+    let mut state = WorkspaceState {
+        selected: Some("a".into()),
+        ..WorkspaceState::default()
+    };
+    assert!(state.selected_channel().is_none());
+    state.channels = Some(Load::Loading);
+    assert!(state.selected_channel().is_none());
+    state.channels = Some(Load::Failed("unavailable".into()));
+    assert!(state.selected_channel().is_none());
+    state.channels = Some(Load::Ready(channels()));
+    assert_eq!(state.selected_channel().unwrap().name, "alpha");
+    state.selected = Some("z".into());
+    assert_eq!(state.selected_channel().unwrap().name, "Zebra");
+    state.selected = Some("unknown".into());
+    assert!(state.selected_channel().is_none());
+    state.selected = None;
+    assert!(state.selected_channel().is_none());
 }
 
 #[test]
@@ -167,7 +188,7 @@ fn authority_and_session_replacement_gate_reads_and_writes_before_rejection() {
 #[test]
 fn channel_snapshot_preserves_server_order_and_only_loads_current_selection() {
     let mut session = logged_in();
-    let mut state = Conversation::default();
+    let mut state = WorkspaceState::default();
     let list = state.start(&session).unwrap();
     let first = state
         .complete_channels(&mut session, &list, Ok(channels()))

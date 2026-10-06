@@ -1,7 +1,8 @@
 pub(crate) mod app_shell;
-mod channel_sidebar;
 mod conversation;
 pub(crate) mod login;
+mod session_footer;
+mod sidebar;
 pub(crate) mod workspace;
 
 #[cfg(test)]

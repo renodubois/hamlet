@@ -1,4 +1,4 @@
-//! Owned conversation lifecycle with authenticated HTTP and SSE outcomes.
+//! Owned workspace lifecycle with authenticated HTTP and SSE outcomes.
 use super::live_support::*;
 use super::*;
 use crate::api::test_support::Response;

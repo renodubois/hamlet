@@ -9,8 +9,8 @@ pub(crate) use saved_login::StorageRetry;
 use saved_login::{SavedLogin, SavedUpdate};
 
 use crate::api::HttpTransport;
-use crate::conversation::{ConversationHandle, SessionEnd};
 use crate::runtime::{Execution, Work};
+use crate::workspace::{SessionEnd, WorkspaceHandle};
 use std::time::Duration;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -42,7 +42,7 @@ pub(crate) struct SessionCoordinator {
     expiry: Option<Work>,
     lifecycle: Option<Lifecycle>,
     saved: SavedLogin,
-    conversation: Option<ConversationHandle>,
+    workspace: Option<WorkspaceHandle>,
 }
 
 impl SessionCoordinator {
@@ -70,7 +70,7 @@ impl SessionCoordinator {
             expiry: None,
             lifecycle: None,
             saved,
-            conversation: None,
+            workspace: None,
         };
         coordinator.start_saved_login();
         coordinator
@@ -94,10 +94,10 @@ impl SessionCoordinator {
     pub fn session_generation(&self) -> Option<u64> {
         self.state.session_generation()
     }
-    pub fn conversation(&self) -> Option<ConversationHandle> {
-        self.conversation.clone()
+    pub fn workspace(&self) -> Option<WorkspaceHandle> {
+        self.workspace.clone()
     }
-    pub fn conversation_ended(&mut self, end: SessionEnd) {
+    pub fn workspace_ended(&mut self, end: SessionEnd) {
         match end {
             SessionEnd::Rejected(generation) => self.protected_rejected(generation),
             SessionEnd::Expired(generation) if self.session_generation() == Some(generation) => {
@@ -106,9 +106,9 @@ impl SessionCoordinator {
             SessionEnd::Expired(_) => {}
         }
     }
-    fn close_conversation(&mut self) {
-        if let Some(conversation) = self.conversation.take() {
-            conversation.close();
+    fn close_workspace(&mut self) {
+        if let Some(workspace) = self.workspace.take() {
+            workspace.close();
         }
     }
     pub fn take_lifecycle(&mut self) -> Option<Lifecycle> {
@@ -186,9 +186,9 @@ impl SessionCoordinator {
                 .await;
         });
         self.expiry = Some(work);
-        self.close_conversation();
+        self.close_workspace();
         let session = self.active().unwrap();
-        self.conversation = Some(ConversationHandle::new(
+        self.workspace = Some(WorkspaceHandle::new(
             generation,
             session.expires_at,
             session.client(),
@@ -206,14 +206,14 @@ impl SessionCoordinator {
         }
     }
     fn invalidated(&mut self) {
-        self.close_conversation();
+        self.close_workspace();
         self.cancel_expiry();
         self.lifecycle = Some(Lifecycle::Invalidated);
         self.invalidate_storage();
     }
     pub fn change_server(&mut self, server: String) {
         if self.server() != server {
-            self.close_conversation();
+            self.close_workspace();
             self.state.change_server(server);
             self.cancel_expiry();
             self.lifecycle = Some(Lifecycle::ServerChanged);
@@ -265,7 +265,7 @@ impl SessionCoordinator {
 
 impl Drop for SessionCoordinator {
     fn drop(&mut self) {
-        self.close_conversation();
+        self.close_workspace();
         self.cancel_expiry();
     }
 }

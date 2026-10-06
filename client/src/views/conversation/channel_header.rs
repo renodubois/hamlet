@@ -1,15 +1,15 @@
 //! Presents the selected channel independently of message history.
-use crate::conversation::{ConversationHandle, Load};
+use crate::workspace::{Load, WorkspaceHandle};
 use gpui_kit::*;
 
 pub(crate) struct ChannelHeaderView {
-    conversation: ConversationHandle,
+    workspace: WorkspaceHandle,
     _notifications: Task<()>,
 }
 
 impl ChannelHeaderView {
-    pub(crate) fn new(conversation: ConversationHandle, cx: &mut Context<Self>) -> Self {
-        let changes = conversation.notifications();
+    pub(crate) fn new(workspace: WorkspaceHandle, cx: &mut Context<Self>) -> Self {
+        let changes = workspace.notifications();
         let notifications = cx.spawn(async move |weak, cx| {
             while changes.recv().await.is_ok() {
                 if weak.update(cx, |_, cx| cx.notify()).is_err() {
@@ -18,7 +18,7 @@ impl ChannelHeaderView {
             }
         });
         Self {
-            conversation,
+            workspace,
             _notifications: notifications,
         }
     }
@@ -26,10 +26,10 @@ impl ChannelHeaderView {
 
 impl Render for ChannelHeaderView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let conversation = self.conversation.read();
+        let workspace = self.workspace.read();
         let header = div().flex_none().min_w_0().flex().items_center();
-        if let Some(id) = conversation.selected.as_deref() {
-            let name = match &conversation.channels {
+        if let Some(id) = workspace.selected.as_deref() {
+            let name = match &workspace.channels {
                 Some(Load::Ready(channels)) => channels
                     .iter()
                     .find(|channel| channel.id == id)

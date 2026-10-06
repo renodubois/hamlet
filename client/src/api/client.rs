@@ -222,7 +222,7 @@ impl ServerClient {
 }
 
 impl AuthenticatedClient {
-    /// Restricted session/storage seam, not a view or conversation interface.
+    /// Restricted session/storage seam, not a view or workspace interface.
     /// Session persistence copies directly into the ordered secure-store operation.
     pub(crate) fn credential_for_session(&self) -> &str {
         &self.0.token
