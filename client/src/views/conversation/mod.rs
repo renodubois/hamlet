@@ -3,6 +3,7 @@ mod channel_header;
 pub(crate) mod composer;
 pub(crate) mod message_history;
 mod message_row;
+mod message_timestamp;
 
 use crate::workspace::WorkspaceHandle;
 use channel_header::ChannelHeaderView;
