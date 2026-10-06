@@ -139,20 +139,6 @@ impl Render for AppShell {
                 "Logged in as {} at {}",
                 session.user.username, session.server
             );
-            surface =
-                surface
-                    .child(
-                        div()
-                            .id("session-status")
-                            .aria_label(label.clone())
-                            .test_support()
-                            .child(label),
-                    )
-                    .child(Button::new("logout").label("Log out").on_click(
-                        move |_, window, cx| {
-                            let _ = logout_view.update(cx, |view, cx| view.logout(window, cx));
-                        },
-                    ));
             if let Some(workspace) = &self.workspace {
                 surface = surface.child(workspace.clone());
             }
@@ -179,26 +165,6 @@ impl Render for AppShell {
                             cx.notify();
                         });
                     }),
-            );
-        }
-        if let Some(feedback) = self.session.read(cx).storage_feedback() {
-            surface = surface.child(
-                div()
-                    .id("storage-status")
-                    .aria_label(feedback.to_owned())
-                    .test_support()
-                    .child(feedback.to_owned()),
-            );
-        }
-        if self.session.read(cx).active().is_some()
-            && let Some(feedback) = self.session.read(cx).feedback()
-        {
-            surface = surface.child(
-                div()
-                    .id("auth-feedback")
-                    .aria_label(feedback.to_owned())
-                    .test_support()
-                    .child(feedback.to_owned()),
             );
         }
         surface

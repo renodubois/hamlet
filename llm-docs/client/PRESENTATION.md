@@ -12,7 +12,7 @@ coordinator. [ARCHITECTURE.md](ARCHITECTURE.md) describes the dependency rules.
 | Channel list and creation input | `src/views/channel_sidebar.rs` | `channels`, `channel-{id}`, `channel-name`, `create-channel`, `channel-feedback` |
 | List/focus, wheel, viewport anchoring and traversal controls | `src/views/conversation/message_history.rs` | `history-pane`, `history`, `retry-older`, `jump-latest` |
 | Plain selectable message, author and timestamp | `src/views/conversation/message_row.rs` | `message-{id}`, `message-text-{id}`, `text-{id}` |
-| Textarea, keyboard, focus, displayed-draft synchronization | `src/views/conversation/composer.rs` | `composer-panel`, `composer`, `send-message`, `send-feedback` |
+| Textarea, keyboard, focus, displayed-draft synchronization | `src/views/conversation/composer.rs` | `composer-panel`, `composer`, `send-feedback` |
 | Colors and bundled Hash/Send icons | `src/theme.rs` | Keep meaningful labels/tooltips |
 
 ## Behavior boundaries

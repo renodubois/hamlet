@@ -1,9 +1,7 @@
 //! Textarea interaction and displayed-draft projection. Conversation owns all drafts and sends.
 use crate::conversation::{ConversationHandle, Load};
-use crate::theme;
-use gpui_kit::base::Disableable;
 use gpui_kit::base::input::{InputBaseState, InputEvent, TextareaMode, TextareaState};
-use gpui_kit::component::{button::Button, input::Textarea};
+use gpui_kit::component::input::Textarea;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -102,7 +100,7 @@ impl ComposerView {
     }
     fn send_message(&mut self, cx: &mut Context<Self>) {
         self.store_input(cx);
-        // Navigation may precede delivery of the old textarea's Enter/click.
+        // Navigation may precede delivery of the old textarea's Enter.
         // Never interpret that event as permission to send the newly selected draft.
         if self.presented_channel.is_some()
             && self.presented_channel == self.conversation.read().selected
@@ -159,18 +157,6 @@ impl Render for ComposerView {
                             .readonly(sending)
                             .h(px(90.)),
                     ),
-            )
-            .child(
-                Button::new("send-message")
-                    .icon(theme::send_icon())
-                    .tooltip("Send message (Enter); Shift+Enter adds a line")
-                    .label(if sending {
-                        "Sending…"
-                    } else {
-                        "Send message"
-                    })
-                    .disabled(sending)
-                    .on_click(cx.listener(|view, _, _, cx| view.send_message(cx))),
             )
             .when_some(conversation.send_feedback.get(id), |pane, feedback| {
                 pane.child(

@@ -44,13 +44,6 @@ impl Render for WorkspaceView {
             .gap_3()
             .child(
                 div()
-                    .id("connection-status")
-                    .aria_label(self.conversation.status())
-                    .test_support()
-                    .child(self.conversation.status()),
-            )
-            .child(
-                div()
                     .flex()
                     .flex_1()
                     .min_h_0()

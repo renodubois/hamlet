@@ -191,7 +191,14 @@ fn confirmed_middle_insertion_keeps_reader_anchor(cx: &mut TestAppContext) {
         window.render_frame(cx);
         window.click("composer", cx);
         window.input("twenty", cx);
-        window.click("send-message", cx);
+        window.click("composer", cx);
+        window.dispatch_action(
+            Box::new(gpui_kit::base::input::Enter {
+                secondary: false,
+                shift: false,
+            }),
+            cx,
+        );
         for _ in 0..30 {
             if window.try_find("message-25").is_some() {
                 break;

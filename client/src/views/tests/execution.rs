@@ -125,18 +125,25 @@ fn send_times_out_at_nine_seconds_without_replay_or_late_draft_loss(cx: &mut Tes
         window.render_frame(cx);
         window.click("composer", cx);
         window.input("keep this draft", cx);
-        window.click("send-message", cx);
+        window.click("composer", cx);
+        window.dispatch_action(
+            Box::new(gpui_kit::base::input::Enter {
+                secondary: false,
+                shift: false,
+            }),
+            cx,
+        );
     });
     cx.run_until_parked();
     advance(cx, 8);
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.find("send-message").label(), Some("Sending…"));
+        assert!(window.try_find("send-message").is_none());
     });
     advance(cx, 1);
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.find("send-message").label(), Some("Send message"));
+        assert!(window.try_find("send-message").is_none());
         assert_draft(window, cx, "keep this draft");
         assert!(
             window

@@ -187,7 +187,14 @@ fn event_before_http_confirmation_shares_one_headless_history_without_followup_r
         window.render_frame(cx);
         window.click("composer", cx);
         window.input("same", cx);
-        window.click("send-message", cx);
+        window.click("composer", cx);
+        window.dispatch_action(
+            Box::new(gpui_kit::base::input::Enter {
+                secondary: false,
+                shift: false,
+            }),
+            cx,
+        );
     });
     cx.run_until_parked();
     assert_eq!(sends.lock().unwrap().len(), 1);

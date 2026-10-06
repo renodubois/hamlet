@@ -22,7 +22,7 @@ fn mount(
 }
 
 #[gpui_kit::test]
-fn composer_uses_real_textarea_keyboard_button_focus_and_channel_drafts(cx: &mut TestAppContext) {
+fn composer_uses_real_textarea_keyboard_focus_and_channel_drafts(cx: &mut TestAppContext) {
     let calls = Arc::new(Mutex::new(Vec::<Sent>::new()));
     let cx = mount(cx, calls.clone());
     cx.update(|window, cx| {
@@ -49,11 +49,18 @@ fn composer_uses_real_textarea_keyboard_button_focus_and_channel_drafts(cx: &mut
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.find("send-message").label(), Some("Sending…"));
+        assert!(window.try_find("send-message").is_none());
         assert_eq!(composer_text(window, cx), "first\nsecond");
         window.input("blocked", cx);
         assert_eq!(composer_text(window, cx), "first\nsecond");
-        window.click("send-message", cx);
+        window.click("composer", cx);
+        window.dispatch_action(
+            Box::new(gpui_kit::base::input::Enter {
+                secondary: false,
+                shift: false,
+            }),
+            cx,
+        );
         window.dispatch_action(
             Box::new(gpui_kit::base::input::Enter {
                 secondary: false,
@@ -79,7 +86,14 @@ fn composer_uses_real_textarea_keyboard_button_focus_and_channel_drafts(cx: &mut
         );
         window.click("channel-000000000000002", cx);
         assert_eq!(composer_text(window, cx), "other");
-        window.click("send-message", cx);
+        window.click("composer", cx);
+        window.dispatch_action(
+            Box::new(gpui_kit::base::input::Enter {
+                secondary: false,
+                shift: false,
+            }),
+            cx,
+        );
     });
     cx.run_until_parked();
     assert_eq!(calls.lock().unwrap().len(), 1);
@@ -104,7 +118,7 @@ fn composer_uses_real_textarea_keyboard_button_focus_and_channel_drafts(cx: &mut
         );
         window.click("channel-000000000000001", cx);
         assert_eq!(composer_text(window, cx), "first\nsecond");
-        assert_eq!(window.find("send-message").label(), Some("Send message"));
+        assert!(window.try_find("send-message").is_none());
         window.click("logout", cx);
         window.render_frame(cx);
         assert!(window.try_find("composer").is_none());
@@ -173,7 +187,14 @@ fn uncertain_send_retains_originating_draft_and_never_replays(cx: &mut TestAppCo
         window.render_frame(cx);
         window.click("composer", cx);
         window.input("maybe published", cx);
-        window.click("send-message", cx);
+        window.click("composer", cx);
+        window.dispatch_action(
+            Box::new(gpui_kit::base::input::Enter {
+                secondary: false,
+                shift: false,
+            }),
+            cx,
+        );
     });
     cx.run_until_parked();
     assert_eq!(calls.lock().unwrap().len(), 1);
@@ -182,7 +203,7 @@ fn uncertain_send_retains_originating_draft_and_never_replays(cx: &mut TestAppCo
         window.render_frame(cx);
         window.click("channel-000000000000002", cx);
         window.render_frame(cx);
-        assert_eq!(window.find("send-message").label(), Some("Send message"));
+        assert!(window.try_find("send-message").is_none());
     });
     sender.try_send(Err(ApiError::Unavailable)).unwrap();
     cx.run_until_parked();
@@ -218,7 +239,14 @@ fn stalled_send_times_out_and_late_completion_cannot_clear_the_draft(cx: &mut Te
         window.render_frame(cx);
         window.click("composer", cx);
         window.input("timeout draft", cx);
-        window.click("send-message", cx);
+        window.click("composer", cx);
+        window.dispatch_action(
+            Box::new(gpui_kit::base::input::Enter {
+                secondary: false,
+                shift: false,
+            }),
+            cx,
+        );
     });
     cx.run_until_parked();
     assert_eq!(calls.lock().unwrap().len(), 1);
@@ -226,7 +254,7 @@ fn stalled_send_times_out_and_late_completion_cannot_clear_the_draft(cx: &mut Te
     cx.run_until_parked();
     cx.update(|window, cx| {
         assert_eq!(composer_text(window, cx), "timeout draft");
-        assert_eq!(window.find("send-message").label(), Some("Send message"));
+        assert!(window.try_find("send-message").is_none());
         assert!(
             window
                 .find("send-feedback")

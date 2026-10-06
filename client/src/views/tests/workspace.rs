@@ -100,6 +100,7 @@ fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut T
     cx.update(|window, cx| {
         window.render_frame(cx);
         assert_eq!(window.find("channel-2").label(), Some("# Zebra"));
+        assert_eq!(window.find("channel-header").label(), Some("# Zebra"));
         assert!(
             window.find("channel-2").bounds().origin.y < window.find("channel-1").bounds().origin.y
         );
@@ -115,6 +116,7 @@ fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut T
         window.render_frame(cx);
         window.click("composer", cx);
         window.input("alpha draft", cx);
+        assert_eq!(window.find("channel-header").label(), Some("# Alpha"));
         window.click("channel-name", cx);
         window.input("local unsent name", cx);
     });
@@ -131,6 +133,7 @@ fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut T
                 .value()
                 .is_none_or(str::is_empty)
         );
+        assert_eq!(window.find("channel-header").label(), Some("# Alpha"));
         assert_eq!(
             window.find("message-alpha-message").label(),
             Some("cached alpha history")
@@ -169,6 +172,7 @@ fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut T
         window.render_frame(cx);
         assert!(window.try_find("composer").is_none());
         assert!(window.try_find("channel-2").is_none());
+        assert!(window.try_find("channel-header").is_none());
         assert!(
             window
                 .find("channel-name")

@@ -138,9 +138,17 @@ fn retained_hidden_composer_observes_invalidation_and_cannot_restore_drafts(
     let (activity, cx) = mount(cx, api.clone());
     cx.update(|window, cx| {
         window.render_frame(cx);
-        window.click("send-message", cx);
-        window.click("toggle-composer", cx);
+        window.click("composer", cx);
+        window.dispatch_action(
+            Box::new(gpui_kit::base::input::Enter {
+                secondary: false,
+                shift: false,
+            }),
+            cx,
+        );
     });
+    drain(cx, &activity);
+    cx.update(|window, cx| window.click("toggle-composer", cx));
     drain(cx, &activity);
     let (_, _, late) = api.0.lock().unwrap().remove(0);
     // Session invalidation closes the same handle even if a child remains retained.
@@ -180,16 +188,31 @@ fn composer_recreation_observes_originating_pending_confirmation_and_timeout(
     let (activity, cx) = mount(cx, api.clone());
     cx.update(|window, cx| {
         window.render_frame(cx);
-        window.click("send-message", cx);
-        window.click("recreate-composer", cx);
+        window.click("composer", cx);
+        window.dispatch_action(
+            Box::new(gpui_kit::base::input::Enter {
+                secondary: false,
+                shift: false,
+            }),
+            cx,
+        );
     });
+    drain(cx, &activity);
+    cx.update(|window, cx| window.click("recreate-composer", cx));
     drain(cx, &activity);
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.find("send-message").label(), Some("Sending…"));
+        assert!(window.try_find("send-message").is_none());
         assert_eq!(text(window, cx), "first\ntrailing\n");
         window.input("cannot edit while pending", cx);
-        window.click("send-message", cx);
+        window.click("composer", cx);
+        window.dispatch_action(
+            Box::new(gpui_kit::base::input::Enter {
+                secondary: false,
+                shift: false,
+            }),
+            cx,
+        );
         assert_eq!(text(window, cx), "first\ntrailing\n");
     });
     assert_eq!(api.0.lock().unwrap().len(), 1);
@@ -212,16 +235,24 @@ fn composer_recreation_observes_originating_pending_confirmation_and_timeout(
     cx.update(|window, cx| {
         window.click("toggle-composer", cx);
         assert_eq!(text(window, cx), "still editable");
-        assert_eq!(window.find("send-message").label(), Some("Send message"));
+        assert!(window.try_find("send-message").is_none());
     });
     activity.select_channel("1");
     drain(cx, &activity);
     cx.update(|window, cx| {
         assert_eq!(text(window, cx), "");
         window.input("uncertain draft", cx);
-        window.click("send-message", cx);
-        window.click("recreate-composer", cx);
+        window.click("composer", cx);
+        window.dispatch_action(
+            Box::new(gpui_kit::base::input::Enter {
+                secondary: false,
+                shift: false,
+            }),
+            cx,
+        );
     });
+    drain(cx, &activity);
+    cx.update(|window, cx| window.click("recreate-composer", cx));
     drain(cx, &activity);
     let (_, sent, late) = api.0.lock().unwrap().remove(0);
     assert_eq!(sent, "uncertain draft");
@@ -231,7 +262,7 @@ fn composer_recreation_observes_originating_pending_confirmation_and_timeout(
     cx.update(|window, cx| {
         // No click or input is needed to receive pending/error notification updates.
         window.render_frame(cx);
-        assert_eq!(window.find("send-message").label(), Some("Send message"));
+        assert!(window.try_find("send-message").is_none());
         assert!(
             window
                 .find("send-feedback")

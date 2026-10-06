@@ -91,7 +91,3 @@ mod tests;
 pub(crate) fn channel_icon() -> gpui_kit::assets::IconName {
     gpui_kit::assets::IconName::Hash
 }
-
-pub(crate) fn send_icon() -> gpui_kit::assets::IconName {
-    gpui_kit::assets::IconName::Send
-}

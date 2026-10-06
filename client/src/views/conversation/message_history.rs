@@ -160,20 +160,6 @@ impl Render for MessageHistoryView {
             .flex_col()
             .gap_2();
         if let Some(id) = conversation.selected.as_deref() {
-            let name = match &conversation.channels {
-                Some(Load::Ready(channels)) => channels
-                    .iter()
-                    .find(|channel| channel.id == id)
-                    .map(|channel| channel.name.as_str())
-                    .unwrap_or("Channel"),
-                _ => "Channel",
-            };
-            history = history.child(
-                div()
-                    .text_lg()
-                    .font_weight(FontWeight::BOLD)
-                    .child(format!("# {name}")),
-            );
             match conversation.history_for_display(id) {
                 None | Some(Load::Loading) => history = history.child("Loading conversation…"),
                 Some(Load::Failed(error)) => {

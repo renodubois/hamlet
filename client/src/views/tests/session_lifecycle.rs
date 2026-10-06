@@ -51,7 +51,16 @@ fn current_rejection_clears_all_channel_drafts_before_same_process_login(cx: &mu
         });
     }
     reject.store(true, Ordering::SeqCst);
-    cx.update(|window, cx| window.click("send-message", cx));
+    cx.update(|window, cx| {
+        window.click("composer", cx);
+        window.dispatch_action(
+            Box::new(gpui_kit::base::input::Enter {
+                secondary: false,
+                shift: false,
+            }),
+            cx,
+        );
+    });
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
