@@ -91,7 +91,7 @@ while true; do
     # Coalesce saves made during the previous build into one fresh build.
     while IFS= read -r -t 0.01 request <&3; do :; done
 
-    printf 'Building client (existing window stays open)...\n'
+    printf 'Building client...\n'
     setsid cargo build --locked --bin hamlet-client --target "$host_target" \
         --target-dir "$client_dir/target" \
         3>&- </dev/null &
@@ -104,7 +104,7 @@ while true; do
             continue
         fi
         stop_process "$client_pid"
-        printf 'Starting rebuilt client (in-memory UI state resets).\n'
+        printf 'Starting rebuilt client...\n'
         setsid "$binary" 3>&- </dev/null &
         client_pid=$!
     else
