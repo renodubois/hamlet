@@ -1,4 +1,6 @@
 //! Owned workspace lifecycle with authenticated HTTP and SSE outcomes.
+#[path = "rename_coordinator.rs"]
+mod rename;
 use super::live_support::*;
 use super::*;
 use crate::api::test_support::Response;

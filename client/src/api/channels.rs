@@ -1,11 +1,16 @@
 use super::{ApiError, ApiFuture, AuthenticatedClient, Channel};
 use super::{auth::protected_response, client::Response, error::ErrorResponse};
-use hamlet_protocol::{Channel as ProtocolChannel, ChannelList, ChannelType, CreateChannel};
+use hamlet_protocol::{
+    Channel as ProtocolChannel, ChannelList, ChannelType, CreateChannel, RenameChannel,
+};
 use reqwest::{Method, StatusCode};
 
-async fn decode_created_channel(response: Response) -> Result<Channel, ApiError> {
+async fn decode_mutated_channel(
+    response: Response,
+    success: StatusCode,
+) -> Result<Channel, ApiError> {
     match response.status() {
-        StatusCode::CREATED => {
+        status if status == success => {
             let wire: ProtocolChannel = response
                 .json()
                 .await
@@ -13,6 +18,7 @@ async fn decode_created_channel(response: Response) -> Result<Channel, ApiError>
             decode_channel(wire)
         }
         StatusCode::UNAUTHORIZED => Err(ApiError::AlreadyInvalid),
+        StatusCode::NOT_FOUND => Err(ApiError::NotFound),
         StatusCode::BAD_REQUEST | StatusCode::CONFLICT => {
             let status = response.status();
             let body: ErrorResponse = response
@@ -44,6 +50,26 @@ pub(super) fn decode_channel(wire: ProtocolChannel) -> Result<Channel, ApiError>
 }
 
 impl AuthenticatedClient {
+    pub fn rename_channel(&self, id: String, name: String) -> ApiFuture<Result<Channel, ApiError>> {
+        let client = self.clone();
+        Box::pin(async move {
+            let request = client
+                .request(
+                    Method::PATCH,
+                    client.0.server.endpoint(&format!("api/v1/channels/{id}")),
+                )
+                .json(&RenameChannel { name });
+            let channel = decode_mutated_channel(
+                client.0.server.0.transport.send(request).await?,
+                StatusCode::OK,
+            )
+            .await?;
+            if channel.id != id {
+                return Err(ApiError::InvalidResponse);
+            }
+            Ok(channel)
+        })
+    }
     pub fn channels(&self) -> ApiFuture<Result<Vec<Channel>, ApiError>> {
         let client = self.clone();
         Box::pin(async move {
@@ -63,7 +89,11 @@ impl AuthenticatedClient {
                     name,
                     kind: ChannelType::Text,
                 });
-            decode_created_channel(client.0.server.0.transport.send(request).await?).await
+            decode_mutated_channel(
+                client.0.server.0.transport.send(request).await?,
+                StatusCode::CREATED,
+            )
+            .await
         })
     }
 }

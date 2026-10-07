@@ -24,6 +24,13 @@ pub struct CreateChannel {
 #[derive(Deserialize, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
+pub struct RenameChannel {
+    pub name: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
 pub struct CreateMessage {
     pub text: String,
 }

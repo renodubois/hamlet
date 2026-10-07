@@ -21,6 +21,7 @@ mod journeys;
 mod live_updates;
 #[path = "protected_binding.rs"]
 mod protected_binding;
+mod rename;
 #[path = "session_lifecycle.rs"]
 mod session_lifecycle;
 mod support;

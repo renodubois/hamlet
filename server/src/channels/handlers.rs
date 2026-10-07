@@ -1,6 +1,6 @@
 use super::{
-    operations::{self, CreateError},
-    types::{Channel, ChannelList, CreateChannel},
+    operations::{self, CreateError, RenameError},
+    types::{Channel, ChannelList, CreateChannel, RenameChannel},
 };
 use crate::{
     AppState,
@@ -25,6 +25,38 @@ pub(crate) async fn create_route(
             problem(StatusCode::CONFLICT, "conflict", "Channel already exists")
         }
         Err(CreateError::Internal) => internal(),
+    }
+}
+
+#[utoipa::path(patch, path = "/api/v1/channels/{id}", tag = "crate::channels", security(("bearer_auth" = [])),
+    params(("id" = String, Path, description = "Decimal-string channel ID")), request_body = RenameChannel,
+    responses((status = 200, body = Channel), (status = 400, body = crate::http::error::ErrorBody),
+        (status = 401, body = crate::http::error::ErrorBody), (status = 404, body = crate::http::error::ErrorBody),
+        (status = 409, body = crate::http::error::ErrorBody), (status = 500, body = crate::http::error::ErrorBody)))]
+pub(crate) async fn rename_route(
+    db: web::Data<AppState>,
+    path: web::Path<String>,
+    input: Result<web::Json<RenameChannel>, Error>,
+) -> impl Responder {
+    if path.len() != 15 || !path.bytes().all(|b| b.is_ascii_digit()) {
+        return bad_request();
+    }
+    let Ok(id) = path.parse::<i64>() else {
+        return bad_request();
+    };
+    let Ok(input) = input else {
+        return bad_request();
+    };
+    match operations::rename(&db.db, id, &input).await {
+        Ok(channel) => HttpResponse::Ok().json(channel),
+        Err(RenameError::Invalid) => bad_request(),
+        Err(RenameError::Missing) => {
+            problem(StatusCode::NOT_FOUND, "not_found", "Channel not found")
+        }
+        Err(RenameError::Duplicate) => {
+            problem(StatusCode::CONFLICT, "conflict", "Channel already exists")
+        }
+        Err(RenameError::Internal) => internal(),
     }
 }
 

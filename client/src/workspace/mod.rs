@@ -7,7 +7,7 @@ mod state;
 use crate::api::{ApiError, AuthenticatedClient, Channel, LiveEvent, Message, Page, StreamError};
 use crate::runtime::{Execution, Work};
 use live_updates::{Attempt, LiveUpdates};
-use state::{CreateRequest, Identity, ReadRequest, SendRequest};
+use state::{CreateRequest, Identity, ReadRequest, RenameRequest, SendRequest};
 pub(crate) use state::{Load, Older, WorkspaceState};
 use std::{
     cell::{Ref, RefCell},
@@ -30,6 +30,7 @@ enum Update {
     Channels(ReadRequest, Result<Vec<Channel>, ApiError>),
     History(u64, ReadRequest, Result<Page, ApiError>),
     Create(CreateRequest, Result<Channel, ApiError>),
+    Rename(RenameRequest, Result<Channel, ApiError>),
     Send(SendRequest, Result<Message, ApiError>),
 }
 
@@ -56,6 +57,7 @@ struct Coordinator {
     history_task: Option<Work>,
     history_serial: u64,
     create_task: Option<Work>,
+    rename_task: Option<Work>,
     sends: HashMap<String, Work>,
     created: Option<(u64, String)>,
     create_revision: u64,
@@ -105,6 +107,7 @@ impl WorkspaceHandle {
             history_task: None,
             history_serial: 0,
             create_task: None,
+            rename_task: None,
             sends: HashMap::new(),
             created: None,
             create_revision: 0,
@@ -215,6 +218,38 @@ impl WorkspaceHandle {
                 .await;
         });
         owner.create_task = Some(task);
+    }
+    pub fn reset_rename_feedback(&self) {
+        self.0.borrow_mut().state.reset_rename_feedback();
+    }
+    pub fn rename_channel(&self, id: &str, name: &str) {
+        let _notify = Notify(self);
+        let mut owner = self.0.borrow_mut();
+        let now = owner.execution.unix_seconds();
+        owner.identity.expire(now);
+        let Some(api) = owner.client.clone() else {
+            return;
+        };
+        let Coordinator {
+            state, identity, ..
+        } = &mut *owner;
+        let Some(request) = state.rename(identity, id, name) else {
+            return;
+        };
+        let work = request.clone();
+        let deliver = owner.deliver.clone();
+        let timeout = owner.execution.sleep(READ_SEND_DEADLINE);
+        let (task, _) = owner.execution.start(async move {
+            let result = tokio::select! {
+                biased;
+                _ = timeout => Err(ApiError::Unavailable),
+                result = api.rename_channel(work.channel_id, work.name) => result,
+            };
+            let _ = deliver
+                .send(WorkspaceUpdate(Update::Rename(request, result)))
+                .await;
+        });
+        owner.rename_task = Some(task);
     }
     pub fn send(&self) {
         let _notify = Notify(self);
@@ -460,6 +495,14 @@ impl Coordinator {
                     self.load_history(next);
                 }
             }
+            Update::Rename(request, result) => {
+                if request.generation != self.generation {
+                    return None;
+                }
+                self.rename_task = None;
+                self.state
+                    .complete_rename(&mut self.identity, &request, result);
+            }
             Update::Send(request, result) => {
                 if request.generation != self.generation {
                     return None;
@@ -492,6 +535,7 @@ impl Coordinator {
             self.stream_task.take(),
             self.channels_task.take(),
             self.create_task.take(),
+            self.rename_task.take(),
         ]
         .into_iter()
         .flatten()

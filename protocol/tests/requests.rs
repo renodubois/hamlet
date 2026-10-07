@@ -1,4 +1,4 @@
-use hamlet_protocol::{CreateChannel, CreateMessage, Credentials};
+use hamlet_protocol::{CreateChannel, CreateMessage, Credentials, RenameChannel};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
@@ -36,6 +36,12 @@ fn channel_creation_preserves_the_strict_request_contract() {
         }))
         .is_err()
     );
+}
+
+#[test]
+fn channel_rename_preserves_the_strict_name_only_contract() {
+    assert_request_contract::<RenameChannel>(json!({"name": "new name"}));
+    assert!(serde_json::from_value::<RenameChannel>(json!({"name":"new", "type":"text"})).is_err());
 }
 
 #[test]

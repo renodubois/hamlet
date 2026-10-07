@@ -13,6 +13,7 @@ use utoipa::{
         crate::auth::handlers::signup, crate::auth::handlers::login,
         crate::auth::handlers::logout, crate::auth::handlers::me,
         crate::channels::handlers::create_route, crate::channels::handlers::list_route,
+        crate::channels::handlers::rename_route,
         crate::messages::handlers::post_route, crate::messages::handlers::history_route,
         crate::live_updates::events
     ),
@@ -39,7 +40,7 @@ struct ErrorCodes;
 impl Modify for ErrorCodes {
     fn modify(&self, api: &mut Document) {
         for path in api.paths.paths.values_mut() {
-            for operation in [path.get.as_mut(), path.post.as_mut()]
+            for operation in [path.get.as_mut(), path.post.as_mut(), path.patch.as_mut()]
                 .into_iter()
                 .flatten()
             {

@@ -85,6 +85,53 @@ pub(super) async fn create(
     Err(CreateError::Internal)
 }
 
+pub(super) enum RenameError {
+    Invalid,
+    Missing,
+    Duplicate,
+    Internal,
+}
+
+pub(super) async fn rename(
+    db: &DatabaseConnection,
+    id: i64,
+    input: &super::types::RenameChannel,
+) -> Result<Channel, RenameError> {
+    let name = input.name.trim();
+    if !valid(name) {
+        return Err(RenameError::Invalid);
+    }
+    // One statement applies the write and returns its own result, even if another
+    // rename follows immediately. Identity, type and conversation are untouched.
+    let row = db
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "UPDATE channels SET name = ?, name_key = ? WHERE id = ? RETURNING id, name, type",
+            [name.into(), name.to_ascii_lowercase().into(), id.into()],
+        ))
+        .await
+        .map_err(|error| {
+            if error.to_string().contains("channels.name_key") {
+                RenameError::Duplicate
+            } else {
+                RenameError::Internal
+            }
+        })?
+        .ok_or(RenameError::Missing)?;
+    Ok(Channel {
+        id: row
+            .try_get::<i64>("", "id")
+            .map_err(|_| RenameError::Internal)?
+            .to_string(),
+        name: row.try_get("", "name").map_err(|_| RenameError::Internal)?,
+        kind: super::types::parse_channel_type(
+            &row.try_get::<String>("", "type")
+                .map_err(|_| RenameError::Internal)?,
+        )
+        .map_err(|_| RenameError::Internal)?,
+    })
+}
+
 pub(super) async fn list(db: &DatabaseConnection) -> Result<ChannelList, DbErr> {
     let rows = db
         .query_all_raw(Statement::from_string(

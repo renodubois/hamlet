@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, pin::Pin, time::Duration};
 
 // The explicit API inventory cross-checks annotations against Actix registrations.
-// The source scan below fails if a new GET/POST handler is registered without inventory coverage.
+// The source scan below fails if a new method handler is registered without inventory coverage.
 const INVENTORY: &[(&str, &str, &str, u16, bool)] = &[
     ("post", "/api/v1/auth/signup", "signup", 201, false),
     ("post", "/api/v1/auth/login", "login", 200, false),
@@ -13,6 +13,7 @@ const INVENTORY: &[(&str, &str, &str, u16, bool)] = &[
     ("get", "/api/v1/events", "events", 200, true),
     ("post", "/api/v1/channels", "create_route", 201, true),
     ("get", "/api/v1/channels", "list_route", 200, true),
+    ("patch", "/api/v1/channels/{id}", "rename_route", 200, true),
     (
         "post",
         "/api/v1/channels/{channel_id}/messages",
@@ -88,7 +89,7 @@ async fn generated_contract_is_current_and_covers_every_registered_handler() {
         }
     }
     assert_eq!(
-        resource_count, 7,
+        resource_count, 8,
         "new Actix resources require an inventory entry"
     );
     registered.sort();
@@ -196,12 +197,11 @@ async fn documented_security_and_error_shapes_match_http() {
         if !protected {
             continue;
         }
-        let path = path.replace("{channel_id}", "999999999999999");
-        let request = if method == "get" {
-            test::TestRequest::get()
-        } else {
-            test::TestRequest::post()
-        };
+        let path = path
+            .replace("{channel_id}", "999999999999999")
+            .replace("{id}", "999999999999999");
+        let request =
+            test::TestRequest::default().method(method.to_ascii_uppercase().parse().unwrap());
         let response = test::call_service(&app, request.uri(&path).to_request()).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
         let body: Value = test::read_body_json(response).await;
@@ -232,12 +232,11 @@ async fn documented_security_and_error_shapes_match_http() {
         if handler == "logout" {
             continue;
         }
-        let path = path.replace("{channel_id}", channel_id);
-        let mut request = if method == "get" {
-            test::TestRequest::get()
-        } else {
-            test::TestRequest::post()
-        };
+        let path = path
+            .replace("{channel_id}", channel_id)
+            .replace("{id}", channel_id);
+        let mut request =
+            test::TestRequest::default().method(method.to_ascii_uppercase().parse().unwrap());
         request = request.uri(&path);
         if protected {
             request = request.insert_header(("Authorization", format!("Bearer {token}")));
@@ -248,6 +247,7 @@ async fn documented_security_and_error_shapes_match_http() {
             }
             "login" => request.set_json(json!({"username":"Alice","password":"long password"})),
             "create_route" => request.set_json(json!({"name":"contract","type":"text"})),
+            "rename_route" => request.set_json(json!({"name":"renamed general"})),
             "post_route" => request.set_json(json!({"text":"contract message"})),
             _ => request,
         };

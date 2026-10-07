@@ -79,6 +79,14 @@ pub(super) struct CreateRequest {
     serial: u64,
 }
 
+#[derive(Clone)]
+pub(super) struct RenameRequest {
+    pub generation: u64,
+    pub channel_id: String,
+    pub name: String,
+    serial: u64,
+}
+
 #[derive(Default)]
 pub struct WorkspaceState {
     pub channels: Option<Load<Vec<Channel>>>,
@@ -89,6 +97,10 @@ pub struct WorkspaceState {
     channel_pending: bool,
     channel_serial: u64,
     read_serial: u64,
+    pub rename_pending: bool,
+    pub rename_feedback: Option<String>,
+    pub rename_confirmed: u64,
+    rename_serial: u64,
     pub create_pending: bool,
     pub create_feedback: Option<String>,
     create_serial: u64,
@@ -118,15 +130,91 @@ impl WorkspaceState {
 
     pub(super) fn clear(&mut self) {
         // Keep obsolete completions distinct even if the same session remains active.
+        let rename_next = self.rename_serial.wrapping_add(1);
         let next = self.create_serial.wrapping_add(1);
         let read_next = self.read_serial.wrapping_add(1);
         let channel_next = self.channel_serial.wrapping_add(1);
         let send_next = self.send_serial.wrapping_add(1);
         *self = Self::default();
+        self.rename_serial = rename_next;
         self.send_serial = send_next;
         self.create_serial = next;
         self.read_serial = read_next;
         self.channel_serial = channel_next;
+    }
+
+    pub(super) fn reset_rename_feedback(&mut self) {
+        if !self.rename_pending {
+            self.rename_feedback = None;
+        }
+    }
+
+    pub(super) fn rename(
+        &mut self,
+        session: &Identity,
+        id: &str,
+        name: &str,
+    ) -> Option<RenameRequest> {
+        if self.rename_pending {
+            return None;
+        }
+        let Some(Load::Ready(channels)) = &self.channels else {
+            return None;
+        };
+        if !channels.iter().any(|channel| channel.id == id) {
+            return None;
+        }
+        let generation = session.session_generation()?;
+        let name = name.trim();
+        if !(1..=64).contains(&name.len())
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b' ' || b == b'-' || b == b'_')
+        {
+            self.rename_feedback = Some("Channel name must be 1–64 bytes after trimming, using ASCII letters, digits, spaces, hyphens or underscores.".into());
+            return None;
+        }
+        self.rename_serial = self.rename_serial.wrapping_add(1);
+        self.rename_pending = true;
+        self.rename_feedback = None;
+        Some(RenameRequest {
+            generation,
+            channel_id: id.into(),
+            name: name.into(),
+            serial: self.rename_serial,
+        })
+    }
+
+    pub(super) fn complete_rename(
+        &mut self,
+        session: &mut Identity,
+        request: &RenameRequest,
+        result: Result<Channel, ApiError>,
+    ) {
+        if !self.rename_pending
+            || self.rename_serial != request.serial
+            || session.session_generation() != Some(request.generation)
+        {
+            return;
+        }
+        self.rename_pending = false;
+        match result {
+            Ok(channel) if channel.id == request.channel_id => {
+                if let Some(Load::Ready(channels)) = &mut self.channels {
+                    if let Some(existing) = channels.iter_mut().find(|item| item.id == channel.id) { *existing = channel; }
+                    channels.sort_by_key(|item| (item.name.to_ascii_lowercase(), item.id.clone()));
+                }
+                self.rename_feedback = None;
+                self.rename_confirmed = self.rename_confirmed.wrapping_add(1);
+            }
+            Err(ApiError::AlreadyInvalid) => { session.protected_rejected(request.generation); self.clear(); }
+            result => self.rename_feedback = Some(match result {
+                Err(ApiError::Conflict) => "Channel name already exists. Choose another name.".into(),
+                Err(ApiError::InvalidInput) => "The server rejected this channel name. Check the name and try again.".into(),
+                Err(ApiError::NotFound) => "Channel not found.".into(),
+                _ => "Could not confirm channel rename; it may have succeeded. Check the channel list before submitting again.".into(),
+            }),
+        }
     }
 
     pub(super) fn create(&mut self, session: &Identity, name: &str) -> Option<CreateRequest> {

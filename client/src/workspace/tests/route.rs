@@ -1,4 +1,6 @@
 //! Real-route workspace verification, including two-client orders and server restart.
+#[path = "rename_route.rs"]
+mod rename_route;
 use super::{Load, Older, WorkspaceHandle};
 use crate::{
     api::{
@@ -263,7 +265,7 @@ impl Drop for RelayTasks {
 }
 
 // Faults/delays at the HTTP boundary still execute the real route first. Losing
-// a successful POST response models an uncertain outcome, not a failed write.
+// a successful write response models an uncertain outcome, not a failed write.
 struct ControlledResponses {
     inner: CountReads,
     channels: Arc<Gate>,
@@ -277,8 +279,9 @@ impl RequestAdapter for ControlledResponses {
     fn execute(&self, request: reqwest::Request) -> ApiFuture<Result<Response, ApiError>> {
         let get = request.method() == reqwest::Method::GET;
         let history = get && request.url().path().ends_with("/messages");
-        let post = request.method() == reqwest::Method::POST
-            && request.url().path().ends_with("/messages");
+        let post = request.method() == reqwest::Method::PATCH
+            || (request.method() == reqwest::Method::POST
+                && request.url().path().ends_with("/messages"));
         let gate = if history {
             self.history.clone()
         } else if get {
