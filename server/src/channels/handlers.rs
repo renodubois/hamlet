@@ -76,7 +76,7 @@ pub(crate) async fn delete_route(
     let Ok(id) = path.parse::<i64>() else {
         return bad_request();
     };
-    match operations::delete(&db.db, id).await {
+    match operations::delete(&db.db, &db.events, id).await {
         Ok(()) => HttpResponse::NoContent().finish(),
         Err(DeleteError::Missing) => {
             problem(StatusCode::NOT_FOUND, "not_found", "Channel not found")

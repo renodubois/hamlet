@@ -15,7 +15,10 @@ fn deletion_discards_operations_rejects_late_deliveries_and_can_clear_selection(
     assert!(!state.history.contains_key("z"));
     assert!(!state.drafts.contains_key("z"));
     assert!(!state.send_pending.contains_key("z"));
-    assert!(!state.rename_pending);
+    assert!(
+        state.rename_pending,
+        "deletion does not confirm or cancel a dialog request"
+    );
     state.complete_rename(
         &mut session,
         &rename,
@@ -25,6 +28,8 @@ fn deletion_discards_operations_rejects_late_deliveries_and_can_clear_selection(
         }),
     );
     assert_eq!(state.rename_confirmed, 0);
+    assert!(!state.rename_pending);
+    assert!(state.rename_feedback.is_some());
     assert_eq!(
         state.complete_send(&mut session, &send, Ok(message("late", "z")), 0),
         SendOutcome::Stale

@@ -116,6 +116,22 @@ fn channel_rename_matches_the_wire_contract_and_accepts_additional_fields() {
 }
 
 #[test]
+fn channel_deletion_matches_the_wire_contract_and_accepts_additional_fields() {
+    let wire = json!({"type":"channel_deleted", "channel_id":"100000000000001"});
+    let event: Event = serde_json::from_value(wire.clone()).unwrap();
+    let Event::ChannelDeleted { channel_id } = &event else {
+        panic!("expected channel deletion");
+    };
+    assert_eq!(channel_id, "100000000000001");
+    assert_eq!(serde_json::to_value(event).unwrap(), wire);
+    let extended: Event = serde_json::from_value(json!({
+        "type":"channel_deleted", "channel_id":"100000000000001", "extra":true
+    }))
+    .unwrap();
+    assert_eq!(serde_json::to_value(extended).unwrap(), wire);
+}
+
+#[test]
 fn maximum_message_and_additional_fields_round_trip() {
     // Server accepts 4000 Unicode scalar values, not 4000 bytes.
     let text = "🦀\n".repeat(2000);
@@ -186,6 +202,11 @@ fn unknown_event_types_deserialize_but_cannot_be_serialized() {
 #[test]
 fn malformed_events_do_not_fall_back_to_unknown() {
     for wire in [
+        r#"{"type":"channel_deleted"}"#,
+        r#"{"type":"channel_deleted","channel_id":null}"#,
+        r#"{"type":"channel_deleted","channel_id":1}"#,
+        r#"{"type":"channel_deleted","channel_id":"c","channel_id":"d"}"#,
+        r#"{"type":"channel_deleted","type":"future","channel_id":"c"}"#,
         r#"{"type":"message_created"}"#,
         r#"{"type":"channel_renamed"}"#,
         r#"{"type":"channel_renamed","channel":null}"#,
@@ -210,7 +231,7 @@ fn malformed_events_do_not_fall_back_to_unknown() {
 
 #[cfg(feature = "openapi")]
 #[test]
-fn openapi_describes_creation_and_rename_payloads() {
+fn openapi_describes_creation_rename_and_deletion_payloads() {
     use utoipa::OpenApi;
     #[derive(OpenApi)]
     #[openapi(components(schemas(Event)))]
@@ -222,7 +243,7 @@ fn openapi_describes_creation_and_rename_payloads() {
         "date-time"
     );
     assert_eq!(schemas["ChannelType"]["enum"], json!(["text"]));
-    assert_eq!(schemas["Event"]["oneOf"].as_array().unwrap().len(), 3);
+    assert_eq!(schemas["Event"]["oneOf"].as_array().unwrap().len(), 4);
     let variants = schemas["Event"]["oneOf"].as_array().unwrap();
     assert_eq!(
         variants[0]["properties"]["type"]["enum"],
@@ -236,4 +257,10 @@ fn openapi_describes_creation_and_rename_payloads() {
         variants[2]["properties"]["type"]["enum"],
         json!(["channel_renamed"])
     );
+    assert_eq!(
+        variants[3]["properties"]["type"]["enum"],
+        json!(["channel_deleted"])
+    );
+    assert_eq!(variants[3]["properties"]["channel_id"]["type"], "string");
+    assert_eq!(variants[3]["required"], json!(["channel_id", "type"]));
 }

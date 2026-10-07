@@ -16,6 +16,7 @@ pub enum LiveEvent {
     Ready,
     ChannelCreated(super::Channel),
     ChannelRenamed(super::Channel),
+    ChannelDeleted(String),
     MessageCreated(super::Message),
 }
 
@@ -307,6 +308,15 @@ fn decode(kind: &str, data: &str) -> Result<Option<LiveEvent>, ApiError> {
                 }
                 hamlet_protocol::Event::ChannelRenamed { channel } => {
                     LiveEvent::ChannelRenamed(super::channels::decode_channel(channel)?)
+                }
+                hamlet_protocol::Event::ChannelDeleted { channel_id } => {
+                    if channel_id.is_empty()
+                        || !channel_id.bytes().all(|byte| byte.is_ascii_digit())
+                        || !matches!(channel_id.parse::<i64>(), Ok(id) if id > 0)
+                    {
+                        return Err(ApiError::InvalidResponse);
+                    }
+                    LiveEvent::ChannelDeleted(channel_id)
                 }
                 hamlet_protocol::Event::MessageCreated { message } => {
                     let channel = message.channel_id.clone();

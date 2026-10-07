@@ -101,7 +101,6 @@ pub struct WorkspaceState {
     pub delete_confirmed: u64,
     delete_serial: u64,
     deleted: HashSet<String>,
-    rename_target: Option<String>,
     pub channels: Option<Load<Vec<Channel>>>,
     pub selected: Option<String>,
     pub history: HashMap<String, Load<Vec<Message>>>,
@@ -200,37 +199,9 @@ impl WorkspaceState {
         self.delete_pending = false;
         match result {
             Ok(()) => {
-                let id = &request.channel_id;
-                self.deleted.insert(id.clone());
-                if let Some(Load::Ready(channels)) = &mut self.channels {
-                    channels.retain(|channel| channel.id != *id);
-                }
-                self.history.remove(id);
-                self.older.remove(id);
-                self.cursors.remove(id);
-                self.drafts.remove(id);
-                self.send_pending.remove(id);
-                self.send_feedback.remove(id);
-                self.uncertain.remove(id);
-                self.uncertain_notice.remove(id);
-                self.confirmed.remove(id);
-                if self.rename_target.as_ref() == Some(id) {
-                    self.rename_pending = false;
-                    self.rename_feedback = None;
-                    self.rename_target = None;
-                    self.rename_serial = self.rename_serial.wrapping_add(1);
-                }
                 self.delete_confirmed = self.delete_confirmed.wrapping_add(1);
                 self.delete_feedback = None;
-                if self.selected.as_ref() == Some(id) {
-                    self.cancel_selected();
-                    self.selected = None;
-                    let next = match &self.channels {
-                        Some(Load::Ready(channels)) => channels.first().map(|channel| channel.id.clone()),
-                        _ => None,
-                    };
-                    return next.and_then(|id| self.select(session, &id));
-                }
+                return self.merge_deletion(session, &request.channel_id);
             }
             Err(ApiError::AlreadyInvalid) => { session.protected_rejected(request.generation); self.clear(); }
             Err(error) => self.delete_feedback = Some(match error {
@@ -239,6 +210,36 @@ impl WorkspaceState {
                 ApiError::InvalidInput => "The server rejected this channel deletion.".into(),
                 _ => "Could not confirm channel deletion; it may have succeeded. Check the channel list before submitting again.".into(),
             }),
+        }
+        None
+    }
+
+    /// Shared local/live cleanup. Dialog operations keep their own HTTP outcome;
+    /// a delivered deletion is never proof that an originating request succeeded.
+    pub(super) fn merge_deletion(&mut self, session: &Identity, id: &str) -> Option<ReadRequest> {
+        if !self.deleted.insert(id.to_owned()) {
+            return None;
+        }
+        if let Some(Load::Ready(channels)) = &mut self.channels {
+            channels.retain(|channel| channel.id != id);
+        }
+        self.history.remove(id);
+        self.older.remove(id);
+        self.cursors.remove(id);
+        self.drafts.remove(id);
+        self.send_pending.remove(id);
+        self.send_feedback.remove(id);
+        self.uncertain.remove(id);
+        self.uncertain_notice.remove(id);
+        self.confirmed.remove(id);
+        if self.selected.as_deref() == Some(id) {
+            self.cancel_selected();
+            self.selected = None;
+            let next = match &self.channels {
+                Some(Load::Ready(channels)) => channels.first().map(|channel| channel.id.clone()),
+                _ => None,
+            };
+            return next.and_then(|id| self.select(session, &id));
         }
         None
     }
@@ -276,7 +277,6 @@ impl WorkspaceState {
         }
         self.rename_serial = self.rename_serial.wrapping_add(1);
         self.rename_pending = true;
-        self.rename_target = Some(id.into());
         self.rename_feedback = None;
         Some(RenameRequest {
             generation,
@@ -300,6 +300,9 @@ impl WorkspaceState {
         }
         self.rename_pending = false;
         match result {
+            Ok(channel) if channel.id == request.channel_id && self.deleted.contains(&channel.id) => {
+                self.rename_feedback = Some("Channel not found.".into());
+            }
             Ok(channel) if channel.id == request.channel_id => {
                 self.merge_rename(channel);
                 self.rename_feedback = None;
@@ -361,6 +364,10 @@ impl WorkspaceState {
         match result {
             Ok(channel) => {
                 let id = channel.id.clone();
+                if self.deleted.contains(&id) {
+                    self.create_feedback = Some("Channel not found.".into());
+                    return (false, None);
+                }
                 self.merge_channel(channel);
                 self.create_feedback = None;
                 (true, self.select(session, &id))
@@ -384,6 +391,9 @@ impl WorkspaceState {
 
     /// Rename only locally known identities, without changing conversation or operation state.
     pub(super) fn merge_rename(&mut self, channel: Channel) {
+        if self.deleted.contains(&channel.id) {
+            return;
+        }
         let Some(Load::Ready(channels)) = &mut self.channels else {
             return;
         };
@@ -566,7 +576,8 @@ impl WorkspaceState {
         }
         self.channel_pending = false;
         match result {
-            Ok(channels) => {
+            Ok(mut channels) => {
+                channels.retain(|channel| !self.deleted.contains(&channel.id));
                 self.channels = Some(Load::Ready(channels));
                 let Some(Load::Ready(channels)) = &self.channels else {
                     unreachable!();

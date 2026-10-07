@@ -379,6 +379,17 @@ impl Coordinator {
                 let _ = self.state.merge_channel(channel);
             }
             LiveEvent::ChannelRenamed(channel) => self.state.merge_rename(channel),
+            LiveEvent::ChannelDeleted(id) => {
+                let previous = self.state.selected.clone();
+                let next = self.state.merge_deletion(&self.identity, &id);
+                if let Some(task) = self.sends.remove(&id) {
+                    task.abort();
+                }
+                self.selection_changed(previous);
+                if let Some(next) = next {
+                    self.load_history(next);
+                }
+            }
             LiveEvent::MessageCreated(message) => {
                 let _ = self.state.merge_message(message);
             }
@@ -549,15 +560,10 @@ impl Coordinator {
                 let next = self
                     .state
                     .complete_delete(&mut self.identity, &request, result);
-                if revision != self.state.delete_confirmed {
-                    if let Some(task) = self.sends.remove(&request.channel_id) {
-                        task.abort();
-                    }
-                    if !self.state.rename_pending
-                        && let Some(task) = self.rename_task.take()
-                    {
-                        task.abort();
-                    }
+                if revision != self.state.delete_confirmed
+                    && let Some(task) = self.sends.remove(&request.channel_id)
+                {
+                    task.abort();
                 }
                 self.selection_changed(previous);
                 if let Some(next) = next {
@@ -621,6 +627,10 @@ mod live_coordinator_tests;
 #[cfg(test)]
 #[path = "tests/support/live.rs"]
 mod live_support;
+
+#[cfg(test)]
+#[path = "tests/delete_coordinator.rs"]
+mod delete_coordinator_tests;
 
 #[cfg(test)]
 #[path = "tests/coordinator.rs"]

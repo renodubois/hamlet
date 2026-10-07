@@ -1,14 +1,55 @@
 use super::*;
+use crate::api::test_support::{StreamAdapter, StreamResponse};
+
+type DeleteStreamBody = async_channel::Sender<Result<Vec<u8>, ApiError>>;
+#[derive(Default)]
+struct DeleteStream(Mutex<Option<DeleteStreamBody>>);
+impl StreamAdapter for DeleteStream {
+    fn open(&self, _: Request) -> ApiFuture<Result<StreamResponse, ApiError>> {
+        let (send, body) = async_channel::bounded(16);
+        *self.0.lock().unwrap() = Some(send);
+        Box::pin(async move {
+            Ok(StreamResponse::Controlled {
+                status: StatusCode::OK,
+                content_type: "text/event-stream".into(),
+                body,
+            })
+        })
+    }
+}
+impl DeleteStream {
+    fn frame(&self, kind: &str, data: serde_json::Value) {
+        self.0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .try_send(Ok(format!("event: {kind}\ndata: {data}\n\n").into_bytes()))
+            .unwrap();
+    }
+}
 
 #[gpui_kit::test]
-fn selected_delete_controls_show_fallback_and_discard_deleted_draft(cx: &mut TestAppContext) {
+fn selected_delete_controls_show_live_fallback_but_wait_for_http_confirmation(
+    cx: &mut TestAppContext,
+) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         cx.set_reduce_motion(true);
     });
     let calls = Arc::new(Mutex::new(Vec::new()));
+    let stream = Arc::new(DeleteStream::default());
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = open_controlled(window, cx, Arc::new(DeleteAuth(calls.clone())));
+        let execution =
+            crate::runtime::Execution::controlled(cx.background_executor().clone(), 1_800_000_000);
+        let view = crate::views::app_shell::open(
+            window,
+            cx,
+            HttpTransport::with_adapters(Arc::new(DeleteAuth(calls.clone())), stream.clone()),
+            crate::storage::Config::default(),
+            None,
+            execution,
+        );
         Root::new(view, window, cx)
     });
     cx.update(|window, cx| {
@@ -19,6 +60,8 @@ fn selected_delete_controls_show_fallback_and_discard_deleted_draft(cx: &mut Tes
         window.input("pass", cx);
         window.click("login", cx);
     });
+    cx.run_until_parked();
+    stream.frame("ready", serde_json::json!({}));
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -37,6 +80,26 @@ fn selected_delete_controls_show_fallback_and_discard_deleted_draft(cx: &mut Tes
         window.click("confirm-delete-channel", cx);
     });
     cx.run_until_parked();
+    for _ in 0..2 {
+        stream.frame(
+            "change",
+            serde_json::json!({"type":"channel_deleted","channel_id":"000000000000001"}),
+        );
+        cx.run_until_parked();
+    }
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("channel-000000000000001").is_none());
+        assert_eq!(window.find("channel-header").label(), Some("# general"));
+        assert_eq!(composer_text(window, cx), "");
+        assert!(window.try_find("delete-channel-confirmation").is_some());
+        assert_eq!(
+            window.find("confirm-delete-channel").label(),
+            Some("Deleting channel…")
+        );
+        window.click("confirm-delete-channel", cx);
+    });
+    assert_eq!(calls.lock().unwrap().len(), 1);
     calls.lock().unwrap()[0].1.try_send(Ok(())).unwrap();
     cx.run_until_parked();
     cx.update(|window, cx| {
@@ -46,6 +109,90 @@ fn selected_delete_controls_show_fallback_and_discard_deleted_draft(cx: &mut Tes
         assert_eq!(composer_text(window, cx), "");
         assert!(window.try_find("delete-channel-confirmation").is_none());
     });
+}
+
+#[gpui_kit::test]
+fn live_delete_keeps_missing_and_uncertain_dialog_feedback_without_replay(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_reduce_motion(true);
+    });
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let stream = Arc::new(DeleteStream::default());
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let execution =
+            crate::runtime::Execution::controlled(cx.background_executor().clone(), 1_800_000_000);
+        let view = crate::views::app_shell::open(
+            window,
+            cx,
+            HttpTransport::with_adapters(Arc::new(DeleteAuth(calls.clone())), stream.clone()),
+            crate::storage::Config::default(),
+            None,
+            execution,
+        );
+        Root::new(view, window, cx)
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("username", cx);
+        window.input("Ada", cx);
+        window.click("password", cx);
+        window.input("pass", cx);
+        window.click("login", cx);
+    });
+    cx.run_until_parked();
+    stream.frame("ready", serde_json::json!({}));
+    cx.run_until_parked();
+    for (id, error, feedback) in [
+        ("000000000000002", ApiError::NotFound, "not found"),
+        (
+            "000000000000001",
+            ApiError::Unavailable,
+            "may have succeeded",
+        ),
+    ] {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.right_click(format!("channel-{id}"), cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("delete-channel-label", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("confirm-delete-channel", cx);
+        });
+        cx.run_until_parked();
+        stream.frame(
+            "change",
+            serde_json::json!({"type":"channel_deleted","channel_id":id}),
+        );
+        cx.run_until_parked();
+        let count = calls.lock().unwrap().len();
+        calls.lock().unwrap()[count - 1]
+            .1
+            .try_send(Err(error))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find(format!("channel-{id}")).is_none());
+            assert!(window.try_find("delete-channel-confirmation").is_some());
+            assert!(
+                window
+                    .find("delete-channel-feedback")
+                    .label()
+                    .unwrap()
+                    .contains(feedback)
+            );
+            window.click("cancel-channel-action", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(calls.lock().unwrap().len(), count, "no mutation replay");
+    }
 }
 
 type DeleteCall = (String, async_channel::Sender<Result<(), ApiError>>);

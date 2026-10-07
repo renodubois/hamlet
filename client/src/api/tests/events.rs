@@ -1,4 +1,33 @@
 use super::*;
+
+#[test]
+fn deletion_wire_validates_identity_and_known_fields() {
+    assert_eq!(
+        decode(
+            "change",
+            r#"{"type":"channel_deleted","channel_id":"000000000000001","extra":true}"#
+        ),
+        Ok(Some(LiveEvent::ChannelDeleted("000000000000001".into())))
+    );
+    for data in [
+        r#"{"type":"channel_deleted"}"#,
+        r#"{"type":"channel_deleted","channel_id":1}"#,
+        r#"{"type":"channel_deleted","channel_id":""}"#,
+        r#"{"type":"channel_deleted","channel_id":"abc"}"#,
+        r#"{"type":"channel_deleted","channel_id":"0"}"#,
+        r#"{"type":"channel_deleted","channel_id":"-1"}"#,
+        r#"{"type":"channel_deleted","channel_id":"9223372036854775808"}"#,
+        r#"{"type":"channel_deleted","channel_id":"1","channel_id":"2"}"#,
+        r#"{"type":"channel_deleted","type":"channel_deleted","channel_id":"1"}"#,
+    ] {
+        assert_eq!(
+            decode("change", data),
+            Err(ApiError::InvalidResponse),
+            "{data}"
+        );
+    }
+}
+
 use crate::api::HttpTransport;
 use gpui_kit::TestAppContext;
 use std::sync::Arc;

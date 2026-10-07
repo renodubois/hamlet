@@ -156,7 +156,15 @@ pub(super) enum DeleteError {
     Internal,
 }
 
-pub(super) async fn delete(db: &DatabaseConnection, id: i64) -> Result<(), DeleteError> {
+pub(super) async fn delete(
+    db: &DatabaseConnection,
+    events: &EventHub,
+    id: i64,
+) -> Result<(), DeleteError> {
+    let event = PreparedEvent::new(&Event::ChannelDeleted {
+        channel_id: id.to_string(),
+    })
+    .map_err(|_| DeleteError::Internal)?;
     // SQLite serializes writers. Check the invariant inside the same statement
     // that marks the row, so simultaneous deletes cannot both remove the last
     // two active channels. No stale application-side count is used.
@@ -166,6 +174,8 @@ pub(super) async fn delete(db: &DatabaseConnection, id: i64) -> Result<(), Delet
         [chrono::Utc::now().to_rfc3339().into(), id.into()],
     )).await.map_err(|_| DeleteError::Internal)?;
     if result.rows_affected() != 0 {
+        // Best-effort write-then-notify, with no post-write await or serialization.
+        events.notify(event);
         return Ok(());
     }
     let active = db

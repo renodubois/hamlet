@@ -200,6 +200,24 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "properties": {
+              "channel_id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "channel_deleted"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "channel_id",
+              "type"
+            ],
+            "type": "object"
           }
         ]
       },

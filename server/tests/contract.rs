@@ -164,8 +164,14 @@ async fn generated_contract_is_current_and_covers_every_registered_handler() {
             .as_array()
             .unwrap()
             .len(),
-        3
+        4
     );
+    let deletion = &doc["components"]["schemas"]["Event"]["oneOf"][3];
+    assert_eq!(
+        deletion["properties"]["type"]["enum"],
+        json!(["channel_deleted"])
+    );
+    assert_eq!(deletion["properties"]["channel_id"]["type"], "string");
     let params = doc["paths"]["/api/v1/channels/{channel_id}/messages"]["get"]["parameters"]
         .as_array()
         .unwrap();
