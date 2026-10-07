@@ -112,6 +112,37 @@ fn reconnect_retains_rows_draft_and_creation_input_without_http_reads(cx: &mut T
         window.click("channel-name", cx);
         window.input("unfinished room", cx);
     });
+    cx.run_until_parked();
+    // Shared renames reorder both selected and unselected rows while the
+    // conversation and local modal input remain intact.
+    let before_y = cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.find("message-8").bounds().origin.y
+    });
+    for (id, name) in [("000000000000001", "ZZZ"), ("000000000000002", "AAA")] {
+        let data = serde_json::json!({"type":"channel_renamed","channel":{"id":id,"name":name,"type":"text"}});
+        api.streams
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .try_send(Ok(format!("event: change\ndata: {data}\n\n").into_bytes()))
+            .unwrap();
+        cx.run_until_parked();
+    }
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("channel-000000000000001").label(), Some("ZZZ"));
+        assert_eq!(window.find("channel-000000000000002").label(), Some("AAA"));
+        assert!(
+            window.find("channel-000000000000002").bounds().origin.y
+                < window.find("channel-000000000000001").bounds().origin.y
+        );
+        assert_eq!(window.find("message-8").bounds().origin.y, before_y);
+        assert_eq!(composer_text(window, cx), "draft survives");
+        assert_eq!(window.find("channel-name").value(), Some("unfinished room"));
+    });
+    assert_eq!(api.reads.load(Ordering::SeqCst), 2);
     api.disconnect();
     cx.run_until_parked();
     let assert_retained = |window: &mut Window, cx: &mut gpui_kit::App| {

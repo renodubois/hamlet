@@ -343,6 +343,7 @@ impl Coordinator {
             LiveEvent::ChannelCreated(channel) => {
                 let _ = self.state.merge_channel(channel);
             }
+            LiveEvent::ChannelRenamed(channel) => self.state.merge_rename(channel),
             LiveEvent::MessageCreated(message) => {
                 let _ = self.state.merge_message(message);
             }

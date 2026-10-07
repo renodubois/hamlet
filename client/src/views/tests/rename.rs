@@ -5,7 +5,29 @@ type RenameCall = (
     serde_json::Value,
     async_channel::Sender<Result<serde_json::Value, ApiError>>,
 );
-struct RenameAuth(Arc<Mutex<Vec<RenameCall>>>);
+type RenameStreamBody = async_channel::Sender<Result<Vec<u8>, ApiError>>;
+struct RenameAuth {
+    calls: Arc<Mutex<Vec<RenameCall>>>,
+    streams: Mutex<Vec<RenameStreamBody>>,
+}
+impl crate::api::test_support::StreamAdapter for RenameAuth {
+    fn open(
+        &self,
+        _: Request,
+    ) -> ApiFuture<Result<crate::api::test_support::StreamResponse, ApiError>> {
+        let (send, body) = async_channel::bounded(8);
+        send.try_send(Ok(b"event: ready\ndata: {}\n\n".to_vec()))
+            .unwrap();
+        self.streams.lock().unwrap().push(send);
+        Box::pin(async move {
+            Ok(crate::api::test_support::StreamResponse::Controlled {
+                status: StatusCode::OK,
+                content_type: "text/event-stream".into(),
+                body,
+            })
+        })
+    }
+}
 impl RequestAdapter for RenameAuth {
     fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
         if request.method() != reqwest::Method::PATCH {
@@ -13,7 +35,7 @@ impl RequestAdapter for RenameAuth {
         }
         let body = serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
         let (send, receive) = async_channel::bounded(1);
-        self.0
+        self.calls
             .lock()
             .unwrap()
             .push((request.url().path().into(), body, send));
@@ -28,12 +50,22 @@ fn rename_controls_target_pending_feedback_and_confirmation(cx: &mut TestAppCont
         cx.set_reduce_motion(true);
     });
     let calls = Arc::new(Mutex::new(Vec::new()));
+    let api = Arc::new(RenameAuth {
+        calls: calls.clone(),
+        streams: Mutex::new(Vec::new()),
+    });
     let (_, cx) = cx.add_window_view(|window, cx| {
-        Root::new(
-            open_controlled(window, cx, Arc::new(RenameAuth(calls.clone()))),
+        let execution =
+            crate::runtime::Execution::controlled(cx.background_executor().clone(), 1_800_000_000);
+        let view = crate::views::app_shell::open(
             window,
             cx,
-        )
+            HttpTransport::with_adapters(api.clone(), api.clone()),
+            crate::storage::Config::default(),
+            None,
+            execution,
+        );
+        Root::new(view, window, cx)
     });
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -96,6 +128,26 @@ fn rename_controls_target_pending_feedback_and_confirmation(cx: &mut TestAppCont
     assert_eq!(
         calls.lock().unwrap()[0].1,
         serde_json::json!({"name":"AAA"})
+    );
+    let data = serde_json::json!({"type":"channel_renamed","channel":{"id":"000000000000002","name":"AAA","type":"text"}});
+    api.streams.lock().unwrap()[0]
+        .try_send(Ok(format!("event: change\ndata: {data}\n\n").into_bytes()))
+        .unwrap();
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("channel-000000000000002").label(), Some("AAA"));
+        assert_eq!(window.find("rename-channel-name").value(), Some("  AAA  "));
+        assert_eq!(
+            window.find("confirm-rename-channel").label(),
+            Some("Renaming channel…")
+        );
+        assert_eq!(composer_text(window, cx), "preserved draft");
+    });
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        1,
+        "live rename does not confirm or retry the dialog request"
     );
     for (index, error, feedback) in [
         (0, ApiError::Conflict, "already exists"),

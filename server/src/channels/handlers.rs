@@ -47,7 +47,7 @@ pub(crate) async fn rename_route(
     let Ok(input) = input else {
         return bad_request();
     };
-    match operations::rename(&db.db, id, &input).await {
+    match operations::rename(&db.db, &db.events, id, &input).await {
         Ok(channel) => HttpResponse::Ok().json(channel),
         Err(RenameError::Invalid) => bad_request(),
         Err(RenameError::Missing) => {

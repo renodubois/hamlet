@@ -200,10 +200,7 @@ impl WorkspaceState {
         self.rename_pending = false;
         match result {
             Ok(channel) if channel.id == request.channel_id => {
-                if let Some(Load::Ready(channels)) = &mut self.channels {
-                    if let Some(existing) = channels.iter_mut().find(|item| item.id == channel.id) { *existing = channel; }
-                    channels.sort_by_key(|item| (item.name.to_ascii_lowercase(), item.id.clone()));
-                }
+                self.merge_rename(channel);
                 self.rename_feedback = None;
                 self.rename_confirmed = self.rename_confirmed.wrapping_add(1);
             }
@@ -282,6 +279,18 @@ impl WorkspaceState {
                 (false, None)
             }
         }
+    }
+
+    /// Rename only locally known identities, without changing conversation or operation state.
+    pub(super) fn merge_rename(&mut self, channel: Channel) {
+        let Some(Load::Ready(channels)) = &mut self.channels else {
+            return;
+        };
+        let Some(existing) = channels.iter_mut().find(|item| item.id == channel.id) else {
+            return;
+        };
+        *existing = channel;
+        channels.sort_by_key(|item| (item.name.to_ascii_lowercase(), item.id.clone()));
     }
 
     /// Remote creations never change selection or allocate history.

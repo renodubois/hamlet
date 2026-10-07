@@ -72,6 +72,33 @@ fn opened(
     (stream, body)
 }
 const CHANNEL: &str = r#"{"type":"channel_created","channel":{"id":"123","name":"general","type":"text","extra":1},"extra":true}"#;
+#[gpui_kit::test]
+fn rename_uses_shared_channel_validation(cx: &mut TestAppContext) {
+    let renamed = CHANNEL.replace("channel_created", "channel_renamed");
+    let (mut stream, body) = opened(cx);
+    body.try_send(Ok(change(&renamed))).unwrap();
+    assert_eq!(
+        next(cx, &mut stream),
+        Ok(LiveEvent::ChannelRenamed(super::super::Channel {
+            id: "123".into(),
+            name: "general".into()
+        }))
+    );
+    for invalid in [
+        renamed.replace("\"123\"", "\"\""),
+        renamed.replace("general", ""),
+        renamed.replace("text", "voice"),
+        r#"{"type":"channel_renamed"}"#.into(),
+    ] {
+        let (mut stream, body) = opened(cx);
+        body.try_send(Ok(change(&invalid))).unwrap();
+        assert_eq!(
+            next(cx, &mut stream),
+            Err(StreamError::Api(ApiError::InvalidResponse))
+        );
+    }
+}
+
 const MESSAGE: &str = r#"{"type":"message_created","message":{"id":"456","channel_id":"123","author":{"id":"789","display_name":"Ada","extra":true},"text":"雪\"\\\nnext","created_at":"2026-01-01T01:00:00+01:00","extra":1}}"#;
 fn change(value: &str) -> Vec<u8> {
     format!("event: change\ndata: {value}\n\n").into_bytes()

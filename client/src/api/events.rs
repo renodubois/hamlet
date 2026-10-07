@@ -15,6 +15,7 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 pub enum LiveEvent {
     Ready,
     ChannelCreated(super::Channel),
+    ChannelRenamed(super::Channel),
     MessageCreated(super::Message),
 }
 
@@ -303,6 +304,9 @@ fn decode(kind: &str, data: &str) -> Result<Option<LiveEvent>, ApiError> {
             Ok(Some(match event {
                 hamlet_protocol::Event::ChannelCreated { channel } => {
                     LiveEvent::ChannelCreated(super::channels::decode_channel(channel)?)
+                }
+                hamlet_protocol::Event::ChannelRenamed { channel } => {
+                    LiveEvent::ChannelRenamed(super::channels::decode_channel(channel)?)
                 }
                 hamlet_protocol::Event::MessageCreated { message } => {
                     let channel = message.channel_id.clone();

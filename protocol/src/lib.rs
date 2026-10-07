@@ -1,4 +1,4 @@
-//! Shared wire contract for Hamlet HTTP and creation updates.
+//! Shared wire contract for Hamlet HTTP and live updates.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -89,6 +89,9 @@ pub enum Event {
         message: Message,
     },
     ChannelCreated {
+        channel: Channel,
+    },
+    ChannelRenamed {
         channel: Channel,
     },
     /// Receive-only fallback for event types this version does not support.

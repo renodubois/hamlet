@@ -1,4 +1,4 @@
-//! Validates, creates and lists channels in SQLite; successful creations notify the live-update hub.
+//! Validates, creates, renames and lists channels in SQLite; successful writes notify the live-update hub.
 //! Publication is best-effort and does not await subscriber delivery.
 
 use super::types::{Channel, ChannelList, CreateChannel};
@@ -94,6 +94,7 @@ pub(super) enum RenameError {
 
 pub(super) async fn rename(
     db: &DatabaseConnection,
+    events: &EventHub,
     id: i64,
     input: &super::types::RenameChannel,
 ) -> Result<Channel, RenameError> {
@@ -101,12 +102,36 @@ pub(super) async fn rename(
     if !valid(name) {
         return Err(RenameError::Invalid);
     }
-    // One statement applies the write and returns its own result, even if another
-    // rename follows immediately. Identity, type and conversation are untouched.
+    // Type is immutable through channel operations. Decode it and prepare the
+    // complete response/event before writing, so success needs no fallible work.
     let row = db
         .query_one_raw(Statement::from_sql_and_values(
             DbBackend::Sqlite,
-            "UPDATE channels SET name = ?, name_key = ? WHERE id = ? RETURNING id, name, type",
+            "SELECT type FROM channels WHERE id = ?",
+            [id.into()],
+        ))
+        .await
+        .map_err(|_| RenameError::Internal)?
+        .ok_or(RenameError::Missing)?;
+    let channel = Channel {
+        id: id.to_string(),
+        name: name.into(),
+        kind: super::types::parse_channel_type(
+            &row.try_get::<String>("", "type")
+                .map_err(|_| RenameError::Internal)?,
+        )
+        .map_err(|_| RenameError::Internal)?,
+    };
+    let event = PreparedEvent::new(&Event::ChannelRenamed {
+        channel: channel.clone(),
+    })
+    .map_err(|_| RenameError::Internal)?;
+    // No expected-name precondition: the last successful write wins. The
+    // response/event describe this write, not a later concurrent rename.
+    let result = db
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "UPDATE channels SET name = ?, name_key = ? WHERE id = ?",
             [name.into(), name.to_ascii_lowercase().into(), id.into()],
         ))
         .await
@@ -116,20 +141,13 @@ pub(super) async fn rename(
             } else {
                 RenameError::Internal
             }
-        })?
-        .ok_or(RenameError::Missing)?;
-    Ok(Channel {
-        id: row
-            .try_get::<i64>("", "id")
-            .map_err(|_| RenameError::Internal)?
-            .to_string(),
-        name: row.try_get("", "name").map_err(|_| RenameError::Internal)?,
-        kind: super::types::parse_channel_type(
-            &row.try_get::<String>("", "type")
-                .map_err(|_| RenameError::Internal)?,
-        )
-        .map_err(|_| RenameError::Internal)?,
-    })
+        })?;
+    if result.rows_affected() == 0 {
+        return Err(RenameError::Missing);
+    }
+    // Unchanged-name requests also publish; no-op suppression is optional.
+    events.notify(event);
+    Ok(channel)
 }
 
 pub(super) async fn list(db: &DatabaseConnection) -> Result<ChannelList, DbErr> {

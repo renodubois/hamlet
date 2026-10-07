@@ -163,7 +163,7 @@ async fn generated_contract_is_current_and_covers_every_registered_handler() {
             .as_array()
             .unwrap()
             .len(),
-        2
+        3
     );
     let params = doc["paths"]["/api/v1/channels/{channel_id}/messages"]["get"]["parameters"]
         .as_array()

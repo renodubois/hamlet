@@ -96,6 +96,26 @@ fn channel_creation_matches_the_language_neutral_wire_example() {
 }
 
 #[test]
+fn channel_rename_matches_the_wire_contract_and_accepts_additional_fields() {
+    let channel = json!({"id":"100000000000001", "name":"Renamed", "type":"text"});
+    let wire = json!({"type":"channel_renamed", "channel":channel});
+    let event: Event = serde_json::from_value(wire.clone()).unwrap();
+    let Event::ChannelRenamed { channel: decoded } = &event else {
+        panic!("expected channel rename");
+    };
+    assert_eq!(decoded.id, "100000000000001");
+    assert_eq!(decoded.name, "Renamed");
+    assert!(matches!(decoded.kind, ChannelType::Text));
+    assert_eq!(serde_json::to_value(event).unwrap(), wire);
+    let extended: Event = serde_json::from_value(json!({
+        "type":"channel_renamed", "extra":true,
+        "channel":{"id":"100000000000001", "name":"Renamed", "type":"text", "extra":[]}
+    }))
+    .unwrap();
+    assert_eq!(serde_json::to_value(extended).unwrap(), wire);
+}
+
+#[test]
 fn maximum_message_and_additional_fields_round_trip() {
     // Server accepts 4000 Unicode scalar values, not 4000 bytes.
     let text = "🦀\n".repeat(2000);
@@ -167,6 +187,11 @@ fn unknown_event_types_deserialize_but_cannot_be_serialized() {
 fn malformed_events_do_not_fall_back_to_unknown() {
     for wire in [
         r#"{"type":"message_created"}"#,
+        r#"{"type":"channel_renamed"}"#,
+        r#"{"type":"channel_renamed","channel":null}"#,
+        r#"{"type":"channel_renamed","channel":{"id":"c","name":"x","type":"voice"}}"#,
+        r#"{"type":"channel_renamed","channel":{"id":"c","id":"d","name":"x","type":"text"}}"#,
+        r#"{"type":"channel_renamed","type":"future"}"#,
         r#"{"type":"channel_created","channel":null}"#,
         r#"{"type":"channel_created","channel":{"id":"c","id":"d","name":"general","type":"text"}}"#,
         r#"{"type":"channel_created","type":"future"}"#,
@@ -185,7 +210,7 @@ fn malformed_events_do_not_fall_back_to_unknown() {
 
 #[cfg(feature = "openapi")]
 #[test]
-fn openapi_describes_both_creation_payloads() {
+fn openapi_describes_creation_and_rename_payloads() {
     use utoipa::OpenApi;
     #[derive(OpenApi)]
     #[openapi(components(schemas(Event)))]
@@ -197,7 +222,7 @@ fn openapi_describes_both_creation_payloads() {
         "date-time"
     );
     assert_eq!(schemas["ChannelType"]["enum"], json!(["text"]));
-    assert_eq!(schemas["Event"]["oneOf"].as_array().unwrap().len(), 2);
+    assert_eq!(schemas["Event"]["oneOf"].as_array().unwrap().len(), 3);
     let variants = schemas["Event"]["oneOf"].as_array().unwrap();
     assert_eq!(
         variants[0]["properties"]["type"]["enum"],
@@ -206,5 +231,9 @@ fn openapi_describes_both_creation_payloads() {
     assert_eq!(
         variants[1]["properties"]["type"]["enum"],
         json!(["channel_created"])
+    );
+    assert_eq!(
+        variants[2]["properties"]["type"]["enum"],
+        json!(["channel_renamed"])
     );
 }

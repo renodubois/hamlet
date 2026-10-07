@@ -182,6 +182,24 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "properties": {
+              "channel": {
+                "$ref": "#/components/schemas/Channel"
+              },
+              "type": {
+                "enum": [
+                  "channel_renamed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "channel",
+              "type"
+            ],
+            "type": "object"
           }
         ]
       },
