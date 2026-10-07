@@ -37,39 +37,34 @@ struct WorkspaceHost {
     visible: bool,
 }
 impl Render for WorkspaceHost {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let dialogs = Root::render_dialog_layer(window, cx);
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut host = div().relative().size_full().flex().flex_col();
         if self.visible {
             host = host.child(self.workspace.clone());
         }
-        host.children(dialogs.map(|layer| div().absolute().inset_0().child(layer)))
-            .child(
-                Button::new("recreate-workspace")
-                    .label("Recreate workspace")
-                    .on_click(cx.listener(|host, _, window, cx| {
-                        host.workspace = cx.new(|cx| {
-                            WorkspaceView::new(
-                                host.activity.clone(),
-                                Execution::controlled(
-                                    cx.background_executor().clone(),
-                                    1_800_000_000,
-                                ),
-                                window,
-                                cx,
-                            )
-                        });
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("toggle-workspace")
-                    .label("Toggle workspace")
-                    .on_click(cx.listener(|host, _, _, cx| {
-                        host.visible = !host.visible;
-                        cx.notify();
-                    })),
-            )
+        host.child(
+            Button::new("recreate-workspace")
+                .label("Recreate workspace")
+                .on_click(cx.listener(|host, _, window, cx| {
+                    host.workspace = cx.new(|cx| {
+                        WorkspaceView::new(
+                            host.activity.clone(),
+                            Execution::controlled(cx.background_executor().clone(), 1_800_000_000),
+                            window,
+                            cx,
+                        )
+                    });
+                    cx.notify();
+                })),
+        )
+        .child(
+            Button::new("toggle-workspace")
+                .label("Toggle workspace")
+                .on_click(cx.listener(|host, _, _, cx| {
+                    host.visible = !host.visible;
+                    cx.notify();
+                })),
+        )
     }
 }
 fn drain(cx: &mut gpui_kit::VisualTestContext, activity: &WorkspaceHandle) {

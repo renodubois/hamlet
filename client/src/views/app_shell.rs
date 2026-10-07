@@ -5,7 +5,7 @@ use crate::api::HttpTransport;
 use crate::runtime::Execution;
 use crate::session::{Lifecycle, SessionCoordinator, StorageRetry};
 use crate::storage::{Config, Persistence};
-use gpui_kit::component::{ActiveTheme, Root, button::Button};
+use gpui_kit::component::{ActiveTheme, button::Button};
 use gpui_kit::*;
 
 pub(crate) fn open(
@@ -123,8 +123,7 @@ impl AppShell {
     }
 }
 impl Render for AppShell {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let dialogs = Root::render_dialog_layer(window, cx);
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity().downgrade();
         let mut surface = div()
             .relative()
@@ -163,8 +162,6 @@ impl Render for AppShell {
                     }),
             );
         }
-        // Kit's dialog layer has an in-flow wrapper. Keep it out of the flex
-        // column so opening a modal cannot add a gap or shrink the workspace.
-        surface.children(dialogs.map(|layer| div().absolute().inset_0().child(layer)))
+        surface
     }
 }

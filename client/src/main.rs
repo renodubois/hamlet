@@ -8,7 +8,6 @@ mod theme;
 mod views;
 mod workspace;
 
-use gpui_kit::component::Root;
 use gpui_kit::*;
 
 fn main() {
@@ -20,11 +19,12 @@ fn main() {
 
             let bounds = Bounds::centered(None, size(px(500.), px(500.0)), cx);
 
-            cx.open_window(
+            gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     ..Default::default()
                 },
+                cx,
                 |window, cx| {
                     let api = api::HttpTransport::new();
                     #[cfg(not(test))]
@@ -34,9 +34,7 @@ fn main() {
                     let (config, persistence) = (storage::Config::default(), None);
                     let execution =
                         runtime::Execution::production(cx.background_executor().clone());
-                    let view =
-                        views::app_shell::open(window, cx, api, config, persistence, execution);
-                    cx.new(|cx| Root::new(view, window, cx))
+                    views::app_shell::open(window, cx, api, config, persistence, execution)
                 },
             )
             .unwrap();

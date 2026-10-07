@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 hamlet-protocol = { path = "../protocol" }
-gpui-kit = {version = "0.6", "features" = ["inspector"] }
+gpui-kit = { version = "0.7.1", features = ["inspector"] }
 anyhow = "1.0"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
@@ -16,7 +16,7 @@ async-channel = "2"
 keyring = { version = "=3.0.4", default-features = false, features = ["sync-secret-service"] }
 
 [dev-dependencies]
-gpui-kit = { version = "0.6", features = ["test-support"] }
+gpui-kit = { version = "0.7.1", features = ["test-support"] }
 hamlet = { path = "../server" }
 actix-web = "4.14"
 tempfile = "3"
