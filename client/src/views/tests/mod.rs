@@ -5,6 +5,8 @@
 mod authentication;
 #[path = "bound_auth.rs"]
 mod bound_auth;
+#[path = "channel_context_menu.rs"]
+mod channel_context_menu;
 #[path = "channels.rs"]
 mod channels;
 #[path = "composer.rs"]

@@ -114,6 +114,7 @@ impl WorkspaceHandle {
     pub fn read(&self) -> Ref<'_, WorkspaceState> {
         Ref::map(self.0.borrow(), |owner| &owner.state)
     }
+    #[cfg(test)]
     pub fn status(&self) -> &'static str {
         self.0.borrow().live.status()
     }

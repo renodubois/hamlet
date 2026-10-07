@@ -96,6 +96,7 @@ impl SessionCoordinator {
         &self.saved.initial_username
     }
 
+    #[cfg(test)]
     pub fn storage_feedback(&self) -> Option<String> {
         // A new save/restore cannot erase unrelated cleanup, nor can late cleanup
         // hide a current memory-only/unconfirmed save. One unchanged UI status shows both.

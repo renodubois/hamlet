@@ -139,7 +139,6 @@ impl Render for LoginView {
             return form;
         }
         let pending = session.pending();
-        let restoring = session.restore_pending();
         let feedback = session.feedback().map(str::to_owned);
 
         let submit_button = Button::new(if self.signup { "signup" } else { "login" })

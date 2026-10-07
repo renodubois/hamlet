@@ -258,6 +258,7 @@ impl SessionCoordinator {
         }
     }
 
+    #[cfg(test)]
     pub fn restore_pending(&self) -> bool {
         self.state.restore_pending()
     }

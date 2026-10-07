@@ -7,7 +7,6 @@ use crate::workspace::WorkspaceHandle;
 use gpui_kit::*;
 
 pub(crate) struct WorkspaceView {
-    workspace: WorkspaceHandle,
     sidebar: Entity<SidebarView>,
     footer: Option<Entity<SessionFooterView>>,
     layout: Entity<ConversationView>,
@@ -31,7 +30,6 @@ impl WorkspaceView {
             }
         });
         Self {
-            workspace,
             sidebar,
             footer: None,
             layout,

@@ -20,6 +20,7 @@ pub(super) struct LiveUpdates {
     attempt: Attempt,
     phase: Phase,
     retry_at: Duration,
+    #[cfg(test)]
     disconnected: bool,
 }
 
@@ -32,6 +33,7 @@ impl LiveUpdates {
             },
             phase: Phase::Connecting,
             retry_at: Duration::ZERO,
+            #[cfg(test)]
             disconnected: false,
         }
     }
@@ -40,6 +42,7 @@ impl LiveUpdates {
         self.attempt
     }
 
+    #[cfg(test)]
     pub fn status(&self) -> &'static str {
         if matches!(self.phase, Phase::Connected | Phase::Closed) {
             ""
@@ -70,7 +73,10 @@ impl LiveUpdates {
         }
         self.retry_at = now.saturating_add(Duration::from_secs(3));
         self.phase = Phase::WaitingToRetry;
-        self.disconnected = true;
+        #[cfg(test)]
+        {
+            self.disconnected = true;
+        }
         true
     }
 
