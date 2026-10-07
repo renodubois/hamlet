@@ -148,19 +148,17 @@ impl RequestAdapter for RaceAuth {
     }
 }
 
-// Real textarea observation without exposing the combined layout's private entity.
+// Read the real textarea's accessibility value without changing focus or selection.
+// Clicking the background composer while a modal is open dismisses that modal.
 fn composer_text(window: &mut Window, cx: &mut gpui_kit::App) -> String {
     window.render_frame(cx);
-    window.click("composer", cx);
-    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(String::new()));
-    window.press("ctrl-a", cx);
-    window.press("ctrl-c", cx);
-    let text = cx
-        .read_from_clipboard()
-        .and_then(|item| item.text())
-        .unwrap_or_default();
-    window.press("right", cx);
-    text
+    let composer = window.find("composer");
+    let inputs: Vec<_> = gpui_kit::base::test_support::snapshots(window)
+        .into_iter()
+        .filter(|control| control.path().starts_with(composer.path()) && control.value().is_some())
+        .collect();
+    assert_eq!(inputs.len(), 1, "composer must expose one textarea value");
+    inputs[0].value().unwrap().to_owned()
 }
 
 fn advance(cx: &mut gpui_kit::VisualTestContext, seconds: u64) {

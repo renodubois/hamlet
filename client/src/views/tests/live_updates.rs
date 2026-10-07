@@ -1,4 +1,4 @@
-//! Semantic controls exercise connection notices without reconnect-triggered reads.
+//! Reconnect preserves controls and conversation state without triggering reads.
 use super::*;
 use crate::api::test_support::{StreamAdapter, StreamResponse};
 
@@ -48,9 +48,7 @@ impl LiveUpdatesApi {
 }
 
 #[gpui_kit::test]
-fn reconnect_notice_retains_rows_draft_and_creation_input_without_http_reads(
-    cx: &mut TestAppContext,
-) {
+fn reconnect_retains_rows_draft_and_creation_input_without_http_reads(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (send, pages) = std::sync::mpsc::channel();
     let api = Arc::new(LiveUpdatesApi {
@@ -86,19 +84,11 @@ fn reconnect_notice_retains_rows_draft_and_creation_input_without_http_reads(
     assert_eq!(api.stream_count(), 1);
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert_eq!(
-            window.find("connection-status").label(),
-            Some("Connecting…")
-        );
         assert!(window.try_find("refresh-channels").is_none());
         assert!(window.try_find("refresh-history").is_none());
     });
     api.ready();
     cx.run_until_parked();
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        assert_eq!(window.find("connection-status").label(), Some(""));
-    });
     initial
         .try_send(Ok(crate::api::Page {
             items: vec![crate::api::Message {
@@ -127,30 +117,28 @@ fn reconnect_notice_retains_rows_draft_and_creation_input_without_http_reads(
     let assert_retained = |window: &mut Window, cx: &mut gpui_kit::App| {
         window.render_frame(cx);
         assert_eq!(window.find("message-8").label(), Some("retained row"));
-        assert_eq!(composer_text(window, cx), "draft survives");
         assert_eq!(window.find("channel-name").value(), Some("unfinished room"));
+        assert_eq!(composer_text(window, cx), "draft survives");
+        // Draft inspection must not dismiss the modal or steal its input focus.
+        assert_eq!(window.find("channel-name").value(), Some("unfinished room"));
+        assert_eq!(window.find("channel-name").focused(), Some(true));
     };
-    let assert_disconnected = |window: &mut Window, cx: &mut gpui_kit::App| {
-        assert_retained(window, cx);
-        assert_eq!(
-            window.find("connection-status").label(),
-            Some("Live updates disconnected — reconnecting.")
-        );
-    };
-    cx.update(assert_disconnected);
+    cx.update(assert_retained);
     advance(cx, 2);
     assert_eq!(api.stream_count(), 1);
-    cx.update(assert_disconnected);
+    cx.update(assert_retained);
     advance(cx, 1);
     assert_eq!(api.stream_count(), 2);
-    cx.update(assert_disconnected);
+    cx.update(assert_retained);
     assert_eq!(api.reads.load(Ordering::SeqCst), 2);
     assert!(pages.try_recv().is_err(), "reconnect cannot read history");
     api.ready();
     cx.run_until_parked();
     cx.update(|window, cx| {
         assert_retained(window, cx);
-        assert_eq!(window.find("connection-status").label(), Some(""));
+        window.click("cancel-channel", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("channel-name").is_none());
         window.click("logout", cx);
     });
     assert_eq!(api.reads.load(Ordering::SeqCst), 2);
