@@ -191,7 +191,7 @@ impl Render for MessageHistoryView {
                 }
                 Some(Load::Ready(messages)) => {
                     match workspace.older.get(id) {
-                        Some(Older::Loading) => history = history.child("Loading older messages…"),
+                        Some(Older::Loading) => {}
                         Some(Older::Failed(error)) => {
                             history = history.child(
                                 div().child(format!("Older messages: {error}")).child(
@@ -203,7 +203,7 @@ impl Render for MessageHistoryView {
                                 ),
                             );
                         }
-                        Some(Older::Exhausted) => history = history.child("Start of conversation."),
+                        Some(Older::Exhausted) => {}
                         _ => {}
                     }
                     history = history.child(
