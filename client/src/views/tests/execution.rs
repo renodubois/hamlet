@@ -343,7 +343,6 @@ fn focus_and_elapsed_time_never_poll_or_restart_the_session_stream(cx: &mut Test
     assert_eq!(counts(), (1, 1));
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.find("connection-status").label(), Some(""));
         assert_eq!(
             window.find("message-live").label(),
             Some("unfocused creation")

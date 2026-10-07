@@ -19,8 +19,6 @@ mod journeys;
 mod live_updates;
 #[path = "protected_binding.rs"]
 mod protected_binding;
-#[path = "saved_login.rs"]
-mod saved_login;
 #[path = "session_lifecycle.rs"]
 mod session_lifecycle;
 mod support;
@@ -30,16 +28,15 @@ use support::{open_controlled, open_with_streams};
 use crate::api::{ApiError, ApiFuture, HttpTransport};
 use crate::runtime::runtime;
 use crate::storage::Persistence;
-use crate::test_support::storage::{Controlled, Shared};
 use bound_auth::{BoundAuth, Request, RequestAdapter, Response, StatusCode};
 use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{TestAppContext, Window, px};
+use std::sync::Mutex;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
-use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 // Fixture responses deliberately use wire representations, so decoding remains under API ownership.

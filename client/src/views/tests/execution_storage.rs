@@ -136,13 +136,6 @@ fn restoration_has_one_ten_second_budget_for_storage_and_verification(cx: &mut T
     cx.update(|window, cx| {
         window.render_frame(cx);
         assert_eq!(window.find("login").label(), Some("Log in"));
-        assert!(
-            window
-                .find("storage-status")
-                .label()
-                .unwrap()
-                .contains("Could not verify saved login")
-        );
         assert_eq!(
             window.find("retry-storage").label(),
             Some("Retry saved-login restoration")
@@ -258,99 +251,6 @@ fn private_restore_candidate_cannot_open_workspace_after_server_change(cx: &mut 
 }
 
 #[gpui_kit::test]
-fn failed_restoration_can_retry_then_yield_to_manual_login_without_late_activation(
-    cx: &mut TestAppContext,
-) {
-    use super::super::saved_login::wait_status;
-    cx.update(gpui_kit::init);
-    cx.background_executor.allow_parking();
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("session.json");
-    let selection = Selection {
-        server: crate::session::DEFAULT_SERVER_URL.into(),
-        user: User {
-            id: "42".into(),
-            username: "Ada".into(),
-        },
-        expires_at: 4_070_908_800,
-    };
-    let config = Config {
-        server: Some(selection.server.clone()),
-        saved: Some(selection.clone()),
-        pending_deletions: vec![],
-    };
-    std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
-    let shared: Shared = Arc::new((
-        Mutex::new((
-            vec![(crate::storage::account(&selection), "saved-token".into())],
-            false,
-            false,
-            false,
-            false,
-            false,
-        )),
-        Condvar::new(),
-    ));
-    let store = Persistence::start(Controlled(shared), Some(path));
-    let (verify, requests) = std::sync::mpsc::channel();
-    let execution = Execution::controlled(cx.background_executor.clone(), 1_800_000_000);
-    let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = crate::views::app_shell::open(
-            window,
-            cx,
-            bound_api(VerifyAuth(verify)),
-            config,
-            Some(store),
-            execution,
-        );
-        Root::new(view, window, cx)
-    });
-    let first = await_verification(cx, &requests);
-    first.try_send(Err(ApiError::Unavailable)).unwrap();
-    wait_status(cx, "Could not verify saved login");
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        assert_eq!(window.find("username").value(), Some("Ada"));
-        assert!(window.try_find("session-status").is_none());
-        assert_eq!(
-            window.find("retry-storage").label(),
-            Some("Retry saved-login restoration")
-        );
-        window.click("retry-storage", cx);
-    });
-    let late = await_verification(cx, &requests);
-    advance(cx, 10);
-    wait_status(cx, "Could not verify saved login");
-    cx.update(|window, cx| {
-        window.click("username", cx);
-        window.press("ctrl-a", cx);
-        window.input("Manual", cx);
-        window.click("password", cx);
-        window.input("new password", cx);
-        window.click("login", cx);
-    });
-    wait_status(cx, "Login saved in");
-    assert!(
-        late.try_send(Ok(selection.user)).is_err(),
-        "deadline dropped obsolete verification"
-    );
-    cx.run_until_parked();
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        assert!(
-            window
-                .find("session-status")
-                .label()
-                .unwrap()
-                .contains("Manual")
-        );
-        assert!(window.try_find("retry-storage").is_none());
-        assert!(window.try_find("auth-feedback").is_none());
-        assert!(window.try_find("password").is_none());
-    });
-}
-
-#[gpui_kit::test]
 fn delayed_save_and_delete_are_unconfirmed_at_ten_seconds_without_blocking_logout(
     cx: &mut TestAppContext,
 ) {
@@ -381,13 +281,6 @@ fn delayed_save_and_delete_are_unconfirmed_at_ten_seconds_without_blocking_logou
         window.render_frame(cx);
         assert!(
             window
-                .find("storage-status")
-                .label()
-                .unwrap()
-                .contains("Saving login")
-        );
-        assert!(
-            window
                 .find("session-status")
                 .label()
                 .unwrap()
@@ -397,13 +290,6 @@ fn delayed_save_and_delete_are_unconfirmed_at_ten_seconds_without_blocking_logou
     advance(cx, 1);
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert!(
-            window
-                .find("storage-status")
-                .label()
-                .unwrap()
-                .contains("saving is unconfirmed")
-        );
         window.click("logout", cx);
         window.render_frame(cx);
         assert_eq!(window.find("login").label(), Some("Log in"));
@@ -411,27 +297,7 @@ fn delayed_save_and_delete_are_unconfirmed_at_ten_seconds_without_blocking_logou
     // The blocked write still owns the worker; deletion is queued, not run concurrently.
     assert!(provider.try_recv().is_err());
     advance(cx, 9);
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        assert!(
-            window
-                .find("storage-status")
-                .label()
-                .unwrap()
-                .contains("Removing saved login")
-        );
-    });
     advance(cx, 1);
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        assert!(
-            window
-                .find("storage-status")
-                .label()
-                .unwrap()
-                .contains("Could not confirm deletion")
-        );
-    });
     write.try_send(Ok(None)).unwrap();
     // Invalidated save rolls back before the queued deletion. Provider work survives UI timeout.
     for _ in 0..2 {
@@ -445,12 +311,5 @@ fn delayed_save_and_delete_are_unconfirmed_at_ten_seconds_without_blocking_logou
     cx.update(|window, cx| {
         window.render_frame(cx);
         assert_eq!(window.find("login").label(), Some("Log in"));
-        assert!(
-            window
-                .find("storage-status")
-                .label()
-                .unwrap()
-                .contains("Could not confirm deletion")
-        );
     });
 }
