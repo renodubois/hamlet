@@ -5,6 +5,7 @@ pub(crate) mod message_history;
 mod message_row;
 mod message_timestamp;
 
+use crate::runtime::Execution;
 use crate::workspace::WorkspaceHandle;
 use channel_header::ChannelHeaderView;
 use composer::ComposerView;
@@ -19,12 +20,13 @@ pub(crate) struct ConversationView {
 impl ConversationView {
     pub(crate) fn new(
         workspace: WorkspaceHandle,
+        execution: Execution,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
             header: cx.new(|cx| ChannelHeaderView::new(workspace.clone(), cx)),
-            history: cx.new(|cx| MessageHistoryView::new(workspace.clone(), window, cx)),
+            history: cx.new(|cx| MessageHistoryView::new(workspace.clone(), execution, window, cx)),
             composer: cx.new(|cx| ComposerView::new(workspace, window, cx)),
         }
     }

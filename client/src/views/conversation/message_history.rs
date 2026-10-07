@@ -1,11 +1,14 @@
 //! Displays history and owns scroll anchoring, selection and jump-to-latest controls.
 //! Workspace owns message data, pagination cursors and request execution.
-use super::message_row::message_row;
+use super::message_row::message_row_at;
+use crate::runtime::Execution;
 use crate::workspace::{Load, Older, WorkspaceHandle};
+use chrono::{DateTime, Local};
 use gpui_kit::base::Disableable;
 use gpui_kit::component::button::Button;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use std::time::Duration;
 
 fn hint_history_row_heights(list: &ListState) {
     list.clone().with_uniform_item_height(px(64.));
@@ -36,6 +39,8 @@ fn reconcile_history_list(list: &ListState, before: &[String], after: &[String])
 
 pub(crate) struct MessageHistoryView {
     workspace: WorkspaceHandle,
+    execution: Execution,
+    _timestamp_refresh: Task<()>,
     focus: FocusHandle,
     list: ListState,
     presented_channel: Option<String>,
@@ -46,6 +51,7 @@ pub(crate) struct MessageHistoryView {
 impl MessageHistoryView {
     pub(crate) fn new(
         workspace: WorkspaceHandle,
+        execution: Execution,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -75,8 +81,23 @@ impl MessageHistoryView {
                 }
             }
         });
+        // Only invalidate presentation: do not splice/reset the list or dispatch reads.
+        // Weak ownership plus the retained Task makes closing the view cancel the loop.
+        let clock = execution.clone();
+        let mut tick = clock.sleep(Duration::from_secs(60));
+        let timestamp_refresh = cx.spawn(async move |weak, cx| {
+            loop {
+                tick.await;
+                if weak.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+                tick = clock.sleep(Duration::from_secs(60));
+            }
+        });
         let mut view = Self {
             workspace,
+            execution,
+            _timestamp_refresh: timestamp_refresh,
             focus: cx.focus_handle(),
             list,
             presented_channel: None,
@@ -196,10 +217,13 @@ impl Render for MessageHistoryView {
                     );
                     // Server order is newest-first. Reverse only for chronological presentation.
                     let rows = messages.iter().rev().cloned().collect::<Vec<_>>();
+                    let now = DateTime::from_timestamp(self.execution.unix_seconds(), 0)
+                        .expect("viewer clock in supported range")
+                        .with_timezone(&Local);
                     history = history.child(
                         div().id("history").test_support().flex_1().min_h_0().child(
                             list(self.list.clone(), move |ix, _, cx| {
-                                message_row(&rows[ix], cx).into_any_element()
+                                message_row_at(&rows[ix], &now, cx).into_any_element()
                             })
                             .size_full(),
                         ),

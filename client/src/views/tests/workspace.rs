@@ -48,8 +48,17 @@ impl Render for WorkspaceHost {
                 Button::new("recreate-workspace")
                     .label("Recreate workspace")
                     .on_click(cx.listener(|host, _, window, cx| {
-                        host.workspace =
-                            cx.new(|cx| WorkspaceView::new(host.activity.clone(), window, cx));
+                        host.workspace = cx.new(|cx| {
+                            WorkspaceView::new(
+                                host.activity.clone(),
+                                Execution::controlled(
+                                    cx.background_executor().clone(),
+                                    1_800_000_000,
+                                ),
+                                window,
+                                cx,
+                            )
+                        });
                         cx.notify();
                     })),
             )
@@ -90,7 +99,14 @@ fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut T
     );
     activity.start();
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let workspace = cx.new(|cx| WorkspaceView::new(activity.clone(), window, cx));
+        let workspace = cx.new(|cx| {
+            WorkspaceView::new(
+                activity.clone(),
+                Execution::controlled(cx.background_executor().clone(), 1_800_000_000),
+                window,
+                cx,
+            )
+        });
         let host = cx.new(|_| WorkspaceHost {
             activity: activity.clone(),
             workspace,
@@ -130,7 +146,14 @@ fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut T
     cx.update(|window, cx| {
         // Native modals block background controls; simulate external recreation.
         host_entity.as_ref().unwrap().update(cx, |host, cx| {
-            host.workspace = cx.new(|cx| WorkspaceView::new(host.activity.clone(), window, cx));
+            host.workspace = cx.new(|cx| {
+                WorkspaceView::new(
+                    host.activity.clone(),
+                    Execution::controlled(cx.background_executor().clone(), 1_800_000_000),
+                    window,
+                    cx,
+                )
+            });
             cx.notify();
         });
     });
@@ -227,7 +250,14 @@ fn sidebar_dialog_creation_tracks_pending_state_across_recreation(cx: &mut TestA
     );
     activity.start();
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let workspace = cx.new(|cx| WorkspaceView::new(activity.clone(), window, cx));
+        let workspace = cx.new(|cx| {
+            WorkspaceView::new(
+                activity.clone(),
+                Execution::controlled(cx.background_executor().clone(), 1_800_000_000),
+                window,
+                cx,
+            )
+        });
         let host = cx.new(|_| WorkspaceHost {
             activity: activity.clone(),
             workspace,

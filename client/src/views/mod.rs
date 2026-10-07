@@ -21,5 +21,13 @@ mod workspace_tests;
 mod history_lifecycle_tests;
 
 #[cfg(test)]
+#[path = "tests/timestamp_refresh.rs"]
+mod timestamp_refresh_tests;
+
+#[cfg(test)]
+#[path = "tests/support/history.rs"]
+mod history_test_support;
+
+#[cfg(test)]
 #[path = "tests/composer_lifecycle.rs"]
 mod composer_lifecycle_tests;

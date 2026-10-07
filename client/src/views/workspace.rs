@@ -2,6 +2,7 @@
 use super::{
     conversation::ConversationView, session_footer::SessionFooterView, sidebar::SidebarView,
 };
+use crate::runtime::Execution;
 use crate::workspace::WorkspaceHandle;
 use gpui_kit::*;
 
@@ -15,11 +16,12 @@ pub(crate) struct WorkspaceView {
 impl WorkspaceView {
     pub(crate) fn new(
         workspace: WorkspaceHandle,
+        execution: Execution,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let sidebar = cx.new(|cx| SidebarView::new(workspace.clone(), window, cx));
-        let layout = cx.new(|cx| ConversationView::new(workspace.clone(), window, cx));
+        let layout = cx.new(|cx| ConversationView::new(workspace.clone(), execution, window, cx));
         let changes = workspace.notifications();
         let notifications = cx.spawn(async move |weak, cx| {
             while changes.recv().await.is_ok() {

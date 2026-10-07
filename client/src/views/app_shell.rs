@@ -20,6 +20,7 @@ pub(crate) fn open(
 }
 
 pub(crate) struct AppShell {
+    execution: Execution,
     session: Entity<SessionCoordinator>,
     login: Entity<LoginView>,
     workspace: Option<Entity<WorkspaceView>>,
@@ -34,7 +35,8 @@ impl AppShell {
         persistence: Option<Persistence>,
         execution: Execution,
     ) -> Self {
-        let session = cx.new(|_| SessionCoordinator::new(api, execution, config, persistence));
+        let session =
+            cx.new(|_| SessionCoordinator::new(api, execution.clone(), config, persistence));
         let login = cx.new(|cx| LoginView::new(session.clone(), window, cx));
         let session_subscription =
             cx.observe_in(&session, window, |view: &mut Self, _, window, cx| {
@@ -61,6 +63,7 @@ impl AppShell {
         })
         .detach();
         Self {
+            execution,
             session,
             login,
             workspace: None,
@@ -74,8 +77,10 @@ impl AppShell {
         let updates = activity.updates();
         activity.start();
         let footer = cx.new(|cx| SessionFooterView::new(self.session.clone(), cx));
-        self.workspace =
-            Some(cx.new(|cx| WorkspaceView::new(activity.clone(), window, cx).with_footer(footer)));
+        self.workspace = Some(cx.new(|cx| {
+            WorkspaceView::new(activity.clone(), self.execution.clone(), window, cx)
+                .with_footer(footer)
+        }));
         // Opaque delivery only. Views subscribe separately to feature invalidations;
         // recreating a workspace never creates another competing delivery loop.
         cx.spawn(async move |weak, cx| {

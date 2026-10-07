@@ -1,16 +1,12 @@
 //! Plain, selectable message presentation; rows do not need independent entities.
 use super::message_timestamp::format_timestamp;
 use crate::api::Message;
-use chrono::{DateTime, Local, TimeZone};
+use chrono::{DateTime, TimeZone};
 use gpui_kit::base::SelectableText;
 use gpui_kit::component::{ActiveTheme, tooltip::Tooltip};
 use gpui_kit::*;
 
-pub(super) fn message_row(message: &Message, cx: &App) -> impl IntoElement {
-    message_row_at(message, &Local::now(), cx)
-}
-
-fn message_row_at<Tz: TimeZone>(
+pub(super) fn message_row_at<Tz: TimeZone>(
     message: &Message,
     now: &DateTime<Tz>,
     cx: &App,

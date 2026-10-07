@@ -1,15 +1,13 @@
 //! Independent history lifetime through Kit controls and the owned workspace interface.
+use super::history_test_support::{HistoryHost, ReaderHistory, drain};
 use crate::api::test_support::{RequestAdapter, Response};
 use crate::api::{ApiError, ApiFuture};
 use crate::runtime::Execution;
 use crate::views::conversation::message_history::MessageHistoryView;
 use crate::workspace::WorkspaceHandle;
-use gpui_kit::component::{Root, button::Button};
+use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{
-    AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,
-    TestAppContext, Window, div,
-};
+use gpui_kit::{AppContext as _, TestAppContext, Window};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -32,45 +30,6 @@ impl RequestAdapter for HistoryApi {
                 "created_at":"2026-01-01T00:00:00Z"}]}).to_string()
         };
         Box::pin(async move { Ok(Response::controlled(reqwest::StatusCode::OK, body)) })
-    }
-}
-struct HistoryHost {
-    activity: WorkspaceHandle,
-    history: Entity<MessageHistoryView>,
-    visible: bool,
-}
-impl Render for HistoryHost {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut host = div().size_full().flex().flex_col();
-        if self.visible {
-            host = host.child(self.history.clone());
-        }
-        host.child(
-            Button::new("recreate-history")
-                .label("Recreate history")
-                .on_click(cx.listener(|host, _, window, cx| {
-                    host.history =
-                        cx.new(|cx| MessageHistoryView::new(host.activity.clone(), window, cx));
-                    cx.notify();
-                })),
-        )
-        .child(
-            Button::new("toggle-history")
-                .label("Toggle history")
-                .on_click(cx.listener(|host, _, _, cx| {
-                    host.visible = !host.visible;
-                    cx.notify();
-                })),
-        )
-    }
-}
-fn drain(cx: &mut gpui_kit::VisualTestContext, activity: &WorkspaceHandle) {
-    loop {
-        cx.run_until_parked();
-        let Ok(update) = activity.updates().try_recv() else {
-            break;
-        };
-        assert!(activity.apply(update).is_none());
     }
 }
 #[gpui_kit::test]
@@ -99,7 +58,14 @@ fn independent_history_hydrates_cache_recreates_and_clears_when_hidden(cx: &mut 
     }
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let history = cx.new(|cx| MessageHistoryView::new(activity.clone(), window, cx));
+        let history = cx.new(|cx| {
+            MessageHistoryView::new(
+                activity.clone(),
+                Execution::controlled(cx.background_executor().clone(), 1_800_000_000),
+                window,
+                cx,
+            )
+        });
         let host = cx.new(|_| HistoryHost {
             activity: activity.clone(),
             history,
@@ -169,7 +135,14 @@ fn history_shutdown_clears_selected_text(cx: &mut TestAppContext) {
     );
     activity.start();
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let history = cx.new(|cx| MessageHistoryView::new(activity.clone(), window, cx));
+        let history = cx.new(|cx| {
+            MessageHistoryView::new(
+                activity.clone(),
+                Execution::controlled(cx.background_executor().clone(), 1_800_000_000),
+                window,
+                cx,
+            )
+        });
         let host = cx.new(|_| HistoryHost {
             activity: activity.clone(),
             history,
@@ -205,36 +178,12 @@ fn history_shutdown_clears_selected_text(cx: &mut TestAppContext) {
     });
 }
 
-struct ReaderHistory {
-    reads: AtomicUsize,
-}
-impl RequestAdapter for ReaderHistory {
-    fn execute(&self, request: reqwest::Request) -> ApiFuture<Result<Response, ApiError>> {
-        assert_eq!(request.method(), reqwest::Method::GET);
-        self.reads.fetch_add(1, Ordering::SeqCst);
-        let body = if request.url().path() == "/api/v1/channels" {
-            serde_json::json!({"items":[{"id":"1","name":"General","type":"text"}]})
-        } else {
-            serde_json::json!({"items":(1..=40).rev().map(|id| {
-                serde_json::json!({"id":id.to_string(),"channel_id":"1",
-                    "author":{"id":"u","display_name":"Ada"},"text":format!("message {id}\nsecond line"),
-                    "created_at":"2026-01-01T00:00:00Z"})
-            }).collect::<Vec<_>>()})
-        };
-        Box::pin(async move {
-            Ok(Response::controlled(
-                reqwest::StatusCode::OK,
-                body.to_string(),
-            ))
-        })
-    }
-}
-
 #[gpui_kit::test]
 fn healthy_events_and_reconnect_keep_reader_anchor_without_http_reads(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let api = Arc::new(ReaderHistory {
         reads: AtomicUsize::new(0),
+        created_at: "2026-01-01T00:00:00Z",
     });
     let streams = crate::test_support::live::Streams::default();
     let client = streams
@@ -251,7 +200,14 @@ fn healthy_events_and_reconnect_keep_reader_anchor_without_http_reads(cx: &mut T
     );
     activity.start();
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let history = cx.new(|cx| MessageHistoryView::new(activity.clone(), window, cx));
+        let history = cx.new(|cx| {
+            MessageHistoryView::new(
+                activity.clone(),
+                Execution::controlled(cx.background_executor().clone(), 1_800_000_000),
+                window,
+                cx,
+            )
+        });
         let host = cx.new(|_| HistoryHost {
             activity: activity.clone(),
             history,
