@@ -28,6 +28,7 @@ const INVENTORY: &[(&str, &str, &str, u16, bool)] = &[
         200,
         true,
     ),
+    ("delete", "/api/v1/channels/{id}", "delete_route", 204, true),
 ];
 
 #[actix_web::test]

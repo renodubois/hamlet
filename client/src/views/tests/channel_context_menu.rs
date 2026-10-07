@@ -32,7 +32,7 @@ fn channel_context_menu_cancellation_is_request_free(cx: &mut TestAppContext) {
     let initial_requests = requests.load(Ordering::SeqCst);
 
     for id in ["000000000000001", "000000000000002"] {
-        for dismissal in ["confirm", "enter", "cancel", "escape"] {
+        for dismissal in ["cancel", "escape"] {
             let original_name = cx.update(|window, cx| {
                 window.render_frame(cx);
                 window
@@ -107,7 +107,7 @@ fn channel_context_menu_cancellation_is_request_free(cx: &mut TestAppContext) {
                 );
                 assert_eq!(
                     window.find("delete-channel-warning").label(),
-                    Some("This action cannot be undone.")
+                    Some("You cannot restore this channel in the app.")
                 );
                 assert_eq!(
                     window.find("confirm-delete-channel").label(),

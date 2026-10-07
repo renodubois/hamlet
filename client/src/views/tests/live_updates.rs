@@ -49,7 +49,11 @@ impl LiveUpdatesApi {
 
 #[gpui_kit::test]
 fn reconnect_retains_rows_draft_and_creation_input_without_http_reads(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        // Modal hit targets must not depend on wall-time animation under suite load.
+        cx.set_reduce_motion(true);
+    });
     let (send, pages) = std::sync::mpsc::channel();
     let api = Arc::new(LiveUpdatesApi {
         pages: PagedAuth(send),

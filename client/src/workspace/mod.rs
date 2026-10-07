@@ -7,7 +7,7 @@ mod state;
 use crate::api::{ApiError, AuthenticatedClient, Channel, LiveEvent, Message, Page, StreamError};
 use crate::runtime::{Execution, Work};
 use live_updates::{Attempt, LiveUpdates};
-use state::{CreateRequest, Identity, ReadRequest, RenameRequest, SendRequest};
+use state::{CreateRequest, DeleteRequest, Identity, ReadRequest, RenameRequest, SendRequest};
 pub(crate) use state::{Load, Older, WorkspaceState};
 use std::{
     cell::{Ref, RefCell},
@@ -31,6 +31,7 @@ enum Update {
     History(u64, ReadRequest, Result<Page, ApiError>),
     Create(CreateRequest, Result<Channel, ApiError>),
     Rename(RenameRequest, Result<Channel, ApiError>),
+    Delete(DeleteRequest, Result<(), ApiError>),
     Send(SendRequest, Result<Message, ApiError>),
 }
 
@@ -58,6 +59,7 @@ struct Coordinator {
     history_serial: u64,
     create_task: Option<Work>,
     rename_task: Option<Work>,
+    delete_task: Option<Work>,
     sends: HashMap<String, Work>,
     created: Option<(u64, String)>,
     create_revision: u64,
@@ -108,6 +110,7 @@ impl WorkspaceHandle {
             history_serial: 0,
             create_task: None,
             rename_task: None,
+            delete_task: None,
             sends: HashMap::new(),
             created: None,
             create_revision: 0,
@@ -218,6 +221,38 @@ impl WorkspaceHandle {
                 .await;
         });
         owner.create_task = Some(task);
+    }
+    pub fn reset_delete_feedback(&self) {
+        self.0.borrow_mut().state.reset_delete_feedback();
+    }
+    pub fn delete_channel(&self, id: &str) {
+        let _notify = Notify(self);
+        let mut owner = self.0.borrow_mut();
+        let now = owner.execution.unix_seconds();
+        owner.identity.expire(now);
+        let Some(api) = owner.client.clone() else {
+            return;
+        };
+        let Coordinator {
+            state, identity, ..
+        } = &mut *owner;
+        let Some(request) = state.delete(identity, id) else {
+            return;
+        };
+        let work = request.clone();
+        let deliver = owner.deliver.clone();
+        let timeout = owner.execution.sleep(READ_SEND_DEADLINE);
+        let (task, _) = owner.execution.start(async move {
+            let result = tokio::select! {
+                biased;
+                _ = timeout => Err(ApiError::Unavailable),
+                result = api.delete_channel(work.channel_id) => result,
+            };
+            let _ = deliver
+                .send(WorkspaceUpdate(Update::Delete(request, result)))
+                .await;
+        });
+        owner.delete_task = Some(task);
     }
     pub fn reset_rename_feedback(&self) {
         self.0.borrow_mut().state.reset_rename_feedback();
@@ -504,6 +539,31 @@ impl Coordinator {
                 self.state
                     .complete_rename(&mut self.identity, &request, result);
             }
+            Update::Delete(request, result) => {
+                if request.generation != self.generation {
+                    return None;
+                }
+                self.delete_task = None;
+                let previous = self.state.selected.clone();
+                let revision = self.state.delete_confirmed;
+                let next = self
+                    .state
+                    .complete_delete(&mut self.identity, &request, result);
+                if revision != self.state.delete_confirmed {
+                    if let Some(task) = self.sends.remove(&request.channel_id) {
+                        task.abort();
+                    }
+                    if !self.state.rename_pending
+                        && let Some(task) = self.rename_task.take()
+                    {
+                        task.abort();
+                    }
+                }
+                self.selection_changed(previous);
+                if let Some(next) = next {
+                    self.load_history(next);
+                }
+            }
             Update::Send(request, result) => {
                 if request.generation != self.generation {
                     return None;
@@ -537,6 +597,7 @@ impl Coordinator {
             self.channels_task.take(),
             self.create_task.take(),
             self.rename_task.take(),
+            self.delete_task.take(),
         ]
         .into_iter()
         .flatten()

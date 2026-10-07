@@ -1,5 +1,5 @@
 use super::{
-    operations::{self, CreateError, RenameError},
+    operations::{self, CreateError, DeleteError, RenameError},
     types::{Channel, ChannelList, CreateChannel, RenameChannel},
 };
 use crate::{
@@ -57,6 +57,36 @@ pub(crate) async fn rename_route(
             problem(StatusCode::CONFLICT, "conflict", "Channel already exists")
         }
         Err(RenameError::Internal) => internal(),
+    }
+}
+
+#[utoipa::path(delete, path = "/api/v1/channels/{id}", tag = "crate::channels", security(("bearer_auth" = [])),
+    params(("id" = String, Path, description = "Decimal-string channel ID")),
+    responses((status = 204, description = "Channel removed from normal use; conversation retained"),
+        (status = 400, body = crate::http::error::ErrorBody), (status = 401, body = crate::http::error::ErrorBody),
+        (status = 404, body = crate::http::error::ErrorBody), (status = 409, body = crate::http::error::ErrorBody),
+        (status = 500, body = crate::http::error::ErrorBody)))]
+pub(crate) async fn delete_route(
+    db: web::Data<AppState>,
+    path: web::Path<String>,
+) -> impl Responder {
+    if path.len() != 15 || !path.bytes().all(|b| b.is_ascii_digit()) {
+        return bad_request();
+    }
+    let Ok(id) = path.parse::<i64>() else {
+        return bad_request();
+    };
+    match operations::delete(&db.db, id).await {
+        Ok(()) => HttpResponse::NoContent().finish(),
+        Err(DeleteError::Missing) => {
+            problem(StatusCode::NOT_FOUND, "not_found", "Channel not found")
+        }
+        Err(DeleteError::LastChannel) => problem(
+            StatusCode::CONFLICT,
+            "conflict",
+            "Cannot delete the last active channel",
+        ),
+        Err(DeleteError::Internal) => internal(),
     }
 }
 

@@ -87,8 +87,21 @@ pub(super) struct RenameRequest {
     serial: u64,
 }
 
+#[derive(Clone)]
+pub(super) struct DeleteRequest {
+    pub generation: u64,
+    pub channel_id: String,
+    serial: u64,
+}
+
 #[derive(Default)]
 pub struct WorkspaceState {
+    pub delete_pending: bool,
+    pub delete_feedback: Option<String>,
+    pub delete_confirmed: u64,
+    delete_serial: u64,
+    deleted: HashSet<String>,
+    rename_target: Option<String>,
     pub channels: Option<Load<Vec<Channel>>>,
     pub selected: Option<String>,
     pub history: HashMap<String, Load<Vec<Message>>>,
@@ -130,17 +143,104 @@ impl WorkspaceState {
 
     pub(super) fn clear(&mut self) {
         // Keep obsolete completions distinct even if the same session remains active.
+        let delete_next = self.delete_serial.wrapping_add(1);
         let rename_next = self.rename_serial.wrapping_add(1);
         let next = self.create_serial.wrapping_add(1);
         let read_next = self.read_serial.wrapping_add(1);
         let channel_next = self.channel_serial.wrapping_add(1);
         let send_next = self.send_serial.wrapping_add(1);
         *self = Self::default();
+        self.delete_serial = delete_next;
         self.rename_serial = rename_next;
         self.send_serial = send_next;
         self.create_serial = next;
         self.read_serial = read_next;
         self.channel_serial = channel_next;
+    }
+
+    pub(super) fn reset_delete_feedback(&mut self) {
+        if !self.delete_pending {
+            self.delete_feedback = None;
+        }
+    }
+
+    pub(super) fn delete(&mut self, session: &Identity, id: &str) -> Option<DeleteRequest> {
+        if self.delete_pending || self.deleted.contains(id) {
+            return None;
+        }
+        let Some(Load::Ready(channels)) = &self.channels else {
+            return None;
+        };
+        if !channels.iter().any(|channel| channel.id == id) {
+            return None;
+        }
+        let generation = session.session_generation()?;
+        self.delete_serial = self.delete_serial.wrapping_add(1);
+        self.delete_pending = true;
+        self.delete_feedback = None;
+        Some(DeleteRequest {
+            generation,
+            channel_id: id.into(),
+            serial: self.delete_serial,
+        })
+    }
+
+    pub(super) fn complete_delete(
+        &mut self,
+        session: &mut Identity,
+        request: &DeleteRequest,
+        result: Result<(), ApiError>,
+    ) -> Option<ReadRequest> {
+        if !self.delete_pending
+            || self.delete_serial != request.serial
+            || session.session_generation() != Some(request.generation)
+        {
+            return None;
+        }
+        self.delete_pending = false;
+        match result {
+            Ok(()) => {
+                let id = &request.channel_id;
+                self.deleted.insert(id.clone());
+                if let Some(Load::Ready(channels)) = &mut self.channels {
+                    channels.retain(|channel| channel.id != *id);
+                }
+                self.history.remove(id);
+                self.older.remove(id);
+                self.cursors.remove(id);
+                self.drafts.remove(id);
+                self.send_pending.remove(id);
+                self.send_feedback.remove(id);
+                self.uncertain.remove(id);
+                self.uncertain_notice.remove(id);
+                self.confirmed.remove(id);
+                if self.rename_target.as_ref() == Some(id) {
+                    self.rename_pending = false;
+                    self.rename_feedback = None;
+                    self.rename_target = None;
+                    self.rename_serial = self.rename_serial.wrapping_add(1);
+                }
+                self.delete_confirmed = self.delete_confirmed.wrapping_add(1);
+                self.delete_feedback = None;
+                if self.selected.as_ref() == Some(id) {
+                    self.cancel_selected();
+                    self.selected = None;
+                    let next = match &self.channels {
+                        Some(Load::Ready(channels)) => channels.first().map(|channel| channel.id.clone()),
+                        _ => None,
+                    };
+                    return next.and_then(|id| self.select(session, &id));
+                }
+            }
+            Err(ApiError::AlreadyInvalid) => { session.protected_rejected(request.generation); self.clear(); }
+            Err(error) => self.delete_feedback = Some(match error {
+                ApiError::Conflict => "Cannot delete the last active channel. Create another channel first.".into(),
+                ApiError::NotFound => "Channel not found.".into(),
+                ApiError::InvalidInput => "The server rejected this channel deletion.".into(),
+                _ => "Could not confirm channel deletion; it may have succeeded. Check the channel list before submitting again.".into(),
+            }),
+        }
+        None
     }
 
     pub(super) fn reset_rename_feedback(&mut self) {
@@ -176,6 +276,7 @@ impl WorkspaceState {
         }
         self.rename_serial = self.rename_serial.wrapping_add(1);
         self.rename_pending = true;
+        self.rename_target = Some(id.into());
         self.rename_feedback = None;
         Some(RenameRequest {
             generation,
@@ -298,7 +399,7 @@ impl WorkspaceState {
         let Some(Load::Ready(channels)) = &mut self.channels else {
             return 0;
         };
-        if channels.iter().any(|item| item.id == channel.id) {
+        if self.deleted.contains(&channel.id) || channels.iter().any(|item| item.id == channel.id) {
             return 0;
         }
         // Match ORDER BY name_key ASC, id ASC without reordering the server snapshot.
@@ -314,7 +415,7 @@ impl WorkspaceState {
     }
 
     pub(super) fn set_draft(&mut self, id: &str, text: String) {
-        if !self.send_pending.contains_key(id) {
+        if !self.deleted.contains(id) && !self.send_pending.contains_key(id) {
             self.drafts.insert(id.into(), text);
             if !self.uncertain_notice.contains(id) && !self.confirmed.contains_key(id) {
                 self.send_feedback.remove(id);

@@ -10,12 +10,18 @@ use crate::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, SecondsFormat, Utc};
 use hamlet_protocol::Event;
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, QueryResult, Statement};
+use sea_orm::{
+    ConnectionTrait, DatabaseConnection, DbBackend, DbErr, QueryResult, Statement, TransactionTrait,
+};
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
 #[path = "tests/publication.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/deletion.rs"]
+mod deletion_tests;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -53,11 +59,11 @@ impl Cursor {
     }
 }
 
-async fn channel_exists(db: &DatabaseConnection, id: i64) -> Result<bool, DbErr> {
+async fn channel_exists(db: &impl ConnectionTrait, id: i64) -> Result<bool, DbErr> {
     Ok(db
         .query_one_raw(Statement::from_sql_and_values(
             DbBackend::Sqlite,
-            "SELECT id FROM channels WHERE id = ?",
+            "SELECT id FROM channels WHERE id = ? AND deleted_at IS NULL",
             [id.into()],
         ))
         .await?
@@ -94,12 +100,6 @@ pub(super) async fn post(
     if text.trim().is_empty() || text.chars().count() > 4000 {
         return Err(PostError::Invalid);
     }
-    if !channel_exists(db, channel_id)
-        .await
-        .map_err(|_| PostError::Internal)?
-    {
-        return Err(PostError::Missing);
-    }
     for _ in 0..5 {
         #[cfg(not(test))]
         let id = new_id();
@@ -126,10 +126,15 @@ pub(super) async fn post(
         let created = message
             .created_at
             .to_rfc3339_opts(SecondsFormat::Nanos, true);
+        #[cfg(test)]
+        deletion_tests::pause(false).await;
         match db.execute_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
-            "INSERT INTO messages (id, channel_id, author_id, text, created_at) VALUES (?, ?, ?, ?, ?)",
-            [id.into(), channel_id.into(), author.id.into(), text.to_owned().into(), created.into()])).await {
-            Ok(_) => {
+            "INSERT INTO messages (id, channel_id, author_id, text, created_at) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM channels WHERE id = ? AND deleted_at IS NULL)",
+            [id.into(), channel_id.into(), author.id.into(), text.to_owned().into(), created.into(), channel_id.into()])).await {
+            Ok(result) => {
+                if result.rows_affected() == 0 {
+                    return Err(PostError::Missing);
+                }
                 #[cfg(test)]
                 tests::after_insert();
                 events.notify(event);
@@ -160,25 +165,35 @@ pub(super) async fn history(
     if !(1..=100).contains(&limit) {
         return Err(HistoryError::Invalid);
     }
+    // Existence and messages share one SQLite read snapshot. A deletion that
+    // wins before this snapshot returns Missing; a read that wins first may
+    // complete with pre-deletion history, never a stale-check/new-read mix.
+    let snapshot = db.begin().await.map_err(|_| HistoryError::Internal)?;
     // Missing channels take precedence over bad cursors.
-    if !channel_exists(db, channel_id)
+    if !channel_exists(&snapshot, channel_id)
         .await
         .map_err(|_| HistoryError::Internal)?
     {
         return Err(HistoryError::Missing);
     }
+    #[cfg(test)]
+    deletion_tests::pause(true).await;
     let cursor = before
         .map(|value| Cursor::decode(value).ok_or(HistoryError::Invalid))
         .transpose()?;
     let rows = if let Some(cursor) = cursor {
-        db.query_all_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
+        snapshot.query_all_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
             "SELECT m.id, m.channel_id, m.author_id, m.text, m.created_at, u.username FROM messages m JOIN users u ON u.id = m.author_id WHERE m.channel_id = ? AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
             [channel_id.into(), cursor.created_at.clone().into(), cursor.created_at.into(), cursor.id.into(), (i64::from(limit) + 1).into()])).await
     } else {
-        db.query_all_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
+        snapshot.query_all_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
             "SELECT m.id, m.channel_id, m.author_id, m.text, m.created_at, u.username FROM messages m JOIN users u ON u.id = m.author_id WHERE m.channel_id = ? ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
             [channel_id.into(), (i64::from(limit) + 1).into()])).await
     }.map_err(|_| HistoryError::Internal)?;
+    snapshot
+        .commit()
+        .await
+        .map_err(|_| HistoryError::Internal)?;
     let has_more = rows.len() > usize::from(limit);
     let items = rows
         .into_iter()

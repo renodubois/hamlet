@@ -107,7 +107,7 @@ pub(super) async fn rename(
     let row = db
         .query_one_raw(Statement::from_sql_and_values(
             DbBackend::Sqlite,
-            "SELECT type FROM channels WHERE id = ?",
+            "SELECT type FROM channels WHERE id = ? AND deleted_at IS NULL",
             [id.into()],
         ))
         .await
@@ -131,7 +131,7 @@ pub(super) async fn rename(
     let result = db
         .execute_raw(Statement::from_sql_and_values(
             DbBackend::Sqlite,
-            "UPDATE channels SET name = ?, name_key = ? WHERE id = ?",
+            "UPDATE channels SET name = ?, name_key = ? WHERE id = ? AND deleted_at IS NULL",
             [name.into(), name.to_ascii_lowercase().into(), id.into()],
         ))
         .await
@@ -150,11 +150,44 @@ pub(super) async fn rename(
     Ok(channel)
 }
 
+pub(super) enum DeleteError {
+    Missing,
+    LastChannel,
+    Internal,
+}
+
+pub(super) async fn delete(db: &DatabaseConnection, id: i64) -> Result<(), DeleteError> {
+    // SQLite serializes writers. Check the invariant inside the same statement
+    // that marks the row, so simultaneous deletes cannot both remove the last
+    // two active channels. No stale application-side count is used.
+    let result = db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Sqlite,
+        "UPDATE channels SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL AND (SELECT COUNT(*) FROM channels WHERE deleted_at IS NULL) > 1",
+        [chrono::Utc::now().to_rfc3339().into(), id.into()],
+    )).await.map_err(|_| DeleteError::Internal)?;
+    if result.rows_affected() != 0 {
+        return Ok(());
+    }
+    let active = db
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "SELECT id FROM channels WHERE id = ? AND deleted_at IS NULL",
+            [id.into()],
+        ))
+        .await
+        .map_err(|_| DeleteError::Internal)?;
+    if active.is_some() {
+        Err(DeleteError::LastChannel)
+    } else {
+        Err(DeleteError::Missing)
+    }
+}
+
 pub(super) async fn list(db: &DatabaseConnection) -> Result<ChannelList, DbErr> {
     let rows = db
         .query_all_raw(Statement::from_string(
             DbBackend::Sqlite,
-            "SELECT id, name, type FROM channels ORDER BY name_key ASC, id ASC",
+            "SELECT id, name, type FROM channels WHERE deleted_at IS NULL ORDER BY name_key ASC, id ASC",
         ))
         .await?;
     let items = rows

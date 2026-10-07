@@ -5,7 +5,7 @@ mod types;
 use crate::http::error::problem;
 use actix_web::{http::StatusCode, web};
 
-pub(crate) use handlers::{create_route, list_route, rename_route};
+pub(crate) use handlers::{create_route, delete_route, list_route, rename_route};
 
 pub(crate) fn routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
@@ -23,6 +23,7 @@ pub(crate) fn routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::resource("/channels/{id}")
             .route(web::patch().to(rename_route))
+            .route(web::delete().to(delete_route))
             .default_service(web::to(|| async {
                 problem(
                     StatusCode::METHOD_NOT_ALLOWED,

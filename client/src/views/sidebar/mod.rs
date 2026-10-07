@@ -13,6 +13,7 @@ pub(crate) struct SidebarView {
     created_revision: u64,
     dialog_open: bool,
     rename_revision: Option<u64>,
+    delete_revision: Option<u64>,
     _release: Subscription,
     _notifications: Task<()>,
 }
@@ -53,11 +54,19 @@ impl SidebarView {
             created_revision,
             dialog_open: false,
             rename_revision: None,
+            delete_revision: None,
             _release: release,
             _notifications: notifications,
         }
     }
     fn present(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(revision) = self.delete_revision
+            && revision != self.workspace.read().delete_confirmed
+        {
+            self.delete_revision = None;
+            self.dialog_open = false;
+            window.close_dialog(cx);
+        }
         if let Some(revision) = self.rename_revision
             && revision != self.workspace.read().rename_confirmed
         {
@@ -82,7 +91,8 @@ impl SidebarView {
             self.created_revision = revision;
             self.channel_name
                 .update(cx, |input, cx| input.set_value("", window, cx));
-            if self.dialog_open && self.rename_revision.is_none() {
+            if self.dialog_open && self.rename_revision.is_none() && self.delete_revision.is_none()
+            {
                 self.dialog_open = false;
                 window.close_dialog(cx);
             }

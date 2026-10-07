@@ -1,4 +1,6 @@
 //! Real-route workspace verification, including two-client orders and server restart.
+#[path = "delete_route.rs"]
+mod delete_route;
 #[path = "rename_route.rs"]
 mod rename_route;
 use super::{Load, Older, WorkspaceHandle};
@@ -279,7 +281,8 @@ impl RequestAdapter for ControlledResponses {
     fn execute(&self, request: reqwest::Request) -> ApiFuture<Result<Response, ApiError>> {
         let get = request.method() == reqwest::Method::GET;
         let history = get && request.url().path().ends_with("/messages");
-        let post = request.method() == reqwest::Method::PATCH
+        let post = request.method() == reqwest::Method::DELETE
+            || request.method() == reqwest::Method::PATCH
             || (request.method() == reqwest::Method::POST
                 && request.url().path().ends_with("/messages"));
         let gate = if history {

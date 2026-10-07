@@ -1,3 +1,5 @@
+#[path = "delete.rs"]
+mod delete;
 #[path = "rename.rs"]
 mod rename;
 use super::http_support::{response, server};

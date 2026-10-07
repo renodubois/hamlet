@@ -6,7 +6,12 @@ pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(Initial), Box::new(Channels), Box::new(Messages)]
+        vec![
+            Box::new(Initial),
+            Box::new(Channels),
+            Box::new(Messages),
+            Box::new(ChannelDeletion),
+        ]
     }
 }
 
@@ -52,6 +57,45 @@ impl MigrationTrait for Channels {
             .execute_unprepared("DROP TABLE channels")
             .await?;
         Ok(())
+    }
+}
+
+// Rebuild both related tables with foreign keys enabled. Copy before dropping
+// either original table; SQLite retargets the new message FK on channel rename.
+struct ChannelDeletion;
+impl MigrationName for ChannelDeletion {
+    fn name(&self) -> &str {
+        "m20261007_000004_channel_deletion"
+    }
+}
+#[async_trait::async_trait]
+impl MigrationTrait for ChannelDeletion {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        for sql in [
+            "CREATE TABLE channels_new (id INTEGER PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL, type TEXT NOT NULL CHECK (type = 'text'), deleted_at TEXT)",
+            "INSERT INTO channels_new (id, name, name_key, type) SELECT id, name, name_key, type FROM channels",
+            "CREATE TABLE messages_new (id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL REFERENCES channels_new(id), author_id INTEGER NOT NULL REFERENCES users(id), text TEXT NOT NULL, created_at TEXT NOT NULL)",
+            "INSERT INTO messages_new SELECT id, channel_id, author_id, text, created_at FROM messages",
+            "DROP TABLE messages",
+            "DROP TABLE channels",
+            "ALTER TABLE channels_new RENAME TO channels",
+            "ALTER TABLE messages_new RENAME TO messages",
+            "CREATE UNIQUE INDEX channels_active_name ON channels(name_key) WHERE deleted_at IS NULL",
+            "CREATE INDEX messages_history ON messages (channel_id, created_at DESC, id DESC)",
+        ] {
+            manager.get_connection().execute_unprepared(sql).await?;
+        }
+        Ok(())
+    }
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
+        // Active-name reuse makes a lossless downgrade to all-row uniqueness
+        // impossible in general. Never silently discard retained conversations.
+        Err(DbErr::Custom(
+            "channel deletion migration cannot be downgraded losslessly".into(),
+        ))
     }
 }
 

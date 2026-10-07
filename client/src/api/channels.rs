@@ -50,6 +50,36 @@ pub(super) fn decode_channel(wire: ProtocolChannel) -> Result<Channel, ApiError>
 }
 
 impl AuthenticatedClient {
+    pub fn delete_channel(&self, id: String) -> ApiFuture<Result<(), ApiError>> {
+        let client = self.clone();
+        Box::pin(async move {
+            let request = client.request(
+                Method::DELETE,
+                client.0.server.endpoint(&format!("api/v1/channels/{id}")),
+            );
+            let response = client.0.server.0.transport.send(request).await?;
+            match response.status() {
+                StatusCode::NO_CONTENT => Ok(()),
+                StatusCode::UNAUTHORIZED => Err(ApiError::AlreadyInvalid),
+                StatusCode::NOT_FOUND => Err(ApiError::NotFound),
+                StatusCode::BAD_REQUEST | StatusCode::CONFLICT => {
+                    let status = response.status();
+                    let body: ErrorResponse = response
+                        .json()
+                        .await
+                        .map_err(|_| ApiError::InvalidResponse)?;
+                    match (status, body.error.code.as_str()) {
+                        (StatusCode::BAD_REQUEST, "bad_request") => Err(ApiError::InvalidInput),
+                        (StatusCode::CONFLICT, "conflict") => Err(ApiError::Conflict),
+                        _ => Err(ApiError::InvalidResponse),
+                    }
+                }
+                StatusCode::INTERNAL_SERVER_ERROR => Err(ApiError::ServerFailure),
+                _ => Err(ApiError::Unavailable),
+            }
+        })
+    }
+
     pub fn rename_channel(&self, id: String, name: String) -> ApiFuture<Result<Channel, ApiError>> {
         let client = self.clone();
         Box::pin(async move {

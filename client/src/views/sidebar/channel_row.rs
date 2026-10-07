@@ -13,7 +13,7 @@ use gpui_kit::*;
 
 enum ChannelDialog {
     Rename(String, String),
-    Delete,
+    Delete(String),
 }
 
 impl SidebarView {
@@ -73,6 +73,7 @@ impl SidebarView {
                 let delete = menu_view.clone();
                 let name = channel_name.clone();
                 let id = menu_id.clone();
+                let delete_id = menu_id.clone();
                 menu.item(
                     PopupMenuItem::new("Rename channel").on_click(move |_, window, cx| {
                         let rename = rename.clone();
@@ -101,9 +102,10 @@ impl SidebarView {
                     })
                     .on_click(move |_, window, cx| {
                         let delete = delete.clone();
+                        let id = delete_id.clone();
                         window.defer(cx, move |window, cx| {
                             let _ = delete.update(cx, |view, cx| {
-                                view.open_channel_dialog(ChannelDialog::Delete, window, cx);
+                                view.open_channel_dialog(ChannelDialog::Delete(id), window, cx);
                             });
                         });
                     }),
@@ -119,13 +121,18 @@ impl SidebarView {
         if self.dialog_open {
             return;
         }
-        if self.workspace.read().rename_pending {
+        if self.workspace.read().rename_pending || self.workspace.read().delete_pending {
             return;
         }
         self.workspace.reset_rename_feedback();
+        self.workspace.reset_delete_feedback();
+        self.delete_revision = match &action {
+            ChannelDialog::Delete(_) => Some(self.workspace.read().delete_confirmed),
+            _ => None,
+        };
         self.rename_revision = match &action {
             ChannelDialog::Rename(..) => Some(self.workspace.read().rename_confirmed),
-            ChannelDialog::Delete => None,
+            ChannelDialog::Delete(_) => None,
         };
         self.dialog_open = true;
         // This input belongs only to the dialog; closing it discards the edit.
@@ -135,7 +142,7 @@ impl SidebarView {
                 input.set_value(name.clone(), window, cx);
                 input
             })),
-            ChannelDialog::Delete => None,
+            ChannelDialog::Delete(_) => None,
         };
         let rename_input = input.clone();
         let view = cx.entity().downgrade();
@@ -144,20 +151,24 @@ impl SidebarView {
                 return dialog;
             };
             let workspace = sidebar.read(cx).workspace.read();
-            let pending = matches!(action, ChannelDialog::Rename(..)) && workspace.rename_pending;
+            let pending = match action {
+                ChannelDialog::Rename(..) => workspace.rename_pending,
+                ChannelDialog::Delete(_) => workspace.delete_pending,
+            };
+            let deleting = matches!(action, ChannelDialog::Delete(_));
             let feedback = if matches!(action, ChannelDialog::Rename(..)) {
                 workspace.rename_feedback.clone()
             } else {
-                None
+                workspace.delete_feedback.clone()
             };
             let target = match &action {
                 ChannelDialog::Rename(id, _) => Some(id.clone()),
-                _ => None,
+                ChannelDialog::Delete(id) => Some(id.clone()),
             };
             let submit_input = input.clone();
             let (title, confirm_id, confirm_label) = match &action {
                 ChannelDialog::Rename(..) => ("Rename channel", "confirm-rename-channel", "Rename"),
-                ChannelDialog::Delete => ("Delete channel", "confirm-delete-channel", "Delete"),
+                ChannelDialog::Delete(_) => ("Delete channel", "confirm-delete-channel", "Delete"),
             };
             let mut content = if let Some(input) = &input {
                 div()
@@ -188,11 +199,11 @@ impl SidebarView {
                     .child(
                         div()
                             .id("delete-channel-warning")
-                            .aria_label("This action cannot be undone.")
+                            .aria_label("You cannot restore this channel in the app.")
                             .test_support()
                             .font_weight(FontWeight::BOLD)
                             .text_color(cx.theme().danger)
-                            .child("This action cannot be undone."),
+                            .child("You cannot restore this channel in the app."),
                     )
                     .into_any_element()
             };
@@ -204,7 +215,11 @@ impl SidebarView {
                     .child(content)
                     .child(
                         div()
-                            .id("rename-channel-feedback")
+                            .id(if deleting {
+                                "delete-channel-feedback"
+                            } else {
+                                "rename-channel-feedback"
+                            })
                             .aria_label(feedback.clone())
                             .test_support()
                             .child(feedback),
@@ -233,7 +248,13 @@ impl SidebarView {
                         }
                         false
                     } else {
-                        true
+                        if !pending && let Some(id) = &keyboard_target {
+                            let _ = keyboard_submit.update(cx, |view, cx| {
+                                view.workspace.delete_channel(id);
+                                cx.notify();
+                            });
+                        }
+                        false
                     }
                 })
                 .child(content)
@@ -252,6 +273,7 @@ impl SidebarView {
                                         }
                                         view.dialog_open = false;
                                         view.rename_revision = None;
+                                        view.delete_revision = None;
                                         cx.notify();
                                     });
                                     if !pending {
@@ -263,14 +285,18 @@ impl SidebarView {
                             Button::new(confirm_id)
                                 .disabled(pending)
                                 .label(if pending {
-                                    "Renaming channel…"
+                                    if deleting {
+                                        "Deleting channel…"
+                                    } else {
+                                        "Renaming channel…"
+                                    }
                                 } else {
                                     confirm_label
                                 })
-                                .when(matches!(action, ChannelDialog::Delete), |button| {
+                                .when(matches!(action, ChannelDialog::Delete(_)), |button| {
                                     button.danger()
                                 })
-                                .on_click(move |_, window, cx| {
+                                .on_click(move |_, _, cx| {
                                     if pending {
                                         return;
                                     }
@@ -280,12 +306,11 @@ impl SidebarView {
                                             view.workspace.rename_channel(id, &name);
                                             cx.notify();
                                         });
-                                    } else {
+                                    } else if let Some(id) = &target {
                                         let _ = confirm.update(cx, |view, cx| {
-                                            view.dialog_open = false;
+                                            view.workspace.delete_channel(id);
                                             cx.notify();
                                         });
-                                        window.close_dialog(cx);
                                     }
                                 }),
                         ),
@@ -294,6 +319,7 @@ impl SidebarView {
                     let _ = closed.update(cx, |view, cx| {
                         view.dialog_open = false;
                         view.rename_revision = None;
+                        view.delete_revision = None;
                         cx.notify();
                     });
                 })

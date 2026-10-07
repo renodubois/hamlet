@@ -1,4 +1,6 @@
 use super::*;
+#[path = "deletion.rs"]
+mod deletion;
 fn logged_in() -> Identity {
     Identity {
         generation: Some(1),

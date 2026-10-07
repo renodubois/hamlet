@@ -11,6 +11,7 @@ mod channel_context_menu;
 mod channels;
 #[path = "composer.rs"]
 mod composer;
+mod deletion;
 #[path = "execution.rs"]
 mod execution;
 #[path = "history.rs"]
