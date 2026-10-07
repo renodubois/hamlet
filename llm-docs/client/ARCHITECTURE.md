@@ -23,7 +23,9 @@ client/src/
 │   ├── app_shell.rs             # Chooses login vs authenticated workspace
 │   ├── login.rs                 # Login/signup inputs, focus, and form interaction
 │   ├── workspace.rs             # Composes sidebar and conversation
-│   ├── sidebar.rs              # Scrollable channel navigation and creation form
+│   ├── sidebar/
+│   │   ├── mod.rs             # Scrollable channel navigation, creation form and dialog lifecycle
+│   │   └── channel_row.rs     # Channel rows, context menus and rename/delete dialogs
 │   ├── session_footer.rs       # Fixed account footer and logout intention
 │   └── conversation/
 │       ├── mod.rs              # Conversation view and layout

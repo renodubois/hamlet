@@ -10,7 +10,7 @@ coordinator. [ARCHITECTURE.md](ARCHITECTURE.md) describes the dependency rules.
 | Fixed sidebar account footer and logout intention | `src/views/session_footer.rs` | `sidebar-footer`, `session-status`, `logout` |
 | Login/signup fields, form mode, focus and sensitive cleanup | `src/views/login.rs` | `server-url`, `username`, `password`, `auth-mode`, `login`, `signup`, `auth-feedback` |
 | Pane composition and connection-status presentation | `src/views/workspace.rs`, `src/views/conversation/mod.rs` | `connection-status` |
-| Scrollable channel list and creation dialog | `src/views/sidebar.rs` | `channels`, `channel-{id}`, `open-create-channel`, `channel-name`, `create-channel`, `cancel-channel`, `channel-feedback` |
+| Scrollable channel list and creation dialog | `src/views/sidebar/mod.rs` (composition/creation), `src/views/sidebar/channel_row.rs` (rows/context-menu dialogs) | `channels`, `channel-{id}`, `open-create-channel`, `channel-name`, `create-channel`, `cancel-channel`, `channel-feedback` |
 | List/focus, wheel, viewport anchoring and traversal controls | `src/views/conversation/message_history.rs` | `history-pane`, `history`, `retry-older`, `jump-latest` |
 | Plain selectable message, author and timestamp | `src/views/conversation/message_row.rs` | `message-{id}`, `message-text-{id}`, `text-{id}` |
 | Textarea, keyboard, focus, displayed-draft synchronization | `src/views/conversation/composer.rs` | `composer-panel`, `composer`, `send-feedback` |
