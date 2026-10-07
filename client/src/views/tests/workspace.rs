@@ -119,7 +119,7 @@ fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut T
     assert_eq!(activity.read().selected.as_deref(), Some("2"));
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.find("channel-2").label(), Some("# Zebra"));
+        assert_eq!(window.find("channel-2").label(), Some("Zebra"));
         assert_eq!(window.find("channel-header").label(), Some("# Zebra"));
         assert!(
             window.find("channel-2").bounds().origin.y < window.find("channel-1").bounds().origin.y
@@ -311,7 +311,7 @@ fn sidebar_dialog_creation_tracks_pending_state_across_recreation(cx: &mut TestA
     drain(cx, &activity);
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.find("channel-3").label(), Some("# Room"));
+        assert_eq!(window.find("channel-3").label(), Some("Room"));
         window.click("open-create-channel", cx);
         window.render_frame(cx);
         assert_eq!(window.find("channel-name").value(), Some(""));

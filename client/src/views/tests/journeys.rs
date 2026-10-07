@@ -326,7 +326,7 @@ fn bob_activity_arrives_through_session_stream_and_real_server_routes(cx: &mut T
         .block_on(bob.client.create_channel("Bob room".into()))
         .unwrap();
     // Real creations arrive while application time stays fixed: no polling wakeup.
-    await_control(cx, format!("channel-{}", channel.id), "# Bob room");
+    await_control(cx, format!("channel-{}", channel.id), "Bob room");
     await_control(cx, format!("message-{}", posted.id), "hello from Bob");
     cx.update(|window, cx| {
         window.click("logout", cx);

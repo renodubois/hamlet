@@ -118,7 +118,19 @@ fn create_controls_confirm_order_selection_and_empty_history(cx: &mut TestAppCon
                 histories.lock().unwrap().last().map(String::as_str),
                 Some("/api/v1/channels/3/messages")
             );
-            assert_eq!(window.find("channel-3").label(), Some("# Middle"));
+            assert_eq!(window.find("channel-3").label(), Some("Middle"));
+            if !empty {
+                let first_label = window.find("channel-label-1").bounds();
+                let middle_label = window.find("channel-label-3").bounds();
+                let button = window.find("channel-1").bounds();
+                let sidebar = window.find("channels").bounds();
+                assert!(
+                    button.size.width >= sidebar.size.width - px(24.),
+                    "channel button must span the sidebar: button={button:?}, sidebar={sidebar:?}"
+                );
+                // The button owns its icon; only custom label alignment is observed here.
+                assert_eq!(first_label.origin.x, middle_label.origin.x);
+            }
             if empty {
                 assert!(window.try_find("channel-1").is_none());
                 assert!(window.try_find("channel-2").is_none());
@@ -419,7 +431,7 @@ fn remote_channel_creation_keeps_selected_conversation_without_refresh_controls(
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.find("channel-remote").label(), Some("# Remote"));
+        assert_eq!(window.find("channel-remote").label(), Some("Remote"));
         assert_eq!(
             window.find("message-000000000000002").label(),
             Some("other channel")

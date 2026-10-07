@@ -1,9 +1,14 @@
 //! Channel controls own their input/focus and subscription; policy belongs to workspace.
 use crate::theme;
 use crate::workspace::{Load, WorkspaceHandle};
-use gpui_kit::base::Disableable;
+use gpui_kit::assets::IconName;
 use gpui_kit::base::input::{InputBaseState, InputMode, InputState};
-use gpui_kit::component::{ActiveTheme, WindowExt as _, button::Button, input::Input};
+use gpui_kit::base::{Disableable, StyledExt};
+use gpui_kit::component::{
+    ActiveTheme, Icon, WindowExt as _,
+    button::{Button, ButtonCustomVariant, ButtonVariants},
+    input::Input,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -188,28 +193,12 @@ impl Render for SidebarView {
             .min_h_0()
             .bg(cx.theme().tokens.sidebar.background)
             .text_color(cx.theme().sidebar_foreground)
-            .p_3()
+            .p_2()
             .flex()
             .flex_col()
             .gap_2()
-            .overflow_y_scroll()
-            .child(div().font_weight(FontWeight::BOLD).child("Text channels"))
-            .child(
-                Button::new("open-create-channel")
-                    .disabled(
-                        workspace.create_pending
-                            || !matches!(workspace.channels, Some(Load::Ready(_))),
-                    )
-                    .label(if workspace.create_pending {
-                        "Creating channel…"
-                    } else {
-                        "Create text channel"
-                    })
-                    .on_click(move |_, window, cx| {
-                        let _ =
-                            create_view.update(cx, |view, cx| view.open_create_dialog(window, cx));
-                    }),
-            );
+            .overflow_y_scroll();
+        let mut channel_container = div().flex_1();
         match &workspace.channels {
             None | Some(Load::Loading) => sidebar = sidebar.child("Loading channels…"),
             Some(Load::Failed(error)) => sidebar = sidebar.child(format!("Channels: {error}")),
@@ -220,12 +209,42 @@ impl Render for SidebarView {
                 for channel in channels {
                     let id = channel.id.clone();
                     let selected = workspace.selected.as_deref() == Some(&id);
-                    let label = format!("# {}", channel.name);
+                    let label = format!("{}", channel.name);
                     let target = view.clone();
-                    sidebar = sidebar.child(
+                    let icon_id = format!("channel-icon-{id}");
+                    let label_id = format!("channel-label-{id}");
+                    channel_container = channel_container.child(
                         Button::new(format!("channel-{id}"))
-                            .label(label)
-                            .icon(theme::channel_icon())
+                            .px_1()
+                            .icon(Icon::new(theme::channel_icon()))
+                            .custom(
+                                ButtonCustomVariant::new(cx)
+                                    .color(cx.theme().sidebar)
+                                    .foreground(cx.theme().sidebar_foreground)
+                                    .hover(cx.theme().sidebar_accent)
+                                    .active(cx.theme().sidebar_accent),
+                            )
+                            .accessibility_label(label.clone())
+                            // Kit centers its built-in icon/label slot. A full-width
+                            // child keeps navigation content aligned to the left.
+                            .child(
+                                div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .flex()
+                                    .items_center()
+                                    .justify_start()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .id(label_id)
+                                            .test_support()
+                                            .min_w_0()
+                                            .text_ellipsis()
+                                            .line_height(relative(1.))
+                                            .child(label),
+                                    ),
+                            )
                             .on_click(move |_, window, cx| {
                                 let _ = target
                                     .update(cx, |view, cx| view.select_channel(&id, window, cx));
@@ -239,6 +258,23 @@ impl Render for SidebarView {
                 }
             }
         }
+        sidebar = sidebar.child(channel_container);
+
+        sidebar = sidebar.child(
+            Button::new("open-create-channel")
+                .disabled(
+                    workspace.create_pending || !matches!(workspace.channels, Some(Load::Ready(_))),
+                )
+                .label(if workspace.create_pending {
+                    "Creating channel…"
+                } else {
+                    "Create text channel"
+                })
+                .on_click(move |_, window, cx| {
+                    let _ = create_view.update(cx, |view, cx| view.open_create_dialog(window, cx));
+                }),
+        );
+
         sidebar
     }
 }
