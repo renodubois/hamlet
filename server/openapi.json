@@ -1198,7 +1198,7 @@
             "bearer_auth": []
           }
         ],
-        "summary": "Fresh all-channel subscription: ready with {}, then change with tagged Event JSON;\nheartbeat comments keep idle connections alive. No IDs or replay; Last-Event-ID\nis ignored. Reconnect with ready/read/buffer reconciliation. EOF is not an\nauthoritative authentication rejection. See llm-docs/server/LIVE-UPDATES.md.",
+        "summary": "Fresh all-channel subscription: ready with {}, then change with tagged Event JSON;\nheartbeat comments keep idle connections alive. No IDs or replay; Last-Event-ID\nis ignored. Readiness does not guarantee recovery of missed changes. EOF is not\nan authoritative authentication rejection. See llm-docs/server/LIVE-UPDATES.md.",
         "tags": [
           "crate::live_updates"
         ]
