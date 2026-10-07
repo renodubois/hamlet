@@ -35,15 +35,6 @@ cargo install watchexec-cli --locked
 
 The script forces worktree-local configuration at `client/.env.dev-config` and native debug build output under `client/target/<host-target>/debug`, regardless of inherited `XDG_CONFIG_HOME`, `CARGO_TARGET_DIR` or `CARGO_BUILD_TARGET`. It neither starts nor stops the server. Run a separate worktree-local server on an unused loopback port, then set the client's Server URL to that endpoint. Start with fresh configuration; never copy session metadata or pending deletions from another environment. Different endpoints have different credential keys, but configuration isolation alone does not isolate Secret Service. Agent-driven desktop automation or real-keyring access still requires separate consent and the [native safety gate](VERIFY.md#native-safety-gate).
 
-Run the supervisor's automated tests from the repository root:
-
-```sh
-bash -n client/dev.sh
-python3 client/scripts/tests/dev.py
-```
-
-These tests use fake Cargo, watcher and client processes; they do not launch GPUI or access a keyring.
-
 ## Channels and conversations
 
 - Choose **Create text channel** to open a dialog, enter **Channel name**, then create it. The dialog stays open while creating and on errors, and closes on confirmed success; **Cancel** or Escape discards its input without canceling an already submitted request. Names are trimmed, accept 1–64 bytes of ASCII letters, digits, spaces, hyphens or underscores, and are unique ignoring ASCII case. Confirmed creation selects the channel; uncertain creation is not replayed automatically.
