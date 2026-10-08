@@ -1,4 +1,4 @@
-//! Best-effort live delivery through the session-owned workspace interface.
+//! Best-effort live delivery through the session-owned chat interface.
 use super::*;
 use live_support::*;
 

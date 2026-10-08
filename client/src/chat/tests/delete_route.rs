@@ -16,7 +16,7 @@ fn remote_delete_empty_fallback_and_missed_deletion_survives_reconnect_without_r
         let alice = api.signup("Alice".into(), "long password".into()).await.unwrap();
         let bob = HttpTransport::new().server(&url).unwrap().signup("Bob".into(), "long password".into()).await.unwrap();
         let general = alice.client.channels().await.unwrap()[0].clone();
-        let a = WorkspaceHandle::new(1, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let a = ChatHandle::new(1, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
         a.start();
         settle(cx, &[&a], || a.status().is_empty() && matches!(a.read().history.get(&general.id), Some(Load::Ready(_)))).await;
         a.edit_draft("discard remotely".into());
@@ -45,7 +45,7 @@ fn remote_delete_empty_fallback_and_missed_deletion_survives_reconnect_without_r
         assert_eq!(reads.load(Ordering::SeqCst), baseline, "no catch-up after missed deletion");
         assert_eq!(bob.client.history_page(later.id, None).await, Err(ApiError::NotFound));
         a.close();
-        let reopened = WorkspaceHandle::new(2, alice.expires_at, alice.client, Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let reopened = ChatHandle::new(2, alice.expires_at, alice.client, Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
         reopened.start(); settle(cx, &[&reopened], || matches!(&reopened.read().channels, Some(Load::Ready(channels)) if channels.len() == 1 && channels[0].name == "missed replacement")).await;
         reopened.close(); drop(relay); stop(handle, task).await;
     });
@@ -77,8 +77,8 @@ fn two_user_live_delete_both_orders_cleanup_fallback_and_reopening(cx: &mut Test
         let general = alice.client.channels().await.unwrap()[0].clone();
         let first = bob.client.create_channel("aaa-first".into()).await.unwrap();
         let other = bob.client.create_channel("zzz-other".into()).await.unwrap();
-        let a = WorkspaceHandle::new(1, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
-        let b = WorkspaceHandle::new(2, bob.expires_at, bob.client.clone(), Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
+        let a = ChatHandle::new(1, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let b = ChatHandle::new(2, bob.expires_at, bob.client.clone(), Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
         a.start(); b.start();
         settle(cx, &[&a, &b], || a.status().is_empty() && b.status().is_empty() && matches!(a.read().history.get(&first.id), Some(Load::Ready(_))) && matches!(b.read().history.get(&first.id), Some(Load::Ready(_)))).await;
         a.edit_draft("discard Alice".into()); b.edit_draft("discard Bob".into());
@@ -106,20 +106,20 @@ fn two_user_live_delete_both_orders_cleanup_fallback_and_reopening(cx: &mut Test
         assert_eq!(a.read().selected.as_deref(), Some(first.id.as_str()));
         stream_gate.open(); stream_gate.open();
         settle(cx, &[&a, &b], || matches!(a.read().history.get(&general.id), Some(Load::Ready(_)))).await;
-        for workspace in [&a, &b] {
-            assert_eq!(workspace.read().selected.as_deref(), Some(general.id.as_str()));
-            assert!(!workspace.read().history.contains_key(&first.id));
-            assert!(!workspace.read().drafts.contains_key(&first.id));
+        for chat in [&a, &b] {
+            assert_eq!(chat.read().selected.as_deref(), Some(general.id.as_str()));
+            assert!(!chat.read().history.contains_key(&first.id));
+            assert!(!chat.read().drafts.contains_key(&first.id));
         }
         assert_eq!(reads.load(Ordering::SeqCst), baseline + 2, "one ordinary fallback read per client, no reconciliation");
         assert_eq!(writes.load(Ordering::SeqCst), 2);
-        // Last-channel failure leaves both workspaces intact.
+        // Last-channel failure leaves both chats intact.
         a.delete_channel(&general.id);
         settle(cx, &[&a, &b], || !a.read().delete_pending).await;
         assert!(a.read().delete_feedback.as_ref().unwrap().contains("last active"));
         assert_eq!(b.read().selected.as_deref(), Some(general.id.as_str()));
         a.close(); b.close();
-        let reopened = WorkspaceHandle::new(3, alice.expires_at, alice.client, Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let reopened = ChatHandle::new(3, alice.expires_at, alice.client, Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
         reopened.start();
         settle(cx, &[&reopened], || matches!(&reopened.read().channels, Some(Load::Ready(channels)) if channels.len() == 1)).await;
         assert_eq!(reopened.read().selected.as_deref(), Some(general.id.as_str()));
@@ -150,7 +150,7 @@ fn real_route_delete_rejects_late_send_and_live_delivery_with_no_locally_known_f
         let alice = api.signup("Alice".into(), "long password".into()).await.unwrap();
         let bob = HttpTransport::new().server(&url).unwrap().signup("Bob".into(), "long password".into()).await.unwrap();
         let general = alice.client.channels().await.unwrap()[0].clone();
-        let a = WorkspaceHandle::new(1, alice.expires_at, alice.client, Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let a = ChatHandle::new(1, alice.expires_at, alice.client, Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
         a.start();
         settle(cx, &[&a], || a.status().is_empty() && matches!(a.read().history.get(&general.id), Some(Load::Ready(_)))).await;
         // Server knows another active channel, but its creation is held in the stream.
@@ -212,7 +212,7 @@ fn real_route_delete_target_cleanup_fallback_uncertainty_and_session_isolation(
         let bob = HttpTransport::new().server(&url).unwrap().signup("Bob".into(), "long password".into()).await.unwrap();
         let general = alice.client.channels().await.unwrap()[0].clone();
         let other = bob.client.create_channel("zz-other".into()).await.unwrap();
-        let a = WorkspaceHandle::new(1, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let a = ChatHandle::new(1, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
         a.start();
         settle(cx, &[&a], || matches!(a.read().history.get(&general.id), Some(Load::Ready(_)))).await;
         a.edit_draft("general draft".into());
@@ -290,7 +290,7 @@ fn real_route_delete_target_cleanup_fallback_uncertainty_and_session_isolation(
         a.close(); gate.open();
         cx.executor().run_until_parked();
         assert!(a.read().channels.is_none());
-        let b = WorkspaceHandle::new(2, bob.expires_at, bob.client, Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
+        let b = ChatHandle::new(2, bob.expires_at, bob.client, Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
         b.start();
         settle(cx, &[&b], || matches!(b.read().channels, Some(Load::Ready(_)))).await;
         assert_eq!(b.read().delete_confirmed, 0);

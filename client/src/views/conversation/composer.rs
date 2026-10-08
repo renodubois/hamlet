@@ -1,12 +1,12 @@
-//! Textarea interaction and displayed-draft projection. Workspace owns all drafts and sends.
-use crate::workspace::WorkspaceHandle;
+//! Textarea interaction and displayed-draft projection. Chat owns all drafts and sends.
+use crate::chat::ChatHandle;
 use gpui_kit::base::input::{InputBaseState, InputEvent, TextareaMode, TextareaState};
 use gpui_kit::component::input::Textarea;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-pub(crate) struct ComposerView {
-    workspace: WorkspaceHandle,
+pub(super) struct ComposerView {
+    chat: ChatHandle,
     presented_channel: Option<String>,
     // Last hydrated/forwarded text, not an authoritative draft. Protects queued Kit edits.
     presented_draft: String,
@@ -16,11 +16,7 @@ pub(crate) struct ComposerView {
     syncing: bool,
 }
 impl ComposerView {
-    pub(crate) fn new(
-        workspace: WorkspaceHandle,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub(super) fn new(chat: ChatHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .submit_on_enter(true)
@@ -40,7 +36,7 @@ impl ComposerView {
             }
             cx.notify();
         });
-        let changes = workspace.notifications();
+        let changes = chat.notifications();
         let notifications = cx.spawn(async move |weak, cx| {
             while changes.recv().await.is_ok() {
                 if weak
@@ -55,7 +51,7 @@ impl ComposerView {
             }
         });
         let mut view = Self {
-            workspace,
+            chat,
             presented_channel: None,
             presented_draft: String::new(),
             input,
@@ -71,18 +67,18 @@ impl ComposerView {
         if text != self.presented_draft
             && let Some(channel) = &self.presented_channel
         {
-            let is_selected = self.workspace.read().selected.as_deref() == Some(channel);
+            let is_selected = self.chat.read().selected.as_deref() == Some(channel);
             if is_selected {
-                self.workspace.edit_draft(text.clone());
+                self.chat.edit_draft(text.clone());
             } else {
-                self.workspace.edit_channel_draft(channel, text.clone());
+                self.chat.edit_channel_draft(channel, text.clone());
             }
             self.presented_draft = text;
         }
     }
     fn sync_input(&mut self, replaced: bool, window: &mut Window, cx: &mut Context<Self>) {
         let text = {
-            let state = self.workspace.read();
+            let state = self.chat.read();
             state
                 .selected
                 .as_deref()
@@ -106,15 +102,13 @@ impl ComposerView {
         self.store_input(cx);
         // Navigation may precede delivery of the old textarea's Enter.
         // Never interpret that event as permission to send the newly selected draft.
-        if self.presented_channel.is_some()
-            && self.presented_channel == self.workspace.read().selected
-        {
-            self.workspace.send();
+        if self.presented_channel.is_some() && self.presented_channel == self.chat.read().selected {
+            self.chat.send();
         }
         cx.notify();
     }
     fn present(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let selected = self.workspace.read().selected.clone();
+        let selected = self.chat.read().selected.clone();
         let replaced = selected != self.presented_channel;
         if replaced {
             self.store_input(cx);
@@ -123,7 +117,7 @@ impl ComposerView {
         self.sync_input(replaced, window, cx);
 
         let placeholder = self
-            .workspace
+            .chat
             .read()
             .selected_channel()
             .map(|channel| format!("Message #{}", channel.name))
@@ -139,15 +133,15 @@ impl ComposerView {
 impl Render for ComposerView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.present(window, cx);
-        let workspace = self.workspace.read();
-        let Some(id) = workspace.selected.as_deref() else {
+        let chat = self.chat.read();
+        let Some(id) = chat.selected.as_deref() else {
             return div().into_any_element();
         };
-        let name = workspace
+        let name = chat
             .selected_channel()
             .map(|channel| channel.name.as_str())
             .unwrap_or("Channel");
-        let sending = workspace.send_pending.contains_key(id);
+        let sending = chat.send_pending.contains_key(id);
         let focus = self.input.read(cx).focus_handle(cx);
         div()
             .id("composer-panel")
@@ -170,7 +164,7 @@ impl Render for ComposerView {
                             .h(px(90.)),
                     ),
             )
-            .when_some(workspace.send_feedback.get(id), |pane, feedback| {
+            .when_some(chat.send_feedback.get(id), |pane, feedback| {
                 pane.child(
                     div()
                         .id("send-feedback")
@@ -182,3 +176,7 @@ impl Render for ComposerView {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+#[path = "tests/composer_lifecycle.rs"]
+mod composer_lifecycle_tests;

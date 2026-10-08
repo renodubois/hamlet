@@ -29,8 +29,8 @@ fn page(items: Vec<Message>, cursor: Option<&str>) -> Page {
         next_cursor: cursor.map(str::to_owned),
     }
 }
-fn loading() -> (WorkspaceState, Identity, ReadRequest) {
-    let mut state = WorkspaceState::default();
+fn loading() -> (ChatState, Identity, ReadRequest) {
+    let mut state = ChatState::default();
     let mut session = session();
     let read = state.start(&session).unwrap();
     let history = state
@@ -42,7 +42,7 @@ fn loading() -> (WorkspaceState, Identity, ReadRequest) {
         .unwrap();
     (state, session, history)
 }
-fn ids(state: &WorkspaceState) -> Vec<&str> {
+fn ids(state: &ChatState) -> Vec<&str> {
     match state.history.get("1") {
         Some(Load::Ready(items)) => items.iter().map(|m| m.id.as_str()).collect(),
         _ => panic!("history not ready"),
@@ -228,7 +228,7 @@ fn initial_read_preserves_http_confirmation_but_live_events_do_not_settle_sends(
 
 #[test]
 fn initial_channel_read_can_miss_live_creations_and_rejects_obsolete_completions() {
-    let mut state = WorkspaceState::default();
+    let mut state = ChatState::default();
     let mut session = session();
     let read = state.start(&session).unwrap();
     assert!(state.start(&session).is_none());

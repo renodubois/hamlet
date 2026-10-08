@@ -1,8 +1,8 @@
 //! Displays history and owns scroll anchoring, selection and jump-to-latest controls.
-//! Workspace owns message data, pagination cursors and request execution.
+//! Chat owns message data, pagination cursors and request execution.
 use super::message_row::message_row_at;
+use crate::chat::{ChatHandle, Load, Older};
 use crate::runtime::Execution;
-use crate::workspace::{Load, Older, WorkspaceHandle};
 use chrono::{DateTime, Local};
 use gpui_kit::base::Disableable;
 use gpui_kit::component::button::Button;
@@ -37,8 +37,8 @@ fn reconcile_history_list(list: &ListState, before: &[String], after: &[String])
     }
 }
 
-pub(crate) struct MessageHistoryView {
-    workspace: WorkspaceHandle,
+pub(super) struct MessageHistoryView {
+    chat: ChatHandle,
     execution: Execution,
     _timestamp_refresh: Task<()>,
     focus: FocusHandle,
@@ -49,8 +49,8 @@ pub(crate) struct MessageHistoryView {
     _notifications: Task<()>,
 }
 impl MessageHistoryView {
-    pub(crate) fn new(
-        workspace: WorkspaceHandle,
+    pub(super) fn new(
+        chat: ChatHandle,
         execution: Execution,
         _window: &mut Window,
         cx: &mut Context<Self>,
@@ -61,13 +61,13 @@ impl MessageHistoryView {
             if event.is_scrolled {
                 let _ = weak.update(cx, |view, cx| {
                     if event.count > 0 && event.visible_range.start <= 1 {
-                        view.workspace.request_older();
+                        view.chat.request_older();
                     }
                     cx.notify();
                 });
             }
         });
-        let changes = workspace.notifications();
+        let changes = chat.notifications();
         let notifications = cx.spawn(async move |weak, cx| {
             while changes.recv().await.is_ok() {
                 if weak
@@ -95,7 +95,7 @@ impl MessageHistoryView {
             }
         });
         let mut view = Self {
-            workspace,
+            chat,
             execution,
             _timestamp_refresh: timestamp_refresh,
             focus: cx.focus_handle(),
@@ -109,7 +109,7 @@ impl MessageHistoryView {
     }
     fn present_history(&mut self) {
         let (selected, ids) = {
-            let state = self.workspace.read();
+            let state = self.chat.read();
             let ids = state
                 .selected
                 .as_ref()
@@ -151,12 +151,12 @@ impl MessageHistoryView {
 impl Render for MessageHistoryView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.present_history();
-        let workspace = self.workspace.read();
+        let chat = self.chat.read();
         // Only a populated list consumes spare height, as in the original combined pane.
-        let has_rows = workspace
+        let has_rows = chat
             .selected
             .as_ref()
-            .and_then(|id| workspace.history_for_display(id))
+            .and_then(|id| chat.history_for_display(id))
             .is_some_and(|load| matches!(load, Load::Ready(messages) if !messages.is_empty()));
         let focus = self.focus.clone();
         let list_for_wheel = self.list.clone();
@@ -180,8 +180,8 @@ impl Render for MessageHistoryView {
             .flex()
             .flex_col()
             .gap_2();
-        if let Some(id) = workspace.selected.as_deref() {
-            match workspace.history_for_display(id) {
+        if let Some(id) = chat.selected.as_deref() {
+            match chat.history_for_display(id) {
                 None | Some(Load::Loading) => history = history.child("Loading conversation…"),
                 Some(Load::Failed(error)) => {
                     history = history.child(format!("Conversation: {error}"))
@@ -190,16 +190,16 @@ impl Render for MessageHistoryView {
                     history = history.child("No messages in this channel yet.")
                 }
                 Some(Load::Ready(messages)) => {
-                    match workspace.older.get(id) {
+                    match chat.older.get(id) {
                         Some(Older::Loading) => {}
                         Some(Older::Failed(error)) => {
                             history = history.child(
                                 div().child(format!("Older messages: {error}")).child(
                                     Button::new("retry-older")
                                         .label("Retry older messages")
-                                        .on_click(cx.listener(|view, _, _, _| {
-                                            view.workspace.retry_older()
-                                        })),
+                                        .on_click(
+                                            cx.listener(|view, _, _, _| view.chat.retry_older()),
+                                        ),
                                 ),
                             );
                         }
@@ -230,9 +230,21 @@ impl Render for MessageHistoryView {
                     );
                 }
             }
-        } else if !matches!(workspace.channels, Some(Load::Ready(ref items)) if items.is_empty()) {
+        } else if !matches!(chat.channels, Some(Load::Ready(ref items)) if items.is_empty()) {
             history = history.child("Select a text channel to read its conversation.");
         }
         history
     }
 }
+
+#[cfg(test)]
+#[path = "tests/history_lifecycle.rs"]
+mod history_lifecycle_tests;
+
+#[cfg(test)]
+#[path = "tests/timestamp_refresh.rs"]
+mod timestamp_refresh_tests;
+
+#[cfg(test)]
+#[path = "tests/support/history.rs"]
+mod history_test_support;

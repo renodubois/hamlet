@@ -3,13 +3,13 @@ use crate::session::SessionCoordinator;
 use gpui_kit::component::{ActiveTheme, button::Button};
 use gpui_kit::*;
 
-pub(crate) struct SessionFooterView {
+pub(super) struct SessionFooterView {
     session: Entity<SessionCoordinator>,
     _subscription: Subscription,
 }
 
 impl SessionFooterView {
-    pub(crate) fn new(session: Entity<SessionCoordinator>, cx: &mut Context<Self>) -> Self {
+    pub(super) fn new(session: Entity<SessionCoordinator>, cx: &mut Context<Self>) -> Self {
         let subscription = cx.observe(&session, |_, _, cx| cx.notify());
         Self {
             session,

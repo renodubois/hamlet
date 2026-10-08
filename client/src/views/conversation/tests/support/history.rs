@@ -1,15 +1,15 @@
-//! Shared headless history host, HTTP fixture and workspace delivery driver.
+//! Shared headless history host, HTTP fixture and chat delivery driver.
+use super::MessageHistoryView;
 use crate::api::test_support::{RequestAdapter, Response};
 use crate::api::{ApiError, ApiFuture};
+use crate::chat::ChatHandle;
 use crate::runtime::Execution;
-use crate::views::conversation::message_history::MessageHistoryView;
-use crate::workspace::WorkspaceHandle;
 use gpui_kit::component::button::Button;
 use gpui_kit::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(super) struct HistoryHost {
-    pub(super) activity: WorkspaceHandle,
+    pub(super) activity: ChatHandle,
     pub(super) history: Entity<MessageHistoryView>,
     pub(super) visible: bool,
 }
@@ -44,7 +44,7 @@ impl Render for HistoryHost {
         )
     }
 }
-pub(super) fn drain(cx: &mut gpui_kit::VisualTestContext, activity: &WorkspaceHandle) {
+pub(super) fn drain(cx: &mut gpui_kit::VisualTestContext, activity: &ChatHandle) {
     loop {
         cx.run_until_parked();
         let Ok(update) = activity.updates().try_recv() else {

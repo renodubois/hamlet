@@ -1,4 +1,5 @@
 mod api;
+mod chat;
 mod runtime;
 mod session;
 mod storage;
@@ -6,7 +7,6 @@ mod storage;
 mod test_support;
 mod theme;
 mod views;
-mod workspace;
 
 use gpui_kit::*;
 

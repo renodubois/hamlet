@@ -56,9 +56,11 @@ Save, restore, deletion and revocation report confirmed, failed or unconfirmed o
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for module ownership and dependency rules, and [PRESENTATION.md](PRESENTATION.md) for editing locations and semantic controls.
 
-`src/main.rs` handles startup. `views/` owns controls and subscriptions; `session/` owns authentication, restoration, expiry and cleanup; `workspace/` owns session-scoped requests, stream reconnect, history and drafts. `api/` owns bound HTTP clients, `storage/` owns the ordered provider/configuration worker, `runtime.rs` provides shared execution/time support, and `theme.rs` installs the One Dark theme and defines palette constants/icons. Edit `theme.rs`'s `config()` role assignments to tune backgrounds, text, primary/secondary actions, and status colors; unspecified settings use Kit's dark defaults, with hover/pressed colors derived automatically.
+`src/main.rs` handles startup. `views/` owns controls and subscriptions; `session/` owns authentication, restoration, expiry and cleanup; `chat/` owns session-scoped requests, stream reconnect, history and drafts. `api/` owns bound HTTP clients, `storage/` owns the ordered provider/configuration worker, `runtime.rs` provides shared execution/time support, and `theme.rs` installs the One Dark theme and defines palette constants/icons. Edit `theme.rs`'s `config()` role assignments to tune backgrounds, text, primary/secondary actions, and status colors; unspecified settings use Kit's dark defaults, with hover/pressed colors derived automatically.
 
-Tests live in the owning feature's `src/<feature>/tests/` directory, with cross-feature fixtures in `src/test_support/`. Follow the required [test layout](ARCHITECTURE.md#test-layout-required).
+`views/chat.rs` is a small composition module; sidebar, conversation and account-footer views live directly under `views/`, with their internals kept private. Its constructor receives existing session/chat handles; it does not change their lifetimes or request behavior.
+
+Tests live in the owning feature's `src/<feature>/tests/` directory, including `src/views/tests/` for chat composition and `src/views/conversation/tests/` for conversation-local suites. Cross-screen/application journeys stay under `src/views/tests/`; cross-feature fixtures live in `src/test_support/`. Follow the required [test layout](ARCHITECTURE.md#test-layout-required).
 
 ## Verification
 

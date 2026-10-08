@@ -1,33 +1,33 @@
 //! Conversation layout composes independently owned header, history and composer children.
 mod channel_header;
-pub(crate) mod composer;
-pub(crate) mod message_history;
+mod composer;
+mod message_history;
 mod message_row;
 mod message_timestamp;
 
+use crate::chat::ChatHandle;
 use crate::runtime::Execution;
-use crate::workspace::WorkspaceHandle;
 use channel_header::ChannelHeaderView;
 use composer::ComposerView;
 use gpui_kit::*;
 use message_history::MessageHistoryView;
 
-pub(crate) struct ConversationView {
+pub(super) struct ConversationView {
     header: Entity<ChannelHeaderView>,
     history: Entity<MessageHistoryView>,
     composer: Entity<ComposerView>,
 }
 impl ConversationView {
-    pub(crate) fn new(
-        workspace: WorkspaceHandle,
+    pub(super) fn new(
+        chat: ChatHandle,
         execution: Execution,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
-            header: cx.new(|cx| ChannelHeaderView::new(workspace.clone(), cx)),
-            history: cx.new(|cx| MessageHistoryView::new(workspace.clone(), execution, window, cx)),
-            composer: cx.new(|cx| ComposerView::new(workspace, window, cx)),
+            header: cx.new(|cx| ChannelHeaderView::new(chat.clone(), cx)),
+            history: cx.new(|cx| MessageHistoryView::new(chat.clone(), execution, window, cx)),
+            composer: cx.new(|cx| ComposerView::new(chat, window, cx)),
         }
     }
 }

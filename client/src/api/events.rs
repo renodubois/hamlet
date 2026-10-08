@@ -1,5 +1,5 @@
 //! Opens and parses one authenticated SSE connection, with deadlines and bounded event delivery.
-//! Dropping the stream cancels it; workspace coordination owns reconnection.
+//! Dropping the stream cancels it; chat coordination owns reconnection.
 
 use super::{ApiError, ApiFuture, AuthenticatedClient};
 use crate::runtime::{Execution, Work};

@@ -1,4 +1,4 @@
-//! One workspace lifetime per accepted session. Views issue intentions and read state;
+//! One chat lifetime per accepted session. Views issue intentions and read state;
 //! this owner alone dispatches requests, applies completions and schedules selected reads.
 
 mod delivery;
@@ -7,8 +7,8 @@ mod state;
 use crate::api::{ApiError, AuthenticatedClient, Channel, LiveEvent, Message, Page, StreamError};
 use crate::runtime::{Execution, Work};
 use live_updates::{Attempt, LiveUpdates};
+pub(crate) use state::{ChatState, Load, Older};
 use state::{CreateRequest, DeleteRequest, Identity, ReadRequest, RenameRequest, SendRequest};
-pub(crate) use state::{Load, Older, WorkspaceState};
 use std::{
     cell::{Ref, RefCell},
     collections::HashMap,
@@ -20,10 +20,10 @@ const READ_SEND_DEADLINE: Duration = Duration::from_secs(9);
 
 /// A clone shares the same closed gate and state; it cannot reopen a lost session.
 #[derive(Clone)]
-pub(crate) struct WorkspaceHandle(Rc<RefCell<Coordinator>>);
+pub(crate) struct ChatHandle(Rc<RefCell<Coordinator>>);
 
 /// Opaque executor delivery. Hosts never interpret request identities or HTTP results.
-pub(crate) struct WorkspaceUpdate(Update);
+pub(crate) struct ChatUpdate(Update);
 enum Update {
     Tick,
     Stream(Attempt, Result<LiveEvent, StreamError>),
@@ -42,7 +42,7 @@ pub(crate) enum SessionEnd {
 }
 
 struct Coordinator {
-    state: WorkspaceState,
+    state: ChatState,
     identity: Identity,
     generation: u64,
     client: Option<AuthenticatedClient>,
@@ -68,7 +68,7 @@ struct Coordinator {
 
 // Notify after each intention/completion releases its state borrow, including early returns.
 // Each subscriber gets a coalesced invalidation, never a competing executor delivery.
-struct Notify<'a>(&'a WorkspaceHandle);
+struct Notify<'a>(&'a ChatHandle);
 impl Drop for Notify<'_> {
     fn drop(&mut self) {
         self.0.0.borrow_mut().observers.retain(|observer| {
@@ -80,7 +80,7 @@ impl Drop for Notify<'_> {
     }
 }
 
-impl WorkspaceHandle {
+impl ChatHandle {
     pub(crate) fn new(
         generation: u64,
         expires_at: i64,
@@ -89,7 +89,7 @@ impl WorkspaceHandle {
     ) -> Self {
         let (deliver, updates) = delivery::channel();
         Self(Rc::new(RefCell::new(Coordinator {
-            state: WorkspaceState::default(),
+            state: ChatState::default(),
             identity: Identity {
                 generation: Some(generation),
                 expires_at,
@@ -117,7 +117,7 @@ impl WorkspaceHandle {
             observers: Vec::new(),
         })))
     }
-    pub fn read(&self) -> Ref<'_, WorkspaceState> {
+    pub fn read(&self) -> Ref<'_, ChatState> {
         Ref::map(self.0.borrow(), |owner| &owner.state)
     }
     #[cfg(test)]
@@ -217,7 +217,7 @@ impl WorkspaceHandle {
         let (task, _) = owner.execution.start(async move {
             let result = api.create_channel(work.name).await;
             let _ = deliver
-                .send(WorkspaceUpdate(Update::Create(request, result)))
+                .send(ChatUpdate(Update::Create(request, result)))
                 .await;
         });
         owner.create_task = Some(task);
@@ -249,7 +249,7 @@ impl WorkspaceHandle {
                 result = api.delete_channel(work.channel_id) => result,
             };
             let _ = deliver
-                .send(WorkspaceUpdate(Update::Delete(request, result)))
+                .send(ChatUpdate(Update::Delete(request, result)))
                 .await;
         });
         owner.delete_task = Some(task);
@@ -281,7 +281,7 @@ impl WorkspaceHandle {
                 result = api.rename_channel(work.channel_id, work.name) => result,
             };
             let _ = deliver
-                .send(WorkspaceUpdate(Update::Rename(request, result)))
+                .send(ChatUpdate(Update::Rename(request, result)))
                 .await;
         });
         owner.rename_task = Some(task);
@@ -309,13 +309,13 @@ impl WorkspaceHandle {
                 result = api.send_message(work.channel_id, work.text) => result,
             };
             let _ = deliver
-                .send(WorkspaceUpdate(Update::Send(request, result)))
+                .send(ChatUpdate(Update::Send(request, result)))
                 .await;
         });
         owner.sends.insert(channel, task);
     }
     /// Applies only this lifetime's opaque delivery, reporting authoritative loss by identity.
-    pub fn apply(&self, update: WorkspaceUpdate) -> Option<SessionEnd> {
+    pub fn apply(&self, update: ChatUpdate) -> Option<SessionEnd> {
         let _notify = Notify(self);
         self.0.borrow_mut().apply(update.0)
     }
@@ -344,7 +344,7 @@ impl Coordinator {
         let deliver = self.deliver.clone();
         let (task, _) = self.execution.start(async move {
             timer.await;
-            let _ = deliver.send(WorkspaceUpdate(Update::Tick)).await;
+            let _ = deliver.send(ChatUpdate(Update::Tick)).await;
         });
         self.timer = Some(task);
     }
@@ -356,17 +356,17 @@ impl Coordinator {
         let (task, _) = self.execution.start(async move {
             loop {
                 let error = match stream.next().await {
-                    Ok(event) => match deliver
-                        .try_send(WorkspaceUpdate(Update::Stream(attempt, Ok(event))))
-                    {
-                        Ok(()) => continue,
-                        Err(async_channel::TrySendError::Full(())) => StreamError::Overflow,
-                        Err(async_channel::TrySendError::Closed(())) => break,
-                    },
+                    Ok(event) => {
+                        match deliver.try_send(ChatUpdate(Update::Stream(attempt, Ok(event)))) {
+                            Ok(()) => continue,
+                            Err(async_channel::TrySendError::Full(())) => StreamError::Overflow,
+                            Err(async_channel::TrySendError::Closed(())) => break,
+                        }
+                    }
                     Err(error) => error,
                 };
                 let _ = deliver
-                    .send_terminal(WorkspaceUpdate(Update::Stream(attempt, Err(error))))
+                    .send_terminal(ChatUpdate(Update::Stream(attempt, Err(error))))
                     .await;
                 break;
             }
@@ -430,7 +430,7 @@ impl Coordinator {
                 result = api.channels() => result,
             };
             let _ = deliver
-                .send(WorkspaceUpdate(Update::Channels(request, result)))
+                .send(ChatUpdate(Update::Channels(request, result)))
                 .await;
         });
         self.channels_task = Some(task);
@@ -463,7 +463,7 @@ impl Coordinator {
                 result = api.history_page(work.channel_id.unwrap(), work.before) => result,
             };
             let _ = deliver
-                .send(WorkspaceUpdate(Update::History(serial, request, result)))
+                .send(ChatUpdate(Update::History(serial, request, result)))
                 .await;
         });
         self.history_task = Some(task);

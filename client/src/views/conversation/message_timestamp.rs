@@ -49,5 +49,5 @@ pub(super) fn format_timestamp<Tz: TimeZone>(
 }
 
 #[cfg(test)]
-#[path = "../tests/message_timestamp.rs"]
+#[path = "tests/message_timestamp.rs"]
 mod tests;

@@ -95,7 +95,7 @@ pub(super) struct DeleteRequest {
 }
 
 #[derive(Default)]
-pub struct WorkspaceState {
+pub struct ChatState {
     pub delete_pending: bool,
     pub delete_feedback: Option<String>,
     pub delete_confirmed: u64,
@@ -127,7 +127,7 @@ pub struct WorkspaceState {
     send_serial: u64,
 }
 
-impl WorkspaceState {
+impl ChatState {
     pub fn selected_channel(&self) -> Option<&Channel> {
         let id = self.selected.as_deref()?;
         let Some(Load::Ready(channels)) = &self.channels else {
@@ -508,7 +508,7 @@ impl WorkspaceState {
             _ => {
                 self.uncertain.insert(id.clone());
                 self.uncertain_notice.insert(id.clone());
-                self.send_feedback.insert(id.clone(), "Could not confirm publication; this message may already have been published. Check the workspace before resending.".into());
+                self.send_feedback.insert(id.clone(), "Could not confirm publication; this message may already have been published. Check the chat before resending.".into());
                 SendOutcome::Uncertain
             }
         }

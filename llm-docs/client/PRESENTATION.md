@@ -9,7 +9,7 @@ coordinator. [ARCHITECTURE.md](ARCHITECTURE.md) describes the dependency rules.
 | Screen composition, shared session/storage feedback and retry | `src/views/app_shell.rs` | `auth-feedback`, `storage-status`, `retry-storage` |
 | Fixed sidebar account footer and logout intention | `src/views/session_footer.rs` | `sidebar-footer`, `session-status`, `logout` |
 | Login/signup fields, form mode, focus and sensitive cleanup | `src/views/login.rs` | `server-url`, `username`, `password`, `auth-mode`, `login`, `signup`, `auth-feedback` |
-| Pane composition and connection-status presentation | `src/views/workspace.rs`, `src/views/conversation/mod.rs` | `connection-status` |
+| Pane composition and connection-status presentation | `src/views/chat.rs`, `src/views/conversation/mod.rs` | `connection-status` |
 | Scrollable channel list and creation dialog | `src/views/sidebar/mod.rs` (composition/creation), `src/views/sidebar/channel_row.rs` (rows/context-menu dialogs) | `channels`, `channel-{id}`, `open-create-channel`, `channel-name`, `create-channel`, `cancel-channel`, `channel-feedback` |
 | List/focus, wheel, viewport anchoring and traversal controls | `src/views/conversation/message_history.rs` | `history-pane`, `history`, `retry-older`, `jump-latest` |
 | Plain selectable message, author and timestamp | `src/views/conversation/message_row.rs` | `message-{id}`, `message-text-{id}`, `text-{id}` |
@@ -18,13 +18,16 @@ coordinator. [ARCHITECTURE.md](ARCHITECTURE.md) describes the dependency rules.
 
 ## Behavior boundaries
 
-`WorkspaceView` stacks the scrollable channel sidebar above a non-scrolling
+`views/chat.rs` composes the authenticated screen.
+It constructs sidebar, conversation and account-footer views from sibling modules
+using existing session/chat handles; the shell does not construct its children.
+`ChatView` stacks the scrollable channel sidebar above a non-scrolling
 account footer. The footer displays the authenticated username and **Log out**;
 its accessible session label also identifies the server. Logout uses the existing
-session coordinator, and the shell removes the authenticated workspace on
+session coordinator, and the shell removes the authenticated chat on
 invalidation. The footer is absent on the login screen.
 
-Views issue intentions to `SessionCoordinator` or `WorkspaceHandle`; they do
+Views issue intentions to `SessionCoordinator` or `ChatHandle`; they do
 not dispatch HTTP, interpret pagination continuity, hold bearer tokens or own
 saved-login deletion identities. `session/` owns login/signup, verified restoration,
 expiry, rejection and independent cleanup/revocation. `session/saved_login.rs`
@@ -32,16 +35,16 @@ retains old-identity cleanup and retry across screens/newer sessions. `storage/`
 owns the ordered blocking provider/configuration protocol; feedback must distinguish
 memory-only, confirmed and unconfirmed outcomes.
 
-`workspace/mod.rs` owns requests, task cancellation and completion identities.
-`workspace/state.rs` owns server-order selection, history continuity, deduplication,
-creation, per-channel drafts and send uncertainty. `workspace/live_updates.rs`
+`chat/mod.rs` owns requests, task cancellation and completion identities.
+`chat/state.rs` owns server-order selection, history continuity, deduplication,
+creation, per-channel drafts and send uncertainty. `chat/live_updates.rs`
 owns one connecting/connected/waiting-to-retry/closed lifecycle. Initial reads
 start independently of readiness; local read failures do not restart the stream.
 Focus and view recreation do not restart the session stream. Creations merge by
 ID into loaded data only; events for unloaded data or during replacing reads may
 be missed. HTTP confirmations remain operation-aware. Stream failures retry after
 a fixed three seconds without catch-up reads, canceling HTTP work or resetting
-workspace state; readiness resumes future delivery, not synchronization.
+chat state; readiness resumes future delivery, not synchronization.
 Uncertainty never schedules reads, reconnect or automatic write retry.
 Neither polling nor manual Refresh/Retry connection controls remain. `api/` alone
 builds routes/headers and decodes responses. HTTP 8s, stream readiness 8s/idle 45s,
@@ -63,7 +66,7 @@ revision. **Connecting…** appears initially; **Live updates disconnected —
 reconnecting.** persists after failure until the replacement stream is ready,
 regardless of cached rows or read outcomes. Neither status promises synchronized
 state. Selection/copy uses Kit `SelectableText` and Root. The composer keeps only its displayed-channel/text
-projection; drafts remain in workspace ownership. Hydration must not overwrite
+projection; drafts remain in chat ownership. Hydration must not overwrite
 queued edits, move the caret on unchanged notifications, or let an old Enter send
 the newly selected channel's draft. Enter sends unchanged text; Shift+Enter adds
 a line. A pending send locks only its originating composer. Uncertain sends retain

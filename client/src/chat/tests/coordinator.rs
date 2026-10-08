@@ -1,4 +1,4 @@
-//! Owned workspace lifecycle with authenticated HTTP and SSE outcomes.
+//! Owned chat lifecycle with authenticated HTTP and SSE outcomes.
 #[path = "rename_coordinator.rs"]
 mod rename;
 use super::live_support::*;
@@ -110,7 +110,7 @@ fn closed_activity_discards_queued_pages_creates_sends_and_rejections(cx: &mut T
 }
 
 #[gpui_kit::test]
-fn current_read_and_stream_rejections_close_before_host_removes_workspace(cx: &mut TestAppContext) {
+fn current_read_and_stream_rejections_close_before_host_removes_chat(cx: &mut TestAppContext) {
     for reject_stream in [false, true] {
         let (activity, calls, _, stream) = ready(cx);
         activity.edit_draft("private draft".into());

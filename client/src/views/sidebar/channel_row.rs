@@ -121,17 +121,17 @@ impl SidebarView {
         if self.dialog_open {
             return;
         }
-        if self.workspace.read().rename_pending || self.workspace.read().delete_pending {
+        if self.chat.read().rename_pending || self.chat.read().delete_pending {
             return;
         }
-        self.workspace.reset_rename_feedback();
-        self.workspace.reset_delete_feedback();
+        self.chat.reset_rename_feedback();
+        self.chat.reset_delete_feedback();
         self.delete_revision = match &action {
-            ChannelDialog::Delete(_) => Some(self.workspace.read().delete_confirmed),
+            ChannelDialog::Delete(_) => Some(self.chat.read().delete_confirmed),
             _ => None,
         };
         self.rename_revision = match &action {
-            ChannelDialog::Rename(..) => Some(self.workspace.read().rename_confirmed),
+            ChannelDialog::Rename(..) => Some(self.chat.read().rename_confirmed),
             ChannelDialog::Delete(_) => None,
         };
         self.dialog_open = true;
@@ -150,16 +150,16 @@ impl SidebarView {
             let Some(sidebar) = view.upgrade() else {
                 return dialog;
             };
-            let workspace = sidebar.read(cx).workspace.read();
+            let chat = sidebar.read(cx).chat.read();
             let pending = match action {
-                ChannelDialog::Rename(..) => workspace.rename_pending,
-                ChannelDialog::Delete(_) => workspace.delete_pending,
+                ChannelDialog::Rename(..) => chat.rename_pending,
+                ChannelDialog::Delete(_) => chat.delete_pending,
             };
             let deleting = matches!(action, ChannelDialog::Delete(_));
             let feedback = if matches!(action, ChannelDialog::Rename(..)) {
-                workspace.rename_feedback.clone()
+                chat.rename_feedback.clone()
             } else {
-                workspace.delete_feedback.clone()
+                chat.delete_feedback.clone()
             };
             let target = match &action {
                 ChannelDialog::Rename(id, _) => Some(id.clone()),
@@ -242,7 +242,7 @@ impl SidebarView {
                         if !pending {
                             let name = input.read(cx).text().to_string();
                             let _ = keyboard_submit.update(cx, |view, cx| {
-                                view.workspace.rename_channel(id, &name);
+                                view.chat.rename_channel(id, &name);
                                 cx.notify();
                             });
                         }
@@ -250,7 +250,7 @@ impl SidebarView {
                     } else {
                         if !pending && let Some(id) = &keyboard_target {
                             let _ = keyboard_submit.update(cx, |view, cx| {
-                                view.workspace.delete_channel(id);
+                                view.chat.delete_channel(id);
                                 cx.notify();
                             });
                         }
@@ -303,12 +303,12 @@ impl SidebarView {
                                     if let (Some(id), Some(input)) = (&target, &submit_input) {
                                         let name = input.read(cx).text().to_string();
                                         let _ = confirm.update(cx, |view, cx| {
-                                            view.workspace.rename_channel(id, &name);
+                                            view.chat.rename_channel(id, &name);
                                             cx.notify();
                                         });
                                     } else if let Some(id) = &target {
                                         let _ = confirm.update(cx, |view, cx| {
-                                            view.workspace.delete_channel(id);
+                                            view.chat.delete_channel(id);
                                             cx.notify();
                                         });
                                     }
@@ -330,7 +330,7 @@ impl SidebarView {
         cx.notify();
     }
     fn select_channel(&mut self, id: &str, _: &mut Window, cx: &mut Context<Self>) {
-        self.workspace.select_channel(id);
+        self.chat.select_channel(id);
         cx.notify();
     }
 }

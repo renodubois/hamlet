@@ -8,12 +8,12 @@ use reqwest::{Request, StatusCode};
 use std::{sync::Arc, time::Duration};
 
 #[gpui_kit::test]
-fn session_loss_closes_surviving_workspace_handles_before_any_host_update(cx: &mut TestAppContext) {
+fn session_loss_closes_surviving_chat_handles_before_any_host_update(cx: &mut TestAppContext) {
     for reason in ["logout", "expiry", "server", "rejection"] {
         let (mut session, calls) = controlled(cx);
         let generation = accept(cx, &mut session, &calls, "Old", 1_800_000_100);
         let old_client = session.active().map(Session::client).unwrap();
-        let activity = session.workspace().unwrap();
+        let activity = session.chat().unwrap();
         activity.start();
         cx.executor().run_until_parked();
         assert!(
@@ -63,7 +63,7 @@ fn session_loss_closes_surviving_workspace_handles_before_any_host_update(cx: &m
             pending.push(call);
         }
         assert_eq!(pending.len(), 3);
-        // Finish before invalidation but leave deliveries queued for the old workspace.
+        // Finish before invalidation but leave deliveries queued for the old chat.
         for call in pending {
             call.reply
                 .try_send(Ok(Response::controlled(
@@ -82,7 +82,7 @@ fn session_loss_closes_surviving_workspace_handles_before_any_host_update(cx: &m
         }
         // No shell, observer or lifecycle consumer has run yet.
         assert!(session.active().is_none());
-        assert!(session.workspace().is_none());
+        assert!(session.chat().is_none());
         assert!(activity.read().channels.is_none());
         assert!(activity.read().history.is_empty());
         assert!(activity.read().drafts.is_empty());
@@ -104,7 +104,7 @@ fn session_loss_closes_surviving_workspace_handles_before_any_host_update(cx: &m
         while let Ok(update) = activity.updates().try_recv() {
             assert!(activity.apply(update).is_none());
         }
-        session.workspace_ended(SessionEnd::Rejected(generation));
+        session.chat_ended(SessionEnd::Rejected(generation));
         assert_eq!(session.session_generation(), Some(current));
         assert_eq!(session.active().unwrap().user.username, "New");
         assert!(activity.read().drafts.is_empty());
@@ -353,10 +353,10 @@ fn restored_context_uses_the_same_lifetime_and_server_change_invalidates_it(
     deliver(cx, &mut session);
     assert_eq!(session.take_lifecycle(), Some(Lifecycle::Authenticated));
     let generation = session.session_generation().unwrap();
-    assert!(session.workspace().is_some());
+    assert!(session.chat().is_some());
     session.change_server("https://other.example".into());
     assert!(session.active().is_none());
-    assert!(session.workspace().is_none());
+    assert!(session.chat().is_none());
     assert_eq!(session.take_lifecycle(), Some(Lifecycle::ServerChanged));
     let current = accept(cx, &mut session, &calls, "New", 1_800_000_100);
     assert_ne!(generation, current);
@@ -383,7 +383,7 @@ fn logout_is_local_before_revocation_and_retains_distinct_remote_outcomes(cx: &m
         accept(cx, &mut session, &calls, "Ada", 1_800_000_100);
         session.logout();
         assert!(session.active().is_none());
-        assert!(session.workspace().is_none());
+        assert!(session.chat().is_none());
         assert_eq!(session.take_lifecycle(), Some(Lifecycle::Invalidated));
         cx.executor().run_until_parked();
         let revoke = calls.try_recv().unwrap();

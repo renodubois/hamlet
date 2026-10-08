@@ -36,9 +36,9 @@ fn page(ids: &[&str], cursor: Option<&str>) -> Page {
         next_cursor: cursor.map(str::to_owned),
     }
 }
-fn ready() -> (WorkspaceState, Identity) {
+fn ready() -> (ChatState, Identity) {
     let mut session = logged_in();
-    let mut state = WorkspaceState::default();
+    let mut state = ChatState::default();
     let list = state.start(&session).unwrap();
     let read = state
         .complete_channels(&mut session, &list, Ok(channels()))
@@ -46,7 +46,7 @@ fn ready() -> (WorkspaceState, Identity) {
     state.complete_history(&mut session, &read, Ok(page(&["8"], Some("opaque older"))));
     (state, session)
 }
-fn ids(state: &WorkspaceState) -> Vec<&str> {
+fn ids(state: &ChatState) -> Vec<&str> {
     let Some(Load::Ready(items)) = state.history.get("z") else {
         panic!("history not ready")
     };
@@ -55,9 +55,9 @@ fn ids(state: &WorkspaceState) -> Vec<&str> {
 
 #[test]
 fn selected_channel_resolves_only_loaded_matching_selection() {
-    let mut state = WorkspaceState {
+    let mut state = ChatState {
         selected: Some("a".into()),
-        ..WorkspaceState::default()
+        ..ChatState::default()
     };
     assert!(state.selected_channel().is_none());
     state.channels = Some(Load::Loading);
@@ -190,7 +190,7 @@ fn authority_and_session_replacement_gate_reads_and_writes_before_rejection() {
 #[test]
 fn channel_snapshot_preserves_server_order_and_only_loads_current_selection() {
     let mut session = logged_in();
-    let mut state = WorkspaceState::default();
+    let mut state = ChatState::default();
     let list = state.start(&session).unwrap();
     let first = state
         .complete_channels(&mut session, &list, Ok(channels()))

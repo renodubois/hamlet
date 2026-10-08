@@ -154,7 +154,7 @@ fn restoration_has_one_ten_second_budget_for_storage_and_verification(cx: &mut T
 }
 
 #[gpui_kit::test]
-fn private_restore_candidate_cannot_open_workspace_after_server_change(cx: &mut TestAppContext) {
+fn private_restore_candidate_cannot_open_chat_after_server_change(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     cx.background_executor.allow_parking();
     let dir = tempfile::tempdir().unwrap();

@@ -59,5 +59,5 @@ pub(super) fn message_row_at<Tz: TimeZone>(
 }
 
 #[cfg(test)]
-#[path = "../tests/message_row.rs"]
+#[path = "tests/message_row.rs"]
 mod tests;

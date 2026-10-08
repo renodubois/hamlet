@@ -1,9 +1,11 @@
-//! Composition journeys through Kit Root, semantic controls and the owned workspace seam.
+//! Composition journeys through Kit Root, semantic controls and the owned chat seam.
+use super::ChatView;
 use crate::api::test_support::{RequestAdapter, Response};
 use crate::api::{ApiError, ApiFuture};
+use crate::chat::ChatHandle;
 use crate::runtime::Execution;
-use crate::views::workspace::WorkspaceView;
-use crate::workspace::WorkspaceHandle;
+use crate::session::SessionCoordinator;
+use crate::storage::Config;
 use gpui_kit::component::{Root, button::Button};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
@@ -31,24 +33,81 @@ impl RequestAdapter for Channels {
         Box::pin(async move { Ok(Response::controlled(reqwest::StatusCode::OK, body)) })
     }
 }
-struct WorkspaceHost {
-    activity: WorkspaceHandle,
-    workspace: Entity<WorkspaceView>,
+// Authentication uses the real session workflow; protected requests use each scenario's fixture.
+struct SessionRequests(Arc<dyn RequestAdapter>);
+impl RequestAdapter for SessionRequests {
+    fn execute(&self, request: reqwest::Request) -> ApiFuture<Result<Response, ApiError>> {
+        let response = match request.url().path() {
+            "/api/v1/auth/login" => Response::controlled(
+                reqwest::StatusCode::OK,
+                r#"{"user":{"id":"u","username":"Ada"},"access_token":"synthetic","expires_at":"2099-01-01T00:00:00Z"}"#,
+            ),
+            "/api/v1/auth/logout" => Response::controlled(reqwest::StatusCode::NO_CONTENT, ""),
+            _ => return self.0.execute(request),
+        };
+        Box::pin(async move { Ok(response) })
+    }
+}
+fn authenticated_chat(
+    cx: &mut TestAppContext,
+    adapter: Arc<dyn RequestAdapter>,
+) -> (Entity<SessionCoordinator>, ChatHandle) {
+    let execution = Execution::controlled(cx.background_executor.clone(), 1_800_000_000);
+    let api = crate::test_support::live::transport(Arc::new(SessionRequests(adapter)));
+    let session = cx.update(|cx| {
+        cx.new(|_| {
+            SessionCoordinator::new(
+                api,
+                execution,
+                Config {
+                    server: Some("https://chat.example".into()),
+                    ..Config::default()
+                },
+                None,
+            )
+        })
+    });
+    let updates = cx.update(|cx| {
+        session.update(cx, |session, _| {
+            session.submit("Ada".into(), "password".into(), false);
+            session.updates()
+        })
+    });
+    loop {
+        cx.run_until_parked();
+        let Ok(update) = updates.try_recv() else {
+            break;
+        };
+        cx.update(|cx| {
+            session.update(cx, |session, cx| {
+                session.apply(update);
+                cx.notify();
+            });
+        });
+    }
+    let activity = cx.update(|cx| session.read(cx).chat().unwrap());
+    (session, activity)
+}
+struct ChatHost {
+    activity: ChatHandle,
+    session: Entity<SessionCoordinator>,
+    chat: Entity<ChatView>,
     visible: bool,
 }
-impl Render for WorkspaceHost {
+impl Render for ChatHost {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut host = div().relative().size_full().flex().flex_col();
         if self.visible {
-            host = host.child(self.workspace.clone());
+            host = host.child(self.chat.clone());
         }
         host.child(
-            Button::new("recreate-workspace")
-                .label("Recreate workspace")
+            Button::new("recreate-chat")
+                .label("Recreate chat")
                 .on_click(cx.listener(|host, _, window, cx| {
-                    host.workspace = cx.new(|cx| {
-                        WorkspaceView::new(
+                    host.chat = cx.new(|cx| {
+                        ChatView::new(
                             host.activity.clone(),
+                            host.session.clone(),
                             Execution::controlled(cx.background_executor().clone(), 1_800_000_000),
                             window,
                             cx,
@@ -58,8 +117,8 @@ impl Render for WorkspaceHost {
                 })),
         )
         .child(
-            Button::new("toggle-workspace")
-                .label("Toggle workspace")
+            Button::new("toggle-chat")
+                .label("Toggle chat")
                 .on_click(cx.listener(|host, _, _, cx| {
                     host.visible = !host.visible;
                     cx.notify();
@@ -67,7 +126,7 @@ impl Render for WorkspaceHost {
         )
     }
 }
-fn drain(cx: &mut gpui_kit::VisualTestContext, activity: &WorkspaceHandle) {
+fn drain(cx: &mut gpui_kit::VisualTestContext, activity: &ChatHandle) {
     loop {
         cx.run_until_parked();
         let Ok(update) = activity.updates().try_recv() else {
@@ -77,34 +136,26 @@ fn drain(cx: &mut gpui_kit::VisualTestContext, activity: &WorkspaceHandle) {
     }
 }
 #[gpui_kit::test]
-fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut TestAppContext) {
+fn chat_hydrates_cached_selection_and_recreates_without_requests(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let calls = Arc::new(AtomicUsize::new(0));
     let mut host_entity = None;
-    let client = crate::test_support::live::transport(Arc::new(Channels(calls.clone())))
-        .server("https://workspace.example")
-        .unwrap()
-        .restore_candidate("synthetic".into())
-        .unwrap();
-    let activity = WorkspaceHandle::new(
-        1,
-        1_800_001_000,
-        client,
-        Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
-    );
+    let (session, activity) = authenticated_chat(cx, Arc::new(Channels(calls.clone())));
     activity.start();
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let workspace = cx.new(|cx| {
-            WorkspaceView::new(
+        let chat = cx.new(|cx| {
+            ChatView::new(
                 activity.clone(),
+                session.clone(),
                 Execution::controlled(cx.background_executor().clone(), 1_800_000_000),
                 window,
                 cx,
             )
         });
-        let host = cx.new(|_| WorkspaceHost {
+        let host = cx.new(|_| ChatHost {
             activity: activity.clone(),
-            workspace,
+            session: session.clone(),
+            chat,
             visible: true,
         });
         host_entity = Some(host.clone());
@@ -141,9 +192,10 @@ fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut T
     cx.update(|window, cx| {
         // Native modals block background controls; simulate external recreation.
         host_entity.as_ref().unwrap().update(cx, |host, cx| {
-            host.workspace = cx.new(|cx| {
-                WorkspaceView::new(
+            host.chat = cx.new(|cx| {
+                ChatView::new(
                     host.activity.clone(),
+                    host.session.clone(),
                     Execution::controlled(cx.background_executor().clone(), 1_800_000_000),
                     window,
                     cx,
@@ -189,12 +241,12 @@ fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut T
         window.click("channel-name", cx);
         window.input("clear even when hidden", cx);
         window.click("cancel-channel", cx);
-        window.click("toggle-workspace", cx);
+        window.click("toggle-chat", cx);
     });
     activity.close();
     cx.run_until_parked();
     cx.update(|window, cx| {
-        window.click("toggle-workspace", cx);
+        window.click("toggle-chat", cx);
         window.render_frame(cx);
         assert!(window.try_find("composer").is_none());
         assert!(window.try_find("channel-2").is_none());
@@ -208,6 +260,51 @@ fn workspace_hydrates_cached_selection_and_recreates_without_requests(cx: &mut T
         3,
         "recreation, cache and shutdown must not dispatch"
     );
+}
+
+#[gpui_kit::test]
+fn chat_composes_account_footer_and_routes_logout_without_shell(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (session, activity) = authenticated_chat(cx, Arc::new(Channels(calls.clone())));
+    activity.start();
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let chat = cx.new(|cx| {
+            ChatView::new(
+                activity.clone(),
+                session.clone(),
+                Execution::controlled(cx.background_executor().clone(), 1_800_000_000),
+                window,
+                cx,
+            )
+        });
+        Root::new(chat, window, cx)
+    });
+    drain(cx, &activity);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("sidebar-footer").is_some());
+        assert_eq!(
+            window.find("session-status").label(),
+            Some("Logged in as Ada at https://chat.example")
+        );
+        assert_eq!(window.find("logout").label(), Some("Log out"));
+        window.click("composer", cx);
+        window.input("clear on logout", cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(activity.read().draft("2"), "clear on logout");
+    cx.update(|window, cx| window.click("logout", cx));
+    drain(cx, &activity);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(session.read(cx).active().is_none());
+        assert!(activity.read().channels.is_none());
+        assert_eq!(activity.read().draft("2"), "");
+        assert!(window.try_find("logout").is_none());
+        assert!(window.try_find("composer").is_none());
+    });
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
 type Creation = (String, async_channel::Sender<Result<Response, ApiError>>);
@@ -232,30 +329,22 @@ impl RequestAdapter for DelayedCreation {
 fn sidebar_dialog_creation_tracks_pending_state_across_recreation(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let api = Arc::new(DelayedCreation(std::sync::Mutex::new(Vec::new())));
-    let client = crate::test_support::live::transport(api.clone())
-        .server("https://workspace.example")
-        .unwrap()
-        .restore_candidate("synthetic".into())
-        .unwrap();
-    let activity = WorkspaceHandle::new(
-        1,
-        1_800_001_000,
-        client,
-        Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
-    );
+    let (session, activity) = authenticated_chat(cx, api.clone());
     activity.start();
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let workspace = cx.new(|cx| {
-            WorkspaceView::new(
+        let chat = cx.new(|cx| {
+            ChatView::new(
                 activity.clone(),
+                session.clone(),
                 Execution::controlled(cx.background_executor().clone(), 1_800_000_000),
                 window,
                 cx,
             )
         });
-        let host = cx.new(|_| WorkspaceHost {
+        let host = cx.new(|_| ChatHost {
             activity: activity.clone(),
-            workspace,
+            session: session.clone(),
+            chat,
             visible: true,
         });
         Root::new(host, window, cx)
@@ -276,7 +365,7 @@ fn sidebar_dialog_creation_tracks_pending_state_across_recreation(cx: &mut TestA
         );
         window.click("cancel-channel", cx);
         window.render_frame(cx);
-        window.click("recreate-workspace", cx);
+        window.click("recreate-chat", cx);
     });
     drain(cx, &activity);
     cx.update(|window, cx| {

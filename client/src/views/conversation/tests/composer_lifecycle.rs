@@ -1,9 +1,9 @@
-//! Independent composer lifetime through real Kit controls and the workspace interface.
+//! Independent composer lifetime through real Kit controls and the chat interface.
+use super::ComposerView;
 use crate::api::test_support::{RequestAdapter, Response};
 use crate::api::{ApiError, ApiFuture};
+use crate::chat::ChatHandle;
 use crate::runtime::Execution;
-use crate::views::conversation::composer::ComposerView;
-use crate::workspace::WorkspaceHandle;
 use gpui_kit::component::{Root, button::Button};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
@@ -41,7 +41,7 @@ impl RequestAdapter for ComposerApi {
     }
 }
 struct ComposerHost {
-    activity: WorkspaceHandle,
+    activity: ChatHandle,
     composer: Entity<ComposerView>,
     visible: bool,
 }
@@ -70,7 +70,7 @@ impl Render for ComposerHost {
         )
     }
 }
-fn drain(cx: &mut gpui_kit::VisualTestContext, activity: &WorkspaceHandle) {
+fn drain(cx: &mut gpui_kit::VisualTestContext, activity: &ChatHandle) {
     loop {
         cx.run_until_parked();
         let Ok(update) = activity.updates().try_recv() else {
@@ -92,14 +92,14 @@ fn text(window: &mut Window, cx: &mut gpui_kit::App) -> String {
 fn mount(
     cx: &mut TestAppContext,
     api: Arc<ComposerApi>,
-) -> (WorkspaceHandle, &mut gpui_kit::VisualTestContext) {
+) -> (ChatHandle, &mut gpui_kit::VisualTestContext) {
     cx.update(gpui_kit::init);
     let client = crate::test_support::live::transport(api)
         .server("https://composer.example")
         .unwrap()
         .restore_candidate("synthetic".into())
         .unwrap();
-    let activity = WorkspaceHandle::new(
+    let activity = ChatHandle::new(
         1,
         1_800_001_000,
         client,

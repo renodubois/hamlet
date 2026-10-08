@@ -1,7 +1,7 @@
 use crate::api::test_support::{RequestAdapter, Response, StreamAdapter, StreamResponse};
 use crate::api::{ApiError, ApiFuture, HttpTransport};
+use crate::chat::ChatHandle;
 use crate::runtime::Execution;
-use crate::workspace::WorkspaceHandle;
 use gpui_kit::TestAppContext;
 use reqwest::{Request, StatusCode};
 use std::sync::Arc;
@@ -60,7 +60,7 @@ impl StreamAdapter for Streams {
 pub fn fixture(
     cx: &TestAppContext,
 ) -> (
-    WorkspaceHandle,
+    ChatHandle,
     async_channel::Receiver<Call>,
     async_channel::Receiver<Stream>,
 ) {
@@ -71,19 +71,19 @@ pub fn fixture_for_session(
     cx: &TestAppContext,
     generation: u64,
 ) -> (
-    WorkspaceHandle,
+    ChatHandle,
     async_channel::Receiver<Call>,
     async_channel::Receiver<Stream>,
 ) {
     let (send, calls) = async_channel::unbounded();
     let (open, streams) = async_channel::unbounded();
     let client = HttpTransport::with_adapters(Arc::new(Requests(send)), Arc::new(Streams(open)))
-        .server("https://workspace.example")
+        .server("https://chat.example")
         .unwrap()
         .restore_candidate("synthetic".into())
         .unwrap();
     (
-        WorkspaceHandle::new(
+        ChatHandle::new(
             generation,
             1_800_001_000,
             client,
@@ -98,7 +98,7 @@ pub fn respond(call: Call, value: serde_json::Value) {
         .try_send(Ok(Response::controlled(StatusCode::OK, value.to_string())))
         .unwrap();
 }
-pub fn drain(cx: &mut TestAppContext, activity: &WorkspaceHandle) {
+pub fn drain(cx: &mut TestAppContext, activity: &ChatHandle) {
     loop {
         cx.executor().run_until_parked();
         let Ok(update) = activity.updates().try_recv() else {
@@ -119,7 +119,7 @@ pub fn channels() -> serde_json::Value {
 pub fn ready(
     cx: &mut TestAppContext,
 ) -> (
-    WorkspaceHandle,
+    ChatHandle,
     async_channel::Receiver<Call>,
     async_channel::Receiver<Stream>,
     Stream,
@@ -137,9 +137,9 @@ pub fn ready(
     (activity, calls, streams, stream)
 }
 
-pub fn ids(activity: &WorkspaceHandle) -> Vec<String> {
+pub fn ids(activity: &ChatHandle) -> Vec<String> {
     let state = activity.read();
-    let Some(crate::workspace::Load::Ready(messages)) = state.history_for_display("1") else {
+    let Some(crate::chat::Load::Ready(messages)) = state.history_for_display("1") else {
         panic!("history not ready")
     };
     messages.iter().map(|message| message.id.clone()).collect()

@@ -35,7 +35,7 @@ fn live_rename_duplicates_unknown_and_obsolete_deliveries(cx: &mut TestAppContex
     let (new, new_calls, _, new_stream) = ready(cx);
     assert!(activity.apply(late).is_none());
     assert_eq!(new.read().selected_channel().unwrap().name, "General");
-    // Abandoned attempt delivery cannot alter this workspace after failure.
+    // Abandoned attempt delivery cannot alter this chat after failure.
     new_stream.frame("change", rename("1", "Obsolete"));
     cx.executor().run_until_parked();
     let obsolete = new.updates().try_recv().unwrap();
@@ -83,7 +83,7 @@ fn rename_queued_old_results_cannot_affect_new_authentication(cx: &mut TestAppCo
 }
 
 #[gpui_kit::test]
-fn rename_current_authoritative_rejection_closes_workspace(cx: &mut TestAppContext) {
+fn rename_current_authoritative_rejection_closes_chat(cx: &mut TestAppContext) {
     let (activity, calls, _, _) = ready(cx);
     activity.rename_channel("1", "New");
     drain(cx, &activity);

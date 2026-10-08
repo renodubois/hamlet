@@ -57,7 +57,7 @@ fn delayed_login(executor: gpui_kit::BackgroundExecutor) -> HttpTransport {
 }
 
 #[gpui_kit::test]
-fn controlled_login_remains_pending_until_response_then_enters_workspace(cx: &mut TestAppContext) {
+fn controlled_login_remains_pending_until_response_then_enters_chat(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let executor = cx.background_executor.clone();
     let execution = Execution::controlled(executor.clone(), 1_800_000_000);
@@ -232,7 +232,7 @@ fn late_login_cannot_replace_a_newer_server_submission(cx: &mut TestAppContext) 
 }
 
 #[gpui_kit::test]
-fn expiry_uses_controlled_wall_time_and_clears_the_workspace(cx: &mut TestAppContext) {
+fn expiry_uses_controlled_wall_time_and_clears_the_chat(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     // BoundAuth expires at 4_070_908_800; the accepted response arrives at second 2.
     let executor = cx.background_executor.clone();

@@ -1,14 +1,14 @@
-//! Channel controls own their input/focus and subscription; policy belongs to workspace.
+//! Channel controls own their input/focus and subscription; policy belongs to chat.
 mod channel_row;
 
-use crate::workspace::{Load, WorkspaceHandle};
+use crate::chat::{ChatHandle, Load};
 use gpui_kit::base::Disableable;
 use gpui_kit::base::input::{InputBaseState, InputMode, InputState};
 use gpui_kit::component::{ActiveTheme, WindowExt as _, button::Button, input::Input};
 use gpui_kit::*;
 
-pub(crate) struct SidebarView {
-    workspace: WorkspaceHandle,
+pub(super) struct SidebarView {
+    chat: ChatHandle,
     channel_name: Entity<InputBaseState<InputMode>>,
     created_revision: u64,
     dialog_open: bool,
@@ -18,18 +18,11 @@ pub(crate) struct SidebarView {
     _notifications: Task<()>,
 }
 impl SidebarView {
-    pub(crate) fn new(
-        workspace: WorkspaceHandle,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub(super) fn new(chat: ChatHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let channel_name = cx.new(|cx| InputState::new(window, cx));
         // A newly mounted input must not consume a confirmation from before its lifetime.
-        let created_revision = workspace
-            .created()
-            .map(|(revision, _)| revision)
-            .unwrap_or(0);
-        let changes = workspace.notifications();
+        let created_revision = chat.created().map(|(revision, _)| revision).unwrap_or(0);
+        let changes = chat.notifications();
         let notifications = cx.spawn(async move |weak, cx| {
             while changes.recv().await.is_ok() {
                 if weak
@@ -49,7 +42,7 @@ impl SidebarView {
             }
         });
         Self {
-            workspace,
+            chat,
             channel_name,
             created_revision,
             dialog_open: false,
@@ -61,20 +54,20 @@ impl SidebarView {
     }
     fn present(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(revision) = self.delete_revision
-            && revision != self.workspace.read().delete_confirmed
+            && revision != self.chat.read().delete_confirmed
         {
             self.delete_revision = None;
             self.dialog_open = false;
             window.close_dialog(cx);
         }
         if let Some(revision) = self.rename_revision
-            && revision != self.workspace.read().rename_confirmed
+            && revision != self.chat.read().rename_confirmed
         {
             self.rename_revision = None;
             self.dialog_open = false;
             window.close_dialog(cx);
         }
-        if self.workspace.read().channels.is_none() {
+        if self.chat.read().channels.is_none() {
             if self.dialog_open {
                 self.dialog_open = false;
                 window.close_dialog(cx);
@@ -85,7 +78,7 @@ impl SidebarView {
                     .update(cx, |input, cx| input.set_value("", window, cx));
             }
         }
-        if let Some((revision, _)) = self.workspace.created()
+        if let Some((revision, _)) = self.chat.created()
             && revision != self.created_revision
         {
             self.created_revision = revision;
@@ -110,8 +103,8 @@ impl SidebarView {
                 return dialog;
             };
             let sidebar = view.read(cx);
-            let workspace = sidebar.workspace.read();
-            let pending = workspace.create_pending;
+            let chat = sidebar.chat.read();
+            let pending = chat.create_pending;
             let submit = view.downgrade();
             let cancel = view.downgrade();
             let confirm = view.downgrade();
@@ -121,7 +114,7 @@ impl SidebarView {
                     .aria_label("Channel name")
                     .disabled(pending),
             );
-            if let Some(feedback) = &workspace.create_feedback {
+            if let Some(feedback) = &chat.create_feedback {
                 content = content.child(
                     div()
                         .id("channel-feedback")
@@ -184,7 +177,7 @@ impl SidebarView {
         cx.notify();
     }
     fn create_channel(&mut self, cx: &mut Context<Self>) {
-        self.workspace
+        self.chat
             .create_channel(&self.channel_name.read(cx).text().to_string());
         cx.notify();
     }
@@ -192,7 +185,7 @@ impl SidebarView {
 impl Render for SidebarView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.present(window, cx);
-        let workspace = self.workspace.read();
+        let chat = self.chat.read();
         let view = cx.entity().downgrade();
         let create_view = view.clone();
         let mut sidebar = div()
@@ -209,7 +202,7 @@ impl Render for SidebarView {
             .gap_2()
             .overflow_y_scroll();
         let mut channel_container = div().flex_1();
-        match &workspace.channels {
+        match &chat.channels {
             None | Some(Load::Loading) => sidebar = sidebar.child("Loading channels…"),
             Some(Load::Failed(error)) => sidebar = sidebar.child(format!("Channels: {error}")),
             Some(Load::Ready(channels)) if channels.is_empty() => {
@@ -217,7 +210,7 @@ impl Render for SidebarView {
             }
             Some(Load::Ready(channels)) => {
                 for channel in channels {
-                    let selected = workspace.selected.as_deref() == Some(&channel.id);
+                    let selected = chat.selected.as_deref() == Some(&channel.id);
                     channel_container =
                         channel_container.child(Self::channel_row(channel, selected, cx));
                 }
@@ -227,10 +220,8 @@ impl Render for SidebarView {
 
         sidebar = sidebar.child(
             Button::new("open-create-channel")
-                .disabled(
-                    workspace.create_pending || !matches!(workspace.channels, Some(Load::Ready(_))),
-                )
-                .label(if workspace.create_pending {
+                .disabled(chat.create_pending || !matches!(chat.channels, Some(Load::Ready(_))))
+                .label(if chat.create_pending {
                     "Creating channel…"
                 } else {
                     "Create text channel"

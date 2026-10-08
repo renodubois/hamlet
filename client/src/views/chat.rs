@@ -1,27 +1,32 @@
-//! Composes the channel sidebar and conversation view against one shared workspace handle.
+//! Composes the authenticated screen from sibling view modules.
+//! Session and chat behavior remain independent of the rendered screen's lifetime.
 use super::{
     conversation::ConversationView, session_footer::SessionFooterView, sidebar::SidebarView,
 };
+
+use crate::chat::ChatHandle;
 use crate::runtime::Execution;
-use crate::workspace::WorkspaceHandle;
+use crate::session::SessionCoordinator;
 use gpui_kit::*;
 
-pub(crate) struct WorkspaceView {
+pub(super) struct ChatView {
     sidebar: Entity<SidebarView>,
-    footer: Option<Entity<SessionFooterView>>,
+    footer: Entity<SessionFooterView>,
     layout: Entity<ConversationView>,
     _notifications: Task<()>,
 }
-impl WorkspaceView {
-    pub(crate) fn new(
-        workspace: WorkspaceHandle,
+impl ChatView {
+    pub(super) fn new(
+        chat: ChatHandle,
+        session: Entity<SessionCoordinator>,
         execution: Execution,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let sidebar = cx.new(|cx| SidebarView::new(workspace.clone(), window, cx));
-        let layout = cx.new(|cx| ConversationView::new(workspace.clone(), execution, window, cx));
-        let changes = workspace.notifications();
+        let footer = cx.new(|cx| SessionFooterView::new(session, cx));
+        let sidebar = cx.new(|cx| SidebarView::new(chat.clone(), window, cx));
+        let layout = cx.new(|cx| ConversationView::new(chat.clone(), execution, window, cx));
+        let changes = chat.notifications();
         let notifications = cx.spawn(async move |weak, cx| {
             while changes.recv().await.is_ok() {
                 if weak.update(cx, |_, cx| cx.notify()).is_err() {
@@ -31,29 +36,23 @@ impl WorkspaceView {
         });
         Self {
             sidebar,
-            footer: None,
+            footer,
             layout,
             _notifications: notifications,
         }
     }
-    pub(crate) fn with_footer(mut self, footer: Entity<SessionFooterView>) -> Self {
-        self.footer = Some(footer);
-        self
-    }
 }
-impl Render for WorkspaceView {
+impl Render for ChatView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let mut sidebar = div()
+        let sidebar = div()
             .w(px(220.))
             .h_full()
             .min_h_0()
             .flex_shrink_0()
             .flex()
             .flex_col()
-            .child(self.sidebar.clone());
-        if let Some(footer) = &self.footer {
-            sidebar = sidebar.child(footer.clone());
-        }
+            .child(self.sidebar.clone())
+            .child(self.footer.clone());
         div()
             .flex()
             .flex_col()
@@ -72,3 +71,7 @@ impl Render for WorkspaceView {
             )
     }
 }
+
+#[cfg(test)]
+#[path = "tests/chat.rs"]
+mod chat_tests;

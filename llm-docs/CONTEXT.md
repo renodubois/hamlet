@@ -11,6 +11,10 @@ The single group of participants and channels served by a Hamlet installation.
 A participant in a Hamlet community with a persistent identity, independent of how they authenticate.
 _Avoid_: Account (when referring to the participant)
 
+**Chat**:
+A user's participation in the community's text conversations, spanning channels and drafts rather than a single conversation.
+_Avoid_: Workspace
+
 **Channel**:
 A named space within the community. Its type determines what kind of activity it supports.
 

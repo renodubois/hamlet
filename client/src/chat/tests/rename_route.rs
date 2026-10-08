@@ -25,7 +25,7 @@ fn real_route_rename_preserves_conversation_and_rejects_closed_session(cx: &mut 
         let channel = alice.client.channels().await.unwrap()[0].clone();
         let other = bob.client.create_channel("Other".into()).await.unwrap();
         let message = bob.client.send_message(channel.id.clone(), "retained message".into()).await.unwrap();
-        let activity = WorkspaceHandle::new(1, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let activity = ChatHandle::new(1, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
         activity.start();
         settle(cx, &[&activity], || activity.status().is_empty() && ids(&activity, &channel.id).contains(&message.id)).await;
         activity.edit_draft("retained draft".into());
@@ -74,7 +74,7 @@ fn real_route_rename_preserves_conversation_and_rejects_closed_session(cx: &mut 
         cx.executor().run_until_parked();
         assert!(activity.read().channels.is_none());
         assert!(activity.read().drafts.is_empty());
-        let replacement = WorkspaceHandle::new(2, bob.expires_at, bob.client.clone(), Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
+        let replacement = ChatHandle::new(2, bob.expires_at, bob.client.clone(), Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
         replacement.start();
         settle(cx, &[&replacement], || matches!(replacement.read().channels, Some(Load::Ready(_)))).await;
         assert!(!replacement.read().rename_pending);
@@ -110,13 +110,13 @@ fn two_user_live_rename_both_confirmation_orders_without_reads(cx: &mut TestAppC
         let channel = alice.client.channels().await.unwrap()[0].clone();
         let other = bob.client.create_channel("Other".into()).await.unwrap();
         let message = bob.client.send_message(channel.id.clone(), "retained".into()).await.unwrap();
-        let a = WorkspaceHandle::new(1, alice.expires_at, alice.client, Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
-        let b = WorkspaceHandle::new(2, bob.expires_at, bob.client, Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
+        let a = ChatHandle::new(1, alice.expires_at, alice.client, Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let b = ChatHandle::new(2, bob.expires_at, bob.client, Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
         a.start(); b.start();
         settle(cx, &[&a, &b], || a.status().is_empty() && b.status().is_empty() && ids(&a, &channel.id).contains(&message.id) && ids(&b, &channel.id).contains(&message.id)).await;
         a.edit_draft("Alice draft".into()); b.edit_draft("Bob draft".into());
         let baseline = reads.load(Ordering::SeqCst);
-        let named = |workspace: &WorkspaceHandle, id: &str, name: &str| matches!(&workspace.read().channels, Some(Load::Ready(channels)) if channels.iter().any(|c| c.id == id && c.name == name));
+        let named = |chat: &ChatHandle, id: &str, name: &str| matches!(&chat.read().channels, Some(Load::Ready(channels)) if channels.iter().any(|c| c.id == id && c.name == name));
         // The live event arrives first: it cannot confirm the originating operation.
         response_gate.arm();
         a.rename_channel(&other.id, "AAA");
@@ -136,10 +136,10 @@ fn two_user_live_rename_both_confirmation_orders_without_reads(cx: &mut TestAppC
         a.rename_channel(&channel.id, "aaa");
         settle(cx, &[&a, &b], || !a.read().rename_pending).await;
         assert!(a.read().rename_feedback.as_ref().unwrap().contains("already exists"));
-        for workspace in [&a, &b] {
-            assert_eq!(workspace.read().selected.as_deref(), Some(channel.id.as_str()));
-            assert_eq!(ids(workspace, &channel.id), vec![message.id.clone()]);
-            assert!(matches!(&workspace.read().channels, Some(Load::Ready(channels)) if channels.len() == 2 && channels[0].id == other.id && channels[1].id == channel.id));
+        for chat in [&a, &b] {
+            assert_eq!(chat.read().selected.as_deref(), Some(channel.id.as_str()));
+            assert_eq!(ids(chat, &channel.id), vec![message.id.clone()]);
+            assert!(matches!(&chat.read().channels, Some(Load::Ready(channels)) if channels.len() == 2 && channels[0].id == other.id && channels[1].id == channel.id));
         }
         assert_eq!(a.read().draft(&channel.id), "Alice draft");
         assert_eq!(b.read().draft(&channel.id), "Bob draft");

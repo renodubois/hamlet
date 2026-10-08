@@ -16,7 +16,7 @@
 
 `client/src/views/conversation/message_timestamp.rs` formats labels and exact times from an RFC3339 instant and an injected viewer-local current time. `message_row.rs` supplies `chrono::Local::now()` and attaches the exact-time tooltip only to the timestamp. This is display-only: API data, ordering and storage remain unchanged.
 
-The agreed deterministic seams are the formatter and headless GPUI message-row rendering/hover. Suites live in `client/src/views/tests/message_timestamp.rs` and `message_row.rs`, declared by their owning conversation modules. They cover thresholds, calendar/year boundaries, timezone conversion, future instants, noon/midnight, tooltip hover and normal redraws. No desktop automation or real keyring is used.
+The agreed deterministic seams are the formatter and headless GPUI message-row rendering/hover. Suites live in `client/src/views/conversation/tests/message_timestamp.rs` and `message_row.rs`, declared by their owning conversation modules. They cover thresholds, calendar/year boundaries, timezone conversion, future instants, noon/midnight, tooltip hover and normal redraws. No desktop automation or real keyring is used.
 
 Run from `client/`: `cargo test --locked message_timestamp` and `cargo test --locked message_row`.
 

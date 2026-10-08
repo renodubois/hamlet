@@ -96,7 +96,7 @@ fn live_deletion_duplicate_late_deliveries_dialog_outcomes_and_session_guards(
     let replacement_stream = replacement_streams.try_recv().unwrap();
     replacement_stream.ready();
     drain(cx, &replacement);
-    replacement.apply(WorkspaceUpdate(Update::Stream(
+    replacement.apply(ChatUpdate(Update::Stream(
         old,
         Ok(LiveEvent::ChannelDeleted("2".into())),
     )));

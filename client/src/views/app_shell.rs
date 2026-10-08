@@ -1,6 +1,6 @@
-//! Switches between login and workspace, displays session/storage feedback and delivers updates.
-//! Session and workspace coordinators interpret those updates and dispatch requests.
-use super::{login::LoginView, session_footer::SessionFooterView, workspace::WorkspaceView};
+//! Switches between login and chat, displays session/storage feedback and delivers updates.
+//! Session and chat coordinators interpret those updates and dispatch requests.
+use super::{chat::ChatView, login::LoginView};
 use crate::api::HttpTransport;
 use crate::runtime::Execution;
 use crate::session::{Lifecycle, SessionCoordinator, StorageRetry};
@@ -23,7 +23,7 @@ pub(crate) struct AppShell {
     execution: Execution,
     session: Entity<SessionCoordinator>,
     login: Entity<LoginView>,
-    workspace: Option<Entity<WorkspaceView>>,
+    chat: Option<Entity<ChatView>>,
     _session_subscription: Subscription,
 }
 impl AppShell {
@@ -66,30 +66,34 @@ impl AppShell {
             execution,
             session,
             login,
-            workspace: None,
+            chat: None,
             _session_subscription: session_subscription,
         }
     }
     fn enter_authenticated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(activity) = self.session.read(cx).workspace() else {
+        let Some(activity) = self.session.read(cx).chat() else {
             return;
         };
         let updates = activity.updates();
         activity.start();
-        let footer = cx.new(|cx| SessionFooterView::new(self.session.clone(), cx));
-        self.workspace = Some(cx.new(|cx| {
-            WorkspaceView::new(activity.clone(), self.execution.clone(), window, cx)
-                .with_footer(footer)
+        self.chat = Some(cx.new(|cx| {
+            ChatView::new(
+                activity.clone(),
+                self.session.clone(),
+                self.execution.clone(),
+                window,
+                cx,
+            )
         }));
         // Opaque delivery only. Views subscribe separately to feature invalidations;
-        // recreating a workspace never creates another competing delivery loop.
+        // recreating a chat never creates another competing delivery loop.
         cx.spawn(async move |weak, cx| {
             while let Ok(update) = updates.recv().await {
                 if weak
                     .update_in(cx, |view, window, cx| {
                         if let Some(end) = activity.apply(update) {
                             view.session.update(cx, |session, cx| {
-                                session.workspace_ended(end);
+                                session.chat_ended(end);
                                 cx.notify();
                             });
                         }
@@ -116,7 +120,7 @@ impl AppShell {
             Some(Lifecycle::Authenticated) => self.enter_authenticated(window, cx),
             Some(Lifecycle::Invalidated | Lifecycle::ServerChanged) => {
                 // The session already closed protected dispatch and wiped authoritative state.
-                self.workspace = None;
+                self.chat = None;
             }
             None => {}
         }
@@ -134,8 +138,8 @@ impl Render for AppShell {
             .gap_3()
             .text_color(cx.theme().foreground);
         if self.session.read(cx).active().is_some() {
-            if let Some(workspace) = &self.workspace {
-                surface = surface.child(workspace.clone());
+            if let Some(chat) = &self.chat {
+                surface = surface.child(chat.clone());
             }
         } else {
             surface = surface

@@ -1,10 +1,10 @@
 //! Minute refreshes through the real history UI and controlled execution clock.
+use super::MessageHistoryView;
 use super::history_test_support::{HistoryHost, ReaderHistory, drain};
 use crate::api::test_support::{RequestAdapter, Response};
 use crate::api::{ApiError, ApiFuture};
+use crate::chat::ChatHandle;
 use crate::runtime::Execution;
-use crate::views::conversation::message_history::MessageHistoryView;
-use crate::workspace::WorkspaceHandle;
 use chrono::{DateTime, Local, TimeZone};
 use gpui_kit::component::{Root, button::Button};
 use gpui_kit::test::TestWindowExt as _;
@@ -33,7 +33,7 @@ fn minute_refresh_without_messages_preserves_reader_and_selection(cx: &mut TestA
         .restore_candidate("synthetic".into())
         .unwrap();
     let execution = Execution::controlled(cx.background_executor.clone(), 1_800_000_000);
-    let activity = WorkspaceHandle::new(1, 1_800_100_000, client, execution.clone());
+    let activity = ChatHandle::new(1, 1_800_100_000, client, execution.clone());
     activity.start();
     let ticks = Rc::new(Cell::new(0));
     let mut subscription = None;
@@ -137,7 +137,7 @@ impl RequestAdapter for TimestampApi {
 }
 
 struct RefreshHost {
-    activity: WorkspaceHandle,
+    activity: ChatHandle,
     execution: Execution,
     history: Option<Entity<MessageHistoryView>>,
 }
@@ -177,7 +177,7 @@ fn setup(
 ) -> (
     Entity<RefreshHost>,
     &mut gpui_kit::VisualTestContext,
-    WorkspaceHandle,
+    ChatHandle,
     Arc<TimestampApi>,
 ) {
     cx.update(gpui_kit::init);
@@ -191,7 +191,7 @@ fn setup(
         .restore_candidate("synthetic".into())
         .unwrap();
     let execution = Execution::controlled(cx.background_executor.clone(), now.timestamp());
-    let activity = WorkspaceHandle::new(1, now.timestamp() + 200_000, client, execution.clone());
+    let activity = ChatHandle::new(1, now.timestamp() + 200_000, client, execution.clone());
     activity.start();
     let mut host = None;
     let (_, cx) = cx.add_window_view(|window, cx| {

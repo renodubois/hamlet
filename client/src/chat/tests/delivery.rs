@@ -1,11 +1,11 @@
 use super::*;
-use crate::workspace::{Update, WorkspaceUpdate};
+use crate::chat::{ChatUpdate, Update};
 
 #[tokio::test]
 async fn terminal_delivery_remains_available_when_the_executor_bridge_is_full() {
     let (send, updates) = channel();
-    let mut state = crate::workspace::state::WorkspaceState::default();
-    let identity = crate::workspace::state::Identity {
+    let mut state = crate::chat::state::ChatState::default();
+    let identity = crate::chat::state::Identity {
         generation: Some(7),
         expires_at: 100,
         rejected: None,
@@ -13,7 +13,7 @@ async fn terminal_delivery_remains_available_when_the_executor_bridge_is_full() 
     let request = state.start(&identity).unwrap();
     for _ in 0..DELIVERY_CAPACITY {
         assert!(
-            send.try_send(WorkspaceUpdate(Update::Channels(
+            send.try_send(ChatUpdate(Update::Channels(
                 request.clone(),
                 Err(crate::api::ApiError::Unavailable),
             )))
@@ -21,14 +21,10 @@ async fn terminal_delivery_remains_available_when_the_executor_bridge_is_full() 
         );
     }
     assert!(matches!(
-        send.try_send(WorkspaceUpdate(Update::Tick)),
+        send.try_send(ChatUpdate(Update::Tick)),
         Err(async_channel::TrySendError::Full(_))
     ));
-    assert!(
-        send.send_terminal(WorkspaceUpdate(Update::Tick))
-            .await
-            .is_ok()
-    );
+    assert!(send.send_terminal(ChatUpdate(Update::Tick)).await.is_ok());
     assert_eq!(updates.len(), DELIVERY_CAPACITY + 1);
     assert!(matches!(updates.recv().await.unwrap().0, Update::Tick));
     for _ in 0..DELIVERY_CAPACITY {
@@ -38,7 +34,7 @@ async fn terminal_delivery_remains_available_when_the_executor_bridge_is_full() 
         ));
     }
     assert!(updates.try_recv().is_err());
-    assert!(send.send(WorkspaceUpdate(Update::Tick)).await.is_ok());
+    assert!(send.send(ChatUpdate(Update::Tick)).await.is_ok());
     send.close();
     assert!(matches!(updates.recv().await.unwrap().0, Update::Tick));
     assert!(updates.recv().await.is_err());
