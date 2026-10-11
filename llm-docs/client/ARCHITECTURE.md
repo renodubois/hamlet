@@ -32,6 +32,8 @@ client/src/
 │       ├── channel_header.rs    # Selected channel presentation
 │       ├── message_history.rs   # Scrolling, selection, viewport anchoring
 │       ├── message_row.rs       # Message presentation
+│       ├── message_dialog.rs    # Author actions and shared confirmation presentation
+│       ├── message_menu.rs      # Named single-action destructive menu, position/focus/dismissal
 │       ├── message_timestamp.rs # Display-only timestamp formatting
 │       └── composer.rs          # Textarea and keyboard interaction
 │
@@ -43,6 +45,7 @@ client/src/
 ├── chat/                  # Chat behavior and in-memory state
 │   ├── mod.rs                  # Coordinates requests and applies their results
 │   ├── state.rs                # Channels, history, drafts, send/reconciliation rules
+│   ├── message_deletion.rs     # Captured confirmation, request identity and outcomes
 │   ├── live_updates.rs         # Pure readiness and fixed reconnect policy
 │   └── delivery.rs             # Bounded executor bridge with terminal priority
 │
@@ -93,6 +96,8 @@ Saved-login workflows outlive the login view and authenticated chat. A deletion 
 The chat module owns loaded channels, selected channel, history, drafts, pending operations, uncertainty, and reconciliation. It belongs to one authenticated session, not to the currently selected channel's view. `ChatHandle` clones share one coordinator; `read()` gives a read-only `ChatState` borrow. This is the signed-in chat, not application-wide authentication/configuration state or a single channel's conversation. Pure transition methods and request identities are visible only inside chat ownership, not exported to views. API data comes directly from `api/`.
 
 Its coordinator starts initial channel/history reads independently of stream readiness and owns one session stream. Creations merge by identity only into loaded channels/history; creations for unloaded data or during a replacing read are ignored, not staged. HTTP confirmations remain operation-aware. Failed stream attempts reconnect after a fixed three seconds without canceling HTTP work, issuing catch-up reads or resetting histories, pages, cursors, drafts, selection or reading position. Read identities belong to the session/request, not a stream attempt. Read failures remain read failures; older pages retain local retry. Uncertainty causes no reads or resends. Live updates are best-effort: disconnected and read-overlap creations may be missed permanently, while future delivery resumes after readiness. There is no replay, polling or manual Refresh path.
+
+Observed message deletions are retained for the chat lifetime, including unloaded targets; they filter late pages, creation events and send-confirmation overlays without changing cursors or initiating reads. `message_deletion.rs` owns the captured author-validated target, pending request identity, HTTP outcomes and deliberate retry feedback. HTTP success and live deletion share the same removal/anti-resurrection transition; target/channel removal and session invalidation close the confirmation. Views retain only dialog/menu presentation, pointer geometry and focus, not a second mutation owner. The single-action message menu uses a styled Kit base button with `MenuItem` role/name because the pinned generic menu's custom-element variant does not name its actionable accessibility node.
 
 `state.rs` and `live_updates.rs` stay ordinary Rust. The coordinator can use GPUI notifications without moving rendering into this module. It reports authoritative authentication rejection with the originating session identity; it does not mutate session internals.
 

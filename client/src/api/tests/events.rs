@@ -1,5 +1,60 @@
 use super::*;
 
+#[gpui_kit::test]
+fn message_deletion_delivers_only_validated_identities(cx: &mut TestAppContext) {
+    let valid = r#"{"type":"message_deleted","channel_id":"000000000000001","message_id":"000000000000002","extra":true}"#;
+    let (mut stream, body) = opened(cx);
+    body.try_send(Ok(change(valid))).unwrap();
+    assert_eq!(
+        next(cx, &mut stream),
+        Ok(LiveEvent::MessageDeleted {
+            channel_id: "000000000000001".into(),
+            message_id: "000000000000002".into()
+        })
+    );
+    for invalid in [
+        r#"{"type":"message_deleted"}"#.to_owned(),
+        valid.replace("\"message_id\":\"000000000000002\"", "\"message_id\":2"),
+        valid.replace("\"channel_id\":\"000000000000001\"", "\"channel_id\":null"),
+        valid.replace(
+            "\"message_id\":",
+            "\"message_id\":\"000000000000003\",\"message_id\":",
+        ),
+        valid.replace(
+            "\"channel_id\":",
+            "\"channel_id\":\"000000000000004\",\"channel_id\":",
+        ),
+        valid.replace("\"type\":", "\"type\":\"message_deleted\",\"type\":"),
+    ]
+    .into_iter()
+    .chain(
+        [
+            "",
+            "1",
+            "abc",
+            "00000000000000x",
+            "0000000000000001",
+            "-00000000000001",
+            "１２３４５６７８９０１２３４５",
+        ]
+        .into_iter()
+        .flat_map(|id| {
+            [
+                valid.replace("000000000000001", id),
+                valid.replace("000000000000002", id),
+            ]
+        }),
+    ) {
+        let (mut stream, body) = opened(cx);
+        body.try_send(Ok(change(&invalid))).unwrap();
+        assert_eq!(
+            next(cx, &mut stream),
+            Err(StreamError::Api(ApiError::InvalidResponse)),
+            "{invalid}"
+        );
+    }
+}
+
 #[test]
 fn deletion_wire_validates_identity_and_known_fields() {
     assert_eq!(

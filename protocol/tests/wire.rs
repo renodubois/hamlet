@@ -132,6 +132,21 @@ fn channel_deletion_matches_the_wire_contract_and_accepts_additional_fields() {
 }
 
 #[test]
+fn message_deletion_contains_only_channel_and_message_identity() {
+    let wire = json!({"type":"message_deleted", "channel_id":"100000000000001", "message_id":"100000000000002"});
+    let event: Event = serde_json::from_value(wire.clone()).unwrap();
+    assert!(
+        matches!(&event, Event::MessageDeleted { channel_id, message_id }
+        if channel_id == "100000000000001" && message_id == "100000000000002")
+    );
+    assert_eq!(serde_json::to_value(event).unwrap(), wire);
+    let extended: Event = serde_json::from_value(json!({
+        "type":"message_deleted", "channel_id":"100000000000001", "message_id":"100000000000002", "extra":true
+    })).unwrap();
+    assert_eq!(serde_json::to_value(extended).unwrap(), wire);
+}
+
+#[test]
 fn maximum_message_and_additional_fields_round_trip() {
     // Server accepts 4000 Unicode scalar values, not 4000 bytes.
     let text = "🦀\n".repeat(2000);
@@ -202,6 +217,13 @@ fn unknown_event_types_deserialize_but_cannot_be_serialized() {
 #[test]
 fn malformed_events_do_not_fall_back_to_unknown() {
     for wire in [
+        r#"{"type":"message_deleted"}"#,
+        r#"{"type":"message_deleted","channel_id":"c"}"#,
+        r#"{"type":"message_deleted","message_id":"m"}"#,
+        r#"{"type":"message_deleted","channel_id":null,"message_id":"m"}"#,
+        r#"{"type":"message_deleted","channel_id":"c","message_id":1}"#,
+        r#"{"type":"message_deleted","channel_id":"c","message_id":"m","message_id":"n"}"#,
+        r#"{"type":"message_deleted","channel_id":"c","channel_id":"d","message_id":"m"}"#,
         r#"{"type":"channel_deleted"}"#,
         r#"{"type":"channel_deleted","channel_id":null}"#,
         r#"{"type":"channel_deleted","channel_id":1}"#,
@@ -243,7 +265,7 @@ fn openapi_describes_creation_rename_and_deletion_payloads() {
         "date-time"
     );
     assert_eq!(schemas["ChannelType"]["enum"], json!(["text"]));
-    assert_eq!(schemas["Event"]["oneOf"].as_array().unwrap().len(), 4);
+    assert_eq!(schemas["Event"]["oneOf"].as_array().unwrap().len(), 5);
     let variants = schemas["Event"]["oneOf"].as_array().unwrap();
     assert_eq!(
         variants[0]["properties"]["type"]["enum"],
@@ -263,4 +285,13 @@ fn openapi_describes_creation_rename_and_deletion_payloads() {
     );
     assert_eq!(variants[3]["properties"]["channel_id"]["type"], "string");
     assert_eq!(variants[3]["required"], json!(["channel_id", "type"]));
+    assert_eq!(
+        variants[4]["properties"]["type"]["enum"],
+        json!(["message_deleted"])
+    );
+    assert_eq!(
+        variants[4]["required"],
+        json!(["channel_id", "message_id", "type"])
+    );
+    assert_eq!(variants[4]["properties"].as_object().unwrap().len(), 3);
 }

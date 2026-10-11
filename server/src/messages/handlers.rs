@@ -1,5 +1,5 @@
 use super::{
-    operations::{self, HistoryError, PostError},
+    operations::{self, DeleteError, HistoryError, PostError},
     types::{CreateMessage, History, HistoryQuery, Message},
 };
 use crate::{
@@ -11,7 +11,7 @@ use crate::{
 };
 use actix_web::{Error, HttpMessage, HttpRequest, HttpResponse, Responder, http::StatusCode, web};
 
-fn parse_channel(id: &str) -> Option<i64> {
+fn parse_resource_id(id: &str) -> Option<i64> {
     if id.len() != 15 || !id.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
@@ -27,7 +27,7 @@ pub(crate) async fn post_route(
     path: web::Path<String>,
     input: Result<web::Json<CreateMessage>, Error>,
 ) -> impl Responder {
-    let Some(channel_id) = parse_channel(&path) else {
+    let Some(channel_id) = parse_resource_id(&path) else {
         return bad_request();
     };
     let Ok(input) = input else {
@@ -46,6 +46,42 @@ pub(crate) async fn post_route(
     }
 }
 
+#[utoipa::path(delete, path = "/api/v1/channels/{channel_id}/messages/{message_id}", tag = "crate::messages", security(("bearer_auth" = [])),
+    params(("channel_id" = String, Path, description = "15-digit decimal-string channel ID"),
+        ("message_id" = String, Path, description = "15-digit decimal-string message ID")),
+    responses((status = 204, description = "Deleted or already deleted by this author"),
+        (status = 400, body = crate::http::error::ErrorBody), (status = 401, body = crate::http::error::ErrorBody),
+        (status = 403, body = crate::http::error::ErrorBody), (status = 404, body = crate::http::error::ErrorBody),
+        (status = 405, body = crate::http::error::ErrorBody), (status = 500, body = crate::http::error::ErrorBody)))]
+pub(crate) async fn delete_message_route(
+    db: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<(String, String)>,
+) -> impl Responder {
+    let (Some(channel_id), Some(message_id)) =
+        (parse_resource_id(&path.0), parse_resource_id(&path.1))
+    else {
+        return bad_request();
+    };
+    let identity = req
+        .extensions()
+        .get::<Identity>()
+        .cloned()
+        .expect("protected scope");
+    match operations::delete(&db.db, &db.events, channel_id, message_id, identity.user.id).await {
+        Ok(()) => HttpResponse::NoContent().finish(),
+        Err(DeleteError::Forbidden) => problem(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Only the author can delete this message",
+        ),
+        Err(DeleteError::Missing) => {
+            problem(StatusCode::NOT_FOUND, "not_found", "Message not found")
+        }
+        Err(DeleteError::Internal) => internal(),
+    }
+}
+
 #[utoipa::path(get, path = "/api/v1/channels/{channel_id}/messages", tag = "crate::messages", security(("bearer_auth" = [])),
     params(("channel_id" = String, Path, description = "Decimal-string channel ID"), HistoryQuery),
     responses((status = 200, body = History), (status = 400, body = crate::http::error::ErrorBody),
@@ -55,7 +91,7 @@ pub(crate) async fn history_route(
     path: web::Path<String>,
     query: Result<web::Query<HistoryQuery>, Error>,
 ) -> impl Responder {
-    let Some(channel_id) = parse_channel(&path) else {
+    let Some(channel_id) = parse_resource_id(&path) else {
         return bad_request();
     };
     let Ok(query) = query else {

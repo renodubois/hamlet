@@ -88,6 +88,12 @@ Publication is **best effort, not durable or cancellation-proof**. If the awaiti
 
 The prior cancellation investigation is historical evidence, not a release prerequisite or current delivery promise; see the unchanged [implementation record](../implement-epic/renodubois-hamlet-71.md). A missed notification is recovered only when authoritative HTTP reads include that entity; the server does not force such recovery.
 
+## Message deletion publication
+
+`DELETE /api/v1/channels/{channel_id}/messages/{message_id}` authorizes by authenticated persistent user ID. The first atomic update sets nullable `messages.deleted_at` while retaining all original values and requiring an active channel. It prepares `MessageDeleted { channel_id, message_id }` before mutation and synchronously notifies only on the first transition. Same-author repeats in an active channel return 204 without changing the timestamp or publishing again; rejected requests publish nothing. The `change` payload contains only `type: message_deleted` and the two identities. Publication has the same accepted cancellation/process-failure gaps as creation.
+
+New history snapshots filter deleted rows before ordering and the pagination probe; old snapshots may finish with pre-deletion data. Opaque timestamp/ID cursors remain usable after their referenced message is deleted. The client guards observed deletions against overlapping responses; missed events remain best-effort losses until an ordinary authoritative read.
+
 ## Bounds and deployment
 
 - Exactly one concrete `EventHub` is created by application-state initialization before the Actix worker factory; clones share it across workers.
@@ -100,9 +106,9 @@ The prior cancellation investigation is historical evidence, not a release prere
 
 Capacity and intervals are tuning defaults, not throughput, retention-time, or latency guarantees. #70 measured approximately 10 changes/second for 27 seconds with eight healthy TCP readers and one paused HTTP body. See the [verification report](../LIVE-UPDATES-VERIFICATION.md#bounded-fanout-measurement) for payload sizes, latency, retained-buffer pressure, slow-consumer termination and limitations; this is not a production-capacity guarantee. The retained fanout measurement test is opt-in (`cd server && cargo test --locked --lib measured_bounded_fanout_at_ten_changes_per_second -- --ignored --nocapture`), not a release prerequisite.
 
-## Provisional compatibility policy
+## Event decoding
 
-Ignore additional JSON fields and unknown SSE/application event types in v1. Malformed **known** changes terminate the desktop stream attempt rather than being silently ignored; fixed-delay reconnect resumes future delivery without repairing missed updates. This is a provisional policy, **not unlimited additive compatibility**. Before adding events that modify already-supported state (such as message deletion), revisit older-client behavior, ordering, and snapshot reconciliation: ignoring such events could leave stale data. The shared Rust enum uses `#[serde(other, skip_serializing)] Unknown` as a receive-only fallback for unsupported type tags. It cannot be serialized or prepared for publication and is omitted from the OpenAPI Event union; it is not a server-emitted event type.
+Ignore additional JSON fields and unknown SSE/application event types in v1. Malformed **known** changes terminate the desktop stream attempt rather than being silently ignored; fixed-delay reconnect resumes future delivery without repairing missed updates. The shared Rust enum uses `#[serde(other, skip_serializing)] Unknown` as a receive-only fallback for unsupported type tags. It cannot be serialized or prepared for publication and is omitted from the OpenAPI Event union; it is not a server-emitted event type.
 
 ## Verification and sources
 

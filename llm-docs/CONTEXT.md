@@ -22,7 +22,7 @@ A named space within the community. Its type determines what kind of activity it
 A channel whose activity is a persistent conversation of messages.
 
 **Message**:
-A contribution authored by a user in a text channel, retained as part of that channel's conversation. Its author remains the same user even if that user's displayed name changes.
+A contribution authored by a user in a text channel. Its author remains the same user even if that user's displayed name changes; deletion removes the contribution from the visible conversation without erasing the retained message.
 
 **Draft**:
 A user's working text intended for a message in a particular text channel, distinct from a published contribution to the conversation.

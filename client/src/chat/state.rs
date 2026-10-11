@@ -1,6 +1,7 @@
 //! In-memory channels, histories and per-channel drafts, with pure request/completion transitions.
 //! Request identities reject stale results; HTTP confirmations and live creations merge by entity ID.
 
+use super::message_deletion::MessageDeletion;
 use crate::api::ApiError;
 /// Pure originating-session identity and rejection outcome, never mutable auth state.
 pub(super) struct Identity {
@@ -17,7 +18,7 @@ impl Identity {
             self.generation = None;
         }
     }
-    fn protected_rejected(&mut self, generation: u64) {
+    pub(super) fn protected_rejected(&mut self, generation: u64) {
         if self.generation == Some(generation) {
             self.rejected = Some(generation);
             self.generation = None;
@@ -96,11 +97,15 @@ pub(super) struct DeleteRequest {
 
 #[derive(Default)]
 pub struct ChatState {
+    pub message_deletion: Option<MessageDeletion>,
+    pub(super) message_delete_serial: u64,
     pub delete_pending: bool,
     pub delete_feedback: Option<String>,
     pub delete_confirmed: u64,
     delete_serial: u64,
     deleted: HashSet<String>,
+    // Session-lifetime observations, including identities not loaded at event time.
+    deleted_messages: HashMap<String, HashSet<String>>,
     pub channels: Option<Load<Vec<Channel>>>,
     pub selected: Option<String>,
     pub history: HashMap<String, Load<Vec<Message>>>,
@@ -142,6 +147,7 @@ impl ChatState {
 
     pub(super) fn clear(&mut self) {
         // Keep obsolete completions distinct even if the same session remains active.
+        let message_delete_next = self.message_delete_serial.wrapping_add(1);
         let delete_next = self.delete_serial.wrapping_add(1);
         let rename_next = self.rename_serial.wrapping_add(1);
         let next = self.create_serial.wrapping_add(1);
@@ -149,6 +155,7 @@ impl ChatState {
         let channel_next = self.channel_serial.wrapping_add(1);
         let send_next = self.send_serial.wrapping_add(1);
         *self = Self::default();
+        self.message_delete_serial = message_delete_next;
         self.delete_serial = delete_next;
         self.rename_serial = rename_next;
         self.send_serial = send_next;
@@ -222,6 +229,13 @@ impl ChatState {
         }
         if let Some(Load::Ready(channels)) = &mut self.channels {
             channels.retain(|channel| channel.id != id);
+        }
+        if self
+            .message_deletion
+            .as_ref()
+            .is_some_and(|d| d.channel_id == id)
+        {
+            self.message_deletion = None;
         }
         self.history.remove(id);
         self.older.remove(id);
@@ -486,7 +500,9 @@ impl ChatState {
                 self.uncertain_notice.remove(id);
                 self.merge_message(message.clone());
                 // Loaded history accepts the confirmation directly, without an overlay.
-                if !matches!(self.history.get(id), Some(Load::Ready(_))) {
+                if !self.message_was_deleted(id, &message.id)
+                    && !matches!(self.history.get(id), Some(Load::Ready(_)))
+                {
                     self.confirmed.entry(id.clone()).or_default().push(message);
                 }
                 SendOutcome::Confirmed
@@ -514,9 +530,43 @@ impl ChatState {
         }
     }
 
+    /// Record before removing, including for unloaded or currently replacing history.
+    /// Cursors and read/send operations are independent of displayed message rows.
+    pub(super) fn merge_message_deletion(&mut self, channel_id: &str, message_id: &str) {
+        if self
+            .message_deletion
+            .as_ref()
+            .is_some_and(|d| d.channel_id == channel_id && d.message_id == message_id)
+        {
+            self.message_deletion = None;
+        }
+        self.deleted_messages
+            .entry(channel_id.into())
+            .or_default()
+            .insert(message_id.into());
+        if let Some(Load::Ready(messages)) = self.history.get_mut(channel_id) {
+            messages.retain(|message| message.id != message_id);
+        }
+        if let Some(messages) = self.confirmed.get_mut(channel_id) {
+            messages.retain(|message| message.id != message_id);
+            if messages.is_empty() {
+                self.confirmed.remove(channel_id);
+            }
+        }
+    }
+
+    fn message_was_deleted(&self, channel_id: &str, message_id: &str) -> bool {
+        self.deleted_messages
+            .get(channel_id)
+            .is_some_and(|ids| ids.contains(message_id))
+    }
+
     /// Apply a validated creation only to loaded history. Events overlapping a history
     /// load may be missed; never allocate history for an unloaded channel's creation.
     pub(super) fn merge_message(&mut self, message: Message) -> usize {
+        if self.message_was_deleted(&message.channel_id, &message.id) {
+            return 0;
+        }
         let Some(Load::Ready(messages)) = self.history.get_mut(&message.channel_id) else {
             return 0;
         };

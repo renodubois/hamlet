@@ -1,6 +1,8 @@
 //! Real-route chat verification, including two-client orders and server restart.
 #[path = "delete_route.rs"]
 mod delete_route;
+#[path = "message_deletion_route.rs"]
+mod message_deletion_route;
 #[path = "rename_route.rs"]
 mod rename_route;
 use super::{ChatHandle, Load, Older};
@@ -372,8 +374,7 @@ fn second_user_creations_arrive_on_session_stream_without_followup_reads(cx: &mu
             .unwrap();
         let channel = alice.client.channels().await.unwrap()[0].id.clone();
         let activity = ChatHandle::new(
-            1,
-            alice.expires_at,
+            1, alice.user.id.clone(), alice.expires_at,
             alice.client,
             Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600),
         );
@@ -450,7 +451,7 @@ fn real_route_independent_reads_pending_and_uncertain_writes_survive_reconnect(
         let other = bob.client.create_channel("zz-other".into()).await.unwrap();
         channels_gate.arm();
         stream_gate.arm();
-        let a = ChatHandle::new(1, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let a = ChatHandle::new(1, alice.user.id.clone(), alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
         a.start();
         settle(cx, &[&a], || channels_gate.reached.load(Ordering::SeqCst) && stream_gate.reached.load(Ordering::SeqCst)).await;
         channels_gate.open();
@@ -588,8 +589,7 @@ fn server_history_traverses_multiple_pages_with_timestamp_ties(cx: &mut TestAppC
             .await
             .unwrap();
         let activity = ChatHandle::new(
-            1,
-            login.expires_at,
+            1, login.user.id.clone(), login.expires_at,
             login.client.clone(),
             Execution::controlled(cx.background_executor.clone(), login.expires_at - 3600),
         );
@@ -711,8 +711,8 @@ fn real_route_http_event_orders_reconcile_once_without_healthy_reads(cx: &mut Te
         let alice = a_transport.server(&url).unwrap().signup("Alice".into(), "long password".into()).await.unwrap();
         let bob = b_transport.server(&url).unwrap().signup("Bob".into(), "long password".into()).await.unwrap();
         assert_ne!(alice.user.id, bob.user.id);
-        let a = ChatHandle::new(1, alice.expires_at, alice.client, Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
-        let b = ChatHandle::new(2, bob.expires_at, bob.client.clone(), Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
+        let a = ChatHandle::new(1, alice.user.id.clone(), alice.expires_at, alice.client, Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let b = ChatHandle::new(2, bob.user.id.clone(), bob.expires_at, bob.client.clone(), Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
         let clients = [&a, &b];
         a.start(); b.start();
         settle(cx, &clients, || clients.iter().all(|c| c.status().is_empty() && c.read().selected.as_ref().is_some_and(|id| matches!(c.read().history.get(id), Some(Load::Ready(_)))))).await;
@@ -819,8 +819,8 @@ fn two_authenticated_coordinators_reconnect_without_catchup_after_actual_server_
         for index in 0..103 {
             alice.client.send_message(channel.clone(), format!("before restart {index}")).await.unwrap();
         }
-        let a = ChatHandle::new(1, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
-        let b = ChatHandle::new(2, bob.expires_at, bob.client.clone(), Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
+        let a = ChatHandle::new(1, alice.user.id.clone(), alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let b = ChatHandle::new(2, bob.user.id.clone(), bob.expires_at, bob.client.clone(), Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
         let clients = [&a, &b];
         a.start(); b.start();
         settle(cx, &clients, || clients.iter().all(|c| c.status().is_empty())).await;
@@ -928,7 +928,7 @@ fn two_authenticated_coordinators_reconnect_without_catchup_after_actual_server_
         // Reopening the chat is an ordinary initial channel/history load,
         // not a Refresh control or a special catch-up operation. The newest page
         // can retrieve missed creations; no promise is made about the whole gap.
-        let reopened = ChatHandle::new(3, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let reopened = ChatHandle::new(3, alice.user.id.clone(), alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
         reopened.start();
         settle(cx, &[&reopened], || matches!(&reopened.read().channels, Some(Load::Ready(channels)) if channels.contains(&offline))).await;
         reopened.select_channel(&channel);

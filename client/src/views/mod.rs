@@ -9,5 +9,9 @@ mod sidebar;
 mod tests;
 
 #[cfg(test)]
+#[path = "tests/support/menu_text.rs"]
+mod menu_text_probe;
+
+#[cfg(test)]
 #[path = "tests/login.rs"]
 mod login_tests;

@@ -2,7 +2,19 @@
 //! this owner alone dispatches requests, applies completions and schedules selected reads.
 
 mod delivery;
+
 mod live_updates;
+#[cfg(test)]
+#[path = "tests/message_delete_races.rs"]
+mod message_delete_races_tests;
+#[cfg(test)]
+#[path = "tests/support/message_delete.rs"]
+mod message_delete_support;
+#[cfg(test)]
+#[path = "tests/message_delete_workflow.rs"]
+mod message_delete_workflow_tests;
+mod message_deletion;
+use message_deletion::MessageDeleteRequest;
 mod state;
 use crate::api::{ApiError, AuthenticatedClient, Channel, LiveEvent, Message, Page, StreamError};
 use crate::runtime::{Execution, Work};
@@ -23,7 +35,10 @@ const READ_SEND_DEADLINE: Duration = Duration::from_secs(9);
 pub(crate) struct ChatHandle(Rc<RefCell<Coordinator>>);
 
 /// Opaque executor delivery. Hosts never interpret request identities or HTTP results.
+// Tests can replay an opaque delivery without interpreting or fabricating identities.
+#[cfg_attr(test, derive(Clone))]
 pub(crate) struct ChatUpdate(Update);
+#[cfg_attr(test, derive(Clone))]
 enum Update {
     Tick,
     Stream(Attempt, Result<LiveEvent, StreamError>),
@@ -32,6 +47,7 @@ enum Update {
     Create(CreateRequest, Result<Channel, ApiError>),
     Rename(RenameRequest, Result<Channel, ApiError>),
     Delete(DeleteRequest, Result<(), ApiError>),
+    MessageDelete(MessageDeleteRequest, Result<(), ApiError>),
     Send(SendRequest, Result<Message, ApiError>),
 }
 
@@ -45,6 +61,7 @@ struct Coordinator {
     state: ChatState,
     identity: Identity,
     generation: u64,
+    user_id: String,
     client: Option<AuthenticatedClient>,
     execution: Execution,
     live: LiveUpdates,
@@ -60,6 +77,7 @@ struct Coordinator {
     create_task: Option<Work>,
     rename_task: Option<Work>,
     delete_task: Option<Work>,
+    message_delete_task: Option<Work>,
     sends: HashMap<String, Work>,
     created: Option<(u64, String)>,
     create_revision: u64,
@@ -83,6 +101,7 @@ impl Drop for Notify<'_> {
 impl ChatHandle {
     pub(crate) fn new(
         generation: u64,
+        user_id: String,
         expires_at: i64,
         client: AuthenticatedClient,
         execution: Execution,
@@ -96,6 +115,7 @@ impl ChatHandle {
                 rejected: None,
             },
             generation,
+            user_id,
             client: Some(client),
             clock: execution.now(),
             execution,
@@ -111,6 +131,7 @@ impl ChatHandle {
             create_task: None,
             rename_task: None,
             delete_task: None,
+            message_delete_task: None,
             sends: HashMap::new(),
             created: None,
             create_revision: 0,
@@ -119,6 +140,17 @@ impl ChatHandle {
     }
     pub fn read(&self) -> Ref<'_, ChatState> {
         Ref::map(self.0.borrow(), |owner| &owner.state)
+    }
+    /// Inject displayed rows at the controlled-history seam without changing cursors,
+    /// older-read state or executing requests. No deletion workflow is introduced.
+    #[cfg(test)]
+    pub(crate) fn replace_history_for_test(&self, channel: &str, messages: Vec<Message>) {
+        let _notify = Notify(self);
+        let mut owner = self.0.borrow_mut();
+        let Some(Load::Ready(rows)) = owner.state.history.get_mut(channel) else {
+            panic!("controlled history must already be ready");
+        };
+        *rows = messages;
     }
     #[cfg(test)]
     pub fn status(&self) -> &'static str {
@@ -393,6 +425,12 @@ impl Coordinator {
             LiveEvent::MessageCreated(message) => {
                 let _ = self.state.merge_message(message);
             }
+            LiveEvent::MessageDeleted {
+                channel_id,
+                message_id,
+            } => {
+                self.state.merge_message_deletion(&channel_id, &message_id);
+            }
             LiveEvent::Ready => {}
         }
     }
@@ -570,6 +608,9 @@ impl Coordinator {
                     self.load_history(next);
                 }
             }
+            Update::MessageDelete(request, result) => {
+                self.complete_message_delete(request, result);
+            }
             Update::Send(request, result) => {
                 if request.generation != self.generation {
                     return None;
@@ -604,6 +645,7 @@ impl Coordinator {
             self.create_task.take(),
             self.rename_task.take(),
             self.delete_task.take(),
+            self.message_delete_task.take(),
         ]
         .into_iter()
         .flatten()
@@ -620,6 +662,10 @@ impl Drop for Coordinator {
         self.close();
     }
 }
+
+#[cfg(test)]
+#[path = "tests/message_deletion.rs"]
+mod message_deletion_tests;
 
 #[cfg(test)]
 #[path = "tests/live_coordinator.rs"]

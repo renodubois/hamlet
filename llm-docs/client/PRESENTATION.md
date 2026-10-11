@@ -11,7 +11,8 @@ coordinator. [ARCHITECTURE.md](ARCHITECTURE.md) describes the dependency rules.
 | Login/signup fields, form mode, focus and sensitive cleanup | `src/views/login.rs` | `server-url`, `username`, `password`, `auth-mode`, `login`, `signup`, `auth-feedback` |
 | Pane composition and connection-status presentation | `src/views/chat.rs`, `src/views/conversation/mod.rs` | `connection-status` |
 | Scrollable channel list and creation dialog | `src/views/sidebar/mod.rs` (composition/creation), `src/views/sidebar/channel_row.rs` (rows/context-menu dialogs) | `channels`, `channel-{id}`, `open-create-channel`, `channel-name`, `create-channel`, `cancel-channel`, `channel-feedback` |
-| List/focus, wheel, viewport anchoring and traversal controls | `src/views/conversation/message_history.rs` | `history-pane`, `history`, `retry-older`, `jump-latest` |
+| List/focus, wheel, viewport anchoring and traversal controls | `src/views/conversation/message_history.rs` | `history-pane`, `history`, `load-older`, `older-loading`, `retry-older`, `history-empty`, `jump-latest` |
+| Authored-message context menu, hover/focus tray and confirmation | `src/views/conversation/message_dialog.rs`, `message_menu.rs` | `message-context-menu`, `trash-message-{id}`, `delete-message-label`, `delete-message-preview`, `delete-message-warning`, `cancel-message-action`, `confirm-delete-message`, `delete-message-feedback` |
 | Plain selectable message, author and timestamp | `src/views/conversation/message_row.rs` | `message-{id}`, `message-text-{id}`, `text-{id}` |
 | Textarea, keyboard, focus, displayed-draft synchronization | `src/views/conversation/composer.rs` | `composer-panel`, `composer`, `send-feedback` |
 | Colors and bundled Hash/Send icons | `src/theme.rs` | Keep meaningful labels/tooltips |
@@ -59,8 +60,10 @@ controls then clear through their notification/window-update path. This is not
 memory zeroization.
 
 The history view splices chronological stable row IDs, preserving variable-height
-anchors for prepend and middle insertion. It follows only when appropriate;
-**Jump to latest** explicitly resumes bottom-follow. Disconnect/reconnect preserves
+anchors for prepend, middle insertion and removal. A removed anchor falls back to the nearest surviving row (following row on ties), preserving its offset when it fits the measured replacement (otherwise clamping it to keep the replacement visible; an unmeasured fallback starts at its top); bottom-follow stays active only for readers already following. Empty loaded history keeps older-page availability/loading/retry and the server cursor without automatic backfill. It follows only when appropriate;
+**Jump to latest** appears only when the list is known to be away from the end,
+floating over the bottom-right of the history without resizing it. Activating it
+explicitly resumes bottom-follow. Disconnect/reconnect preserves
 reading position, loaded pages/cursors and selection; there is no recovery-reset
 revision. **Connecting…** appears initially; **Live updates disconnected —
 reconnecting.** persists after failure until the replacement stream is ready,
@@ -71,6 +74,8 @@ queued edits, move the caret on unchanged notifications, or let an old Enter sen
 the newly selected channel's draft. Enter sends unchanged text; Shift+Enter adds
 a line. A pending send locks only its originating composer. Uncertain sends retain
 draft/warning and never automatically replay; equal text does not prove delivery.
+
+Authored messages expose a red **Delete Message** context-menu action and a red trash control on hover or keyboard focus. The absolute tray stays within the row and does not resize it or start text selection. Both paths open the same Chat-owned captured-target confirmation with a bounded preview, **You can't restore this message in the app.**, initially focused **Cancel**, and a red **Delete**. Pending confirmation cannot be dismissed or resubmitted. HTTP success or an observed event removes the target and closes the dialog; failures retain it with deliberate retry, and transport uncertainty does not replay the request. Chat retains observed-deletion identities for its lifetime so late reads, creation events and send confirmations cannot restore a deleted message.
 
 ## Checks and native boundary
 

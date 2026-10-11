@@ -20,6 +20,8 @@ mod history;
 mod journeys;
 #[path = "live_updates.rs"]
 mod live_updates;
+mod message_delete_controls;
+mod message_delete_route;
 #[path = "protected_binding.rs"]
 mod protected_binding;
 mod rename;

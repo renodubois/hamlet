@@ -43,6 +43,7 @@ fn independent_history_hydrates_cache_recreates_and_clears_when_hidden(cx: &mut 
         .unwrap();
     let activity = ChatHandle::new(
         1,
+        "u".into(),
         1_800_001_000,
         client,
         Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
@@ -78,6 +79,10 @@ fn independent_history_hydrates_cache_recreates_and_clears_when_hidden(cx: &mut 
         assert_eq!(
             window.find("message-1-latest").label(),
             Some("channel 1\nsecond line")
+        );
+        assert!(
+            window.try_find("jump-latest").is_none(),
+            "short histories need no jump"
         );
         window.click("recreate-history", cx);
     });
@@ -129,6 +134,7 @@ fn history_shutdown_clears_selected_text(cx: &mut TestAppContext) {
             .unwrap();
     let activity = ChatHandle::new(
         1,
+        "u".into(),
         1_800_001_000,
         client,
         Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
@@ -194,6 +200,7 @@ fn healthy_events_and_reconnect_keep_reader_anchor_without_http_reads(cx: &mut T
         .unwrap();
     let activity = ChatHandle::new(
         1,
+        "u".into(),
         1_800_001_000,
         client,
         Execution::controlled(cx.background_executor.clone(), 1_800_000_000),

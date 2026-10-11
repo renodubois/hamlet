@@ -15,6 +15,7 @@ use utoipa::{
         crate::channels::handlers::create_route, crate::channels::handlers::list_route,
         crate::channels::handlers::rename_route, crate::channels::handlers::delete_route,
         crate::messages::handlers::post_route, crate::messages::handlers::history_route,
+        crate::messages::handlers::delete_message_route,
         crate::live_updates::events
     ),
     components(schemas(hamlet_protocol::Event)),
@@ -53,6 +54,7 @@ impl Modify for ErrorCodes {
                     let code = match status.as_str() {
                         "400" => "bad_request",
                         "401" => "unauthorized",
+                        "403" => "forbidden",
                         "404" => "not_found",
                         "405" => "method_not_allowed",
                         "409" => "conflict",
@@ -82,6 +84,7 @@ pub fn generated_json() -> String {
                 let code = match status.as_str() {
                     "400" => "bad_request",
                     "401" => "unauthorized",
+                    "403" => "forbidden",
                     "404" => "not_found",
                     "405" => "method_not_allowed",
                     "409" => "conflict",

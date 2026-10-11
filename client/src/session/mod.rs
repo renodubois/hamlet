@@ -190,6 +190,7 @@ impl SessionCoordinator {
         let session = self.active().unwrap();
         self.chat = Some(ChatHandle::new(
             generation,
+            session.user.id.clone(),
             session.expires_at,
             session.client(),
             self.execution.clone(),

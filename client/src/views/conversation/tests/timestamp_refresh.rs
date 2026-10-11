@@ -33,7 +33,7 @@ fn minute_refresh_without_messages_preserves_reader_and_selection(cx: &mut TestA
         .restore_candidate("synthetic".into())
         .unwrap();
     let execution = Execution::controlled(cx.background_executor.clone(), 1_800_000_000);
-    let activity = ChatHandle::new(1, 1_800_100_000, client, execution.clone());
+    let activity = ChatHandle::new(1, "u".into(), 1_800_100_000, client, execution.clone());
     activity.start();
     let ticks = Rc::new(Cell::new(0));
     let mut subscription = None;
@@ -191,7 +191,13 @@ fn setup(
         .restore_candidate("synthetic".into())
         .unwrap();
     let execution = Execution::controlled(cx.background_executor.clone(), now.timestamp());
-    let activity = ChatHandle::new(1, now.timestamp() + 200_000, client, execution.clone());
+    let activity = ChatHandle::new(
+        1,
+        "u".into(),
+        now.timestamp() + 200_000,
+        client,
+        execution.clone(),
+    );
     activity.start();
     let mut host = None;
     let (_, cx) = cx.add_window_view(|window, cx| {

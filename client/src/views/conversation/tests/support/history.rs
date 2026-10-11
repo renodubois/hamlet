@@ -54,6 +54,51 @@ pub(super) fn drain(cx: &mut gpui_kit::VisualTestContext, activity: &ChatHandle)
     }
 }
 
+pub(super) fn mount_history(
+    cx: &mut TestAppContext,
+    api: std::sync::Arc<dyn RequestAdapter>,
+) -> (ChatHandle, &mut VisualTestContext) {
+    mount_history_with_transport(cx, crate::test_support::live::transport(api))
+}
+
+pub(super) fn mount_history_with_transport(
+    cx: &mut TestAppContext,
+    transport: crate::api::HttpTransport,
+) -> (ChatHandle, &mut VisualTestContext) {
+    cx.update(gpui_kit::init);
+    let client = transport
+        .server("https://history.example")
+        .unwrap()
+        .restore_candidate("synthetic".into())
+        .unwrap();
+    let activity = ChatHandle::new(
+        1,
+        "u".into(),
+        1_800_001_000,
+        client,
+        Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
+    );
+    activity.start();
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let history = cx.new(|cx| {
+            MessageHistoryView::new(
+                activity.clone(),
+                Execution::controlled(cx.background_executor().clone(), 1_800_000_000),
+                window,
+                cx,
+            )
+        });
+        let host = cx.new(|_| HistoryHost {
+            activity: activity.clone(),
+            history,
+            visible: true,
+        });
+        gpui_kit::component::Root::new(host, window, cx)
+    });
+    drain(cx, &activity);
+    (activity, cx)
+}
+
 pub(super) struct ReaderHistory {
     pub(super) reads: AtomicUsize,
     pub(super) created_at: &'static str,

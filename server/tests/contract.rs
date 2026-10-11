@@ -28,6 +28,13 @@ const INVENTORY: &[(&str, &str, &str, u16, bool)] = &[
         200,
         true,
     ),
+    (
+        "delete",
+        "/api/v1/channels/{channel_id}/messages/{message_id}",
+        "delete_message_route",
+        204,
+        true,
+    ),
     ("delete", "/api/v1/channels/{id}", "delete_route", 204, true),
 ];
 
@@ -90,7 +97,7 @@ async fn generated_contract_is_current_and_covers_every_registered_handler() {
         }
     }
     assert_eq!(
-        resource_count, 8,
+        resource_count, 9,
         "new Actix resources require an inventory entry"
     );
     registered.sort();
@@ -118,6 +125,7 @@ async fn generated_contract_is_current_and_covers_every_registered_handler() {
         for (status, code) in [
             ("400", "bad_request"),
             ("401", "unauthorized"),
+            ("403", "forbidden"),
             ("404", "not_found"),
             ("405", "method_not_allowed"),
             ("409", "conflict"),
@@ -164,8 +172,21 @@ async fn generated_contract_is_current_and_covers_every_registered_handler() {
             .as_array()
             .unwrap()
             .len(),
-        4
+        5
     );
+    let message_deletion = &doc["components"]["schemas"]["Event"]["oneOf"][4];
+    assert_eq!(
+        message_deletion["properties"]["type"]["enum"],
+        json!(["message_deleted"])
+    );
+    assert_eq!(
+        message_deletion["required"],
+        json!(["channel_id", "message_id", "type"])
+    );
+    let route = &doc["paths"]["/api/v1/channels/{channel_id}/messages/{message_id}"]["delete"];
+    assert!(route.get("requestBody").is_none());
+    assert!(route["responses"]["204"].get("content").is_none());
+    assert!(route["responses"].get("403").is_some());
     let deletion = &doc["components"]["schemas"]["Event"]["oneOf"][3];
     assert_eq!(
         deletion["properties"]["type"]["enum"],
@@ -206,6 +227,7 @@ async fn documented_security_and_error_shapes_match_http() {
         }
         let path = path
             .replace("{channel_id}", "999999999999999")
+            .replace("{message_id}", "999999999999999")
             .replace("{id}", "999999999999999");
         let request =
             test::TestRequest::default().method(method.to_ascii_uppercase().parse().unwrap());
@@ -235,12 +257,14 @@ async fn documented_security_and_error_shapes_match_http() {
     .await;
     let channels: Value = test::read_body_json(channels).await;
     let channel_id = channels["items"][0]["id"].as_str().unwrap();
+    let mut message_id = String::new();
     for &(method, path, handler, success, protected) in INVENTORY {
         if handler == "logout" {
             continue;
         }
         let path = path
             .replace("{channel_id}", channel_id)
+            .replace("{message_id}", &message_id)
             .replace("{id}", channel_id);
         let mut request =
             test::TestRequest::default().method(method.to_ascii_uppercase().parse().unwrap());
@@ -260,7 +284,10 @@ async fn documented_security_and_error_shapes_match_http() {
         };
         let response = test::call_service(&app, request.to_request()).await;
         assert_eq!(response.status().as_u16(), success, "{method} {path}");
-        if handler == "events" {
+        if handler == "post_route" {
+            let message: Value = test::read_body_json(response).await;
+            message_id = message["id"].as_str().unwrap().to_owned();
+        } else if handler == "events" {
             assert_eq!(
                 response.headers().get("content-type").unwrap(),
                 "text/event-stream"

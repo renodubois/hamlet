@@ -20,6 +20,7 @@ pub enum ApiError {
     InvalidResponse,
     AlreadyInvalid,
     NotFound,
+    Forbidden,
     ServerFailure,
 }
 
@@ -34,6 +35,7 @@ impl ApiError {
             Self::InvalidResponse => "The server returned an invalid response.",
             Self::Unavailable => "Could not reach the server. Check the address and try again.",
             Self::NotFound => "The channel no longer exists on the server.",
+            Self::Forbidden => "You do not have permission to perform this action.",
             Self::ServerFailure => "The server could not complete the request. Try again later.",
         }
     }

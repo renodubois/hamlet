@@ -101,6 +101,7 @@ fn mount(
         .unwrap();
     let activity = ChatHandle::new(
         1,
+        "u".into(),
         1_800_001_000,
         client,
         Execution::controlled(cx.background_executor.clone(), 1_800_000_000),

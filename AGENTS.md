@@ -7,6 +7,11 @@
 - Skills use repository-root `llm-docs/CONTEXT.md` for the glossary, `llm-docs/adr/` for ADRs, `llm-docs/agents/` for workflow guidance, and `llm-docs/out-of-scope/` for rejection records. Write new research, plans, specs, and other generated documentation under `llm-docs/`. Treat paths with placeholders as templates for future outputs, not links to existing files.
 - Commands and source paths in LLM documentation are relative to the repository root or the explicitly named component directory, not the documentation directory.
 
+## Backward compatibility
+
+- Do not spend effort on backward compatibility. There are no active released clients or compatibility commitments yet; breaking changes are acceptable. Do not add compatibility shims, version negotiation/enforcement, migration paths solely for compatibility, or documentation of backward-compatibility limitations.
+- This instruction applies project-wide until the human removes it. It does not waive data integrity or the requirements of the current feature (for example, retaining rows during soft deletion).
+
 ## Worktree development environments
 
 When running or interacting with a development environment, use an isolated environment for the current worktree. Do not use the client's default shared configuration or another worktree's server/database.

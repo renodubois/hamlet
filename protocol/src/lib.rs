@@ -97,6 +97,10 @@ pub enum Event {
     ChannelDeleted {
         channel_id: String,
     },
+    MessageDeleted {
+        channel_id: String,
+        message_id: String,
+    },
     /// Receive-only fallback for event types this version does not support.
     #[serde(other, skip_serializing)]
     Unknown,

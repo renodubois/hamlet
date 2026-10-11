@@ -85,6 +85,7 @@ pub fn fixture_for_session(
     (
         ChatHandle::new(
             generation,
+            "u".into(),
             1_800_001_000,
             client,
             Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
@@ -92,6 +93,12 @@ pub fn fixture_for_session(
         calls,
         streams,
     )
+}
+pub fn deleted(stream: &Stream, channel: &str, id: &str) {
+    stream.frame(
+        "change",
+        serde_json::json!({"type":"message_deleted","channel_id":channel,"message_id":id}),
+    );
 }
 pub fn respond(call: Call, value: serde_json::Value) {
     call.reply

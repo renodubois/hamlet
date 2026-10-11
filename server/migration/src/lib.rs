@@ -11,6 +11,7 @@ impl MigratorTrait for Migrator {
             Box::new(Channels),
             Box::new(Messages),
             Box::new(ChannelDeletion),
+            Box::new(MessageDeletion),
         ]
     }
 }
@@ -95,6 +96,28 @@ impl MigrationTrait for ChannelDeletion {
         // impossible in general. Never silently discard retained conversations.
         Err(DbErr::Custom(
             "channel deletion migration cannot be downgraded losslessly".into(),
+        ))
+    }
+}
+
+struct MessageDeletion;
+impl MigrationName for MessageDeletion {
+    fn name(&self) -> &str {
+        "m20261010_000005_message_deletion"
+    }
+}
+#[async_trait::async_trait]
+impl MigrationTrait for MessageDeletion {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .get_connection()
+            .execute_unprepared("ALTER TABLE messages ADD COLUMN deleted_at TEXT")
+            .await?;
+        Ok(())
+    }
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
+        Err(DbErr::Custom(
+            "message deletion migration cannot be downgraded losslessly".into(),
         ))
     }
 }

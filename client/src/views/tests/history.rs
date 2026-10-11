@@ -288,8 +288,15 @@ fn live_creations_preserve_reader_and_jump_follows_later_messages(cx: &mut TestA
         }))
         .unwrap();
     cx.run_until_parked();
-    cx.update(|window, cx| {
+    let layout = cx.update(|window, cx| {
         window.render_frame(cx);
+        assert!(window.try_find("jump-latest").is_none());
+        (
+            window.find("history").bounds(),
+            window.find("composer-panel").bounds(),
+        )
+    });
+    cx.update(|window, cx| {
         for _ in 0..4 {
             window.scroll(
                 "history",
@@ -300,6 +307,30 @@ fn live_creations_preserve_reader_and_jump_follows_later_messages(cx: &mut TestA
         }
         assert!(window.try_find("message-40").is_none());
         assert!(window.try_find("refresh-history").is_none());
+        assert_eq!(window.find("history").bounds(), layout.0);
+        assert_eq!(window.find("composer-panel").bounds(), layout.1);
+        let jump = window.find("jump-latest");
+        assert_ne!(jump.disabled(), Some(true));
+        assert!(layout.0.contains(&jump.bounds().origin));
+        assert!(layout.0.contains(&jump.bounds().bottom_right()));
+        // Reaching the bottom by wheel input hides the button too.
+        window.scroll(
+            "history",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-10_000.))),
+            cx,
+        );
+        window.render_frame(cx);
+        assert!(window.try_find("jump-latest").is_none());
+        assert_eq!(window.find("history").bounds(), layout.0);
+        for _ in 0..4 {
+            window.scroll(
+                "history",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(90.))),
+                cx,
+            );
+            window.render_frame(cx);
+        }
+        assert!(window.try_find("jump-latest").is_some());
     });
     let anchor = cx.update(|window, cx| {
         window.render_frame(cx);
@@ -317,6 +348,9 @@ fn live_creations_preserve_reader_and_jump_follows_later_messages(cx: &mut TestA
         window.click("jump-latest", cx);
         window.render_frame(cx);
         assert!(window.find("message-70").bounds().size.height > px(0.));
+        assert!(window.try_find("jump-latest").is_none());
+        assert_eq!(window.find("history").bounds(), layout.0);
+        assert_eq!(window.find("composer-panel").bounds(), layout.1);
     });
     assert!(
         requests.try_recv().is_err(),
@@ -327,6 +361,7 @@ fn live_creations_preserve_reader_and_jump_follows_later_messages(cx: &mut TestA
     cx.update(|window, cx| {
         window.render_frame(cx);
         assert!(window.find("message-71").bounds().size.height > px(0.));
+        assert!(window.try_find("jump-latest").is_none());
     });
 }
 

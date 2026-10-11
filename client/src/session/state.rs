@@ -279,7 +279,7 @@ impl AppSession {
                 self.feedback =
                     Some("The server rejected this session. Please log in again.".into())
             }
-            Err(ApiError::NotFound | ApiError::ServerFailure) => {
+            Err(ApiError::NotFound | ApiError::Forbidden | ApiError::ServerFailure) => {
                 self.feedback = Some(if signup { "The server could not confirm signup; it may have succeeded. Check before retrying." } else { "The server could not complete login." }.into())
             }
         }

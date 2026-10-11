@@ -84,6 +84,50 @@ impl AuthenticatedClient {
         })
     }
 
+    /// Delete once using this session's immutable server and bearer binding.
+    pub fn delete_message(
+        &self,
+        channel_id: String,
+        message_id: String,
+    ) -> ApiFuture<Result<(), ApiError>> {
+        let client = self.clone();
+        Box::pin(async move {
+            if message_id.is_empty()
+                || message_id.contains(['/', '\\'])
+                || message_id == "."
+                || message_id == ".."
+            {
+                return Err(ApiError::InvalidResponse);
+            }
+            let mut url = client.message_url(&channel_id)?;
+            url.path_segments_mut()
+                .map_err(|_| ApiError::InvalidResponse)?
+                .push(&message_id);
+            // No body, optimistic mutation, or automatic retry.
+            let request = client.request(Method::DELETE, url);
+            let response = client.0.server.0.transport.send(request).await?;
+            match response.status() {
+                StatusCode::NO_CONTENT => Ok(()),
+                StatusCode::UNAUTHORIZED => Err(ApiError::AlreadyInvalid),
+                StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => {
+                    let status = response.status();
+                    let body: ErrorResponse = response
+                        .json()
+                        .await
+                        .map_err(|_| ApiError::InvalidResponse)?;
+                    match (status, body.error.code.as_str()) {
+                        (StatusCode::BAD_REQUEST, "bad_request") => Err(ApiError::InvalidInput),
+                        (StatusCode::FORBIDDEN, "forbidden") => Err(ApiError::Forbidden),
+                        (StatusCode::NOT_FOUND, "not_found") => Err(ApiError::NotFound),
+                        _ => Err(ApiError::InvalidResponse),
+                    }
+                }
+                StatusCode::INTERNAL_SERVER_ERROR => Err(ApiError::ServerFailure),
+                _ => Err(ApiError::Unavailable),
+            }
+        })
+    }
+
     pub fn history_page(
         &self,
         channel_id: String,

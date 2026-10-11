@@ -30,7 +30,7 @@ async fn delivery(
 }
 
 #[gpui_kit::test]
-fn real_server_delivers_both_creations_to_two_authenticated_consumers_without_reads(
+fn real_server_delivers_creations_and_message_deletion_to_two_authenticated_consumers_without_reads(
     cx: &mut TestAppContext,
 ) {
     actix_web::rt::System::new().block_on(async {
@@ -77,6 +77,20 @@ fn real_server_delivers_both_creations_to_two_authenticated_consumers_without_re
                 assert!(tokio::time::timeout(Duration::from_millis(10), stream.next()).await.is_err(), "failed writes emitted a phantom event");
             }
         }
+        assert_eq!(alice.client.delete_message(channel.id.clone(), message.id.clone()).await, Err(ApiError::Forbidden));
+        bob.client.delete_message(channel.id.clone(), message.id.clone()).await.unwrap();
+        bob.client.delete_message(channel.id.clone(), message.id.clone()).await.unwrap();
+        assert_eq!(alice.client.delete_message(channel.id.clone(), message.id.clone()).await, Err(ApiError::Forbidden));
+        for stream in [&mut a, &mut b] {
+            assert_eq!(delivery(cx, stream).await, Ok(LiveEvent::MessageDeleted {
+                channel_id: channel.id.clone(), message_id: message.id.clone(),
+            }));
+            for _ in 0..10 {
+                cx.executor().run_until_parked();
+                assert!(tokio::time::timeout(Duration::from_millis(10), stream.next()).await.is_err(), "rejected/repeated deletions emitted an event");
+            }
+        }
+        assert!(bob.client.history_page(channel.id.clone(), None).await.unwrap().items.is_empty());
         // A revoked credential is authoritative at a new handshake, not inferred from EOF.
         bob.client.logout().await.unwrap();
         let mut rejected = bob.client.events(&execution);

@@ -6,7 +6,7 @@ The desktop chat coordinator owns one authenticated stream per accepted session.
 
 `AuthenticatedClient::events(&Execution) -> EventStream` starts exactly one attempt using the immutable server/credential binding. `EventStream::next(&mut self)` returns `Result<LiveEvent, StreamError>`:
 
-- `Ready`, `ChannelCreated(Channel)`, `MessageCreated(Message)` contain validated client-facing data, not wire entities or HTTP responses.
+- `Ready`, `ChannelCreated(Channel)`, `ChannelRenamed(Channel)`, `ChannelDeleted(String)`, `MessageCreated(Message)` and `MessageDeleted { channel_id, message_id }` contain validated client-facing data, not wire entities or HTTP responses. Message-deletion identities must be 15-digit decimal strings.
 - `Api(ApiError)` preserves handshake authentication rejection (`AlreadyInvalid`), server failure, unavailable transport, and invalid response distinctions.
 - `ReadyTimeout`, `IdleTimeout`, `Overflow`, and `Ended` are terminal. EOF alone is **not** authoritative credential rejection.
 
@@ -19,6 +19,8 @@ There is no reconnect, replay, write retry, chat state, selected-channel policy 
 `chat/live_updates.rs` is a pure connecting/connected/waiting-to-retry/closed policy. Initial channel reads and the selected channel's newest-history read start independently of Ready. Ready marks the stream usable, not the local data synchronized. Selection changes cancel/invalidate only the selected read; they do not replace the session stream.
 
 Channel creations merge only into a loaded channel list; message creations merge only into loaded histories, including inactive caches. Creations for unloaded data or during a replacing read are ignored. There is no readiness/baseline buffer, replacing-read staging or overflow-triggered data reset. Missed offline events and read-overlap events are accepted losses, potentially permanent in cached state: reconnect neither replays them nor fetches a catch-up baseline. Future delivery resumes after Ready. A later ordinary channel/history load may retrieve missed creations from the authoritative database; there is no special catch-up operation.
+
+Message deletions remove targets from active/inactive loaded histories and send-confirmation overlays without allocating unloaded history or issuing reads. Observed identities persist for the chat lifetime, including targets not loaded at event time, and prevent resurrection from late newest/older pages, creation events or send confirmations. Successful HTTP deletion uses the same transition. Missed deletion events may leave cached rows visible until an ordinary authoritative read; reconnect does not repair them.
 
 API and executor delivery retain their independent 256-entity bounds. `chat/delivery.rs` prioritizes a separate terminal lane; stream forwarding never waits for ordinary capacity. HTTP completions can wait, preserving write outcomes. EOF, transport/parser/deadline errors and overflow terminate the stream attempt and schedule exactly one retry after a fixed three seconds, with no backoff or jitter. Failed channel/history reads remain read failures and do not trigger stream reconnect. The clock-anchored timer serves reconnect and expiry, never polling. The authenticated SSE transport, framing, deadlines and error classifications are unchanged.
 

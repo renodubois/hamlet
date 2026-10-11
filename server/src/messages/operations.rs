@@ -1,5 +1,5 @@
-//! SQLite message creation and cursor-paginated history, with best-effort creation notifications.
-//! HTTP responses and events share the insertion values and authenticated author identity.
+//! SQLite message creation, author soft deletion and cursor-paginated history.
+//! Mutations prepare events before writing and synchronously notify on normal success.
 
 use super::types::{Author, History, Message};
 use crate::{
@@ -151,6 +151,56 @@ pub(super) async fn post(
     Err(PostError::Internal)
 }
 
+pub(super) enum DeleteError {
+    Forbidden,
+    Missing,
+    Internal,
+}
+
+pub(super) async fn delete(
+    db: &DatabaseConnection,
+    events: &EventHub,
+    channel_id: i64,
+    message_id: i64,
+    author_id: i64,
+) -> Result<(), DeleteError> {
+    let event = PreparedEvent::new(&Event::MessageDeleted {
+        channel_id: channel_id.to_string(),
+        message_id: message_id.to_string(),
+    })
+    .map_err(|_| DeleteError::Internal)?;
+    #[cfg(test)]
+    deletion_tests::pause_message_delete(false).await;
+    // SQLite serializes writers. All transition preconditions belong in this
+    // statement, including channel activity, ownership and undeleted state.
+    let result = db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Sqlite,
+        "UPDATE messages SET deleted_at = ? WHERE id = ? AND channel_id = ? AND author_id = ? AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM channels WHERE id = ? AND deleted_at IS NULL)",
+        [Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true).into(), message_id.into(), channel_id.into(), author_id.into(), channel_id.into()],
+    )).await.map_err(|_| DeleteError::Internal)?;
+    if result.rows_affected() != 0 {
+        // No post-write await or serialization on the production first-transition path.
+        events.notify(event);
+        #[cfg(test)]
+        deletion_tests::pause_message_delete(true).await;
+        return Ok(());
+    }
+    // Repeats still require authenticated ownership and an active channel.
+    let row = db.query_one_raw(Statement::from_sql_and_values(
+        DbBackend::Sqlite,
+        "SELECT m.author_id FROM messages m JOIN channels c ON c.id = m.channel_id WHERE m.id = ? AND m.channel_id = ? AND c.deleted_at IS NULL",
+        [message_id.into(), channel_id.into()],
+    )).await.map_err(|_| DeleteError::Internal)?.ok_or(DeleteError::Missing)?;
+    if row
+        .try_get::<i64>("", "author_id")
+        .map_err(|_| DeleteError::Internal)?
+        != author_id
+    {
+        return Err(DeleteError::Forbidden);
+    }
+    Ok(())
+}
+
 pub(super) enum HistoryError {
     Invalid,
     Missing,
@@ -165,9 +215,9 @@ pub(super) async fn history(
     if !(1..=100).contains(&limit) {
         return Err(HistoryError::Invalid);
     }
-    // Existence and messages share one SQLite read snapshot. A deletion that
-    // wins before this snapshot returns Missing; a read that wins first may
-    // complete with pre-deletion history, never a stale-check/new-read mix.
+    // Existence and messages share one SQLite read snapshot. Earlier channel
+    // deletion returns Missing; earlier message deletion excludes that row.
+    // A read that wins first may complete with pre-deletion history.
     let snapshot = db.begin().await.map_err(|_| HistoryError::Internal)?;
     // Missing channels take precedence over bad cursors.
     if !channel_exists(&snapshot, channel_id)
@@ -183,11 +233,11 @@ pub(super) async fn history(
         .transpose()?;
     let rows = if let Some(cursor) = cursor {
         snapshot.query_all_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
-            "SELECT m.id, m.channel_id, m.author_id, m.text, m.created_at, u.username FROM messages m JOIN users u ON u.id = m.author_id WHERE m.channel_id = ? AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
+            "SELECT m.id, m.channel_id, m.author_id, m.text, m.created_at, u.username FROM messages m JOIN users u ON u.id = m.author_id WHERE m.channel_id = ? AND m.deleted_at IS NULL AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
             [channel_id.into(), cursor.created_at.clone().into(), cursor.created_at.into(), cursor.id.into(), (i64::from(limit) + 1).into()])).await
     } else {
         snapshot.query_all_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
-            "SELECT m.id, m.channel_id, m.author_id, m.text, m.created_at, u.username FROM messages m JOIN users u ON u.id = m.author_id WHERE m.channel_id = ? ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
+            "SELECT m.id, m.channel_id, m.author_id, m.text, m.created_at, u.username FROM messages m JOIN users u ON u.id = m.author_id WHERE m.channel_id = ? AND m.deleted_at IS NULL ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
             [channel_id.into(), (i64::from(limit) + 1).into()])).await
     }.map_err(|_| HistoryError::Internal)?;
     snapshot

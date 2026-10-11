@@ -25,7 +25,7 @@ fn real_route_rename_preserves_conversation_and_rejects_closed_session(cx: &mut 
         let channel = alice.client.channels().await.unwrap()[0].clone();
         let other = bob.client.create_channel("Other".into()).await.unwrap();
         let message = bob.client.send_message(channel.id.clone(), "retained message".into()).await.unwrap();
-        let activity = ChatHandle::new(1, alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let activity = ChatHandle::new(1, alice.user.id.clone(), alice.expires_at, alice.client.clone(), Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
         activity.start();
         settle(cx, &[&activity], || activity.status().is_empty() && ids(&activity, &channel.id).contains(&message.id)).await;
         activity.edit_draft("retained draft".into());
@@ -74,7 +74,7 @@ fn real_route_rename_preserves_conversation_and_rejects_closed_session(cx: &mut 
         cx.executor().run_until_parked();
         assert!(activity.read().channels.is_none());
         assert!(activity.read().drafts.is_empty());
-        let replacement = ChatHandle::new(2, bob.expires_at, bob.client.clone(), Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
+        let replacement = ChatHandle::new(2, bob.user.id.clone(), bob.expires_at, bob.client.clone(), Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
         replacement.start();
         settle(cx, &[&replacement], || matches!(replacement.read().channels, Some(Load::Ready(_)))).await;
         assert!(!replacement.read().rename_pending);
@@ -110,8 +110,8 @@ fn two_user_live_rename_both_confirmation_orders_without_reads(cx: &mut TestAppC
         let channel = alice.client.channels().await.unwrap()[0].clone();
         let other = bob.client.create_channel("Other".into()).await.unwrap();
         let message = bob.client.send_message(channel.id.clone(), "retained".into()).await.unwrap();
-        let a = ChatHandle::new(1, alice.expires_at, alice.client, Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
-        let b = ChatHandle::new(2, bob.expires_at, bob.client, Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
+        let a = ChatHandle::new(1, alice.user.id.clone(), alice.expires_at, alice.client, Execution::controlled(cx.background_executor.clone(), alice.expires_at - 3600));
+        let b = ChatHandle::new(2, bob.user.id.clone(), bob.expires_at, bob.client, Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
         a.start(); b.start();
         settle(cx, &[&a, &b], || a.status().is_empty() && b.status().is_empty() && ids(&a, &channel.id).contains(&message.id) && ids(&b, &channel.id).contains(&message.id)).await;
         a.edit_draft("Alice draft".into()); b.edit_draft("Bob draft".into());

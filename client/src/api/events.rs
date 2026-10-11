@@ -18,6 +18,10 @@ pub enum LiveEvent {
     ChannelRenamed(super::Channel),
     ChannelDeleted(String),
     MessageCreated(super::Message),
+    MessageDeleted {
+        channel_id: String,
+        message_id: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -321,6 +325,22 @@ fn decode(kind: &str, data: &str) -> Result<Option<LiveEvent>, ApiError> {
                 hamlet_protocol::Event::MessageCreated { message } => {
                     let channel = message.channel_id.clone();
                     LiveEvent::MessageCreated(super::messages::decode_message(message, &channel)?)
+                }
+                hamlet_protocol::Event::MessageDeleted {
+                    channel_id,
+                    message_id,
+                } => {
+                    // Match the server's 15-digit decimal-string path identities.
+                    if [&channel_id, &message_id]
+                        .into_iter()
+                        .any(|id| id.len() != 15 || !id.bytes().all(|byte| byte.is_ascii_digit()))
+                    {
+                        return Err(ApiError::InvalidResponse);
+                    }
+                    LiveEvent::MessageDeleted {
+                        channel_id,
+                        message_id,
+                    }
                 }
                 hamlet_protocol::Event::Unknown => return Ok(None),
             }))

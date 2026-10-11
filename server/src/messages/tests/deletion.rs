@@ -23,6 +23,280 @@ pub(super) async fn pause(history: bool) {
     }
 }
 
+struct MessageDeleteGate {
+    after_write: bool,
+    reached: Notify,
+    resume: Notify,
+}
+tokio::task_local! { static MESSAGE_DELETE_GATE: Arc<MessageDeleteGate>; }
+
+pub(super) async fn pause_message_delete(after_write: bool) {
+    if let Ok(gate) = MESSAGE_DELETE_GATE.try_with(Arc::clone)
+        && gate.after_write == after_write
+    {
+        gate.reached.notify_one();
+        gate.resume.notified().await;
+    }
+}
+
+#[actix_web::test]
+async fn message_delete_and_channel_delete_have_controlled_winner_semantics() {
+    for message_wins in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let state = connect_to_database(&format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("race.db").display()
+        ))
+        .await
+        .unwrap();
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state.clone()))
+                .configure(routes),
+        )
+        .await;
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/auth/signup")
+                .set_json(json!({"username":"Alice","password":"long password"}))
+                .to_request(),
+        )
+        .await;
+        let auth: Value = test::read_body_json(response).await;
+        let bearer = format!("Bearer {}", auth["access_token"].as_str().unwrap());
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/channels")
+                .insert_header(("Authorization", bearer.clone()))
+                .set_json(json!({"name":"To delete","type":"text"}))
+                .to_request(),
+        )
+        .await;
+        let channel: Value = test::read_body_json(response).await;
+        let path = format!("/api/v1/channels/{}", channel["id"].as_str().unwrap());
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri(&format!("{path}/messages"))
+                .insert_header(("Authorization", bearer.clone()))
+                .set_json(json!({"text":"retained"}))
+                .to_request(),
+        )
+        .await;
+        let message: Value = test::read_body_json(response).await;
+        let message_path = format!("{path}/messages/{}", message["id"].as_str().unwrap());
+        let gate = Arc::new(MessageDeleteGate {
+            after_write: message_wins,
+            reached: Notify::new(),
+            resume: Notify::new(),
+        });
+        let deleting_message = MESSAGE_DELETE_GATE.scope(
+            gate.clone(),
+            test::call_service(
+                &app,
+                test::TestRequest::delete()
+                    .uri(&message_path)
+                    .insert_header(("Authorization", bearer.clone()))
+                    .to_request(),
+            ),
+        );
+        let deleting_channel = async {
+            gate.reached.notified().await;
+            let response = test::call_service(
+                &app,
+                test::TestRequest::delete()
+                    .uri(&path)
+                    .insert_header(("Authorization", bearer.clone()))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            gate.resume.notify_one();
+        };
+        let (response, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(deleting_message, deleting_channel)
+        })
+        .await
+        .expect("bounded gates");
+        assert_eq!(
+            response.status(),
+            if message_wins {
+                StatusCode::NO_CONTENT
+            } else {
+                StatusCode::NOT_FOUND
+            }
+        );
+        assert_eq!(
+            test::call_service(
+                &app,
+                test::TestRequest::delete()
+                    .uri(&message_path)
+                    .insert_header(("Authorization", bearer.clone()))
+                    .to_request()
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri(&format!("{path}/messages"))
+                    .insert_header(("Authorization", bearer.clone()))
+                    .to_request()
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+        let row = state
+            .db
+            .query_one_raw(Statement::from_string(
+                DbBackend::Sqlite,
+                "SELECT text, deleted_at FROM messages",
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.try_get::<String>("", "text").unwrap(), "retained");
+        assert_eq!(
+            row.try_get::<Option<String>>("", "deleted_at")
+                .unwrap()
+                .is_some(),
+            message_wins
+        );
+    }
+}
+
+#[actix_web::test]
+async fn history_snapshot_before_message_deletion_may_return_it_but_new_snapshot_excludes_it() {
+    for older in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let state = connect_to_database(&format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("snapshot.db").display()
+        ))
+        .await
+        .unwrap();
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state.clone()))
+                .configure(routes),
+        )
+        .await;
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/auth/signup")
+                .set_json(json!({"username":"Alice","password":"long password"}))
+                .to_request(),
+        )
+        .await;
+        let auth: Value = test::read_body_json(response).await;
+        let bearer = format!("Bearer {}", auth["access_token"].as_str().unwrap());
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/v1/channels")
+                .insert_header(("Authorization", bearer.clone()))
+                .to_request(),
+        )
+        .await;
+        let list: Value = test::read_body_json(response).await;
+        let path = format!(
+            "/api/v1/channels/{}/messages",
+            list["items"][0]["id"].as_str().unwrap()
+        );
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri(&path)
+                .insert_header(("Authorization", bearer.clone()))
+                .set_json(json!({"text":"old snapshot"}))
+                .to_request(),
+        )
+        .await;
+        let message: Value = test::read_body_json(response).await;
+        let read_path = if older {
+            let response = test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri(&path)
+                    .insert_header(("Authorization", bearer.clone()))
+                    .set_json(json!({"text":"newest"}))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::CREATED);
+            let response = test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri(&format!("{path}?limit=1"))
+                    .insert_header(("Authorization", bearer.clone()))
+                    .to_request(),
+            )
+            .await;
+            let page: Value = test::read_body_json(response).await;
+            format!(
+                "{path}?limit=1&before={}",
+                page["next_cursor"].as_str().unwrap()
+            )
+        } else {
+            path.clone()
+        };
+        let gate = Arc::new(Gate {
+            history: true,
+            reached: Notify::new(),
+            resume: Notify::new(),
+        });
+        let reading = GATE.scope(
+            gate.clone(),
+            test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri(&read_path)
+                    .insert_header(("Authorization", bearer.clone()))
+                    .to_request(),
+            ),
+        );
+        let deleting = async {
+            gate.reached.notified().await;
+            let response = test::call_service(
+                &app,
+                test::TestRequest::delete()
+                    .uri(&format!("{path}/{}", message["id"].as_str().unwrap()))
+                    .insert_header(("Authorization", bearer.clone()))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            gate.resume.notify_one();
+        };
+        let (response, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(reading, deleting)
+        })
+        .await
+        .expect("bounded gates");
+        assert_eq!(response.status(), StatusCode::OK);
+        let page: Value = test::read_body_json(response).await;
+        assert_eq!(page["items"], json!([message]));
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&read_path)
+                .insert_header(("Authorization", bearer.clone()))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let page: Value = test::read_body_json(response).await;
+        assert_eq!(page, json!({"items":[],"next_cursor":null}));
+    }
+}
+
 #[actix_web::test]
 async fn send_and_history_are_ordered_against_deletion() {
     for history in [false, true] {
