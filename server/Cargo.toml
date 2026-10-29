@@ -2,6 +2,7 @@
 name = "hamlet"
 version = "0.1.0"
 edition = "2024"
+default-run = "hamlet"
 
 [dependencies]
 hamlet-protocol = { path = "../protocol", features = ["openapi"] }

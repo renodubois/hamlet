@@ -1,12 +1,8 @@
 use super::*;
-#[path = "deletion.rs"]
-mod deletion;
+#[path = "channel_delete_state.rs"]
+mod channel_delete;
 fn logged_in() -> Identity {
-    Identity {
-        generation: Some(1),
-        expires_at: 100,
-        rejected: None,
-    }
+    Identity::new(1, 100)
 }
 fn channels() -> Vec<Channel> {
     vec![
@@ -46,8 +42,20 @@ fn ready() -> (ChatState, Identity) {
     state.complete_history(&mut session, &read, Ok(page(&["8"], Some("opaque older"))));
     (state, session)
 }
+/// Whether the completion confirmed the creation, observed as the create revision advancing.
+fn confirms_create(
+    state: &mut ChatState,
+    session: &mut Identity,
+    request: &CreateRequest,
+    result: Result<Channel, ApiError>,
+    now: i64,
+) -> bool {
+    let revision = state.create.revision;
+    state.complete_create(session, request, result, now);
+    state.create.revision == revision.wrapping_add(1)
+}
 fn ids(state: &ChatState) -> Vec<&str> {
-    let Some(Load::Ready(items)) = state.history.get("z") else {
+    let Some(Load::Ready(items)) = state.history("z") else {
         panic!("history not ready")
     };
     items.iter().map(|item| item.id.as_str()).collect()
@@ -102,8 +110,8 @@ fn drafts_and_write_identities_are_independent_of_navigation_and_matching_events
         "uncertainty cannot cause a read"
     );
     state.merge_message(message("10", "z"));
-    assert!(state.uncertain.contains("z"));
-    assert!(state.send_feedback["z"].contains("may already"));
+    assert!(state.conversation("z").is_some_and(|c| c.uncertain));
+    assert!(state.send_feedback("z").unwrap().contains("may already"));
     let deliberate = state.send(&session).unwrap();
     assert_eq!(
         state.complete_send(&mut session, &deliberate, Ok(message("11", "z")), 0),
@@ -138,7 +146,7 @@ fn confirmed_entities_merge_immediately_and_only_originating_draft_is_cleared() 
     assert_eq!(ids(&state), ["10", "8"]);
     assert_eq!(state.draft("z"), "");
     assert_eq!(state.draft("a"), "different");
-    assert!(!state.send_feedback.contains_key("z"));
+    assert!(state.send_feedback("z").is_none());
     assert!(state.select(&session, "z").is_none());
 }
 
@@ -153,36 +161,38 @@ fn authority_and_session_replacement_gate_reads_and_writes_before_rejection() {
         if expiry {
             session.expire(100);
         } else {
-            session.generation = None;
+            session.close();
         }
         state.clear();
-        session.generation = Some(2);
+        session = Identity::new(2, session.expires_at);
         let list = state.start(&session).unwrap();
         assert_eq!(
-            state.complete_send(&mut session, &send, Err(ApiError::AlreadyInvalid), 0),
+            state.complete_send(&mut session, &send, Err(ApiError::SessionRejected), 0),
             SendOutcome::Stale
         );
-        state.complete_history(&mut session, &older, Err(ApiError::AlreadyInvalid));
-        assert!(
-            !state
-                .complete_create(&mut session, &create, Err(ApiError::AlreadyInvalid), 0)
-                .0
-        );
-        assert_eq!(session.generation, Some(2));
+        state.complete_history(&mut session, &older, Err(ApiError::SessionRejected));
+        assert!(!confirms_create(
+            &mut state,
+            &mut session,
+            &create,
+            Err(ApiError::SessionRejected),
+            0
+        ));
+        assert_eq!(session.session_generation(), Some(2));
         assert!(state.is_current_channels(&list));
-        assert!(state.drafts.is_empty());
-        assert!(state.history.is_empty());
+        assert!(state.conversations().values().all(|c| c.draft.is_none()));
+        assert!(state.conversations().values().all(|c| c.history.is_none()));
     }
     let (mut state, mut session) = ready();
     state.set_draft("z", "private".into());
     let send = state.send(&session).unwrap();
     let old = state.request_older(&session).unwrap();
     assert_eq!(
-        state.complete_send(&mut session, &send, Err(ApiError::AlreadyInvalid), 0),
+        state.complete_send(&mut session, &send, Err(ApiError::SessionRejected), 0),
         SendOutcome::Invalidated
     );
-    assert!(session.generation.is_none());
-    assert!(state.drafts.is_empty());
+    assert!(session.session_generation().is_none());
+    assert!(state.conversations().values().all(|c| c.draft.is_none()));
     state.complete_history(&mut session, &old, Ok(page(&["7"], None)));
     assert!(state.channels.is_none());
 }
@@ -195,15 +205,22 @@ fn channel_snapshot_preserves_server_order_and_only_loads_current_selection() {
     let first = state
         .complete_channels(&mut session, &list, Ok(channels()))
         .unwrap();
-    assert_eq!(first.channel_id.as_deref(), Some("z"));
+    assert_eq!(first.channel_id, "z");
     assert_eq!(state.channels, Some(Load::Ready(channels())));
-    assert_eq!(state.history.len(), 1);
+    assert_eq!(
+        state
+            .conversations()
+            .values()
+            .filter(|c| c.history.is_some())
+            .count(),
+        1
+    );
     assert!(state.select(&session, "unknown").is_none());
     assert!(state.select(&session, "z").is_none());
     let other = state.select(&session, "a").unwrap();
-    state.complete_history(&mut session, &first, Err(ApiError::AlreadyInvalid));
-    assert_eq!(session.generation, Some(1));
-    assert!(!state.history.contains_key("z"));
+    state.complete_history(&mut session, &first, Err(ApiError::SessionRejected));
+    assert_eq!(session.session_generation(), Some(1));
+    assert!(state.history("z").is_none());
     state.complete_history(&mut session, &other, Ok(page(&[], None)));
     let current = state.select(&session, "z").unwrap();
     state.complete_history(&mut session, &current, Ok(page(&["9", "8"], None)));
@@ -226,30 +243,30 @@ fn channel_creation_validates_names_selects_only_on_confirmation_and_rejects_lat
     };
     state.merge_channel(channel.clone());
     assert_eq!(state.selected.as_deref(), Some("z"));
-    let (confirmed, read) = state.complete_create(&mut session, &create, Ok(channel), 0);
-    assert!(confirmed);
-    assert_eq!(read.unwrap().channel_id.as_deref(), Some("new"));
-    assert!(
-        !state
-            .complete_create(&mut session, &create, Err(ApiError::AlreadyInvalid), 0)
-            .0
-    );
-    assert_eq!(session.generation, Some(1));
+    let revision = state.create.revision;
+    let read = state.complete_create(&mut session, &create, Ok(channel), 0);
+    assert_ne!(state.create.revision, revision);
+    assert_eq!(read.unwrap().channel_id, "new");
+    assert!(!confirms_create(
+        &mut state,
+        &mut session,
+        &create,
+        Err(ApiError::SessionRejected),
+        0
+    ));
+    assert_eq!(session.session_generation(), Some(1));
     let pending = state.create(&session, "Later").unwrap();
-    assert!(
-        !state
-            .complete_create(
-                &mut session,
-                &pending,
-                Ok(Channel {
-                    id: "later".into(),
-                    name: "Later".into()
-                }),
-                100
-            )
-            .0
-    );
-    assert!(session.generation.is_none());
+    assert!(!confirms_create(
+        &mut state,
+        &mut session,
+        &pending,
+        Ok(Channel {
+            id: "later".into(),
+            name: "Later".into()
+        }),
+        100
+    ));
+    assert!(session.session_generation().is_none());
     assert!(state.channels.is_none());
 }
 
@@ -262,17 +279,17 @@ fn older_pages_keep_cursor_and_entities_through_local_failure_retry_and_duplicat
     state.merge_message(message("9", "z"));
     state.complete_history(&mut session, &older, Err(ApiError::Unavailable));
     assert_eq!(ids(&state), ["9", "8"]);
-    assert!(matches!(state.older.get("z"), Some(Older::Failed(_))));
+    assert!(matches!(state.older("z"), Some(OlderPages::Failed(_))));
     assert!(state.request_older(&session).is_none());
     let retry = state.retry_older(&session).unwrap();
     assert_eq!(retry.before, older.before);
     assert_eq!(
         state
-            .complete_history(&mut session, &older, Err(ApiError::AlreadyInvalid))
+            .complete_history(&mut session, &older, Err(ApiError::SessionRejected))
             .added,
         0
     );
-    assert_eq!(session.generation, Some(1));
+    assert_eq!(session.session_generation(), Some(1));
     assert_eq!(
         state
             .complete_history(
@@ -290,7 +307,7 @@ fn older_pages_keep_cursor_and_entities_through_local_failure_retry_and_duplicat
         &final_read,
         Ok(page(&["6", "5"], Some("next opaque"))),
     );
-    assert_eq!(state.older.get("z"), Some(&Older::Exhausted));
+    assert_eq!(state.older("z"), Some(&OlderPages::Exhausted));
     assert_eq!(ids(&state), ["9", "8", "7", "6", "5"]);
     assert!(state.request_older(&session).is_none());
 }
@@ -312,10 +329,10 @@ fn navigation_and_local_creation_cancel_older_identity_without_losing_cursor() {
     state.select(&session, "z");
     let current = state.request_older(&session).unwrap();
     assert_eq!(current.before, old.before);
-    state.complete_history(&mut session, &old, Err(ApiError::AlreadyInvalid));
-    assert_eq!(session.generation, Some(1));
-    state.complete_history(&mut session, &current, Err(ApiError::AlreadyInvalid));
-    assert!(session.generation.is_none());
-    assert!(state.history.is_empty());
-    assert!(state.older.is_empty());
+    state.complete_history(&mut session, &old, Err(ApiError::SessionRejected));
+    assert_eq!(session.session_generation(), Some(1));
+    state.complete_history(&mut session, &current, Err(ApiError::SessionRejected));
+    assert!(session.session_generation().is_none());
+    assert!(state.conversations().values().all(|c| c.history.is_none()));
+    assert!(state.conversations().values().all(|c| c.older.is_none()));
 }

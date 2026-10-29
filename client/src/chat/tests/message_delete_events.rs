@@ -21,7 +21,7 @@ fn history(channel: &str, ids: &[&str], cursor: Option<&str>) -> serde_json::Val
 }
 fn displayed(chat: &ChatHandle, channel: &str) -> Vec<String> {
     let state = chat.read();
-    let Some(Load::Ready(rows)) = state.history_for_display(channel) else {
+    let Some(Load::Ready(rows)) = state.history(channel) else {
         panic!("loaded history")
     };
     rows.iter().map(|m| m.id.clone()).collect()
@@ -51,7 +51,7 @@ fn observed_deletions_block_late_newest_older_and_creation_events(cx: &mut TestA
     deleted(&stream, A, M);
     deleted(&stream, C, M);
     drain(cx, &chat);
-    assert!(!chat.read().history.contains_key(C));
+    assert!(chat.read().history(C).is_none());
     assert!(calls.is_empty());
     respond(newest, history(A, &[M, N], Some("opaque+/=&?")));
     drain(cx, &chat);
@@ -59,18 +59,18 @@ fn observed_deletions_block_late_newest_older_and_creation_events(cx: &mut TestA
     stream.message(M, C);
     drain(cx, &chat);
     assert_eq!(displayed(&chat, A), [N]);
-    assert_eq!(chat.read().older.get(A), Some(&Older::Available));
+    assert_eq!(chat.read().older(A), Some(&OlderPages::Available));
     chat.request_older();
     drain(cx, &chat);
     let older = calls.try_recv().unwrap();
     deleted(&stream, A, N);
     drain(cx, &chat);
     assert!(displayed(&chat, A).is_empty());
-    assert_eq!(chat.read().older.get(A), Some(&Older::Loading));
+    assert_eq!(chat.read().older(A), Some(&OlderPages::Loading));
     respond(older, history(A, &[M, N], Some("next-opaque")));
     drain(cx, &chat);
     assert!(displayed(&chat, A).is_empty());
-    assert_eq!(chat.read().older.get(A), Some(&Older::Available));
+    assert_eq!(chat.read().older(A), Some(&OlderPages::Available));
     chat.select_channel(C);
     drain(cx, &chat);
     respond(calls.try_recv().unwrap(), history(C, &[M, N], None));
@@ -127,13 +127,13 @@ fn deletion_and_send_confirmation_orders_never_restore_loaded_rows_or_confirmati
             }
             stream.message(M, A);
             drain(cx, &chat);
-            assert!(!chat.read().send_pending.contains_key(A));
+            assert!(!chat.read().is_sending(A));
             assert_eq!(
                 chat.read().draft(A),
                 "",
                 "publication remains confirmed even when deleted"
             );
-            assert!(!chat.read().send_feedback.contains_key(A));
+            assert!(chat.read().send_feedback(A).is_none());
             chat.select_channel(A);
             drain(cx, &chat);
             if !loaded {
@@ -182,7 +182,7 @@ fn observations_survive_reconnect_without_reads_but_end_with_the_chat_lifetime(
     replacement.message(M, A);
     drain(cx, &chat);
     assert_eq!(displayed(&chat, A), [N]);
-    assert_eq!(chat.read().older.get(A), Some(&Older::Available));
+    assert_eq!(chat.read().older(A), Some(&OlderPages::Available));
     assert!(
         calls.is_empty(),
         "reconnect and readiness are not synchronization"
@@ -193,7 +193,12 @@ fn observations_survive_reconnect_without_reads_but_end_with_the_chat_lifetime(
     let late = chat.updates().try_recv().unwrap();
     chat.close();
     assert!(chat.apply(late).is_none());
-    assert!(chat.read().history.is_empty());
+    assert!(
+        chat.read()
+            .conversations()
+            .values()
+            .all(|c| c.history.is_none())
+    );
     cx.executor().run_until_parked();
     assert!(replacement.body.is_closed());
     let (fresh, calls, _, _) = started(cx);
@@ -228,10 +233,10 @@ fn deletion_removes_active_and_inactive_rows_without_reads_or_unloaded_allocatio
     drain(cx, &chat);
     assert_eq!(displayed(&chat, A), [N]);
     assert!(displayed(&chat, B).is_empty());
-    assert!(!chat.read().history.contains_key(C));
+    assert!(chat.read().history(C).is_none());
     assert_eq!(chat.read().draft(B), "preserve composer");
     assert_eq!(chat.read().selected.as_deref(), Some(B));
-    assert_eq!(chat.read().older.get(A), Some(&Older::Available));
+    assert_eq!(chat.read().older(A), Some(&OlderPages::Available));
     assert!(calls.is_empty(), "removal must not read or backfill");
     chat.select_channel(A);
     chat.request_older();

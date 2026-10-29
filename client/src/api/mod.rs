@@ -7,6 +7,7 @@ mod client;
 mod error;
 mod events;
 mod messages;
+mod response;
 mod types;
 
 pub use client::{
@@ -16,6 +17,11 @@ pub use error::ApiError;
 pub(crate) use events::{LiveEvent, StreamError};
 pub use types::{Channel, Message, Page, User};
 pub type ApiFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
+
+/// Deadline for one HTTP operation, applied by callers on the injected clock (see
+/// `runtime::Execution::deadline`); expiry is `ApiError::Unavailable`, never authoritative.
+/// Real transports also end at the client's 8-second total timeout (`client.rs`).
+pub const REQUEST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(9);
 
 #[cfg(test)]
 pub(crate) mod test_support {

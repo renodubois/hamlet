@@ -14,8 +14,8 @@ fn live_rename_duplicates_unknown_and_obsolete_deliveries(cx: &mut TestAppContex
     }
     stream.frame("change", rename("99", "Unknown"));
     drain(cx, &activity);
-    assert!(activity.read().rename_pending);
-    assert_eq!(activity.read().rename_confirmed, 0);
+    assert!(activity.read().rename.pending);
+    assert_eq!(activity.read().rename.revision, 0);
     assert_eq!(activity.read().selected.as_deref(), Some("1"));
     assert_eq!(activity.read().draft("1"), "keep");
     assert!(
@@ -27,7 +27,7 @@ fn live_rename_duplicates_unknown_and_obsolete_deliveries(cx: &mut TestAppContex
         serde_json::json!({"id":"2","name":"AAA","type":"text"}),
     );
     drain(cx, &activity);
-    assert_eq!(activity.read().rename_confirmed, 1);
+    assert_eq!(activity.read().rename.revision, 1);
     stream.frame("change", rename("1", "Old session"));
     cx.executor().run_until_parked();
     let late = activity.updates().try_recv().unwrap();
@@ -74,9 +74,9 @@ fn rename_queued_old_results_cannot_affect_new_authentication(cx: &mut TestAppCo
         let (new, new_calls, _, _) = ready(cx);
         assert!(old.apply(late).is_none());
         assert!(old.read().channels.is_none());
-        assert!(!new.read().rename_pending);
-        assert!(new.read().rename_feedback.is_none());
-        assert_eq!(new.read().rename_confirmed, 0);
+        assert!(!new.read().rename.pending);
+        assert!(new.read().rename.feedback.is_none());
+        assert_eq!(new.read().rename.revision, 0);
         assert!(new_calls.is_empty());
         new.close();
     }

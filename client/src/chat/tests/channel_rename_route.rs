@@ -35,21 +35,21 @@ fn real_route_rename_preserves_conversation_and_rejects_closed_session(cx: &mut 
         activity.rename_channel(&other.id, "  AAA  ");
         activity.rename_channel(&channel.id, "duplicate must not run");
         settle(cx, &[&activity], || gate.reached.load(Ordering::SeqCst)).await;
-        assert!(activity.read().rename_pending);
+        assert!(activity.read().rename.pending);
         assert_eq!(activity.read().selected.as_deref(), Some(channel.id.as_str()));
         gate.open();
-        settle(cx, &[&activity], || !activity.read().rename_pending).await;
-        assert!(activity.read().rename_feedback.is_none());
+        settle(cx, &[&activity], || !activity.read().rename.pending).await;
+        assert!(activity.read().rename.feedback.is_none());
         assert_eq!(writes.load(Ordering::SeqCst), first_writes + 1, "pending duplicate intention is ignored");
         assert!(matches!(&activity.read().channels, Some(Load::Ready(channels)) if channels[0].id == other.id && channels[0].name == "AAA"));
         for name in ["GENERAL", "GENERAL"] {
             activity.rename_channel(&channel.id, name);
-            settle(cx, &[&activity], || !activity.read().rename_pending).await;
-            assert!(activity.read().rename_feedback.is_none());
+            settle(cx, &[&activity], || !activity.read().rename.pending).await;
+            assert!(activity.read().rename.feedback.is_none());
         }
         activity.rename_channel(&channel.id, "aaa");
-        settle(cx, &[&activity], || !activity.read().rename_pending).await;
-        assert!(activity.read().rename_feedback.as_ref().unwrap().contains("already exists"));
+        settle(cx, &[&activity], || !activity.read().rename.pending).await;
+        assert!(activity.read().rename.feedback.as_ref().unwrap().contains("already exists"));
         assert_eq!(activity.read().selected.as_deref(), Some(channel.id.as_str()));
         assert_eq!(activity.read().draft(&channel.id), "retained draft");
         assert_eq!(ids(&activity, &channel.id), vec![message.id]);
@@ -57,8 +57,8 @@ fn real_route_rename_preserves_conversation_and_rejects_closed_session(cx: &mut 
         let baseline_writes = writes.load(Ordering::SeqCst);
         lose.store(true, Ordering::SeqCst);
         activity.rename_channel(&channel.id, "accepted but unconfirmed");
-        settle(cx, &[&activity], || !activity.read().rename_pending).await;
-        assert!(activity.read().rename_feedback.as_ref().unwrap().contains("may have succeeded"));
+        settle(cx, &[&activity], || !activity.read().rename.pending).await;
+        assert!(activity.read().rename.feedback.as_ref().unwrap().contains("may have succeeded"));
         settle(cx, &[&activity], || activity.read().selected_channel().unwrap().name == "accepted but unconfirmed").await;
         assert_eq!(activity.read().draft(&channel.id), "retained draft");
         assert_eq!(reads.load(Ordering::SeqCst), baseline, "uncertainty issues no reads");
@@ -73,12 +73,12 @@ fn real_route_rename_preserves_conversation_and_rejects_closed_session(cx: &mut 
         gate.open();
         cx.executor().run_until_parked();
         assert!(activity.read().channels.is_none());
-        assert!(activity.read().drafts.is_empty());
+        assert!(activity.read().conversations().values().all(|c| c.draft.is_none()));
         let replacement = ChatHandle::new(2, bob.user.id.clone(), bob.expires_at, bob.client.clone(), Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
         replacement.start();
         settle(cx, &[&replacement], || matches!(replacement.read().channels, Some(Load::Ready(_)))).await;
-        assert!(!replacement.read().rename_pending);
-        assert!(replacement.read().rename_feedback.is_none());
+        assert!(!replacement.read().rename.pending);
+        assert!(replacement.read().rename.feedback.is_none());
         replacement.close();
         stop(handle, task).await;
     });
@@ -121,21 +121,21 @@ fn two_user_live_rename_both_confirmation_orders_without_reads(cx: &mut TestAppC
         response_gate.arm();
         a.rename_channel(&other.id, "AAA");
         settle(cx, &[&a, &b], || response_gate.reached.load(Ordering::SeqCst) && named(&a, &other.id, "AAA") && named(&b, &other.id, "AAA")).await;
-        assert!(a.read().rename_pending);
-        assert_eq!(a.read().rename_confirmed, 0);
+        assert!(a.read().rename.pending);
+        assert_eq!(a.read().rename.revision, 0);
         response_gate.open();
-        settle(cx, &[&a, &b], || !a.read().rename_pending).await;
+        settle(cx, &[&a, &b], || !a.read().rename.pending).await;
         // Both streams are gated: HTTP confirmation arrives first.
         stream_gate.arm();
         b.rename_channel(&channel.id, "ZZZ");
-        settle(cx, &[&a, &b], || !b.read().rename_pending && named(&b, &channel.id, "ZZZ") && stream_gate.reached.load(Ordering::SeqCst)).await;
+        settle(cx, &[&a, &b], || !b.read().rename.pending && named(&b, &channel.id, "ZZZ") && stream_gate.reached.load(Ordering::SeqCst)).await;
         assert!(named(&a, &channel.id, "general"));
         stream_gate.open(); stream_gate.open();
         settle(cx, &[&a, &b], || named(&a, &channel.id, "ZZZ")).await;
         // A failed mutation neither changes shared state nor produces extra reads.
         a.rename_channel(&channel.id, "aaa");
-        settle(cx, &[&a, &b], || !a.read().rename_pending).await;
-        assert!(a.read().rename_feedback.as_ref().unwrap().contains("already exists"));
+        settle(cx, &[&a, &b], || !a.read().rename.pending).await;
+        assert!(a.read().rename.feedback.as_ref().unwrap().contains("already exists"));
         for chat in [&a, &b] {
             assert_eq!(chat.read().selected.as_deref(), Some(channel.id.as_str()));
             assert_eq!(ids(chat, &channel.id), vec![message.id.clone()]);

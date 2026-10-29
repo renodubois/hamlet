@@ -44,24 +44,19 @@ impl AppShell {
                 cx.notify();
             });
         let updates = session.read(cx).updates();
-        cx.spawn(async move |weak, cx| {
-            while let Ok(update) = updates.recv().await {
-                if weak
-                    .update_in(cx, |view, window, cx| {
-                        view.session.update(cx, |session, cx| {
-                            session.apply(update);
-                            cx.notify();
-                        });
-                        view.session_changed(window, cx);
-                        cx.notify();
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .detach();
+        Self::deliver(
+            cx,
+            move || {
+                let updates = updates.clone();
+                async move { updates.recv().await.ok() }
+            },
+            |view, update, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.apply(update);
+                    cx.notify();
+                });
+            },
+        );
         Self {
             execution,
             session,
@@ -70,33 +65,18 @@ impl AppShell {
             _session_subscription: session_subscription,
         }
     }
-    fn enter_authenticated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(activity) = self.session.read(cx).chat() else {
-            return;
-        };
-        let updates = activity.updates();
-        activity.start();
-        self.chat = Some(cx.new(|cx| {
-            ChatView::new(
-                activity.clone(),
-                self.session.clone(),
-                self.execution.clone(),
-                window,
-                cx,
-            )
-        }));
-        // Opaque delivery only. Views subscribe separately to feature invalidations;
-        // recreating a chat never creates another competing delivery loop.
+    /// Applies each opaque executor delivery on the UI thread, then reconciles the screen,
+    /// until the source closes or the shell is dropped. Coordinators interpret updates.
+    fn deliver<T: 'static, F: Future<Output = Option<T>> + 'static>(
+        cx: &mut Context<Self>,
+        mut next: impl FnMut() -> F + 'static,
+        mut apply: impl FnMut(&mut Self, T, &mut Context<Self>) + 'static,
+    ) {
         cx.spawn(async move |weak, cx| {
-            while let Ok(update) = updates.recv().await {
+            while let Some(update) = next().await {
                 if weak
                     .update_in(cx, |view, window, cx| {
-                        if let Some(end) = activity.apply(update) {
-                            view.session.update(cx, |session, cx| {
-                                session.chat_ended(end);
-                                cx.notify();
-                            });
-                        }
+                        apply(view, update, cx);
                         view.session_changed(window, cx);
                         cx.notify();
                     })
@@ -107,6 +87,39 @@ impl AppShell {
             }
         })
         .detach();
+    }
+    fn enter_authenticated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(chat) = self.session.read(cx).chat() else {
+            return;
+        };
+        let updates = chat.updates();
+        chat.start();
+        self.chat = Some(cx.new(|cx| {
+            ChatView::new(
+                chat.clone(),
+                self.session.clone(),
+                self.execution.clone(),
+                window,
+                cx,
+            )
+        }));
+        // Opaque delivery only. Views subscribe separately to feature invalidations;
+        // recreating a chat never creates another competing delivery loop.
+        Self::deliver(
+            cx,
+            move || {
+                let updates = updates.clone();
+                async move { updates.recv().await.ok() }
+            },
+            move |view, update, cx| {
+                if let Some(end) = chat.apply(update) {
+                    view.session.update(cx, |session, cx| {
+                        session.chat_ended(end);
+                        cx.notify();
+                    });
+                }
+            },
+        );
     }
     fn session_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let lifecycle = self

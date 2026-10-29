@@ -7,13 +7,20 @@ use gpui_kit::base::input::{InputBaseState, InputMode, InputState};
 use gpui_kit::component::{ActiveTheme, WindowExt as _, button::Button, input::Input};
 use gpui_kit::*;
 
+/// The one sidebar dialog that may be open. Rename and delete record the operation revision
+/// at opening; a confirmed success advances it, which closes the dialog.
+#[derive(Clone, Copy)]
+enum OpenDialog {
+    Create,
+    Rename(u64),
+    Delete(u64),
+}
+
 pub(super) struct SidebarView {
     chat: ChatHandle,
     channel_name: Entity<InputBaseState<InputMode>>,
     created_revision: u64,
-    dialog_open: bool,
-    rename_revision: Option<u64>,
-    delete_revision: Option<u64>,
+    open_dialog: Option<OpenDialog>,
     _release: Subscription,
     _notifications: Task<()>,
 }
@@ -22,22 +29,12 @@ impl SidebarView {
         let channel_name = cx.new(|cx| InputState::new(window, cx));
         // A newly mounted input must not consume a confirmation from before its lifetime.
         let created_revision = chat.created().map(|(revision, _)| revision).unwrap_or(0);
-        let changes = chat.notifications();
-        let notifications = cx.spawn(async move |weak, cx| {
-            while changes.recv().await.is_ok() {
-                if weak
-                    .update_in(cx, |view: &mut Self, window, cx| {
-                        view.present(window, cx);
-                        cx.notify();
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
+        let notifications =
+            super::present_on_chat_change(&chat, cx, |view: &mut Self, window, cx| {
+                view.present(window, cx)
+            });
         let release = cx.on_release_in(window, |view, window, cx| {
-            if view.dialog_open {
+            if view.open_dialog.is_some() {
                 window.close_dialog(cx);
             }
         });
@@ -45,57 +42,46 @@ impl SidebarView {
             chat,
             channel_name,
             created_revision,
-            dialog_open: false,
-            rename_revision: None,
-            delete_revision: None,
+            open_dialog: None,
             _release: release,
             _notifications: notifications,
         }
     }
     fn present(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(revision) = self.delete_revision
-            && revision != self.chat.read().delete_confirmed
-        {
-            self.delete_revision = None;
-            self.dialog_open = false;
-            window.close_dialog(cx);
-        }
-        if let Some(revision) = self.rename_revision
-            && revision != self.chat.read().rename_confirmed
-        {
-            self.rename_revision = None;
-            self.dialog_open = false;
-            window.close_dialog(cx);
-        }
-        if self.chat.read().channels.is_none() {
-            if self.dialog_open {
-                self.dialog_open = false;
-                window.close_dialog(cx);
-            }
-            // A retained but hidden sidebar is cleared by shutdown notifications too.
-            if !self.channel_name.read(cx).text().to_string().is_empty() {
-                self.channel_name
-                    .update(cx, |input, cx| input.set_value("", window, cx));
-            }
-        }
-        if let Some((revision, _)) = self.chat.created()
-            && revision != self.created_revision
-        {
+        let created = self
+            .chat
+            .created()
+            .map(|(revision, _)| revision)
+            .filter(|revision| *revision != self.created_revision);
+        if let Some(revision) = created {
             self.created_revision = revision;
             self.channel_name
                 .update(cx, |input, cx| input.set_value("", window, cx));
-            if self.dialog_open && self.rename_revision.is_none() && self.delete_revision.is_none()
-            {
-                self.dialog_open = false;
-                window.close_dialog(cx);
-            }
+        }
+        let chat = self.chat.read();
+        let signed_out = chat.channels.is_none();
+        let confirmed = match self.open_dialog {
+            Some(OpenDialog::Create) => created.is_some(),
+            Some(OpenDialog::Rename(revision)) => revision != chat.rename.revision,
+            Some(OpenDialog::Delete(revision)) => revision != chat.channel_delete.revision,
+            None => false,
+        };
+        drop(chat);
+        if confirmed || (signed_out && self.open_dialog.is_some()) {
+            self.open_dialog = None;
+            window.close_dialog(cx);
+        }
+        // A retained but hidden sidebar is cleared by shutdown notifications too.
+        if signed_out && !self.channel_name.read(cx).text().to_string().is_empty() {
+            self.channel_name
+                .update(cx, |input, cx| input.set_value("", window, cx));
         }
     }
     fn open_create_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.dialog_open {
+        if self.open_dialog.is_some() {
             return;
         }
-        self.dialog_open = true;
+        self.open_dialog = Some(OpenDialog::Create);
         let view = cx.entity().downgrade();
         let closed = view.clone();
         window.open_dialog(cx, move |dialog, _, cx| {
@@ -104,7 +90,7 @@ impl SidebarView {
             };
             let sidebar = view.read(cx);
             let chat = sidebar.chat.read();
-            let pending = chat.create_pending;
+            let pending = chat.create.pending;
             let submit = view.downgrade();
             let cancel = view.downgrade();
             let confirm = view.downgrade();
@@ -114,7 +100,7 @@ impl SidebarView {
                     .aria_label("Channel name")
                     .disabled(pending),
             );
-            if let Some(feedback) = &chat.create_feedback {
+            if let Some(feedback) = &chat.create.feedback {
                 content = content.child(
                     div()
                         .id("channel-feedback")
@@ -139,7 +125,7 @@ impl SidebarView {
                         .child(Button::new("cancel-channel").label("Cancel").on_click(
                             move |_, window, cx| {
                                 let _ = cancel.update(cx, |view, cx| {
-                                    view.dialog_open = false;
+                                    view.open_dialog = None;
                                     view.channel_name
                                         .update(cx, |input, cx| input.set_value("", window, cx));
                                     cx.notify();
@@ -164,7 +150,7 @@ impl SidebarView {
                     let closed = closed.clone();
                     move |_, window, cx| {
                         let _ = closed.update(cx, |view, cx| {
-                            view.dialog_open = false;
+                            view.open_dialog = None;
                             view.channel_name
                                 .update(cx, |input, cx| input.set_value("", window, cx));
                             cx.notify();
@@ -220,8 +206,8 @@ impl Render for SidebarView {
 
         sidebar = sidebar.child(
             Button::new("open-create-channel")
-                .disabled(chat.create_pending || !matches!(chat.channels, Some(Load::Ready(_))))
-                .label(if chat.create_pending {
+                .disabled(chat.create.pending || !matches!(chat.channels, Some(Load::Ready(_))))
+                .label(if chat.create.pending {
                     "Creating channel…"
                 } else {
                     "Create text channel"

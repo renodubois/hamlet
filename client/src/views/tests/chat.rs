@@ -69,7 +69,11 @@ fn authenticated_chat(
     });
     let updates = cx.update(|cx| {
         session.update(cx, |session, _| {
-            session.submit("Ada".into(), "password".into(), false);
+            session.submit(
+                "Ada".into(),
+                "password".into(),
+                crate::session::AuthMode::Login,
+            );
             session.updates()
         })
     });

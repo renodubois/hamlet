@@ -41,7 +41,7 @@ async fn rename_maps_rejections_and_unconfirmed_responses_without_replay() {
             r#"{"error":{"code":"bad_request"}}"#,
             ApiError::InvalidInput,
         ),
-        (StatusCode::UNAUTHORIZED, "", ApiError::AlreadyInvalid),
+        (StatusCode::UNAUTHORIZED, "", ApiError::SessionRejected),
         (
             StatusCode::NOT_FOUND,
             r#"{"error":{"code":"not_found"}}"#,
@@ -71,7 +71,7 @@ async fn rename_maps_rejections_and_unconfirmed_responses_without_replay() {
         (
             StatusCode::CREATED,
             r#"{"id":"c","name":"New","type":"text"}"#,
-            ApiError::Unavailable,
+            ApiError::UnexpectedStatus,
         ),
     ] {
         let adapter = Controlled::new([(status, body)]);

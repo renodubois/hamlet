@@ -1,0 +1,19 @@
+   Compiling hamlet-client v0.1.0 (/home/reno/projects/hamlet/client)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.09s
+     Running unittests src/main.rs (target/debug/deps/hamlet_client-111794a6e9765e8e)
+
+running 1 test
+
+thread 'views::tests::message_delete_controls::partially_clipped_authored_tray_remains_reachable_without_moving_history' (23845) panicked at src/views/tests/message_delete_controls.rs:449:9:
+hovering the visible remainder must expose the actual tray
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test views::tests::message_delete_controls::partially_clipped_authored_tray_remains_reachable_without_moving_history ... FAILED
+
+failures:
+
+failures:
+    views::tests::message_delete_controls::partially_clipped_authored_tray_remains_reachable_without_moving_history
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 240 filtered out; finished in 0.14s
+
+error: test failed, to rerun pass `--bin hamlet-client`

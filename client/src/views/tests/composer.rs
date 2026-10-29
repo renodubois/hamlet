@@ -264,7 +264,7 @@ fn stalled_send_times_out_and_late_completion_cannot_clear_the_draft(cx: &mut Te
         );
     });
     let (_, _, sender) = calls.lock().unwrap().remove(0);
-    assert!(sender.try_send(Err(ApiError::AlreadyInvalid)).is_err());
+    assert!(sender.try_send(Err(ApiError::SessionRejected)).is_err());
     cx.run_until_parked();
     cx.update(|window, cx| {
         assert_eq!(composer_text(window, cx), "timeout draft");

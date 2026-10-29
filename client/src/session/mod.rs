@@ -8,7 +8,7 @@ use crate::storage::{Config, Persistence};
 pub(crate) use saved_login::StorageRetry;
 use saved_login::{SavedLogin, SavedUpdate};
 
-use crate::api::HttpTransport;
+use crate::api::{HttpTransport, REQUEST_DEADLINE};
 use crate::chat::{ChatHandle, SessionEnd};
 use crate::runtime::{Execution, Work};
 use std::time::Duration;
@@ -23,18 +23,14 @@ pub(crate) enum Lifecycle {
 /// Opaque executor delivery. Only the coordinator interprets results/identities.
 pub(crate) struct SessionUpdate(Update);
 enum Update {
-    Authentication(
-        LoginRequest,
-        Result<crate::api::Authentication, ApiError>,
-        bool,
-    ),
+    Authentication(AuthRequest, Result<crate::api::Authentication, ApiError>),
     Expiry(u64),
     Revocation(u64, Result<(), ApiError>),
     Saved(SavedUpdate),
 }
 
 pub(crate) struct SessionCoordinator {
-    state: AppSession,
+    state: SessionState,
     api: HttpTransport,
     execution: Execution,
     updates: async_channel::Receiver<SessionUpdate>,
@@ -53,7 +49,7 @@ impl SessionCoordinator {
         persistence: Option<Persistence>,
     ) -> Self {
         let (deliver, updates) = async_channel::unbounded();
-        let mut state = AppSession::new();
+        let mut state = SessionState::new();
         state.change_server(
             config
                 .server
@@ -115,27 +111,29 @@ impl SessionCoordinator {
         self.lifecycle.take()
     }
 
-    pub fn submit(&mut self, username: String, password: String, signup: bool) {
-        let request = if signup {
-            self.state.submit_signup(&username, &password)
-        } else {
-            self.state.submit(&username, &password)
+    pub fn submit(&mut self, username: String, password: String, mode: AuthMode) {
+        let request = match mode {
+            AuthMode::Login => self.state.submit(&username, &password),
+            AuthMode::Signup => self.state.submit_signup(&username, &password),
         };
         let Some(request) = request else {
             return;
         };
-        let server = self.api.server(&request.server);
+        let call = self.api.server(&request.server).map(|server| {
+            let call = match mode {
+                AuthMode::Login => server.login(username, password),
+                AuthMode::Signup => server.signup(username, password),
+            };
+            self.execution.deadline(REQUEST_DEADLINE, call)
+        });
         let deliver = self.deliver.clone();
         self.execution.spawn(async move {
-            let result = match server {
-                Ok(server) if signup => server.signup(username, password).await,
-                Ok(server) => server.login(username, password).await,
+            let result = match call {
+                Ok(call) => call.await.unwrap_or(Err(ApiError::Unavailable)),
                 Err(error) => Err(error),
             };
             let _ = deliver
-                .send(SessionUpdate(Update::Authentication(
-                    request, result, signup,
-                )))
+                .send(SessionUpdate(Update::Authentication(request, result)))
                 .await;
         });
     }
@@ -143,14 +141,12 @@ impl SessionCoordinator {
     pub fn apply(&mut self, update: SessionUpdate) {
         match update.0 {
             Update::Saved(update) => self.apply_saved(update),
-            Update::Authentication(request, result, signup) => {
-                let accepted = if signup {
-                    self.state
-                        .complete_signup(request, result, self.execution.unix_seconds())
-                } else {
-                    self.state
-                        .complete_login(request, result, self.execution.unix_seconds())
-                };
+            Update::Authentication(request, result) => {
+                let accepted = self.state.complete_authentication(
+                    request,
+                    result,
+                    self.execution.unix_seconds(),
+                );
                 if accepted && self.active().is_some() {
                     self.activated(true);
                 }
@@ -234,8 +230,11 @@ impl SessionCoordinator {
         self.invalidated();
         if let Some(revocation) = revocation {
             let deliver = self.deliver.clone();
+            let call = self
+                .execution
+                .deadline(REQUEST_DEADLINE, revocation.client.logout());
             self.execution.spawn(async move {
-                let result = revocation.client.logout().await;
+                let result = call.await.unwrap_or(Err(ApiError::Unavailable));
                 let _ = deliver
                     .send(SessionUpdate(Update::Revocation(
                         revocation.generation,
@@ -273,8 +272,8 @@ impl Drop for SessionCoordinator {
 }
 
 use crate::api::ApiError;
-use state::{AppSession, LoginRequest, RestoreDecision, RestoreResult};
-pub(crate) use state::{DEFAULT_SERVER_URL, Session};
+pub(crate) use state::{AuthMode, DEFAULT_SERVER_URL, Session};
+use state::{AuthRequest, RestoreDecision, RestoreResult, SessionState};
 
 impl Session {
     /// Credential material goes directly from the accepted context to the ordered worker.
@@ -302,7 +301,7 @@ impl SessionCoordinator {
         };
         match client.current_user().await {
             Ok(user) => RestoreResult::Verified { user, client },
-            Err(ApiError::AlreadyInvalid) => RestoreResult::Rejected,
+            Err(ApiError::SessionRejected) => RestoreResult::Rejected,
             _ => RestoreResult::Unavailable,
         }
     }

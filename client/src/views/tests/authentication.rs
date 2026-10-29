@@ -59,7 +59,7 @@ impl RequestAdapter for SignupReject {
             body["username"].as_str().unwrap().into(),
             body["password"].as_str().unwrap().into(),
         ));
-        let error = self.error.clone();
+        let error = self.error;
         Box::pin(async move {
             match error {
                 ApiError::Conflict => Ok(Response::controlled(

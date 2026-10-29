@@ -1,53 +1,13 @@
+use super::response::{BAD_REQUEST, CONFLICT, Coded, expect, expect_json};
 use super::{ApiError, ApiFuture, AuthenticatedClient, Authentication, ServerClient, User};
-use super::{client::Response, error::ErrorResponse};
 use hamlet_protocol::{AuthResponse, Credentials};
-use reqwest::StatusCode;
+use reqwest::{Method, StatusCode};
 
-pub(super) async fn protected_response<T: serde::de::DeserializeOwned>(
-    response: Response,
-) -> Result<T, ApiError> {
-    match response.status() {
-        StatusCode::OK => response.json().await.map_err(|_| ApiError::InvalidResponse),
-        StatusCode::UNAUTHORIZED => Err(ApiError::AlreadyInvalid),
-        StatusCode::BAD_REQUEST => Err(ApiError::InvalidInput),
-        StatusCode::NOT_FOUND => Err(ApiError::NotFound),
-        StatusCode::INTERNAL_SERVER_ERROR => Err(ApiError::ServerFailure),
-        _ => Err(ApiError::Unavailable),
-    }
-}
-
-async fn decode_auth(response: Response, success: StatusCode) -> Result<AuthResponse, ApiError> {
-    if response.status() == success {
-        let wire: AuthResponse = response
-            .json()
-            .await
-            .map_err(|_| ApiError::InvalidResponse)?;
-        if wire.access_token.is_empty() || wire.user.id.is_empty() || wire.user.username.is_empty()
-        {
-            return Err(ApiError::InvalidResponse);
-        }
-        return Ok(wire);
-    }
-    let status = response.status();
-    if status == StatusCode::UNAUTHORIZED
-        || status == StatusCode::BAD_REQUEST
-        || status == StatusCode::CONFLICT
-    {
-        let body: ErrorResponse = response
-            .json()
-            .await
-            .map_err(|_| ApiError::InvalidResponse)?;
-        return match (status, body.error.code.as_str()) {
-            (StatusCode::UNAUTHORIZED, "unauthorized") => Err(ApiError::InvalidCredentials),
-            (StatusCode::BAD_REQUEST, "bad_request") => Err(ApiError::InvalidInput),
-            (StatusCode::CONFLICT, "conflict") if success == StatusCode::CREATED => {
-                Err(ApiError::Conflict)
-            }
-            _ => Err(ApiError::InvalidResponse),
-        };
-    }
-    Err(ApiError::Unavailable)
-}
+const INVALID_CREDENTIALS: Coded = (
+    StatusCode::UNAUTHORIZED,
+    "unauthorized",
+    ApiError::InvalidCredentials,
+);
 
 impl ServerClient {
     pub fn login(
@@ -55,7 +15,12 @@ impl ServerClient {
         username: String,
         password: String,
     ) -> ApiFuture<Result<Authentication, ApiError>> {
-        self.authenticate("api/v1/auth/login", StatusCode::OK, username, password)
+        self.authenticate(
+            &["api", "v1", "auth", "login"],
+            StatusCode::OK,
+            &[INVALID_CREDENTIALS, BAD_REQUEST],
+            Credentials { username, password },
+        )
     }
 
     pub fn signup(
@@ -64,29 +29,32 @@ impl ServerClient {
         password: String,
     ) -> ApiFuture<Result<Authentication, ApiError>> {
         self.authenticate(
-            "api/v1/auth/signup",
+            &["api", "v1", "auth", "signup"],
             StatusCode::CREATED,
-            username,
-            password,
+            &[INVALID_CREDENTIALS, BAD_REQUEST, CONFLICT],
+            Credentials { username, password },
         )
     }
 
     fn authenticate(
         &self,
-        path: &str,
+        path: &[&str],
         success: StatusCode,
-        username: String,
-        password: String,
+        coded: &'static [Coded],
+        credentials: Credentials,
     ) -> ApiFuture<Result<Authentication, ApiError>> {
         let server = self.clone();
-        let request = self
-            .0
-            .transport
-            .client
-            .post(self.endpoint(path))
-            .json(&Credentials { username, password });
+        let url = self.endpoint(path);
         Box::pin(async move {
-            let wire = decode_auth(server.0.transport.send(request).await?, success).await?;
+            let request = server.transport().client.post(url?).json(&credentials);
+            let response = server.transport().send(request).await?;
+            let wire: AuthResponse = expect_json(response, success, coded).await?;
+            if wire.access_token.is_empty()
+                || wire.user.id.is_empty()
+                || wire.user.username.is_empty()
+            {
+                return Err(ApiError::InvalidResponse);
+            }
             Ok(Authentication {
                 client: server.restore_candidate(wire.access_token)?,
                 user: wire.user,
@@ -100,10 +68,8 @@ impl AuthenticatedClient {
     pub fn current_user(&self) -> ApiFuture<Result<User, ApiError>> {
         let client = self.clone();
         Box::pin(async move {
-            let request =
-                client.request(reqwest::Method::GET, client.0.server.endpoint("api/v1/me"));
-            let wire: User =
-                protected_response(client.0.server.0.transport.send(request).await?).await?;
+            let request = client.request(Method::GET, &["api", "v1", "me"])?;
+            let wire: User = expect_json(client.send(request).await?, StatusCode::OK, &[]).await?;
             if wire.id.is_empty() || wire.username.is_empty() {
                 return Err(ApiError::InvalidResponse);
             }
@@ -114,15 +80,9 @@ impl AuthenticatedClient {
     pub fn logout(&self) -> ApiFuture<Result<(), ApiError>> {
         let client = self.clone();
         Box::pin(async move {
-            let request = client.request(
-                reqwest::Method::POST,
-                client.0.server.endpoint("api/v1/auth/logout"),
-            );
-            match client.0.server.0.transport.send(request).await?.status() {
-                StatusCode::NO_CONTENT => Ok(()),
-                StatusCode::UNAUTHORIZED => Err(ApiError::AlreadyInvalid),
-                _ => Err(ApiError::Unavailable),
-            }
+            let request = client.request(Method::POST, &["api", "v1", "auth", "logout"])?;
+            expect(client.send(request).await?, StatusCode::NO_CONTENT, &[]).await?;
+            Ok(())
         })
     }
 }

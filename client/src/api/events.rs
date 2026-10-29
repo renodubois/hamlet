@@ -131,11 +131,8 @@ impl StreamResponse {
                 ..
             } => (*status, content_type.as_str()),
         };
-        match status {
-            StatusCode::UNAUTHORIZED => return Err(ApiError::AlreadyInvalid),
-            StatusCode::INTERNAL_SERVER_ERROR => return Err(ApiError::ServerFailure),
-            StatusCode::OK => {}
-            _ => return Err(ApiError::Unavailable),
+        if status != StatusCode::OK {
+            return Err(super::response::status_error(status));
         }
         if !content_type
             .split(';')
@@ -167,11 +164,15 @@ async fn consume(
     clock: Execution,
     ready_deadline: Instant,
 ) -> Result<(), StreamError> {
-    let transport = &client.0.server.0.transport;
+    let transport = client.server().transport();
+    let url = client
+        .server()
+        .endpoint(&["api", "v1", "events"])
+        .map_err(StreamError::Api)?;
     let request = transport
         .stream_client
-        .get(client.0.server.endpoint("api/v1/events"))
-        .bearer_auth(&client.0.token)
+        .get(url)
+        .bearer_auth(client.token())
         .header("accept", "text/event-stream")
         .build()
         .map_err(|_| StreamError::Api(ApiError::Unavailable))?;

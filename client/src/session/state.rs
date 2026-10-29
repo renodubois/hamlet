@@ -6,9 +6,16 @@ use crate::api::{AuthenticatedClient, Authentication};
 
 pub const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8081";
 
-pub struct LoginRequest {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthMode {
+    Login,
+    Signup,
+}
+
+pub struct AuthRequest {
     pub generation: u64,
     pub server: String,
+    pub mode: AuthMode,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -47,7 +54,7 @@ impl Session {
     }
 }
 
-pub struct AppSession {
+pub struct SessionState {
     pub server: String,
     pub pending: bool,
     restore_pending: bool,
@@ -56,7 +63,7 @@ pub struct AppSession {
     generation: u64,
 }
 
-impl AppSession {
+impl SessionState {
     fn active_client(&self) -> Option<AuthenticatedClient> {
         self.active.as_ref().map(Session::client)
     }
@@ -83,7 +90,7 @@ impl AppSession {
         }
     }
 
-    pub fn submit(&mut self, username: &str, password: &str) -> Option<LoginRequest> {
+    pub fn submit(&mut self, username: &str, password: &str) -> Option<AuthRequest> {
         if !self.validate_submission() {
             return None;
         }
@@ -91,10 +98,10 @@ impl AppSession {
             self.feedback = Some("Enter a username and password.".into());
             return None;
         }
-        Some(self.begin_submission())
+        Some(self.begin_submission(AuthMode::Login))
     }
 
-    pub fn submit_signup(&mut self, username: &str, password: &str) -> Option<LoginRequest> {
+    pub fn submit_signup(&mut self, username: &str, password: &str) -> Option<AuthRequest> {
         if !self.validate_submission() {
             return None;
         }
@@ -112,7 +119,7 @@ impl AppSession {
             self.feedback = Some("Password must be 8–256 bytes long.".into());
             return None;
         }
-        Some(self.begin_submission())
+        Some(self.begin_submission(AuthMode::Signup))
     }
 
     fn validate_submission(&mut self) -> bool {
@@ -127,14 +134,15 @@ impl AppSession {
         true
     }
 
-    fn begin_submission(&mut self) -> LoginRequest {
+    fn begin_submission(&mut self, mode: AuthMode) -> AuthRequest {
         self.generation = self.generation.wrapping_add(1);
         self.pending = true;
         self.restore_pending = false;
         self.feedback = None;
-        LoginRequest {
+        AuthRequest {
             generation: self.generation,
             server: self.server.clone(),
+            mode,
         }
     }
 
@@ -211,34 +219,17 @@ impl AppSession {
         self.feedback = None;
     }
 
-    pub fn complete_signup(
+    /// Applies a login or signup result; returns whether it belonged to the pending request.
+    pub fn complete_authentication(
         &mut self,
-        request: LoginRequest,
+        request: AuthRequest,
         result: Result<Authentication, ApiError>,
         now: i64,
-    ) -> bool {
-        self.complete_auth(request, result, now, true)
-    }
-
-    pub fn complete_login(
-        &mut self,
-        request: LoginRequest,
-        result: Result<Authentication, ApiError>,
-        now: i64,
-    ) -> bool {
-        self.complete_auth(request, result, now, false)
-    }
-
-    fn complete_auth(
-        &mut self,
-        request: LoginRequest,
-        result: Result<Authentication, ApiError>,
-        now: i64,
-        signup: bool,
     ) -> bool {
         if request.generation != self.generation || request.server != self.server || !self.pending {
             return false;
         }
+        let signup = request.mode == AuthMode::Signup;
         self.pending = false;
         self.restore_pending = false;
         match result {
@@ -275,11 +266,14 @@ impl AppSession {
                     "Could not reach the server. Check the address and try again."
                 }.into())
             }
-            Err(ApiError::AlreadyInvalid) => {
+            Err(ApiError::SessionRejected) => {
                 self.feedback =
                     Some("The server rejected this session. Please log in again.".into())
             }
-            Err(ApiError::NotFound | ApiError::Forbidden | ApiError::ServerFailure) => {
+            Err(ApiError::InvalidRequest) => {
+                self.feedback = Some("The server address is invalid. Use https://, or http:// for a loopback address.".into())
+            }
+            Err(ApiError::NotFound | ApiError::Forbidden | ApiError::ServerFailure | ApiError::UnexpectedStatus) => {
                 self.feedback = Some(if signup { "The server could not confirm signup; it may have succeeded. Check before retrying." } else { "The server could not complete login." }.into())
             }
         }
@@ -303,7 +297,7 @@ impl AppSession {
         if generation == self.generation && self.active.is_none() {
             self.feedback = match result {
                 Ok(()) => None,
-                Err(ApiError::AlreadyInvalid) => Some("Logged out locally; the server reported the token was already invalid (401). No new revocation was confirmed.".into()),
+                Err(ApiError::SessionRejected) => Some("Logged out locally; the server reported the token was already invalid (401). No new revocation was confirmed.".into()),
                 Err(_) => Some("Logged out locally; server revocation could not be confirmed. Your session may remain valid until it expires.".into()),
             };
         }

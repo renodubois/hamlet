@@ -177,7 +177,7 @@ fn retained_hidden_composer_observes_invalidation_and_cannot_restore_drafts(
     });
     assert_eq!(activity.read().draft("1"), "");
     assert_eq!(activity.read().draft("2"), "");
-    assert!(late.try_send(Err(ApiError::AlreadyInvalid)).is_err());
+    assert!(late.try_send(Err(ApiError::SessionRejected)).is_err());
     assert!(api.0.lock().unwrap().is_empty());
 }
 
@@ -286,7 +286,7 @@ fn composer_recreation_observes_originating_pending_confirmation_and_timeout(
         );
         assert_eq!(text(window, cx), "uncertain draft");
     });
-    assert!(late.try_send(Err(ApiError::AlreadyInvalid)).is_err());
+    assert!(late.try_send(Err(ApiError::SessionRejected)).is_err());
     assert!(
         api.0.lock().unwrap().is_empty(),
         "recreation and timeout never replay writes"

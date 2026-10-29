@@ -72,7 +72,7 @@ async fn send_message_uses_real_server_validation_and_decodes_created_identity()
             .unwrap()
             .send_message(channel, "hi".into())
             .await,
-        Err(ApiError::AlreadyInvalid)
+        Err(ApiError::SessionRejected)
     ));
     handle.stop(true).await;
 }
@@ -202,7 +202,7 @@ async fn current_user_requires_bearer_and_rejects_redirect_or_malformed_identity
             .unwrap()
             .current_user()
             .await,
-        Err(ApiError::AlreadyInvalid)
+        Err(ApiError::SessionRejected)
     ));
     captured.join().unwrap();
     let (url, captured) = server(response("200 OK", r#"{"id":"","username":"Ada"}"#));
@@ -232,7 +232,7 @@ async fn current_user_requires_bearer_and_rejects_redirect_or_malformed_identity
             .unwrap()
             .current_user()
             .await,
-        Err(ApiError::Unavailable)
+        Err(ApiError::UnexpectedStatus)
     ));
     captured.join().unwrap();
     assert!(destination.accept().is_err());
@@ -301,12 +301,12 @@ async fn current_user_against_server_routes_before_and_after_revocation() {
             .unwrap()
             .current_user()
             .await,
-        Err(ApiError::AlreadyInvalid)
+        Err(ApiError::SessionRejected)
     ));
     login.client.logout().await.unwrap();
     assert!(matches!(
         login.client.current_user().await,
-        Err(ApiError::AlreadyInvalid)
+        Err(ApiError::SessionRejected)
     ));
     handle.stop(true).await;
 }
@@ -323,7 +323,7 @@ async fn unexpected_conflict_on_login_is_not_a_signup_error() {
             .unwrap()
             .login("ada".into(), "pass".into())
             .await,
-        Err(ApiError::InvalidResponse)
+        Err(ApiError::UnexpectedStatus)
     ));
     captured.join().unwrap();
 }
@@ -362,7 +362,7 @@ async fn logout_sends_bearer_and_redirects_are_not_followed() {
             .unwrap()
             .logout()
             .await,
-        Err(ApiError::Unavailable)
+        Err(ApiError::UnexpectedStatus)
     ));
     captured.join().unwrap();
     assert!(
@@ -385,7 +385,7 @@ async fn rejects_login_redirect_without_contacting_destination() {
             .unwrap()
             .login("ada".into(), "pass".into())
             .await,
-        Err(ApiError::Unavailable)
+        Err(ApiError::UnexpectedStatus)
     ));
     captured.join().unwrap();
     assert!(
@@ -508,14 +508,14 @@ async fn server_routes_signup_login_logout_and_errors() {
             .unwrap()
             .channels()
             .await,
-        Err(ApiError::AlreadyInvalid)
+        Err(ApiError::SessionRejected)
     ));
     assert!(matches!(
         auth.restore_candidate("bad".into())
             .unwrap()
             .history_page(channel_id.into(), None)
             .await,
-        Err(ApiError::AlreadyInvalid)
+        Err(ApiError::SessionRejected)
     ));
     let empty = login
         .client
@@ -557,7 +557,7 @@ async fn server_routes_signup_login_logout_and_errors() {
     ));
     assert!(matches!(
         login.client.history_page("../bad".into(), None).await,
-        Err(ApiError::InvalidResponse)
+        Err(ApiError::InvalidRequest)
     ));
     assert!(matches!(
         auth.login("Alice".into(), "bad password".into()).await,
@@ -578,7 +578,7 @@ async fn server_routes_signup_login_logout_and_errors() {
     assert_eq!(error["error"]["code"], "bad_request");
     assert!(matches!(
         HttpTransport::new().server("http://example.com"),
-        Err(ApiError::InvalidResponse)
+        Err(ApiError::InvalidRequest)
     ));
 
     // The second token stays live; this distinguishes a protected bearer logout from a
@@ -613,7 +613,7 @@ async fn server_routes_signup_login_logout_and_errors() {
             .unwrap()
             .logout()
             .await,
-        Err(ApiError::AlreadyInvalid)
+        Err(ApiError::SessionRejected)
     ));
     server_handle.stop(true).await;
 }
@@ -716,7 +716,7 @@ async fn create_channel_against_server_routes() {
             .unwrap()
             .create_channel("Other".into())
             .await,
-        Err(ApiError::AlreadyInvalid)
+        Err(ApiError::SessionRejected)
     ));
     handle.stop(true).await;
 }
@@ -793,14 +793,14 @@ async fn signup_redirect_does_not_forward_password() {
             .unwrap()
             .signup("Alice".into(), "long password".into())
             .await,
-        Err(ApiError::Unavailable)
+        Err(ApiError::UnexpectedStatus)
     ));
     let request = captured.join().unwrap();
     assert!(request.starts_with("POST /api/v1/auth/signup "));
     assert!(destination.accept().is_err());
     assert!(matches!(
         HttpTransport::new().server("http://example.com"),
-        Err(ApiError::InvalidResponse)
+        Err(ApiError::InvalidRequest)
     ));
     let (url, captured) = server(response(
         "200 OK",
@@ -812,7 +812,7 @@ async fn signup_redirect_does_not_forward_password() {
             .unwrap()
             .signup("Alice".into(), "long password".into())
             .await,
-        Err(ApiError::Unavailable)
+        Err(ApiError::UnexpectedStatus)
     ));
     captured.join().unwrap();
 }

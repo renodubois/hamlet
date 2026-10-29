@@ -1,5 +1,5 @@
 //! Channel row presentation, context menus, and their rename/delete dialogs.
-use super::SidebarView;
+use super::{OpenDialog, SidebarView};
 use crate::{api::Channel, theme};
 use gpui_kit::base::{Disableable, input::InputState};
 use gpui_kit::component::{
@@ -118,23 +118,20 @@ impl SidebarView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.dialog_open {
+        if self.open_dialog.is_some() {
             return;
         }
-        if self.chat.read().rename_pending || self.chat.read().delete_pending {
+        if self.chat.read().rename.pending || self.chat.read().channel_delete.pending {
             return;
         }
         self.chat.reset_rename_feedback();
-        self.chat.reset_delete_feedback();
-        self.delete_revision = match &action {
-            ChannelDialog::Delete(_) => Some(self.chat.read().delete_confirmed),
-            _ => None,
-        };
-        self.rename_revision = match &action {
-            ChannelDialog::Rename(..) => Some(self.chat.read().rename_confirmed),
-            ChannelDialog::Delete(_) => None,
-        };
-        self.dialog_open = true;
+        self.chat.reset_channel_delete_feedback();
+        self.open_dialog = Some(match &action {
+            ChannelDialog::Rename(..) => OpenDialog::Rename(self.chat.read().rename.revision),
+            ChannelDialog::Delete(_) => {
+                OpenDialog::Delete(self.chat.read().channel_delete.revision)
+            }
+        });
         // This input belongs only to the dialog; closing it discards the edit.
         let input = match &action {
             ChannelDialog::Rename(_, name) => Some(cx.new(|cx| {
@@ -152,14 +149,14 @@ impl SidebarView {
             };
             let chat = sidebar.read(cx).chat.read();
             let pending = match action {
-                ChannelDialog::Rename(..) => chat.rename_pending,
-                ChannelDialog::Delete(_) => chat.delete_pending,
+                ChannelDialog::Rename(..) => chat.rename.pending,
+                ChannelDialog::Delete(_) => chat.channel_delete.pending,
             };
             let deleting = matches!(action, ChannelDialog::Delete(_));
             let feedback = if matches!(action, ChannelDialog::Rename(..)) {
-                chat.rename_feedback.clone()
+                chat.rename.feedback.clone()
             } else {
-                chat.delete_feedback.clone()
+                chat.channel_delete.feedback.clone()
             };
             let target = match &action {
                 ChannelDialog::Rename(id, _) => Some(id.clone()),
@@ -271,9 +268,7 @@ impl SidebarView {
                                         if pending {
                                             return;
                                         }
-                                        view.dialog_open = false;
-                                        view.rename_revision = None;
-                                        view.delete_revision = None;
+                                        view.open_dialog = None;
                                         cx.notify();
                                     });
                                     if !pending {
@@ -317,9 +312,7 @@ impl SidebarView {
                 )
                 .on_close(move |_, _, cx| {
                     let _ = closed.update(cx, |view, cx| {
-                        view.dialog_open = false;
-                        view.rename_revision = None;
-                        view.delete_revision = None;
+                        view.open_dialog = None;
                         cx.notify();
                     });
                 })

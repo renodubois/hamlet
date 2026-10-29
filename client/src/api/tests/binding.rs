@@ -1,9 +1,9 @@
-#[path = "delete.rs"]
-mod delete;
+#[path = "channel_delete.rs"]
+mod channel_delete;
+#[path = "channel_rename.rs"]
+mod channel_rename;
 #[path = "message_delete.rs"]
 mod message_delete;
-#[path = "rename.rs"]
-mod rename;
 use super::http_support::{response, server};
 use super::test_support::{RequestAdapter, Response};
 use super::*;
@@ -386,23 +386,33 @@ async fn controlled_adapter_cannot_bypass_binding_validation_or_invent_missing_o
     ] {
         assert!(matches!(
             transport.server(origin),
-            Err(ApiError::InvalidResponse)
+            Err(ApiError::InvalidRequest)
         ));
     }
     let server = transport.server("https://example.com").unwrap();
     assert!(matches!(
         server.restore_candidate(String::new()),
-        Err(ApiError::InvalidResponse)
+        Err(ApiError::InvalidRequest)
     ));
     let candidate = server.restore_candidate("synthetic-stored".into()).unwrap();
     for channel in ["", "..", ".", "../steal", "a/b", "a\\b"] {
         assert!(matches!(
             candidate.history_page(channel.into(), None).await,
-            Err(ApiError::InvalidResponse)
+            Err(ApiError::InvalidRequest)
         ));
         assert!(matches!(
             candidate.send_message(channel.into(), "text".into()).await,
-            Err(ApiError::InvalidResponse)
+            Err(ApiError::InvalidRequest)
+        ));
+        assert!(matches!(
+            candidate
+                .rename_channel(channel.into(), "name".into())
+                .await,
+            Err(ApiError::InvalidRequest)
+        ));
+        assert!(matches!(
+            candidate.delete_channel(channel.into()).await,
+            Err(ApiError::InvalidRequest)
         ));
     }
     assert!(adapter.requests.lock().unwrap().is_empty());

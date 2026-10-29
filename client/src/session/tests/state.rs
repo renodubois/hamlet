@@ -1,7 +1,7 @@
 use super::*;
 use crate::api::HttpTransport;
-fn app() -> AppSession {
-    AppSession::new()
+fn app() -> SessionState {
+    SessionState::new()
 }
 fn login(name: &str) -> Authentication {
     Authentication {
@@ -23,13 +23,13 @@ fn login_feedback_and_recoverable_inputs() {
     assert!(app.submit("", "").is_none());
     let request = app.submit("alice", "wrong").unwrap();
     assert!(app.submit("alice", "wrong").is_none());
-    app.complete_login(request, Err(ApiError::InvalidCredentials), 0);
+    app.complete_authentication(request, Err(ApiError::InvalidCredentials), 0);
     assert_eq!(
         app.feedback.as_deref(),
         Some("Incorrect username or password.")
     );
     let request = app.submit("alice", "corrected").unwrap();
-    app.complete_login(request, Ok(login("alice")), 0);
+    app.complete_authentication(request, Ok(login("alice")), 0);
     assert_eq!(app.active.as_ref().unwrap().user.username, "alice");
 }
 #[test]
@@ -39,10 +39,10 @@ fn signup_enters_session_and_preserves_inputs_on_rejection() {
     assert!(app.feedback.as_deref().unwrap().contains("3–32"));
     let request = app.submit_signup("Alice_1", "long password").unwrap();
     assert!(app.submit_signup("Alice_1", "long password").is_none());
-    assert!(app.complete_signup(request, Err(ApiError::Conflict), 0));
+    assert!(app.complete_authentication(request, Err(ApiError::Conflict), 0));
     assert!(app.feedback.as_deref().unwrap().contains("already exists"));
     let request = app.submit_signup("Alice_1", "long password").unwrap();
-    assert!(app.complete_signup(request, Err(ApiError::Unavailable), 0));
+    assert!(app.complete_authentication(request, Err(ApiError::Unavailable), 0));
     assert!(
         app.feedback
             .as_deref()
@@ -50,7 +50,7 @@ fn signup_enters_session_and_preserves_inputs_on_rejection() {
             .contains("may have succeeded")
     );
     let request = app.submit_signup("Alice_1", "long password").unwrap();
-    assert!(app.complete_signup(request, Ok(login("Alice_1")), 0));
+    assert!(app.complete_authentication(request, Ok(login("Alice_1")), 0));
     assert_eq!(app.active.as_ref().unwrap().user.username, "Alice_1");
 }
 #[test]
@@ -59,8 +59,8 @@ fn stale_signup_cannot_replace_new_session_or_feedback() {
     let old = app.submit_signup("Alice", "password").unwrap();
     app.cancel_pending();
     let newer = app.submit("Alice", "password").unwrap();
-    app.complete_login(newer, Ok(login("new")), 0);
-    assert!(!app.complete_signup(old, Err(ApiError::Conflict), 0));
+    app.complete_authentication(newer, Ok(login("new")), 0);
+    assert!(!app.complete_authentication(old, Err(ApiError::Conflict), 0));
     assert_eq!(app.active.as_ref().unwrap().user.username, "new");
     assert!(app.feedback.is_none());
 }
@@ -70,9 +70,9 @@ fn stale_outcomes_cannot_replace_or_invalidate_newer_session() {
     let old = app.submit("a", "p").unwrap();
     app.logout();
     let newer = app.submit("a", "p").unwrap();
-    app.complete_login(newer, Ok(login("new")), 0);
+    app.complete_authentication(newer, Ok(login("new")), 0);
     let current = app.session_generation().unwrap();
-    app.complete_login(old, Err(ApiError::InvalidCredentials), 0);
+    app.complete_authentication(old, Err(ApiError::InvalidCredentials), 0);
     app.protected_rejected(current.wrapping_sub(1));
     assert_eq!(app.active.as_ref().unwrap().user.username, "new");
     app.protected_rejected(current);
@@ -83,7 +83,7 @@ fn stale_outcomes_cannot_replace_or_invalidate_newer_session() {
 fn logout_clears_immediately_and_only_current_revocation_warns() {
     let mut app = app();
     let request = app.submit("a", "p").unwrap();
-    app.complete_login(request, Ok(login("a")), 0);
+    app.complete_authentication(request, Ok(login("a")), 0);
     let revocation = app.logout().unwrap();
     assert!(app.active.is_none());
     app.revocation_result(revocation.generation, Err(ApiError::Unavailable));
@@ -93,7 +93,7 @@ fn logout_clears_immediately_and_only_current_revocation_warns() {
             .unwrap()
             .contains("could not be confirmed")
     );
-    app.revocation_result(revocation.generation, Err(ApiError::AlreadyInvalid));
+    app.revocation_result(revocation.generation, Err(ApiError::SessionRejected));
     assert!(
         app.feedback
             .as_deref()
@@ -106,7 +106,7 @@ fn logout_clears_immediately_and_only_current_revocation_warns() {
         app.feedback.is_none(),
         "old revocation cannot alter a newer login"
     );
-    app.complete_login(request, Ok(login("b")), 0);
+    app.complete_authentication(request, Ok(login("b")), 0);
     app.revocation_result(revocation.generation, Err(ApiError::Unavailable));
     assert!(app.feedback.is_none());
     app.expire(100);
@@ -234,7 +234,7 @@ fn changing_servers_invalidates_pending_and_active() {
     let mut app = app();
     let request = app.submit("a", "p").unwrap();
     app.change_server("https://example.org".into());
-    app.complete_login(request, Ok(login("a")), 0);
+    app.complete_authentication(request, Ok(login("a")), 0);
     assert!(app.active.is_none());
     assert!(!app.pending);
 }

@@ -84,7 +84,7 @@ impl MessageHistoryView {
         let invalid = self.message_menu.as_ref().is_some_and(|menu| {
             let state = self.chat.read();
             state.selected.as_deref() != Some(menu.channel.as_str())
-                || !state.history_for_display(&menu.channel).is_some_and(|load| {
+                || !state.history(&menu.channel).is_some_and(|load| {
                     matches!(load, crate::chat::Load::Ready(messages)
                         if messages.iter().any(|message| message.id == menu.id && self.chat.owns_message(message)))
                 })

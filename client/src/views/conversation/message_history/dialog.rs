@@ -23,7 +23,8 @@ impl MessageHistoryView {
         now: &DateTime<Local>,
         chat: &crate::chat::ChatHandle,
         view: WeakEntity<Self>,
-        cx: &App,
+        window: &mut Window,
+        cx: &mut App,
     ) -> AnyElement {
         let own = chat.owns_message(message);
         let channel = message.channel_id.clone();
@@ -40,48 +41,110 @@ impl MessageHistoryView {
         let group = SharedString::from(format!("message-hover-{id}"));
         let ring = cx.theme().ring;
         let tooltip_id = format!("trash-message-tooltip-{id}");
-        // Absolute, row-local geometry keeps the tray inside the list's pane and
-        // inside the row's hover hitbox. Opacity keeps its keyboard tab stop
-        // available even before hover; focus reveals the same real control.
+        // Keyed presentation state detects focus entry, not application behavior.
+        let focus_state =
+            window.use_keyed_state(format!("message-tray-focus-{id}"), cx, |_, cx| {
+                (cx.focus_handle(), false)
+            });
+        let tray_focus = focus_state.read(cx).0.clone();
+        let reveal_view = view.clone();
+        let reveal_channel = channel.clone();
+        let reveal_id = id.clone();
+        let mut tray = gpui_kit::base::Button::new(format!("trash-message-{id}"))
+            .track_focus(&tray_focus)
+            .accessibility_label("Delete Message")
+            .size_8()
+            .rounded_md()
+            .bg(cx.theme().popover)
+            .text_color(cx.theme().danger)
+            .opacity(0.)
+            .group_hover(group.clone(), |style| style.opacity(1.))
+            .focus(|style| style.opacity(1.))
+            .focus_visible(|style| style.border_2().border_color(ring))
+            .tooltip(move |window, cx| {
+                let id = tooltip_id.clone();
+                Tooltip::element(move |_, _| {
+                    div()
+                        .id(id.clone())
+                        .aria_label("Delete Message")
+                        .test_support()
+                        .child("Delete Message")
+                })
+                .build(window, cx)
+            })
+            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                window.prevent_default();
+                gpui_kit::base::GlobalState::suppress_text_selection(cx);
+                cx.stop_propagation();
+            })
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                let _ = tray_view.update(cx, |view, cx| {
+                    view.open_message_dialog(&tray_channel, &tray_id, window, cx)
+                });
+            })
+            .child(Icon::new(gpui_kit::assets::IconName::Trash).size_4())
+            .into_any_element();
+        // Clamp into both the current pane and owner row when space permits.
+        // If their intersection is smaller than the control, owner bounds win:
+        // top slivers clip at the pane's top, bottom slivers at its bottom. Mask
+        // painting AND hitboxes to the row so even an opacity-zero fragment can
+        // never intercept another message. Hover never scrolls or changes layout.
+        // Focus entry reveals the row only when vertical clipping prevents a full
+        // tray and the pane/row can fit it. A pane smaller than 32px stays clipped.
         row.relative()
-            .group(group.clone())
+            .group(group)
             .child(
-                gpui_kit::base::Button::new(format!("trash-message-{id}"))
-                    .accessibility_label("Delete Message")
-                    .absolute()
-                    .top_0()
-                    .right_2()
-                    .size_8()
-                    .rounded_md()
-                    .bg(cx.theme().popover)
-                    .text_color(cx.theme().danger)
-                    .opacity(0.)
-                    .group_hover(group, |style| style.opacity(1.))
-                    .focus(|style| style.opacity(1.))
-                    .focus_visible(|style| style.border_2().border_color(ring))
-                    .tooltip(move |window, cx| {
-                        let id = tooltip_id.clone();
-                        Tooltip::element(move |_, _| {
-                            div()
-                                .id(id.clone())
-                                .aria_label("Delete Message")
-                                .test_support()
-                                .child("Delete Message")
-                        })
-                        .build(window, cx)
-                    })
-                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                        window.prevent_default();
-                        gpui_kit::base::GlobalState::suppress_text_selection(cx);
-                        cx.stop_propagation();
-                    })
-                    .on_click(move |_, window, cx| {
-                        cx.stop_propagation();
-                        let _ = tray_view.update(cx, |view, cx| {
-                            view.open_message_dialog(&tray_channel, &tray_id, window, cx)
+                canvas(
+                    move |bounds, window, cx| {
+                        let pane = window.content_mask().bounds;
+                        let size = tray.layout_as_root(AvailableSpace::min_size(), window, cx);
+                        let visible = bounds.intersect(&pane);
+                        let entered_focus = focus_state.update(cx, |state, _| {
+                            let focused = tray_focus.is_focused(window);
+                            let entered = focused && !state.1;
+                            state.1 = focused;
+                            entered
                         });
-                    })
-                    .child(Icon::new(gpui_kit::assets::IconName::Trash).size_4()),
+                        if entered_focus
+                            && visible.size.height < size.height
+                            && bounds.size.height >= size.height
+                            && pane.size.height >= size.height
+                        {
+                            let view = reveal_view.clone();
+                            let channel = reveal_channel.clone();
+                            let id = reveal_id.clone();
+                            // ListState is borrowed during this prepaint; reveal
+                            // after the frame, using current stable-ID indices.
+                            cx.defer(move |cx| {
+                                let _ = view.update(cx, |view, cx| {
+                                    view.reveal_message_tray(&channel, &id, cx);
+                                });
+                            });
+                        }
+                        let top = bounds
+                            .top()
+                            .max(pane.top())
+                            .min((pane.bottom() - size.height).max(pane.top()))
+                            .min((bounds.bottom() - size.height).max(bounds.top()))
+                            .max(bounds.top());
+                        let left = (bounds.right() - px(8.) - size.width)
+                            .max(pane.left())
+                            .min((pane.right() - size.width).max(pane.left()))
+                            .min((bounds.right() - size.width).max(bounds.left()))
+                            .max(bounds.left());
+                        let mask = ContentMask { bounds };
+                        window.with_content_mask(Some(mask), |window| {
+                            tray.prepaint_at(point(left, top), window, cx);
+                        });
+                        (tray, mask)
+                    },
+                    |_, (mut tray, mask), window, cx| {
+                        window.with_content_mask(Some(mask), |window| tray.paint(window, cx));
+                    },
+                )
+                .absolute()
+                .inset_0(),
             )
             .on_mouse_down(MouseButton::Right, move |event, window, cx| {
                 window.prevent_default();

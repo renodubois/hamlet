@@ -74,7 +74,7 @@ fn signup_uses_shared_persistent_session_and_verified_restore_against_server_rou
         },
         Some(store),
     );
-    session.submit("Alice".into(), "long password".into(), true);
+    session.submit("Alice".into(), "long password".into(), AuthMode::Signup);
     await_session(cx, &mut session, |session| {
         session.active().is_some()
             && session.storage_feedback().as_deref()
@@ -116,7 +116,7 @@ fn signup_uses_shared_persistent_session_and_verified_restore_against_server_rou
     assert!(storage::load_at(Some(&path)).saved.is_none());
     assert!(shared.0.lock().unwrap().0.is_empty());
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while runtime().block_on(old_client.current_user()) != Err(ApiError::AlreadyInvalid) {
+    while runtime().block_on(old_client.current_user()) != Err(ApiError::SessionRejected) {
         assert!(
             std::time::Instant::now() < deadline,
             "revocation did not complete"

@@ -31,27 +31,30 @@ client/src/
 │       ├── mod.rs               # Conversation view and layout
 │       ├── channel_header.rs    # Selected channel presentation
 │       ├── message_history.rs   # Scrolling, selection, viewport anchoring
+│       ├── message_history/
+│       │   ├── dialog.rs        # Author actions and shared confirmation presentation
+│       │   ├── menu.rs          # Named single-action destructive menu, position/focus/dismissal
+│       │   └── geometry.rs      # Row-height hints, tail padding, stable-ID list splices
 │       ├── message_row.rs       # Message presentation
-│       ├── message_dialog.rs    # Author actions and shared confirmation presentation
-│       ├── message_menu.rs      # Named single-action destructive menu, position/focus/dismissal
 │       ├── message_timestamp.rs # Display-only timestamp formatting
 │       └── composer.rs          # Textarea and keyboard interaction
 │
 ├── session/                    # Authentication and session lifecycle
 │   ├── mod.rs                  # Coordinates login, logout, expiry, active context
-│   ├── state.rs                # Pure authentication state and transition rules
+│   ├── state.rs                # Pure SessionState, AuthMode/AuthRequest and transitions
 │   └── saved_login.rs          # Credential save/restore/delete workflows
 │
 ├── chat/                  # Chat behavior and in-memory state
-│   ├── mod.rs                  # Coordinates requests and applies their results
-│   ├── state.rs                # Channels, history, drafts, send/reconciliation rules
-│   ├── message_deletion.rs     # Captured confirmation, request identity and outcomes
+│   ├── mod.rs                  # Coordinator: one dispatch path, applies results
+│   ├── state.rs                # ChatState: channels, per-channel Conversations, Operations
+│   ├── message_deletion.rs     # Pure captured-confirmation transitions and outcomes
 │   ├── live_updates.rs         # Pure readiness and fixed reconnect policy
 │   └── delivery.rs             # Bounded executor bridge with terminal priority
 │
 ├── api/                        # Canonical home for server communication
 │   ├── mod.rs                  # Public server-client interface and exports
-│   ├── client.rs               # ServerClient, AuthenticatedClient, shared HTTP transport
+│   ├── client.rs               # ServerClient, AuthenticatedClient, endpoints, transport
+│   ├── response.rs             # Shared status/error-code classification
 │   ├── auth.rs                 # Login, signup, current user, logout requests
 │   ├── channels.rs             # Channel requests
 │   ├── messages.rs             # History and message requests
@@ -76,9 +79,10 @@ A view owns its rendering and local interaction state: GPUI input entities, focu
 - `AppShell` observes session status and creates/removes the appropriate screen. Window activation does not affect live delivery. It displays session/storage feedback, including retries that remain relevant after logout. Its small delivery loops apply opaque session/chat updates; only the coordinators interpret results or decide subsequent requests. Chat recreation does not create a second delivery loop.
 - `LoginView` owns editable server/username/password inputs and login/signup mode. It submits values through the session interface; it does not own authentication, bearer tokens, or secure storage.
 - `views/chat.rs` is a small composition module for the authenticated screen. Sidebar, conversation and account-footer modules are siblings under `views/`, private outside views; conversation and sidebar internals remain private to their owning modules. `ChatView` accepts existing session/chat handles and constructs all three children itself. `AppShell` chooses the screen without constructing its footer or knowing its internal layout. The screen does not implement HTTP dispatch or history merging; stream startup and opaque result delivery remain with the existing shell/coordinators.
-- `SidebarView` owns its creation input and presents scrollable channel state. Selection, ordering, and creation policy belong to chat behavior.
+- `SidebarView` owns its creation input and presents scrollable channel state. Selection, ordering, and creation policy belong to chat behavior. At most one sidebar dialog is open (`OpenDialog`); rename/delete dialogs record their `Operation` revision at opening and close when a confirmed success advances it.
+- Views subscribe to chat invalidations through `views::rerender_on_chat_change` or `views::present_on_chat_change` rather than hand-written notification loops.
 - `SessionFooterView` presents the authenticated username and issues logout intentions to the session coordinator. `ChatView` composes it below the scrollable sidebar; session policy and cleanup remain in `session/`.
-- `MessageHistoryView` owns the GPUI list, anchoring, selection/copy, and jump-to-latest interaction. It requests older data through chat behavior rather than fetching pages itself.
+- `MessageHistoryView` (with private `message_history/{dialog,menu,geometry}.rs` children) owns the GPUI list, anchoring, selection/copy, and jump-to-latest interaction. Explicit bottom-follow intent survives width/height resize. If a removal leaves too little tail to retain a scrolled anchor, bounded presentation-only bottom padding prevents GPUI from backfilling preceding rows; appends consume it and deliberate downward scrolling or Jump to latest retires it. Padding measurements are cached by viewport, presentation revision and anchor, and stop after a viewport-worth of rows. Message trays use owner/pane prepaint geometry with owner-masked painting/hitboxes; focus may reveal clipped controls without creating a second mutation owner. It requests older data through chat behavior rather than fetching pages itself.
 - `ComposerView` owns the textarea and input subscriptions. The chat module owns per-channel drafts, pending sends, and uncertainty. Synchronizing the displayed text must not create an independent authoritative draft store.
 
 The login form's editable password must be cleared on accepted authentication and on server changes, and must not remain in a hidden retained view. This is lifecycle cleanup, not a guarantee of memory zeroization. Form values are supplied at submission; the session model must not maintain a second long-lived editable password copy.
@@ -93,17 +97,21 @@ Saved-login workflows outlive the login view and authenticated chat. A deletion 
 
 ### Chat
 
-The chat module owns loaded channels, selected channel, history, drafts, pending operations, uncertainty, and reconciliation. It belongs to one authenticated session, not to the currently selected channel's view. `ChatHandle` clones share one coordinator; `read()` gives a read-only `ChatState` borrow. This is the signed-in chat, not application-wide authentication/configuration state or a single channel's conversation. Pure transition methods and request identities are visible only inside chat ownership, not exported to views. API data comes directly from `api/`.
+The chat module owns loaded channels, selected channel, history, drafts, pending operations, uncertainty, and reconciliation. `ChatState` keeps everything held for one channel in a `Conversation` (history, older-page status and cursor, draft, in-flight send, send feedback/uncertainty, unloaded HTTP confirmations, observed message deletions), so channel deletion drops it as a unit. Create, rename and channel delete share an `Operation` status (`pending`, `feedback`, `revision`). Every request identity draws from one serial counter that survives `clear()`, so obsolete completions never match newer requests. `Identity` holds the chat's constant originating session generation plus whether it may still start protected work. It belongs to one authenticated session, not to the currently selected channel's view. `ChatHandle` clones share one coordinator; `read()` gives a read-only `ChatState` borrow. This is the signed-in chat, not application-wide authentication/configuration state or a single channel's conversation. Pure transition methods and request identities are visible only inside chat ownership, not exported to views. API data comes directly from `api/`.
 
 Its coordinator starts initial channel/history reads independently of stream readiness and owns one session stream. Creations merge by identity only into loaded channels/history; creations for unloaded data or during a replacing read are ignored, not staged. HTTP confirmations remain operation-aware. Failed stream attempts reconnect after a fixed three seconds without canceling HTTP work, issuing catch-up reads or resetting histories, pages, cursors, drafts, selection or reading position. Read identities belong to the session/request, not a stream attempt. Read failures remain read failures; older pages retain local retry. Uncertainty causes no reads or resends. Live updates are best-effort: disconnected and read-overlap creations may be missed permanently, while future delivery resumes after readiness. There is no replay, polling or manual Refresh path.
 
-Observed message deletions are retained for the chat lifetime, including unloaded targets; they filter late pages, creation events and send-confirmation overlays without changing cursors or initiating reads. `message_deletion.rs` owns the captured author-validated target, pending request identity, HTTP outcomes and deliberate retry feedback. HTTP success and live deletion share the same removal/anti-resurrection transition; target/channel removal and session invalidation close the confirmation. Views retain only dialog/menu presentation, pointer geometry and focus, not a second mutation owner. The single-action message menu uses a styled Kit base button with `MenuItem` role/name because the pinned generic menu's custom-element variant does not name its actionable accessibility node.
+Observed message deletions are retained for the chat lifetime, including unloaded targets; they filter late pages, creation events and send-confirmation overlays without changing cursors or initiating reads. `message_deletion.rs` holds the pure `ChatState` transitions for the captured author-validated target, pending request identity, HTTP outcomes and deliberate retry feedback; like channel operations, the coordinator only dispatches and applies them. HTTP success and live deletion share the same removal/anti-resurrection transition; target/channel removal and session invalidation close the confirmation. Views retain only dialog/menu presentation, pointer geometry and focus, not a second mutation owner. The single-action message menu uses a styled Kit base button with `MenuItem` role/name because the pinned generic menu's custom-element variant does not name its actionable accessibility node.
 
-`state.rs` and `live_updates.rs` stay ordinary Rust. The coordinator can use GPUI notifications without moving rendering into this module. It reports authoritative authentication rejection with the originating session identity; it does not mutate session internals.
+Every protected request goes through the coordinator's `dispatch`, which applies `api::REQUEST_DEADLINE` on the injected clock and delivers an opaque update; a deadline completes as `Unavailable`, never as authoritative rejection.
+
+`state.rs`, `message_deletion.rs` and `live_updates.rs` stay ordinary Rust. The coordinator can use GPUI notifications without moving rendering into this module. It reports authoritative authentication rejection with the originating session identity; it does not mutate session internals.
 
 ### API client
 
-`api/` is the canonical place to understand what communication with a Hamlet server is possible and how it works. Endpoint paths, URL validation, headers, bearer attachment, serialization, decoding, redirect/TLS policy, and transport timeouts live here. No view, session workflow, or chat workflow constructs HTTP requests.
+`api/` is the canonical place to understand what communication with a Hamlet server is possible and how it works. Endpoint paths, URL validation, headers, bearer attachment, serialization, decoding, redirect/TLS policy, transport timeouts and the request deadline (`REQUEST_DEADLINE`) live here.
+
+Endpoints are built from literal path segments (`ServerClient::endpoint`, `AuthenticatedClient::request`); every segment, including identifiers, is validated so it cannot add or traverse path levels. Responses are classified by `response::expect`/`expect_json`: one success status, endpoint-specific coded failures (trusted only when the error body code matches), then shared fallbacks — 401 `SessionRejected`, 404 `NotFound`, 500 `ServerFailure`, anything else (including redirects) `UnexpectedStatus`. Client-side refusals are `InvalidRequest`; malformed responses are `InvalidResponse`; `Unavailable` means no complete response (connection failure or deadline). No view, session workflow, or chat workflow constructs HTTP requests.
 
 The interface has two stages:
 
@@ -132,7 +140,7 @@ Store bearer credentials only in Secret Service; configuration files contain pub
 
 `main.rs` constructs dependencies, initializes GPUI/Kit, creates the window/root, and starts the application. It contains neither workflows nor feature tests.
 
-`runtime.rs` is a small internal home for the existing Tokio-to-GPUI execution bridge and controllable execution/time support. It knows nothing about login, messages, or views. Feature coordinators own tasks and decide what results mean. HTTP deadline policy belongs to `api/`, secure-store deadlines to saved-login coordination, and the fixed reconnect delay to `chat/live_updates.rs`.
+`runtime.rs` is a small internal home for the existing Tokio-to-GPUI execution bridge and controllable execution/time support. It knows nothing about login, messages, or views. Feature coordinators own tasks and decide what results mean. HTTP deadline policy belongs to `api/` (callers apply `REQUEST_DEADLINE` through `Execution::deadline`), secure-store deadlines to saved-login coordination, and the fixed reconnect delay to `chat/live_updates.rs`.
 
 Use injected execution/time support where required for deterministic headless tests. Production and tests must exercise the same workflow code rather than maintain separate `cfg(test)` request-dispatch implementations. Do not expand this into a general event bus or command framework.
 
@@ -147,7 +155,7 @@ API/storage/runtime -> no view or feature-coordinator dependencies
 pure state modules -> data and transition rules, no side effects
 ```
 
-Cross-feature coordination uses narrow session-status/rejection interfaces. Do not pass the whole root view or mutable `AppSession` into child views or chat state. Session invalidation synchronously prevents further protected work and clears authenticated state before asynchronous cleanup finishes.
+Cross-feature coordination uses narrow session-status/rejection interfaces. Do not pass the whole root view or mutable `SessionState` into child views or chat state. Session invalidation synchronously prevents further protected work and clears authenticated state before asynchronous cleanup finishes.
 
 ## Adding functionality
 
@@ -185,7 +193,8 @@ src/
 │       ├── saved_login.rs
 │       ├── binding.rs
 │       └── state.rs
-├── chat/tests/            # coordinator, live updates, delivery, route, state
+├── chat/tests/            # coordinator, live updates, delivery, route, state,
+│                          # channel_{delete,rename}_*, message_delete_*
 ├── api/tests/                  # binding, HTTP
 ├── storage/tests/              # configuration, protocol, persistence
 ├── views/

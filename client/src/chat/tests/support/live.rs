@@ -146,7 +146,7 @@ pub fn ready(
 
 pub fn ids(activity: &ChatHandle) -> Vec<String> {
     let state = activity.read();
-    let Some(crate::chat::Load::Ready(messages)) = state.history_for_display("1") else {
+    let Some(crate::chat::Load::Ready(messages)) = state.history("1") else {
         panic!("history not ready")
     };
     messages.iter().map(|message| message.id.clone()).collect()

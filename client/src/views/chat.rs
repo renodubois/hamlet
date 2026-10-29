@@ -12,7 +12,7 @@ use gpui_kit::*;
 pub(super) struct ChatView {
     sidebar: Entity<SidebarView>,
     footer: Entity<SessionFooterView>,
-    layout: Entity<ConversationView>,
+    conversation: Entity<ConversationView>,
     _notifications: Task<()>,
 }
 impl ChatView {
@@ -25,19 +25,12 @@ impl ChatView {
     ) -> Self {
         let footer = cx.new(|cx| SessionFooterView::new(session, cx));
         let sidebar = cx.new(|cx| SidebarView::new(chat.clone(), window, cx));
-        let layout = cx.new(|cx| ConversationView::new(chat.clone(), execution, window, cx));
-        let changes = chat.notifications();
-        let notifications = cx.spawn(async move |weak, cx| {
-            while changes.recv().await.is_ok() {
-                if weak.update(cx, |_, cx| cx.notify()).is_err() {
-                    break;
-                }
-            }
-        });
+        let conversation = cx.new(|cx| ConversationView::new(chat.clone(), execution, window, cx));
+        let notifications = super::rerender_on_chat_change(&chat, cx);
         Self {
             sidebar,
             footer,
-            layout,
+            conversation,
             _notifications: notifications,
         }
     }
@@ -67,7 +60,7 @@ impl Render for ChatView {
                     .min_h_0()
                     .w_full()
                     .child(sidebar)
-                    .child(self.layout.clone()),
+                    .child(self.conversation.clone()),
             )
     }
 }

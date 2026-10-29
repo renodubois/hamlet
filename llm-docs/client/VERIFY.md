@@ -17,9 +17,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for ownership/test rules and [PRESENTATIO
 
 ## Native verification status
 
-The latest recorded desktop attempt (2026-09-30) rendered an isolated login form but stopped because the desktop was securely locked. No interactive two-client workflow or credential save/read/delete was exercised. Private Secret Service registration alone does not establish usable storage.
+The latest recorded desktop verification (2026-10-12) exercised message deletion in two isolated native client windows on an unlocked niri desktop, using X11/Xwayland OS-level input and a private, unlocked GNOME Keyring provider. Both confirmation paths, live removal, other-window dialog closure, tall clipped-row pointer reachability, resize/removal anchoring and deleted-cursor older-history loading passed. The final resize/tall-tail deletion preserved a surviving text crop pixel-for-pixel. See [adversarial review and evidence](../message-deletion-adversarial-review.md). No ordinary wallet was accessed; these outcomes do not establish the full storage checklist.
 
-Native acceptance is incomplete. Message-deletion hover/focus accessibility, physical-pointer reachability and removal anchoring have automated coverage only. In particular, IME candidate/Enter behavior, assistive technology and physical keyboard traversal, precise delayed older-page pixel anchoring, and a locked/slow real wallet's timeout/deletion retry remain unverified. Automated checks, headless rendering and provider registration are not substitutes for these cases. Packaging and non-Linux behavior are also unverified.
+Native acceptance remains incomplete. Physical input hardware, assistive technology, IME candidate/Enter behavior, cross-application selection/copy, precise delayed older-page pixel anchoring, and a locked/slow real wallet's timeout/deletion retry remain unverified in that run. OS-level injected input is not physical device verification. Automated checks, headless rendering and provider registration are not substitutes for these cases. Packaging and non-Linux behavior are also unverified.
 
 ## Native safety gate
 

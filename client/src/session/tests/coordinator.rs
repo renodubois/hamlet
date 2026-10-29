@@ -84,8 +84,20 @@ fn session_loss_closes_surviving_chat_handles_before_any_host_update(cx: &mut Te
         assert!(session.active().is_none());
         assert!(session.chat().is_none());
         assert!(activity.read().channels.is_none());
-        assert!(activity.read().history.is_empty());
-        assert!(activity.read().drafts.is_empty());
+        assert!(
+            activity
+                .read()
+                .conversations()
+                .values()
+                .all(|c| c.history.is_none())
+        );
+        assert!(
+            activity
+                .read()
+                .conversations()
+                .values()
+                .all(|c| c.draft.is_none())
+        );
         activity.start();
         activity.edit_draft("must stay closed".into());
         activity.send();
@@ -107,7 +119,13 @@ fn session_loss_closes_surviving_chat_handles_before_any_host_update(cx: &mut Te
         session.chat_ended(SessionEnd::Rejected(generation));
         assert_eq!(session.session_generation(), Some(current));
         assert_eq!(session.active().unwrap().user.username, "New");
-        assert!(activity.read().drafts.is_empty());
+        assert!(
+            activity
+                .read()
+                .conversations()
+                .values()
+                .all(|c| c.draft.is_none())
+        );
         assert!(calls.try_recv().is_err());
         drop(old_client); // An independently retained bound client never reopens activity.
     }
@@ -134,7 +152,7 @@ fn application_session_authenticates_and_invalidates_without_a_screen(cx: &mut T
         None,
     );
     let updates = session.updates();
-    session.submit("Ada".into(), "password".into(), false);
+    session.submit("Ada".into(), "password".into(), AuthMode::Login);
     assert!(session.pending());
     assert!(session.active().is_none());
     cx.executor().run_until_parked();
@@ -199,7 +217,7 @@ fn accept(
     name: &str,
     expiry: i64,
 ) -> u64 {
-    session.submit(name.into(), "synthetic password".into(), false);
+    session.submit(name.into(), "synthetic password".into(), AuthMode::Login);
     cx.executor().run_until_parked();
     auth(calls.try_recv().unwrap(), name, expiry);
     deliver(cx, session);
@@ -210,8 +228,12 @@ fn accept(
 #[gpui_kit::test]
 fn obsolete_authentication_and_rejection_cannot_replace_a_new_session(cx: &mut TestAppContext) {
     let (mut session, calls) = controlled(cx);
-    session.submit("Old".into(), "old password".into(), true);
-    session.submit("Duplicate".into(), "duplicate password".into(), true);
+    session.submit("Old".into(), "old password".into(), AuthMode::Signup);
+    session.submit(
+        "Duplicate".into(),
+        "duplicate password".into(),
+        AuthMode::Signup,
+    );
     cx.executor().run_until_parked();
     let old = calls.try_recv().unwrap();
     assert!(calls.try_recv().is_err(), "pending submission is inert");

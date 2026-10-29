@@ -2,33 +2,28 @@
 //! this owner alone dispatches requests, applies completions and schedules selected reads.
 
 mod delivery;
-
 mod live_updates;
-#[cfg(test)]
-#[path = "tests/message_delete_races.rs"]
-mod message_delete_races_tests;
-#[cfg(test)]
-#[path = "tests/support/message_delete.rs"]
-mod message_delete_support;
-#[cfg(test)]
-#[path = "tests/message_delete_workflow.rs"]
-mod message_delete_workflow_tests;
 mod message_deletion;
-use message_deletion::MessageDeleteRequest;
 mod state;
-use crate::api::{ApiError, AuthenticatedClient, Channel, LiveEvent, Message, Page, StreamError};
+
+use crate::api::{
+    ApiError, ApiFuture, AuthenticatedClient, Channel, LiveEvent, Message, Page, REQUEST_DEADLINE,
+    StreamError,
+};
 use crate::runtime::{Execution, Work};
 use live_updates::{Attempt, LiveUpdates};
-pub(crate) use state::{ChatState, Load, Older};
-use state::{CreateRequest, DeleteRequest, Identity, ReadRequest, RenameRequest, SendRequest};
+use message_deletion::MessageDeleteRequest;
+use state::{
+    ChannelDeleteRequest, ChannelsRead, CreateRequest, HistoryRead, Identity, RenameRequest,
+    SendRequest,
+};
+pub(crate) use state::{ChatState, Load, OlderPages};
 use std::{
     cell::{Ref, RefCell},
     collections::HashMap,
     rc::Rc,
     time::{Duration, Instant},
 };
-
-const READ_SEND_DEADLINE: Duration = Duration::from_secs(9);
 
 /// A clone shares the same closed gate and state; it cannot reopen a lost session.
 #[derive(Clone)]
@@ -42,11 +37,11 @@ pub(crate) struct ChatUpdate(Update);
 enum Update {
     Tick,
     Stream(Attempt, Result<LiveEvent, StreamError>),
-    Channels(ReadRequest, Result<Vec<Channel>, ApiError>),
-    History(u64, ReadRequest, Result<Page, ApiError>),
+    Channels(ChannelsRead, Result<Vec<Channel>, ApiError>),
+    History(HistoryRead, Result<Page, ApiError>),
     Create(CreateRequest, Result<Channel, ApiError>),
     Rename(RenameRequest, Result<Channel, ApiError>),
-    Delete(DeleteRequest, Result<(), ApiError>),
+    ChannelDelete(ChannelDeleteRequest, Result<(), ApiError>),
     MessageDelete(MessageDeleteRequest, Result<(), ApiError>),
     Send(SendRequest, Result<Message, ApiError>),
 }
@@ -60,27 +55,24 @@ pub(crate) enum SessionEnd {
 struct Coordinator {
     state: ChatState,
     identity: Identity,
-    generation: u64,
     user_id: String,
     client: Option<AuthenticatedClient>,
     execution: Execution,
     live: LiveUpdates,
     stream_task: Option<Work>,
-    clock: Instant,
+    /// Origin for the reconnect/expiry timer's monotonic offsets.
+    started_at: Instant,
     started: bool,
     updates: delivery::Updates,
     deliver: delivery::Sender,
     timer: Option<Work>,
     channels_task: Option<Work>,
     history_task: Option<Work>,
-    history_serial: u64,
     create_task: Option<Work>,
     rename_task: Option<Work>,
-    delete_task: Option<Work>,
+    channel_delete_task: Option<Work>,
     message_delete_task: Option<Work>,
     sends: HashMap<String, Work>,
-    created: Option<(u64, String)>,
-    create_revision: u64,
     observers: Vec<async_channel::Sender<()>>,
 }
 
@@ -109,15 +101,10 @@ impl ChatHandle {
         let (deliver, updates) = delivery::channel();
         Self(Rc::new(RefCell::new(Coordinator {
             state: ChatState::default(),
-            identity: Identity {
-                generation: Some(generation),
-                expires_at,
-                rejected: None,
-            },
-            generation,
+            identity: Identity::new(generation, expires_at),
             user_id,
             client: Some(client),
-            clock: execution.now(),
+            started_at: execution.now(),
             execution,
             live: LiveUpdates::new(generation),
             stream_task: None,
@@ -127,14 +114,11 @@ impl ChatHandle {
             timer: None,
             channels_task: None,
             history_task: None,
-            history_serial: 0,
             create_task: None,
             rename_task: None,
-            delete_task: None,
+            channel_delete_task: None,
             message_delete_task: None,
             sends: HashMap::new(),
-            created: None,
-            create_revision: 0,
             observers: Vec::new(),
         })))
     }
@@ -147,7 +131,12 @@ impl ChatHandle {
     pub(crate) fn replace_history_for_test(&self, channel: &str, messages: Vec<Message>) {
         let _notify = Notify(self);
         let mut owner = self.0.borrow_mut();
-        let Some(Load::Ready(rows)) = owner.state.history.get_mut(channel) else {
+        let Some(Load::Ready(rows)) = owner
+            .state
+            .conversations
+            .get_mut(channel)
+            .and_then(|conversation| conversation.history.as_mut())
+        else {
             panic!("controlled history must already be ready");
         };
         *rows = messages;
@@ -158,7 +147,9 @@ impl ChatHandle {
     }
     /// Presentation may clear an unchanged creation input after this confirmed revision.
     pub fn created(&self) -> Option<(u64, String)> {
-        self.0.borrow().created.clone()
+        let state = self.read();
+        let name = state.last_created.clone()?;
+        Some((state.create.revision, name))
     }
     pub fn updates(&self) -> delivery::Updates {
         self.0.borrow().updates.clone()
@@ -219,10 +210,7 @@ impl ChatHandle {
             state, identity, ..
         } = &mut *owner;
         let next = state.select(identity, id);
-        owner.selection_changed(previous);
-        if let Some(next) = next {
-            owner.load_history(next);
-        }
+        owner.selection_changed(previous, next);
     }
     pub fn request_older(&self) {
         let _notify = Notify(self);
@@ -244,18 +232,11 @@ impl ChatHandle {
         let Some(request) = state.create(identity, name) else {
             return;
         };
-        let work = request.clone();
-        let deliver = owner.deliver.clone();
-        let (task, _) = owner.execution.start(async move {
-            let result = api.create_channel(work.name).await;
-            let _ = deliver
-                .send(ChatUpdate(Update::Create(request, result)))
-                .await;
-        });
-        owner.create_task = Some(task);
+        let call = api.create_channel(request.name.clone());
+        owner.create_task = Some(owner.dispatch(call, |result| Update::Create(request, result)));
     }
-    pub fn reset_delete_feedback(&self) {
-        self.0.borrow_mut().state.reset_delete_feedback();
+    pub fn reset_channel_delete_feedback(&self) {
+        self.0.borrow_mut().state.channel_delete.reset_feedback();
     }
     pub fn delete_channel(&self, id: &str) {
         let _notify = Notify(self);
@@ -268,26 +249,15 @@ impl ChatHandle {
         let Coordinator {
             state, identity, ..
         } = &mut *owner;
-        let Some(request) = state.delete(identity, id) else {
+        let Some(request) = state.channel_delete(identity, id) else {
             return;
         };
-        let work = request.clone();
-        let deliver = owner.deliver.clone();
-        let timeout = owner.execution.sleep(READ_SEND_DEADLINE);
-        let (task, _) = owner.execution.start(async move {
-            let result = tokio::select! {
-                biased;
-                _ = timeout => Err(ApiError::Unavailable),
-                result = api.delete_channel(work.channel_id) => result,
-            };
-            let _ = deliver
-                .send(ChatUpdate(Update::Delete(request, result)))
-                .await;
-        });
-        owner.delete_task = Some(task);
+        let call = api.delete_channel(request.channel_id.clone());
+        owner.channel_delete_task =
+            Some(owner.dispatch(call, |result| Update::ChannelDelete(request, result)));
     }
     pub fn reset_rename_feedback(&self) {
-        self.0.borrow_mut().state.reset_rename_feedback();
+        self.0.borrow_mut().state.rename.reset_feedback();
     }
     pub fn rename_channel(&self, id: &str, name: &str) {
         let _notify = Notify(self);
@@ -303,20 +273,8 @@ impl ChatHandle {
         let Some(request) = state.rename(identity, id, name) else {
             return;
         };
-        let work = request.clone();
-        let deliver = owner.deliver.clone();
-        let timeout = owner.execution.sleep(READ_SEND_DEADLINE);
-        let (task, _) = owner.execution.start(async move {
-            let result = tokio::select! {
-                biased;
-                _ = timeout => Err(ApiError::Unavailable),
-                result = api.rename_channel(work.channel_id, work.name) => result,
-            };
-            let _ = deliver
-                .send(ChatUpdate(Update::Rename(request, result)))
-                .await;
-        });
-        owner.rename_task = Some(task);
+        let call = api.rename_channel(request.channel_id.clone(), request.name.clone());
+        owner.rename_task = Some(owner.dispatch(call, |result| Update::Rename(request, result)));
     }
     pub fn send(&self) {
         let _notify = Notify(self);
@@ -330,21 +288,51 @@ impl ChatHandle {
         let Some(request) = state.send(identity) else {
             return;
         };
-        let work = request.clone();
         let channel = request.channel_id.clone();
-        let deliver = owner.deliver.clone();
-        let timeout = owner.execution.sleep(READ_SEND_DEADLINE);
-        let (task, _) = owner.execution.start(async move {
-            let result = tokio::select! {
-                biased;
-                _ = timeout => Err(ApiError::Unavailable),
-                result = api.send_message(work.channel_id, work.text) => result,
-            };
-            let _ = deliver
-                .send(ChatUpdate(Update::Send(request, result)))
-                .await;
-        });
+        let call = api.send_message(channel.clone(), request.text.clone());
+        let task = owner.dispatch(call, |result| Update::Send(request, result));
         owner.sends.insert(channel, task);
+    }
+    pub fn owns_message(&self, message: &Message) -> bool {
+        let owner = self.0.borrow();
+        owner.client.is_some() && owner.user_id == message.author_id
+    }
+    /// Shared opening seam for message actions; chat resolves and captures the target.
+    pub fn open_message_deletion(&self, channel_id: &str, message_id: &str) -> bool {
+        let _notify = Notify(self);
+        let mut owner = self.0.borrow_mut();
+        if owner.client.is_none() {
+            return false;
+        }
+        let now = owner.execution.unix_seconds();
+        let Coordinator {
+            state,
+            identity,
+            user_id,
+            ..
+        } = &mut *owner;
+        state.open_message_deletion(identity, user_id, now, channel_id, message_id)
+    }
+    pub fn cancel_message_deletion(&self) {
+        let _notify = Notify(self);
+        self.0.borrow_mut().state.cancel_message_deletion();
+    }
+    pub fn confirm_message_deletion(&self) {
+        let _notify = Notify(self);
+        let mut owner = self.0.borrow_mut();
+        let Some(api) = owner.client.clone() else {
+            return;
+        };
+        let now = owner.execution.unix_seconds();
+        let Coordinator {
+            state, identity, ..
+        } = &mut *owner;
+        let Some(request) = state.confirm_message_deletion(identity, now) else {
+            return;
+        };
+        let call = api.delete_message(request.channel_id.clone(), request.message_id.clone());
+        owner.message_delete_task =
+            Some(owner.dispatch(call, |result| Update::MessageDelete(request, result)));
     }
     /// Applies only this lifetime's opaque delivery, reporting authoritative loss by identity.
     pub fn apply(&self, update: ChatUpdate) -> Option<SessionEnd> {
@@ -358,15 +346,30 @@ enum HistoryIntent {
     RetryOlder,
 }
 impl Coordinator {
-    fn time(&self) -> Duration {
-        self.execution.now().duration_since(self.clock)
+    /// The single protected-request path: bounded by the API deadline and delivered as an
+    /// opaque update. A deadline is not authoritative; it completes as `Unavailable`.
+    fn dispatch<T: Send + 'static>(
+        &self,
+        call: ApiFuture<Result<T, ApiError>>,
+        complete: impl FnOnce(Result<T, ApiError>) -> Update + Send + 'static,
+    ) -> Work {
+        let deliver = self.deliver.clone();
+        let bounded = self.execution.deadline(REQUEST_DEADLINE, call);
+        let (task, _) = self.execution.start(async move {
+            let result = bounded.await.unwrap_or(Err(ApiError::Unavailable));
+            let _ = deliver.send(ChatUpdate(complete(result))).await;
+        });
+        task
+    }
+    fn elapsed(&self) -> Duration {
+        self.execution.now().duration_since(self.started_at)
     }
     fn arm_timer(&mut self) {
         // Expiry keeps its cadence; reconnect wakes at the exact fixed-delay deadline.
         if let Some(task) = self.timer.take() {
             task.abort();
         }
-        let elapsed = self.time();
+        let elapsed = self.elapsed();
         let next_tick = Duration::from_secs(elapsed.as_secs() + 1);
         let deadline = self
             .live
@@ -413,14 +416,11 @@ impl Coordinator {
             LiveEvent::ChannelRenamed(channel) => self.state.merge_rename(channel),
             LiveEvent::ChannelDeleted(id) => {
                 let previous = self.state.selected.clone();
-                let next = self.state.merge_deletion(&self.identity, &id);
+                let next = self.state.merge_channel_deletion(&self.identity, &id);
                 if let Some(task) = self.sends.remove(&id) {
                     task.abort();
                 }
-                self.selection_changed(previous);
-                if let Some(next) = next {
-                    self.load_history(next);
-                }
+                self.selection_changed(previous, next);
             }
             LiveEvent::MessageCreated(message) => {
                 let _ = self.state.merge_message(message);
@@ -435,7 +435,7 @@ impl Coordinator {
         }
     }
     fn disconnect(&mut self) {
-        if !self.live.fail(self.live.attempt(), self.time()) {
+        if !self.live.fail(self.live.attempt(), self.elapsed()) {
             return;
         }
         if let Some(task) = self.stream_task.take() {
@@ -455,68 +455,48 @@ impl Coordinator {
             self.load_history(request);
         }
     }
-    fn load_channels(&mut self, request: ReadRequest) {
+    fn load_channels(&mut self, request: ChannelsRead) {
         let Some(api) = self.client.clone() else {
             return;
         };
-        let deliver = self.deliver.clone();
-        let timeout = self.execution.sleep(READ_SEND_DEADLINE);
-        let (task, _) = self.execution.start(async move {
-            let result = tokio::select! {
-                biased;
-                _ = timeout => Err(ApiError::Unavailable),
-                result = api.channels() => result,
-            };
-            let _ = deliver
-                .send(ChatUpdate(Update::Channels(request, result)))
-                .await;
-        });
-        self.channels_task = Some(task);
+        self.channels_task =
+            Some(self.dispatch(api.channels(), |result| Update::Channels(request, result)));
     }
     fn cancel_history(&mut self) {
-        self.history_serial = self.history_serial.wrapping_add(1);
         if let Some(task) = self.history_task.take() {
             task.abort();
         }
     }
-    fn selection_changed(&mut self, previous: Option<String>) {
+    /// Abandons a read for a deselected channel, then starts the next selected read.
+    fn selection_changed(&mut self, previous: Option<String>, next: Option<HistoryRead>) {
         if previous != self.state.selected {
             self.cancel_history();
         }
+        if let Some(next) = next {
+            self.load_history(next);
+        }
     }
     /// The sole selected-history dispatch path, independent of connection status.
-    fn load_history(&mut self, request: ReadRequest) {
+    fn load_history(&mut self, request: HistoryRead) {
         self.cancel_history();
-        let serial = self.history_serial;
         let Some(api) = self.client.clone() else {
             return;
         };
-        let work = request.clone();
-        let deliver = self.deliver.clone();
-        let timeout = self.execution.sleep(READ_SEND_DEADLINE);
-        let (task, _) = self.execution.start(async move {
-            let result = tokio::select! {
-                biased;
-                _ = timeout => Err(ApiError::Unavailable),
-                result = api.history_page(work.channel_id.unwrap(), work.before) => result,
-            };
-            let _ = deliver
-                .send(ChatUpdate(Update::History(serial, request, result)))
-                .await;
-        });
-        self.history_task = Some(task);
+        let call = api.history_page(request.channel_id.clone(), request.before.clone());
+        self.history_task = Some(self.dispatch(call, |result| Update::History(request, result)));
     }
     fn apply(&mut self, update: Update) -> Option<SessionEnd> {
         self.client.as_ref()?;
         self.identity.expire(self.execution.unix_seconds());
-        if self.identity.generation.is_none() {
+        let session = self.identity.session;
+        if self.identity.session_generation().is_none() {
             self.close();
-            return Some(SessionEnd::Expired(self.generation));
+            return Some(SessionEnd::Expired(session));
         }
         match update {
             Update::Tick => {
                 self.timer = None;
-                if self.live.retry(self.time()).is_some() {
+                if self.live.retry(self.elapsed()).is_some() {
                     self.open_stream();
                 }
                 self.arm_timer();
@@ -528,17 +508,15 @@ impl Coordinator {
                 match result {
                     Ok(LiveEvent::Ready) => self.live.ready(attempt),
                     Ok(event) => self.merge_event(event),
-                    Err(StreamError::Api(ApiError::AlreadyInvalid)) => {
+                    Err(StreamError::Api(ApiError::SessionRejected)) => {
                         self.close();
-                        return Some(SessionEnd::Rejected(self.generation));
+                        return Some(SessionEnd::Rejected(session));
                     }
                     Err(_) => self.disconnect(),
                 }
             }
             Update::Channels(request, result) => {
-                if !self.state.is_current_channels(&request)
-                    || request.generation != self.generation
-                {
+                if request.generation != session || !self.state.is_current_channels(&request) {
                     return None;
                 }
                 self.channels_task = None;
@@ -546,73 +524,67 @@ impl Coordinator {
                 let next = self
                     .state
                     .complete_channels(&mut self.identity, &request, result);
-                self.selection_changed(previous);
-                if let Some(next) = next {
-                    self.load_history(next);
-                }
+                self.selection_changed(previous, next);
             }
-            Update::History(serial, request, result) => {
-                if serial != self.history_serial || request.generation != self.generation {
+            Update::History(request, result) => {
+                if request.generation != session {
                     return None;
                 }
-                self.history_task = None;
                 self.state
                     .complete_history(&mut self.identity, &request, result);
             }
             Update::Create(request, result) => {
-                if request.generation != self.generation {
+                if request.generation != session {
                     return None;
                 }
                 self.create_task = None;
                 let previous = self.state.selected.clone();
-                let (confirmed, next) = self.state.complete_create(
+                let next = self.state.complete_create(
                     &mut self.identity,
                     &request,
                     result,
                     self.execution.unix_seconds(),
                 );
-                if confirmed {
-                    self.create_revision = self.create_revision.wrapping_add(1);
-                    self.created = Some((self.create_revision, request.name));
-                }
-                self.selection_changed(previous);
-                if let Some(next) = next {
-                    self.load_history(next);
-                }
+                self.selection_changed(previous, next);
             }
             Update::Rename(request, result) => {
-                if request.generation != self.generation {
+                if request.generation != session {
                     return None;
                 }
                 self.rename_task = None;
                 self.state
                     .complete_rename(&mut self.identity, &request, result);
             }
-            Update::Delete(request, result) => {
-                if request.generation != self.generation {
+            Update::ChannelDelete(request, result) => {
+                if request.generation != session {
                     return None;
                 }
-                self.delete_task = None;
+                self.channel_delete_task = None;
                 let previous = self.state.selected.clone();
-                let revision = self.state.delete_confirmed;
+                let revision = self.state.channel_delete.revision;
                 let next = self
                     .state
-                    .complete_delete(&mut self.identity, &request, result);
-                if revision != self.state.delete_confirmed
+                    .complete_channel_delete(&mut self.identity, &request, result);
+                if revision != self.state.channel_delete.revision
                     && let Some(task) = self.sends.remove(&request.channel_id)
                 {
                     task.abort();
                 }
-                self.selection_changed(previous);
-                if let Some(next) = next {
-                    self.load_history(next);
-                }
+                self.selection_changed(previous, next);
             }
             Update::MessageDelete(request, result) => {
-                self.complete_message_delete(request, result);
+                if request.generation != session {
+                    return None;
+                }
+                if self
+                    .state
+                    .complete_message_delete(&mut self.identity, &request, result)
+                {
+                    self.message_delete_task = None;
+                }
             }
             Update::Send(request, result) => {
-                if request.generation != self.generation {
+                if request.generation != session {
                     return None;
                 }
                 self.sends.remove(&request.channel_id);
@@ -624,27 +596,26 @@ impl Coordinator {
                 );
             }
         }
-        if let Some(generation) = self.identity.rejected.take() {
+        if self.identity.take_rejected() {
             self.close();
-            return Some(SessionEnd::Rejected(generation));
+            return Some(SessionEnd::Rejected(session));
         }
         None
     }
     fn close(&mut self) {
         self.client = None;
-        self.identity.generation = None;
+        self.identity.close();
         self.state.clear();
         self.live.close();
-        self.created = None;
         self.deliver.close();
-        self.cancel_history();
         for task in [
             self.timer.take(),
             self.stream_task.take(),
             self.channels_task.take(),
+            self.history_task.take(),
             self.create_task.take(),
             self.rename_task.take(),
-            self.delete_task.take(),
+            self.channel_delete_task.take(),
             self.message_delete_task.take(),
         ]
         .into_iter()
@@ -664,23 +635,30 @@ impl Drop for Coordinator {
 }
 
 #[cfg(test)]
-#[path = "tests/message_deletion.rs"]
-mod message_deletion_tests;
+#[path = "tests/support/live.rs"]
+mod live_support;
+#[cfg(test)]
+#[path = "tests/support/message_delete.rs"]
+mod message_delete_support;
 
+#[cfg(test)]
+#[path = "tests/channel_delete_coordinator.rs"]
+mod channel_delete_coordinator_tests;
+#[cfg(test)]
+#[path = "tests/coordinator.rs"]
+mod coordinator_tests;
 #[cfg(test)]
 #[path = "tests/live_coordinator.rs"]
 mod live_coordinator_tests;
 #[cfg(test)]
-#[path = "tests/support/live.rs"]
-mod live_support;
-
+#[path = "tests/message_delete_confirmation.rs"]
+mod message_delete_confirmation_tests;
 #[cfg(test)]
-#[path = "tests/delete_coordinator.rs"]
-mod delete_coordinator_tests;
-
+#[path = "tests/message_delete_events.rs"]
+mod message_delete_events_tests;
 #[cfg(test)]
-#[path = "tests/coordinator.rs"]
-mod coordinator_tests;
+#[path = "tests/message_delete_races.rs"]
+mod message_delete_races_tests;
 #[cfg(test)]
 #[path = "tests/route.rs"]
 mod route_tests;

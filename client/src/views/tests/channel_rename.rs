@@ -226,7 +226,7 @@ fn rename_controls_target_pending_feedback_and_confirmation(cx: &mut TestAppCont
     assert!(
         calls.lock().unwrap()[4]
             .2
-            .try_send(Err(ApiError::AlreadyInvalid))
+            .try_send(Err(ApiError::SessionRejected))
             .is_err()
     );
     cx.update(|window, cx| {

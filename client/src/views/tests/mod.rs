@@ -1,31 +1,20 @@
 //! Cross-view scenarios use production startup, Kit Root and semantic controls.
 //! Controlled HTTP responses still pass through the bound API's request/decoding path.
 
-#[path = "authentication.rs"]
 mod authentication;
-#[path = "bound_auth.rs"]
 mod bound_auth;
-#[path = "channel_context_menu.rs"]
 mod channel_context_menu;
-#[path = "channels.rs"]
+mod channel_delete;
+mod channel_rename;
 mod channels;
-#[path = "composer.rs"]
 mod composer;
-mod deletion;
-#[path = "execution.rs"]
 mod execution;
-#[path = "history.rs"]
 mod history;
-#[path = "journeys.rs"]
 mod journeys;
-#[path = "live_updates.rs"]
 mod live_updates;
 mod message_delete_controls;
 mod message_delete_route;
-#[path = "protected_binding.rs"]
 mod protected_binding;
-mod rename;
-#[path = "session_lifecycle.rs"]
 mod session_lifecycle;
 mod support;
 
@@ -72,7 +61,9 @@ fn wire_response(
         Err(ApiError::InvalidResponse) => (success, "malformed".into()),
         Err(error) => (
             match error {
-                ApiError::AlreadyInvalid | ApiError::InvalidCredentials => StatusCode::UNAUTHORIZED,
+                ApiError::SessionRejected | ApiError::InvalidCredentials => {
+                    StatusCode::UNAUTHORIZED
+                }
                 ApiError::InvalidInput => StatusCode::BAD_REQUEST,
                 ApiError::Conflict => StatusCode::CONFLICT,
                 ApiError::NotFound => StatusCode::NOT_FOUND,

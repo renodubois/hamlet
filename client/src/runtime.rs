@@ -117,15 +117,24 @@ impl Execution {
         deadline: Duration,
         future: impl Future<Output = T> + Send + 'static,
     ) -> (Work, async_channel::Receiver<Option<T>>) {
-        // Register at submission, not when a potentially delayed executor first polls.
+        self.start(self.deadline(deadline, future))
+    }
+
+    /// Races `future` against `deadline` on this clock, yielding `None` on expiry. The timer is
+    /// registered at call time, not when a potentially delayed executor first polls.
+    pub(crate) fn deadline<T, F: Future<Output = T>>(
+        &self,
+        deadline: Duration,
+        future: F,
+    ) -> impl Future<Output = Option<T>> + use<T, F> {
         let timeout = self.sleep(deadline);
-        self.start(async move {
+        async move {
             tokio::select! {
                 biased;
                 _ = timeout => None,
                 result = future => Some(result),
             }
-        })
+        }
     }
 }
 

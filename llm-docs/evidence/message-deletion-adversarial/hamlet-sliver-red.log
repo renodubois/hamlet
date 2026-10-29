@@ -1,0 +1,24 @@
+   Compiling hamlet-client v0.1.0 (/home/reno/projects/hamlet/client)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.43s
+     Running unittests src/main.rs (target/debug/deps/hamlet_client-111794a6e9765e8e)
+
+running 2 tests
+
+thread 'views::tests::message_delete_controls::top_sliver_tray_cannot_hit_neighbor_and_focus_reveals_target' (30624) panicked at src/views/tests/message_delete_controls.rs:640:9:
+neighbor click must not delete the clipped owner's message
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test views::tests::message_delete_controls::top_sliver_tray_cannot_hit_neighbor_and_focus_reveals_target ... FAILED
+
+thread 'views::tests::message_delete_controls::bottom_sliver_tray_cannot_hit_neighbor_and_focus_reveals_target' (30623) panicked at src/views/tests/message_delete_controls.rs:640:9:
+neighbor click must not delete the clipped owner's message
+test views::tests::message_delete_controls::bottom_sliver_tray_cannot_hit_neighbor_and_focus_reveals_target ... FAILED
+
+failures:
+
+failures:
+    views::tests::message_delete_controls::bottom_sliver_tray_cannot_hit_neighbor_and_focus_reveals_target
+    views::tests::message_delete_controls::top_sliver_tray_cannot_hit_neighbor_and_focus_reveals_target
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 241 filtered out; finished in 0.74s
+
+error: test failed, to rerun pass `--bin hamlet-client`

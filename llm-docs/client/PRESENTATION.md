@@ -12,7 +12,7 @@ coordinator. [ARCHITECTURE.md](ARCHITECTURE.md) describes the dependency rules.
 | Pane composition and connection-status presentation | `src/views/chat.rs`, `src/views/conversation/mod.rs` | `connection-status` |
 | Scrollable channel list and creation dialog | `src/views/sidebar/mod.rs` (composition/creation), `src/views/sidebar/channel_row.rs` (rows/context-menu dialogs) | `channels`, `channel-{id}`, `open-create-channel`, `channel-name`, `create-channel`, `cancel-channel`, `channel-feedback` |
 | List/focus, wheel, viewport anchoring and traversal controls | `src/views/conversation/message_history.rs` | `history-pane`, `history`, `load-older`, `older-loading`, `retry-older`, `history-empty`, `jump-latest` |
-| Authored-message context menu, hover/focus tray and confirmation | `src/views/conversation/message_dialog.rs`, `message_menu.rs` | `message-context-menu`, `trash-message-{id}`, `delete-message-label`, `delete-message-preview`, `delete-message-warning`, `cancel-message-action`, `confirm-delete-message`, `delete-message-feedback` |
+| Authored-message context menu, hover/focus tray and confirmation | `src/views/conversation/message_history/dialog.rs`, `menu.rs` | `message-context-menu`, `trash-message-{id}`, `delete-message-label`, `delete-message-preview`, `delete-message-warning`, `cancel-message-action`, `confirm-delete-message`, `delete-message-feedback` |
 | Plain selectable message, author and timestamp | `src/views/conversation/message_row.rs` | `message-{id}`, `message-text-{id}`, `text-{id}` |
 | Textarea, keyboard, focus, displayed-draft synchronization | `src/views/conversation/composer.rs` | `composer-panel`, `composer`, `send-feedback` |
 | Colors and bundled Hash/Send icons | `src/theme.rs` | Keep meaningful labels/tooltips |

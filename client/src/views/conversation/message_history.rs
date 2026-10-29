@@ -1,81 +1,23 @@
 //! Displays history and owns scroll anchoring, selection and jump-to-latest controls.
 //! Chat owns message data, pagination cursors and request execution.
 use super::message_row::message_row_at;
-#[path = "message_dialog.rs"]
-mod message_dialog;
-#[path = "message_menu.rs"]
-mod message_menu;
-use crate::chat::{ChatHandle, Load, Older};
+mod dialog;
+mod geometry;
+mod menu;
+use crate::api::Message;
+use crate::chat::{ChatHandle, Load, OlderPages};
 use crate::runtime::Execution;
 use chrono::{DateTime, Local};
+use geometry::{
+    TailPadding, hint_history_row_heights, known_fitting_viewport, reconcile_history_list,
+    tail_anchor_padding,
+};
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use message_menu::MessageMenu;
+use menu::MessageMenu;
 use std::time::Duration;
-
-fn hint_history_row_heights(list: &ListState) {
-    list.clone().with_uniform_item_height(px(64.));
-}
-// Chronological stable-ID splices preserve variable-height viewport anchors.
-fn reconcile_history_list(list: &ListState, before: &[String], after: &[String]) {
-    let positions: std::collections::HashMap<_, _> = after
-        .iter()
-        .enumerate()
-        .map(|(ix, id)| (id.as_str(), ix))
-        .collect();
-    let anchor = list.logical_scroll_top();
-    let surviving_anchor = before
-        .iter()
-        .enumerate()
-        .filter_map(|(ix, id)| positions.get(id.as_str()).map(|&new_ix| (ix, new_ix)))
-        // Prefer the following row on equal distance; otherwise use the nearest
-        // survivor in the previously displayed chronology, not a newly inserted row.
-        .min_by_key(|&(ix, _)| (ix.abs_diff(anchor.item_ix), ix < anchor.item_ix))
-        .filter(|_| anchor.item_ix < before.len())
-        .map(|(old_ix, new_ix)| {
-            let offset_in_item = if old_ix == anchor.item_ix {
-                anchor.offset_in_item
-            } else {
-                // A deleted row's partial offset may exceed its replacement's
-                // height. Keep at least one pixel of the measured survivor visible.
-                // bounds_for_item cannot measure an offscreen preceding survivor;
-                // start that fallback at its top instead of guessing its height.
-                list.bounds_for_item(old_ix)
-                    .map(|bounds| {
-                        anchor
-                            .offset_in_item
-                            .min((bounds.size.height - px(1.)).max(px(0.)))
-                    })
-                    .unwrap_or(px(0.))
-            };
-            ListOffset {
-                item_ix: new_ix,
-                offset_in_item,
-            }
-        });
-    let mut old = 0;
-    let mut new = 0;
-    // Common IDs stay in chronological order. Splice only the gaps between
-    // survivors, retaining their measured heights and GPUI viewport anchors.
-    for (old_ix, id) in before.iter().enumerate() {
-        let Some(&new_ix) = positions.get(id.as_str()) else {
-            continue;
-        };
-        if old_ix > old || new_ix > new {
-            list.splice(new..new + old_ix - old, new_ix - new);
-        }
-        old = old_ix + 1;
-        new = new_ix + 1;
-    }
-    if old < before.len() || new < after.len() {
-        list.splice(new..new + before.len() - old, after.len() - new);
-    }
-    if let Some(anchor) = surviving_anchor {
-        list.scroll_to(anchor);
-    }
-}
 
 pub(super) struct MessageHistoryView {
     chat: ChatHandle,
@@ -89,6 +31,16 @@ pub(super) struct MessageHistoryView {
     dialog_open: bool,
     _release: Subscription,
     list: ListState,
+    // Explicit reader intent: layout (including height-only resize) cannot change it.
+    follow_latest: bool,
+    viewport: Option<Size<Pixels>>,
+    presentation_revision: u64,
+    tail_padding: Option<TailPadding>,
+    // GPUI otherwise backfills preceding rows when a reconciled tail is shorter
+    // than the viewport. This is presentation-only space, never a history row.
+    protect_tail_anchor: bool,
+    #[cfg(test)]
+    tail_padding_layouts: usize,
     presented_channel: Option<String>,
     // Row indices only, never a second history store or continuity model.
     presented_ids: Vec<String>,
@@ -113,21 +65,12 @@ impl MessageHistoryView {
                 });
             }
         });
-        let changes = chat.notifications();
-        let notifications = cx.spawn(async move |weak, cx| {
-            while changes.recv().await.is_ok() {
-                if weak
-                    .update_in(cx, |view, window, cx| {
-                        view.present_message_dialog(window, cx);
-                        view.present_history();
-                        cx.notify();
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
+        let notifications =
+            crate::views::present_on_chat_change(&chat, cx, |view: &mut Self, window, cx| {
+                view.presentation_revision = view.presentation_revision.wrapping_add(1);
+                view.present_message_dialog(window, cx);
+                view.present_history();
+            });
         // Only invalidate presentation: do not splice/reset the list or dispatch reads.
         // Weak ownership plus the retained Task makes closing the view cancel the loop.
         let clock = execution.clone();
@@ -135,7 +78,13 @@ impl MessageHistoryView {
         let timestamp_refresh = cx.spawn(async move |weak, cx| {
             loop {
                 tick.await;
-                if weak.update(cx, |_, cx| cx.notify()).is_err() {
+                if weak
+                    .update(cx, |view, cx| {
+                        view.presentation_revision = view.presentation_revision.wrapping_add(1);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
                     break;
                 }
                 tick = clock.sleep(Duration::from_secs(60));
@@ -160,6 +109,13 @@ impl MessageHistoryView {
             dialog_open: false,
             _release: release,
             list,
+            follow_latest: true,
+            viewport: None,
+            presentation_revision: 0,
+            tail_padding: None,
+            protect_tail_anchor: false,
+            #[cfg(test)]
+            tail_padding_layouts: 0,
             presented_channel: None,
             presented_ids: Vec::new(),
             _notifications: notifications,
@@ -167,13 +123,25 @@ impl MessageHistoryView {
         view.present_history();
         view
     }
+    // Revealing a focused control is viewport presentation, not a message action.
+    fn reveal_message_tray(&mut self, channel: &str, id: &str, cx: &mut Context<Self>) {
+        if self.presented_channel.as_deref() == Some(channel)
+            && let Some(ix) = self.presented_ids.iter().position(|row| row == id)
+        {
+            self.protect_tail_anchor = false;
+            self.list.scroll_to_reveal_item(ix);
+            self.follow_latest = self.list.is_scrolled_to_end().unwrap_or(false);
+            cx.notify();
+        }
+    }
+
     fn present_history(&mut self) {
         let (selected, ids) = {
             let state = self.chat.read();
             let ids = state
                 .selected
                 .as_ref()
-                .and_then(|id| state.history_for_display(id))
+                .and_then(|id| state.history(id))
                 .and_then(|load| {
                     if let Load::Ready(messages) = load {
                         Some(
@@ -190,20 +158,77 @@ impl MessageHistoryView {
                 .unwrap_or_default();
             (state.selected.clone(), ids)
         };
-        let follow = self.list.is_scrolled_to_end() != Some(false);
+        if selected != self.presented_channel || ids != self.presented_ids {
+            self.presentation_revision = self.presentation_revision.wrapping_add(1);
+        }
         if selected != self.presented_channel {
             self.list.reset(ids.len());
             hint_history_row_heights(&self.list);
             self.list.scroll_to_end();
+            self.follow_latest = true;
+            self.protect_tail_anchor = false;
         } else if ids != self.presented_ids {
             reconcile_history_list(&self.list, &self.presented_ids, &ids);
             hint_history_row_heights(&self.list);
-            if self.presented_ids.is_empty() || follow {
+            if self.presented_ids.is_empty() || self.follow_latest {
                 self.list.scroll_to_end();
+                self.follow_latest = true;
+                self.protect_tail_anchor = false;
+            } else {
+                self.protect_tail_anchor = !ids.is_empty();
             }
         }
         self.presented_channel = selected;
         self.presented_ids = ids;
+    }
+
+    fn viewport_padding(
+        &mut self,
+        rows: &[Message],
+        now: &DateTime<Local>,
+        viewport: Size<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Pixels {
+        if self.viewport != Some(viewport) {
+            self.viewport = Some(viewport);
+            if self.follow_latest {
+                // GPUI retains its old top on height-only resize. Apply intent
+                // before this layout, even when no history IDs changed.
+                self.list.scroll_to_end();
+            } else {
+                self.protect_tail_anchor = true;
+            }
+        }
+        if !self.protect_tail_anchor {
+            return px(0.);
+        }
+        let anchor = self.list.logical_scroll_top();
+        if let Some(cache) = &self.tail_padding
+            && cache.viewport == viewport
+            && cache.revision == self.presentation_revision
+            && cache.anchor.item_ix == anchor.item_ix
+            && cache.anchor.offset_in_item == anchor.offset_in_item
+        {
+            return cache.padding;
+        }
+        #[cfg(test)]
+        {
+            self.tail_padding_layouts += 1;
+        }
+        let padding = tail_anchor_padding(&self.list, rows, now, viewport, window, cx);
+        self.tail_padding = Some(TailPadding {
+            viewport,
+            revision: self.presentation_revision,
+            anchor: self.list.logical_scroll_top(),
+            padding,
+        });
+        // With no gap there is nothing to protect on unchanged frames. Future
+        // splices/resizes can activate protection again without resuming follow.
+        if padding == px(0.) {
+            self.protect_tail_anchor = false;
+        }
+        padding
     }
 }
 
@@ -217,10 +242,9 @@ impl Render for MessageHistoryView {
         let has_rows = chat
             .selected
             .as_ref()
-            .and_then(|id| chat.history_for_display(id))
+            .and_then(|id| chat.history(id))
             .is_some_and(|load| matches!(load, Load::Ready(messages) if !messages.is_empty()));
         let focus = self.focus.clone();
-        let list_for_wheel = self.list.clone();
         let mut history = div()
             .id("history-pane")
             .test_support()
@@ -228,13 +252,30 @@ impl Render for MessageHistoryView {
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 window.focus(&focus, cx)
             })
-            .on_scroll_wheel(move |_, _, _| {
+            .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
+                let at_end = view.list.is_scrolled_to_end() == Some(true)
+                    || (view.list.is_scrolled_to_end().is_none()
+                        && known_fitting_viewport(&view.list));
                 // GPUI invalidates all height hints when the list first learns its width.
                 // Re-seed offscreen estimates after that layout, without measuring all rows.
-                if list_for_wheel.is_scrolled_to_end().is_none() {
-                    hint_history_row_heights(&list_for_wheel);
+                if view.list.is_scrolled_to_end().is_none() {
+                    hint_history_row_heights(&view.list);
                 }
-            })
+                let down = event.delta.pixel_delta(px(20.)).y < px(0.);
+                // Upward wheels retain a protected reader's position and reduce
+                // the gap. A deliberate downward wheel at either a padded end or
+                // a known fitting viewport resumes following.
+                if down && at_end {
+                    view.protect_tail_anchor = false;
+                    view.follow_latest = true;
+                    view.list.scroll_to_end();
+                } else if !view.protect_tail_anchor
+                    && let Some(follow) = view.list.is_scrolled_to_end()
+                {
+                    view.follow_latest = follow;
+                }
+                cx.notify();
+            }))
             .when(has_rows, |history| history.flex_1())
             .min_h_0()
             .min_w_0()
@@ -242,14 +283,14 @@ impl Render for MessageHistoryView {
             .flex_col()
             .gap_2();
         if let Some(id) = chat.selected.as_deref() {
-            match chat.history_for_display(id) {
+            match chat.history(id) {
                 None | Some(Load::Loading) => history = history.child("Loading conversation…"),
                 Some(Load::Failed(error)) => {
                     history = history.child(format!("Conversation: {error}"))
                 }
                 Some(Load::Ready(messages)) => {
-                    match chat.older.get(id) {
-                        Some(Older::Loading) if messages.is_empty() => {
+                    match chat.older(id) {
+                        Some(OlderPages::Loading) if messages.is_empty() => {
                             history = history.child(
                                 div()
                                     .id("older-loading")
@@ -258,8 +299,8 @@ impl Render for MessageHistoryView {
                                     .child("Loading older messages…"),
                             );
                         }
-                        Some(Older::Loading) => {}
-                        Some(Older::Failed(error)) => {
+                        Some(OlderPages::Loading) => {}
+                        Some(OlderPages::Failed(error)) => {
                             history = history.child(
                                 div().child(format!("Older messages: {error}")).child(
                                     Button::new("retry-older")
@@ -270,7 +311,7 @@ impl Render for MessageHistoryView {
                                 ),
                             );
                         }
-                        Some(Older::Available) if messages.is_empty() => {
+                        Some(OlderPages::Available) if messages.is_empty() => {
                             history = history.child(
                                 Button::new("load-older")
                                     .label("Load older messages")
@@ -279,11 +320,11 @@ impl Render for MessageHistoryView {
                                     ),
                             );
                         }
-                        Some(Older::Exhausted) => {}
+                        Some(OlderPages::Exhausted) => {}
                         _ => {}
                     }
                     if messages.is_empty() {
-                        if matches!(chat.older.get(id), None | Some(Older::Exhausted)) {
+                        if matches!(chat.older(id), None | Some(OlderPages::Exhausted)) {
                             history = history.child(
                                 div()
                                     .id("history-empty")
@@ -301,6 +342,7 @@ impl Render for MessageHistoryView {
                         .with_timezone(&Local);
                     let handle = self.chat.clone();
                     let view = cx.entity().downgrade();
+                    let list_state = self.list.clone();
                     history = history.child(
                         div()
                             .id("history")
@@ -309,23 +351,54 @@ impl Render for MessageHistoryView {
                             .flex_1()
                             .min_h_0()
                             .child(
-                                list(self.list.clone(), move |ix, _, cx| {
-                                    Self::message_with_menu(
-                                        &rows[ix],
-                                        &now,
-                                        &handle,
-                                        view.clone(),
-                                        cx,
-                                    )
-                                })
+                                canvas(
+                                    move |bounds, window, cx| {
+                                        let padding = view
+                                            .update(cx, |view, cx| {
+                                                view.viewport_padding(
+                                                    &rows,
+                                                    &now,
+                                                    bounds.size,
+                                                    window,
+                                                    cx,
+                                                )
+                                            })
+                                            .unwrap_or(px(0.));
+                                        let mut element =
+                                            list(list_state, move |ix, window, cx| {
+                                                Self::message_with_menu(
+                                                    &rows[ix],
+                                                    &now,
+                                                    &handle,
+                                                    view.clone(),
+                                                    window,
+                                                    cx,
+                                                )
+                                            })
+                                            .w(bounds.size.width)
+                                            .h(bounds.size.height)
+                                            .pb(padding)
+                                            .into_any_element();
+                                        element.layout_as_root(
+                                            bounds.size.map(AvailableSpace::Definite),
+                                            window,
+                                            cx,
+                                        );
+                                        element.prepaint_at(bounds.origin, window, cx);
+                                        element
+                                    },
+                                    |_, mut element, window, cx| element.paint(window, cx),
+                                )
                                 .size_full(),
                             )
-                            .when(self.list.is_scrolled_to_end() == Some(false), |history| {
+                            .when(!self.follow_latest, |history| {
                                 // Stay out of layout so visibility cannot move the reader's viewport.
                                 history.child(div().absolute().bottom_3().right_3().child(
                                     Button::new("jump-latest").label("Jump to latest").on_click(
                                         cx.listener(|view, _, _, cx| {
                                             view.list.scroll_to_end();
+                                            view.follow_latest = true;
+                                            view.protect_tail_anchor = false;
                                             cx.notify();
                                         }),
                                     ),
@@ -342,8 +415,8 @@ impl Render for MessageHistoryView {
 }
 
 #[cfg(test)]
-#[path = "tests/message_deletion.rs"]
-mod message_deletion_tests;
+#[path = "tests/message_delete.rs"]
+mod message_delete_tests;
 
 #[cfg(test)]
 #[path = "tests/history_removals.rs"]

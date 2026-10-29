@@ -91,13 +91,13 @@ fn late_old_cleanup_cannot_acknowledge_logout_of_a_new_identical_selection(
             Some(path.clone()),
         )),
     );
-    session.submit("Ada".into(), "password".into(), false);
+    session.submit("Ada".into(), "password".into(), AuthMode::Login);
     settle(cx, &mut session, "Login saved in");
     let old_selection = crate::storage::load_at(Some(&path)).saved.unwrap();
     session.logout();
     // Hold opaque deliveries after actual provider cleanup and server revocation.
     let old_cleanup = take_updates(cx, &session, 2);
-    session.submit("Ada".into(), "new password".into(), false);
+    session.submit("Ada".into(), "new password".into(), AuthMode::Login);
     for update in take_updates(cx, &session, 1) {
         session.apply(update);
     }
@@ -171,7 +171,7 @@ fn failed_manual_replacement_after_restore_failure_retains_the_rollback_cleanup_
         )),
     );
     settle(cx, &mut session, "Could not verify saved login");
-    session.submit("Ada".into(), "new password".into(), false);
+    session.submit("Ada".into(), "new password".into(), AuthMode::Login);
     settle(cx, &mut session, "memory-only");
     assert_eq!(crate::storage::load_at(Some(&path)).saved, Some(selection));
     session.logout();
@@ -321,7 +321,7 @@ fn noncandidate_replacement_cleanup_remains_retryable_after_logout_and_restart(
     assert_eq!(session.initial_username(), "");
     assert!(!session.pending());
     assert!(session.storage_retry().is_none());
-    session.submit("Ada".into(), "password".into(), false);
+    session.submit("Ada".into(), "password".into(), AuthMode::Login);
     settle(cx, &mut session, "Login saved, but");
     settle(cx, &mut session, "Could not confirm deletion");
     assert!(session.active().is_some());
@@ -499,7 +499,7 @@ fn delayed_failed_deletion_cannot_remove_a_new_save_of_the_same_identity(cx: &mu
             Some(path.clone()),
         )),
     );
-    session.submit("Ada".into(), "password".into(), false);
+    session.submit("Ada".into(), "password".into(), AuthMode::Login);
     settle(cx, &mut session, "Login saved in");
     // Provider deletion remains blocked beyond its deadline while auth can move on.
     shared.0.lock().unwrap().3 = true;
@@ -512,7 +512,7 @@ fn delayed_failed_deletion_cannot_remove_a_new_save_of_the_same_identity(cx: &mu
         session.storage_retry(),
         Some(StorageRetry::Deletion)
     ));
-    session.submit("Ada".into(), "new password".into(), false);
+    session.submit("Ada".into(), "new password".into(), AuthMode::Login);
     settle(cx, &mut session, "Saving login");
     assert!(session.active().is_some());
     assert!(
@@ -555,7 +555,7 @@ fn successful_new_logout_preserves_warning_for_an_older_failed_deletion(cx: &mut
             Some(path.clone()),
         )),
     );
-    session.submit("Ada".into(), "password".into(), false);
+    session.submit("Ada".into(), "password".into(), AuthMode::Login);
     settle(cx, &mut session, "Login saved in");
     let old = crate::storage::load_at(Some(&path)).saved.unwrap();
     shared.0.lock().unwrap().3 = true;
@@ -571,7 +571,7 @@ fn successful_new_logout_preserves_warning_for_an_older_failed_deletion(cx: &mut
     );
 
     session.change_server("https://other.example.test".into());
-    session.submit("Ada".into(), "new password".into(), false);
+    session.submit("Ada".into(), "new password".into(), AuthMode::Login);
     settle(cx, &mut session, "Login saved in");
     assert!(session.active().is_some());
     assert!(
@@ -668,7 +668,7 @@ fn save_restore_and_logout_are_owned_without_either_screen(cx: &mut TestAppConte
             Some(path.clone()),
         )),
     );
-    session.submit("Ada".into(), "synthetic password".into(), false);
+    session.submit("Ada".into(), "synthetic password".into(), AuthMode::Login);
     settle(cx, &mut session, "Login saved in");
     assert!(session.active().is_some());
     assert!(session.storage_retry().is_none());

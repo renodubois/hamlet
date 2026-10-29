@@ -1,0 +1,1 @@
+{"crop_xyxy": [243, 60, 580, 210], "identical": true, "scenario": "final binary: width resize then tall latest deletion with insufficient surviving tail"}

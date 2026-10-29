@@ -26,11 +26,23 @@ fn live_deletion_duplicate_late_deliveries_dialog_outcomes_and_session_guards(
     let fallback = calls.try_recv().unwrap();
     assert_eq!(fallback.request.url().path(), "/api/v1/channels/2/messages");
     assert_eq!(activity.read().selected.as_deref(), Some("2"));
-    assert!(activity.read().delete_pending);
-    assert!(activity.read().rename_pending);
-    assert_eq!(activity.read().delete_confirmed, 0);
-    assert!(activity.read().drafts.is_empty());
-    assert!(activity.read().send_pending.is_empty());
+    assert!(activity.read().channel_delete.pending);
+    assert!(activity.read().rename.pending);
+    assert_eq!(activity.read().channel_delete.revision, 0);
+    assert!(
+        activity
+            .read()
+            .conversations()
+            .values()
+            .all(|c| c.draft.is_none())
+    );
+    assert!(
+        activity
+            .read()
+            .conversations()
+            .values()
+            .all(|c| !c.is_sending())
+    );
     for data in [
         serde_json::json!({"type":"channel_deleted","channel_id":"1"}),
         serde_json::json!({"type":"channel_renamed","channel":{"id":"1","name":"late","type":"text"}}),
@@ -59,7 +71,8 @@ fn live_deletion_duplicate_late_deliveries_dialog_outcomes_and_session_guards(
     assert!(
         activity
             .read()
-            .rename_feedback
+            .rename
+            .feedback
             .as_ref()
             .unwrap()
             .contains("not found")
@@ -67,13 +80,14 @@ fn live_deletion_duplicate_late_deliveries_dialog_outcomes_and_session_guards(
     assert!(
         activity
             .read()
-            .delete_feedback
+            .channel_delete
+            .feedback
             .as_ref()
             .unwrap()
             .contains("may have succeeded")
     );
-    assert_eq!(activity.read().delete_confirmed, 0);
-    assert!(!activity.read().history.contains_key("1"));
+    assert_eq!(activity.read().channel_delete.revision, 0);
+    assert!(activity.read().history("1").is_none());
     assert!(
         matches!(&activity.read().channels, Some(Load::Ready(channels)) if channels.len() == 1 && channels[0].id == "2")
     );
@@ -86,7 +100,13 @@ fn live_deletion_duplicate_late_deliveries_dialog_outcomes_and_session_guards(
     );
     drain(cx, &activity);
     assert!(activity.read().selected.is_none());
-    assert!(activity.read().history.is_empty());
+    assert!(
+        activity
+            .read()
+            .conversations()
+            .values()
+            .all(|c| c.history.is_none())
+    );
     assert!(calls.is_empty());
     let old = activity.0.borrow().live.attempt();
     activity.close();
@@ -127,7 +147,7 @@ fn remote_delete_rejects_held_history_and_successful_late_rename(
     );
     drain(cx, &activity);
     assert_eq!(activity.read().selected.as_deref(), Some("1"));
-    assert!(activity.read().rename_pending);
+    assert!(activity.read().rename.pending);
     let _ = history.reply.try_send(Ok(Response::controlled(
         StatusCode::OK,
         serde_json::json!({"items":[message("9", "2")],"next_cursor":"cursor"}).to_string(),
@@ -140,18 +160,24 @@ fn remote_delete_rejects_held_history_and_successful_late_rename(
         )))
         .unwrap();
     drain(cx, &activity);
-    assert_eq!(activity.read().rename_confirmed, 0);
+    assert_eq!(activity.read().rename.revision, 0);
     assert!(
         activity
             .read()
-            .rename_feedback
+            .rename
+            .feedback
             .as_ref()
             .unwrap()
             .contains("not found")
     );
-    assert!(!activity.read().history.contains_key("2"));
-    assert!(!activity.read().drafts.contains_key("2"));
-    assert!(!activity.read().older.contains_key("2"));
+    assert!(activity.read().history("2").is_none());
+    assert!(
+        activity
+            .read()
+            .conversation("2")
+            .is_none_or(|c| c.draft.is_none())
+    );
+    assert!(activity.read().older("2").is_none());
     assert!(
         calls.is_empty(),
         "cached fallback and late outcomes cause no reads/replay"

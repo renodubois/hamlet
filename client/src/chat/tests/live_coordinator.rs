@@ -131,7 +131,7 @@ fn ordinary_reads_survive_stream_failure_and_read_errors_leave_the_stream_alone(
         .unwrap();
     drain(cx, &activity);
     assert!(matches!(
-        activity.read().history.get("2"),
+        activity.read().history("2"),
         Some(Load::Failed(_))
     ));
     assert_eq!(activity.status(), "");
@@ -144,10 +144,7 @@ fn ordinary_reads_survive_stream_failure_and_read_errors_leave_the_stream_alone(
     drain(cx, &activity);
     respond(calls.try_recv().unwrap(), page(&[]));
     drain(cx, &activity);
-    assert!(matches!(
-        activity.read().history.get("2"),
-        Some(Load::Ready(_))
-    ));
+    assert!(matches!(activity.read().history("2"), Some(Load::Ready(_))));
     assert!(streams.is_empty());
     assert!(calls.is_empty());
 
@@ -189,19 +186,19 @@ fn disconnect_keeps_pending_writes_and_only_originating_confirmation_clears_inpu
     stream.message("9", "1");
     drain(cx, &activity);
     assert_eq!(activity.read().draft("1"), "same text");
-    assert!(activity.read().send_pending.contains_key("1"));
+    assert!(activity.read().is_sending("1"));
     stream.body.close();
     drain(cx, &activity);
     assert!(!send.reply.is_closed());
     assert!(!create.reply.is_closed());
-    assert!(activity.read().create_pending);
+    assert!(activity.read().create.pending);
     cx.background_executor.advance_clock(Duration::from_secs(3));
     drain(cx, &activity);
     let retry = streams.try_recv().unwrap();
     retry.ready();
     drain(cx, &activity);
-    assert!(activity.read().send_pending.contains_key("1"));
-    assert!(activity.read().create_pending);
+    assert!(activity.read().is_sending("1"));
+    assert!(activity.read().create.pending);
     assert!(activity.created().is_none());
     assert!(calls.is_empty());
     confirm(send, message("9", "1"));
@@ -240,7 +237,13 @@ fn disconnect_keeps_pending_writes_and_only_originating_confirmation_clears_inpu
     drain(cx, &activity);
     assert_eq!(ids(&activity), ["10", "9", "8"]);
     assert_eq!(activity.read().draft("1"), "uncertain text");
-    assert!(activity.read().send_feedback["1"].contains("may already have been published"));
+    assert!(
+        activity
+            .read()
+            .send_feedback("1")
+            .unwrap()
+            .contains("may already have been published")
+    );
     assert!(
         calls.is_empty(),
         "uncertainty causes neither resend nor special reads"
@@ -275,7 +278,7 @@ fn replacing_reads_may_miss_events_without_buffering_or_restarting(
     assert!(
         matches!(&activity.read().channels, Some(Load::Ready(channels)) if channels.len() == 2)
     );
-    assert!(!activity.read().history.contains_key("2"));
+    assert!(activity.read().history("2").is_none());
     stream.message("9", "1");
     drain(cx, &activity);
     assert_eq!(ids(&activity), ["9", "8"]);

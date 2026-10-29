@@ -1,0 +1,174 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.22s
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+     Running unittests src/lib.rs (target/debug/deps/hamlet-4efa4901e01c11f5)
+
+running 15 tests
+test live_updates::hub::transport_tests::measured_bounded_fanout_at_ten_changes_per_second ... ignored, optional fanout measurement, not a release prerequisite
+test live_updates::hub::tests::unknown_events_cannot_be_prepared_for_publication ... ok
+test live_updates::hub::tests::full_capacity_is_deliverable_but_one_more_before_ready_is_terminal ... ok
+test live_updates::hub::tests::lag_closes_only_the_affected_subscription_and_fresh_delivery_remains_available ... ok
+test live_updates::hub::tests::no_subscribers_is_normal_and_fanout_shares_payload_storage ... ok
+test channels::operations::tests::missed_publication_does_not_disable_existing_or_fresh_subscriptions ... ok
+test live_updates::hub::tests::terminal_http_bodies_release_lagged_subscription_without_waiting_for_client_drop ... ok
+test messages::operations::tests::independent_creations_arrive_out_of_timestamp_order_but_match_sortable_history ... ok
+test messages::operations::tests::missed_publication_does_not_disable_existing_or_fresh_subscriptions ... ok
+test messages::operations::tests::id_collisions_retry_without_phantoms_and_exhaustion_keeps_delivery_usable ... ok
+test channels::operations::tests::id_collisions_retry_without_phantoms_and_exhaustion_publishes_nothing ... ok
+test live_updates::hub::transport_tests::real_workers_share_fanout_and_disconnect_releases_receivers ... ok
+test messages::operations::deletion_tests::send_and_history_are_ordered_against_deletion ... ok
+test messages::operations::deletion_tests::history_snapshot_before_message_deletion_may_return_it_but_new_snapshot_excludes_it ... ok
+test messages::operations::deletion_tests::message_delete_and_channel_delete_have_controlled_winner_semantics ... ok
+
+test result: ok. 14 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.83s
+
+     Running unittests src/bin/generate-openapi.rs (target/debug/deps/generate_openapi-09b3f297312bbb4e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/hamlet-2b93d7fe30d12e41)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/auth.rs (target/debug/deps/auth-7b23be3377f43c0e)
+
+running 1 test
+test signup_and_identity_are_isolated_and_sessions_are_digest_only ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.68s
+
+     Running tests/channel_delete_publication.rs (target/debug/deps/channel_delete_publication-418e9e386f14e8f3)
+
+running 1 test
+test two_users_receive_deletions_and_failed_deletes_publish_nothing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.45s
+
+     Running tests/channel_deletion.rs (target/debug/deps/channel_deletion-bfad4b3872a0ab9f)
+
+running 3 tests
+test previous_schema_upgrade_preserves_values_and_foreign_keys ... ok
+test simultaneous_route_deletes_leave_one_active_channel ... ok
+test deletion_retains_conversation_blocks_access_and_reuses_names ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.69s
+
+     Running tests/channel_publication.rs (target/debug/deps/channel_publication-e05596a752963d7d)
+
+running 4 tests
+test concurrent_creations_publish_each_confirmed_identity_once_without_commit_order_assumptions ... ok
+test channel_creation_reaches_multiple_subscribers_with_the_http_payload ... ok
+test slow_and_dropped_subscribers_do_not_hold_writes_or_healthy_delivery ... ok
+test rejected_and_failed_creations_publish_nothing_and_no_subscriber_is_normal ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.59s
+
+     Running tests/channel_rename.rs (target/debug/deps/channel_rename-a109d857a636a44d)
+
+running 1 test
+test authenticated_shared_rename_contract_and_conversation_retention ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
+
+     Running tests/channel_rename_publication.rs (target/debug/deps/channel_rename_publication-c052f9bd59d11e0b)
+
+running 1 test
+test two_users_receive_matching_renames_and_failures_publish_nothing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.46s
+
+     Running tests/channels.rs (target/debug/deps/channels-76e9914189f3f360)
+
+running 1 test
+test bootstrap_create_shared_listing_validation_and_order ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.86s
+
+     Running tests/contract.rs (target/debug/deps/contract-a02f9660143a1b62)
+
+running 2 tests
+test generated_contract_is_current_and_covers_every_registered_handler ... ok
+test documented_security_and_error_shapes_match_http ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.60s
+
+     Running tests/live_updates.rs (target/debug/deps/live_updates-196a41192ff8d2bd)
+
+running 10 tests
+test failed_validation_ends_stream_but_next_handshake_is_server_error_not_rejection ... ok
+test known_expiry_preempts_idle_queued_and_not_yet_ready_streams ... ok
+test continuous_changes_cannot_postpone_revalidation ... ok
+test idle_stream_sends_comment_heartbeat ... ok
+test expiry_cancels_stalled_validation_without_delivering_queued_changes ... ok
+test revoked_session_closes_idle_and_busy_streams_before_more_delivery ... ok
+test subscription_precedes_ready_and_fanout_is_fresh_and_escaped ... ok
+test pending_validation_suppresses_all_frames_then_resumes_only_on_success ... ok
+test lag_terminates_before_ready_and_after_ready_even_when_heartbeat_is_due ... ok
+test protected_stream_has_uniform_methods_and_finite_ready_frame ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.01s
+
+     Running tests/login.rs (target/debug/deps/login-92b02a97598a056b)
+
+running 1 test
+test independent_sessions_and_logout ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.05s
+
+     Running tests/message_deletion.rs (target/debug/deps/message_deletion-cfeec71c9c11cac5)
+
+running 4 tests
+test deleted_rows_are_filtered_before_pagination_and_deleted_cursors_still_work ... ok
+test concurrent_author_repeats_publish_once_and_keep_the_first_timestamp ... ok
+test author_soft_deletes_with_one_identity_only_event_and_idempotent_repeats ... ok
+test rejected_requests_and_non_author_repeats_are_silent_and_use_error_envelopes ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.94s
+
+     Running tests/message_publication.rs (target/debug/deps/message_publication-70f150f590416c09)
+
+running 4 tests
+test concurrent_creations_across_channels_deliver_each_identity_once_without_order_assumptions ... ok
+test slow_and_dropped_subscribers_never_hold_writes_or_healthy_delivery ... ok
+test rejected_and_failed_writes_publish_nothing_and_no_subscriber_is_normal ... ok
+test author_lookup_failure_after_insert_cannot_suppress_response_or_matching_fanout ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.78s
+
+     Running tests/messages.rs (target/debug/deps/messages-47bfa1c7bae9088c)
+
+running 1 test
+test messages_keep_author_identity_and_preserve_text ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+
+     Running tests/pagination.rs (target/debug/deps/pagination-d64ea9781a136ae1)
+
+running 1 test
+test cursor_pages_are_bounded_and_stable_on_ties_and_cross_channel_positions ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+
+     Running tests/storage.rs (target/debug/deps/storage-7ce18ff0b3b1d867)
+
+running 2 tests
+test initialization_adds_nullable_message_deletion_without_losing_retained_rows ... ok
+test migrations_and_pool_configuration_survive_restarts ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests hamlet
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s

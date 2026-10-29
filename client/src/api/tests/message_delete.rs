@@ -4,7 +4,7 @@ use super::*;
 async fn message_delete_binds_both_identities_bearer_and_empty_body_and_decodes_failures() {
     for (status, body, expected) in [
         (StatusCode::NO_CONTENT, "", Ok(())),
-        (StatusCode::UNAUTHORIZED, "", Err(ApiError::AlreadyInvalid)),
+        (StatusCode::UNAUTHORIZED, "", Err(ApiError::SessionRejected)),
         (
             StatusCode::BAD_REQUEST,
             r#"{"error":{"code":"bad_request"}}"#,
@@ -45,7 +45,7 @@ async fn message_delete_binds_both_identities_bearer_and_empty_body_and_decodes_
             r#"{"error":{"code":"other"}}"#,
             Err(ApiError::InvalidResponse),
         ),
-        (StatusCode::OK, "{}", Err(ApiError::Unavailable)),
+        (StatusCode::OK, "{}", Err(ApiError::UnexpectedStatus)),
     ] {
         let adapter = Controlled::new([(status, body)]);
         let client = HttpTransport::with_adapter(adapter.clone())
@@ -88,13 +88,13 @@ async fn message_delete_rejects_unsafe_path_segments_before_transport() {
             client
                 .delete_message(invalid.into(), "000000000000002".into())
                 .await,
-            Err(ApiError::InvalidResponse)
+            Err(ApiError::InvalidRequest)
         );
         assert_eq!(
             client
                 .delete_message("000000000000001".into(), invalid.into())
                 .await,
-            Err(ApiError::InvalidResponse)
+            Err(ApiError::InvalidRequest)
         );
     }
     assert!(adapter.requests.lock().unwrap().is_empty());

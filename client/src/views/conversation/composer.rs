@@ -36,20 +36,10 @@ impl ComposerView {
             }
             cx.notify();
         });
-        let changes = chat.notifications();
-        let notifications = cx.spawn(async move |weak, cx| {
-            while changes.recv().await.is_ok() {
-                if weak
-                    .update_in(cx, |view, window, cx| {
-                        view.present(window, cx);
-                        cx.notify();
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
+        let notifications =
+            crate::views::present_on_chat_change(&chat, cx, |view: &mut Self, window, cx| {
+                view.present(window, cx)
+            });
         let mut view = Self {
             chat,
             presented_channel: None,
@@ -141,7 +131,8 @@ impl Render for ComposerView {
             .selected_channel()
             .map(|channel| channel.name.as_str())
             .unwrap_or("Channel");
-        let sending = chat.send_pending.contains_key(id);
+        let sending = chat.is_sending(id);
+        let feedback = chat.send_feedback(id).map(str::to_owned);
         let focus = self.input.read(cx).focus_handle(cx);
         div()
             .id("composer-panel")
@@ -164,7 +155,7 @@ impl Render for ComposerView {
                             .h(px(90.)),
                     ),
             )
-            .when_some(chat.send_feedback.get(id), |pane, feedback| {
+            .when_some(feedback, |pane, feedback| {
                 pane.child(
                     div()
                         .id("send-feedback")

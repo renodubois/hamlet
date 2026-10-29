@@ -9,8 +9,8 @@ use std::{
 };
 
 pub fn validate_server(value: &str) -> Result<Url, ApiError> {
-    let url = Url::parse(value).map_err(|_| ApiError::InvalidResponse)?;
-    let host = url.host_str().ok_or(ApiError::InvalidResponse)?;
+    let url = Url::parse(value).map_err(|_| ApiError::InvalidRequest)?;
+    let host = url.host_str().ok_or(ApiError::InvalidRequest)?;
     let loopback = host.eq_ignore_ascii_case("localhost")
         || host
             .trim_start_matches('[')
@@ -24,9 +24,17 @@ pub fn validate_server(value: &str) -> Result<Url, ApiError> {
         || url.fragment().is_some()
         || url.path() != "/"
     {
-        return Err(ApiError::InvalidResponse);
+        return Err(ApiError::InvalidRequest);
     }
     Ok(url)
+}
+
+/// One literal path segment. Identifiers never add, escape or traverse path levels.
+fn segment(value: &str) -> Result<&str, ApiError> {
+    if value.is_empty() || value.contains(['/', '\\']) || value == "." || value == ".." {
+        return Err(ApiError::InvalidRequest);
+    }
+    Ok(value)
 }
 
 /// Reusable connection pool and transport policy, shared across bound contexts.
@@ -208,7 +216,7 @@ impl ServerClient {
     /// Session coordination must verify current user, identity and expiry before publication.
     pub fn restore_candidate(&self, token: String) -> Result<AuthenticatedClient, ApiError> {
         if token.is_empty() {
-            return Err(ApiError::InvalidResponse);
+            return Err(ApiError::InvalidRequest);
         }
         Ok(AuthenticatedClient(Arc::new(AuthenticatedContext {
             server: self.clone(),
@@ -216,8 +224,23 @@ impl ServerClient {
         })))
     }
 
-    pub(super) fn endpoint(&self, path: &str) -> Url {
-        self.0.url.join(path).expect("static API path")
+    pub(super) fn transport(&self) -> &HttpTransport {
+        &self.0.transport
+    }
+
+    /// Builds `<server>/<segments…>`, validating every segment, including identifiers.
+    pub(super) fn endpoint(&self, segments: &[&str]) -> Result<Url, ApiError> {
+        let mut url = self.0.url.clone();
+        url.path_segments_mut()
+            .map_err(|_| ApiError::InvalidRequest)?
+            .pop_if_empty()
+            .extend(
+                segments
+                    .iter()
+                    .map(|value| segment(value))
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        Ok(url)
     }
 }
 
@@ -232,14 +255,30 @@ impl AuthenticatedClient {
         self.0.server.server_url()
     }
 
-    pub(super) fn request(&self, method: reqwest::Method, url: Url) -> RequestBuilder {
-        self.0
-            .server
-            .0
-            .transport
+    pub(super) fn server(&self) -> &ServerClient {
+        &self.0.server
+    }
+
+    pub(super) fn token(&self) -> &str {
+        &self.0.token
+    }
+
+    /// A bearer-bound request to `<server>/<segments…>`.
+    pub(super) fn request(
+        &self,
+        method: reqwest::Method,
+        segments: &[&str],
+    ) -> Result<RequestBuilder, ApiError> {
+        Ok(self
+            .server()
+            .transport()
             .client
-            .request(method, url)
-            .bearer_auth(&self.0.token)
+            .request(method, self.server().endpoint(segments)?)
+            .bearer_auth(self.token()))
+    }
+
+    pub(super) async fn send(&self, request: RequestBuilder) -> Result<Response, ApiError> {
+        self.server().transport().send(request).await
     }
 }
 

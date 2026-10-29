@@ -4,7 +4,7 @@ use super::*;
 async fn delete_decodes_empty_success_and_typed_failures_with_bound_bearer() {
     for (status, body, expected) in [
         (StatusCode::NO_CONTENT, "", Ok(())),
-        (StatusCode::UNAUTHORIZED, "", Err(ApiError::AlreadyInvalid)),
+        (StatusCode::UNAUTHORIZED, "", Err(ApiError::SessionRejected)),
         (StatusCode::NOT_FOUND, "", Err(ApiError::NotFound)),
         (
             StatusCode::CONFLICT,
@@ -31,7 +31,7 @@ async fn delete_decodes_empty_success_and_typed_failures_with_bound_bearer() {
             "",
             Err(ApiError::ServerFailure),
         ),
-        (StatusCode::OK, "{}", Err(ApiError::Unavailable)),
+        (StatusCode::OK, "{}", Err(ApiError::UnexpectedStatus)),
     ] {
         let adapter = Controlled::new([(status, body)]);
         let client = HttpTransport::with_adapter(adapter.clone())

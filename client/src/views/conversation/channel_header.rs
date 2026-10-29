@@ -9,14 +9,7 @@ pub(super) struct ChannelHeaderView {
 
 impl ChannelHeaderView {
     pub(super) fn new(chat: ChatHandle, cx: &mut Context<Self>) -> Self {
-        let changes = chat.notifications();
-        let notifications = cx.spawn(async move |weak, cx| {
-            while changes.recv().await.is_ok() {
-                if weak.update(cx, |_, cx| cx.notify()).is_err() {
-                    break;
-                }
-            }
-        });
+        let notifications = crate::views::rerender_on_chat_change(&chat, cx);
         Self {
             chat,
             _notifications: notifications,

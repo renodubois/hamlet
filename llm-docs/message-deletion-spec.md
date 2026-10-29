@@ -1,6 +1,6 @@
 # Message deletion
 
-Status: implemented by #85–#88; automated verification is recorded in [message-deletion-verification.md](message-deletion-verification.md). Native acceptance remains unverified. Paths are relative to the repository root.
+Status: implemented by #85–#88; original automated verification is recorded in [message-deletion-verification.md](message-deletion-verification.md). Subsequent fixes and isolated two-client native deletion coverage are recorded in [the adversarial review](message-deletion-adversarial-review.md); device-specific native acceptance remains incomplete. Paths are relative to the repository root.
 
 ## Agreed requirements
 

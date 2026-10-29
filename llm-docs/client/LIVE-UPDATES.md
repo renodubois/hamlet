@@ -7,7 +7,7 @@ The desktop chat coordinator owns one authenticated stream per accepted session.
 `AuthenticatedClient::events(&Execution) -> EventStream` starts exactly one attempt using the immutable server/credential binding. `EventStream::next(&mut self)` returns `Result<LiveEvent, StreamError>`:
 
 - `Ready`, `ChannelCreated(Channel)`, `ChannelRenamed(Channel)`, `ChannelDeleted(String)`, `MessageCreated(Message)` and `MessageDeleted { channel_id, message_id }` contain validated client-facing data, not wire entities or HTTP responses. Message-deletion identities must be 15-digit decimal strings.
-- `Api(ApiError)` preserves handshake authentication rejection (`AlreadyInvalid`), server failure, unavailable transport, and invalid response distinctions.
+- `Api(ApiError)` preserves handshake authentication rejection (`SessionRejected`), server failure, unavailable transport, and invalid response distinctions.
 - `ReadyTimeout`, `IdleTimeout`, `Overflow`, and `Ended` are terminal. EOF alone is **not** authoritative credential rejection.
 
 The handle owns its execution task and response body. Drop it to cancel an attempt, including pending headers or an idle body. Canceling an individual `next()` wait does not cancel the handle. A terminal result invalidates pending deliveries and remains observable on subsequent `next()` calls. Session expiry/logout/replacement and attempt identity are caller responsibilities; cloning the authenticated client never replaces an existing attempt's credentials.

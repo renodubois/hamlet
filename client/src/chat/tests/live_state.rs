@@ -1,11 +1,7 @@
 use super::*;
 
 fn session() -> Identity {
-    Identity {
-        generation: Some(1),
-        expires_at: 100,
-        rejected: None,
-    }
+    Identity::new(1, 100)
 }
 fn channel(id: &str, name: &str) -> Channel {
     Channel {
@@ -29,7 +25,7 @@ fn page(items: Vec<Message>, cursor: Option<&str>) -> Page {
         next_cursor: cursor.map(str::to_owned),
     }
 }
-fn loading() -> (ChatState, Identity, ReadRequest) {
+fn loading() -> (ChatState, Identity, HistoryRead) {
     let mut state = ChatState::default();
     let mut session = session();
     let read = state.start(&session).unwrap();
@@ -43,7 +39,7 @@ fn loading() -> (ChatState, Identity, ReadRequest) {
     (state, session, history)
 }
 fn ids(state: &ChatState) -> Vec<&str> {
-    match state.history.get("1") {
+    match state.history("1") {
         Some(Load::Ready(items)) => items.iter().map(|m| m.id.as_str()).collect(),
         _ => panic!("history not ready"),
     }
@@ -85,7 +81,7 @@ fn inactive_confirmations_merge_into_loaded_history_or_wait_for_their_own_read()
         state.complete_history(&mut session, &original, Ok(page(vec![], None)));
         state.complete_history(&mut session, &other, Ok(page(vec![], None)));
         assert_eq!(state.selected.as_deref(), Some("2"));
-        assert_eq!(state.history.get("2"), Some(&Load::Ready(vec![])));
+        assert_eq!(state.history("2"), Some(&Load::Ready(vec![])));
         if loaded {
             assert_eq!(
                 ids(&state),
@@ -94,7 +90,7 @@ fn inactive_confirmations_merge_into_loaded_history_or_wait_for_their_own_read()
             );
         } else {
             assert!(
-                !state.history.contains_key("1"),
+                state.history("1").is_none(),
                 "confirmation must not allocate an inactive cache"
             );
             let canceled = state.select(&session, "1").unwrap();
@@ -112,7 +108,7 @@ fn inactive_confirmations_merge_into_loaded_history_or_wait_for_their_own_read()
         assert!(state.select(&session, "1").is_none());
         assert_eq!(ids(&state), ["10"], "navigation preserves loaded history");
         assert_eq!(state.draft("1"), "");
-        assert!(!state.uncertain.contains("1"));
+        assert!(state.conversation("1").is_none_or(|c| !c.uncertain));
     }
 }
 
@@ -121,11 +117,11 @@ fn canceled_replacing_reads_cannot_contaminate_new_selection_or_reject_its_sessi
     let (mut state, mut session, obsolete) = loading();
     state.merge_message(message("10", "2026-01-01T00:00:00Z"));
     let current = state.select(&session, "2").unwrap();
-    state.complete_history(&mut session, &obsolete, Err(ApiError::AlreadyInvalid));
-    assert_eq!(session.generation, Some(1));
+    state.complete_history(&mut session, &obsolete, Err(ApiError::SessionRejected));
+    assert_eq!(session.session_generation(), Some(1));
     state.complete_history(&mut session, &current, Ok(page(vec![], None)));
-    assert_eq!(state.history.get("2"), Some(&Load::Ready(vec![])));
-    assert!(!state.history.contains_key("1"));
+    assert_eq!(state.history("2"), Some(&Load::Ready(vec![])));
+    assert!(state.history("1").is_none());
     let fresh = state.select(&session, "1").unwrap();
     state.merge_message(message("11", "2026-01-01T00:00:00Z"));
     state.complete_history(&mut session, &fresh, Ok(page(vec![], None)));
@@ -145,14 +141,11 @@ fn confirmation_during_initial_read_survives_failure_snapshot_and_duplicate_even
     );
     state.set_draft("1", "next draft".into());
     state.complete_history(&mut session, &read, Err(ApiError::Unavailable));
-    assert!(matches!(
-        state.history_for_display("1"),
-        Some(Load::Failed(_))
-    ));
+    assert!(matches!(state.history("1"), Some(Load::Failed(_))));
     assert_eq!(state.draft("1"), "next draft");
     let retry = state.select(&session, "1").unwrap();
-    state.complete_history(&mut session, &read, Err(ApiError::AlreadyInvalid));
-    assert_eq!(session.generation, Some(1));
+    state.complete_history(&mut session, &read, Err(ApiError::SessionRejected));
+    assert_eq!(session.session_generation(), Some(1));
     state.complete_history(
         &mut session,
         &retry,
@@ -164,7 +157,7 @@ fn confirmation_during_initial_read_survives_failure_snapshot_and_duplicate_even
     assert_eq!(ids(&state), ["10", "9", "8"]);
     assert!(state.select(&session, "1").is_none());
     assert_eq!(state.draft("1"), "next draft");
-    assert!(!state.send_feedback.contains_key("1"));
+    assert!(state.send_feedback("1").is_none());
 }
 
 #[test]
@@ -196,9 +189,9 @@ fn older_page_merges_into_live_history_in_order_and_keeps_its_own_cursor() {
     assert_eq!(ids(&state), ["60", "50", "30", "10"]);
     let next = state.request_older(&session).unwrap();
     assert_eq!(next.before.as_deref(), Some("next"));
-    state.complete_history(&mut session, &older, Err(ApiError::AlreadyInvalid));
-    assert_eq!(session.generation, Some(1));
-    assert_eq!(state.older.get("1"), Some(&Older::Loading));
+    state.complete_history(&mut session, &older, Err(ApiError::SessionRejected));
+    assert_eq!(session.session_generation(), Some(1));
+    assert_eq!(state.older("1"), Some(&OlderPages::Loading));
 }
 
 #[test]
@@ -210,7 +203,7 @@ fn initial_read_preserves_http_confirmation_but_live_events_do_not_settle_sends(
     let second = message("10", "2026-01-01T00:00:00Z");
     state.merge_message(first.clone());
     assert_eq!(state.draft("1"), "same text");
-    assert!(state.send_pending.contains_key("1"));
+    assert!(state.is_sending("1"));
     assert_eq!(
         state.complete_send(&mut session, &send, Ok(second.clone()), 0),
         SendOutcome::Confirmed
@@ -236,7 +229,7 @@ fn initial_channel_read_can_miss_live_creations_and_rejects_obsolete_completions
     let history = state
         .complete_channels(&mut session, &read, Ok(vec![channel("1", "General")]))
         .unwrap();
-    assert_eq!(history.channel_id.as_deref(), Some("1"));
+    assert_eq!(history.channel_id, "1");
     assert_eq!(
         state.channels,
         Some(Load::Ready(vec![channel("1", "General")]))
@@ -244,8 +237,8 @@ fn initial_channel_read_can_miss_live_creations_and_rejects_obsolete_completions
     assert_eq!(state.merge_channel(channel("4", "Remote")), 1);
     assert_eq!(state.merge_channel(channel("4", "Remote")), 0);
     assert_eq!(state.selected.as_deref(), Some("1"));
-    state.complete_channels(&mut session, &read, Err(ApiError::AlreadyInvalid));
-    assert_eq!(session.generation, Some(1));
+    state.complete_channels(&mut session, &read, Err(ApiError::SessionRejected));
+    assert_eq!(session.session_generation(), Some(1));
     assert_eq!(
         state.channels,
         Some(Load::Ready(vec![
@@ -262,12 +255,10 @@ fn remote_channels_keep_selection_and_local_confirmation_selects_without_duplica
     state.merge_channel(channel("3", "alpha"));
     state.merge_channel(channel("3", "alpha"));
     assert_eq!(state.selected.as_deref(), Some("1"));
-    assert!(!state.history.contains_key("3"));
-    assert!(
-        state
-            .complete_create(&mut session, &create, Ok(channel("3", "alpha")), 0)
-            .0
-    );
+    assert!(state.history("3").is_none());
+    let revision = state.create.revision;
+    state.complete_create(&mut session, &create, Ok(channel("3", "alpha")), 0);
+    assert_ne!(state.create.revision, revision, "creation confirmed");
     assert_eq!(state.selected.as_deref(), Some("3"));
     state.merge_channel(channel("3", "alpha"));
     assert_eq!(
@@ -297,5 +288,5 @@ fn creations_deduplicate_and_order_by_instant_then_numeric_id_without_loading_ot
     let mut unloaded = message("12", "2026-01-01T00:00:00Z");
     unloaded.channel_id = "2".into();
     state.merge_message(unloaded);
-    assert!(!state.history.contains_key("2"));
+    assert!(state.history("2").is_none());
 }

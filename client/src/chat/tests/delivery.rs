@@ -5,11 +5,7 @@ use crate::chat::{ChatUpdate, Update};
 async fn terminal_delivery_remains_available_when_the_executor_bridge_is_full() {
     let (send, updates) = channel();
     let mut state = crate::chat::state::ChatState::default();
-    let identity = crate::chat::state::Identity {
-        generation: Some(7),
-        expires_at: 100,
-        rejected: None,
-    };
+    let identity = crate::chat::state::Identity::new(7, 100);
     let request = state.start(&identity).unwrap();
     for _ in 0..DELIVERY_CAPACITY {
         assert!(

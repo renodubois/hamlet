@@ -1,34 +1,7 @@
+use super::response::{BAD_REQUEST, FORBIDDEN, NOT_FOUND, expect, expect_json};
 use super::{ApiError, ApiFuture, AuthenticatedClient, Message, Page};
-use super::{auth::protected_response, client::Response, error::ErrorResponse};
 use hamlet_protocol::{CreateMessage, History, Message as ProtocolMessage};
-use reqwest::{Method, StatusCode, Url};
-
-async fn decode_created_message(response: Response, channel_id: &str) -> Result<Message, ApiError> {
-    match response.status() {
-        StatusCode::CREATED => {
-            let wire: ProtocolMessage = response
-                .json()
-                .await
-                .map_err(|_| ApiError::InvalidResponse)?;
-            decode_message(wire, channel_id)
-        }
-        StatusCode::UNAUTHORIZED => Err(ApiError::AlreadyInvalid),
-        StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND => {
-            let status = response.status();
-            let body: ErrorResponse = response
-                .json()
-                .await
-                .map_err(|_| ApiError::InvalidResponse)?;
-            match (status, body.error.code.as_str()) {
-                (StatusCode::BAD_REQUEST, "bad_request") => Err(ApiError::InvalidInput),
-                (StatusCode::NOT_FOUND, "not_found") => Err(ApiError::NotFound),
-                _ => Err(ApiError::InvalidResponse),
-            }
-        }
-        StatusCode::INTERNAL_SERVER_ERROR => Err(ApiError::ServerFailure),
-        _ => Err(ApiError::Unavailable),
-    }
-}
+use reqwest::{Method, StatusCode};
 
 pub(super) fn decode_message(wire: ProtocolMessage, channel_id: &str) -> Result<Message, ApiError> {
     if wire.id.is_empty()
@@ -50,19 +23,33 @@ pub(super) fn decode_message(wire: ProtocolMessage, channel_id: &str) -> Result<
 }
 
 impl AuthenticatedClient {
-    fn message_url(&self, channel_id: &str) -> Result<Url, ApiError> {
-        if channel_id.is_empty()
-            || channel_id.contains(['/', '\\'])
-            || channel_id == "."
-            || channel_id == ".."
-        {
-            return Err(ApiError::InvalidResponse);
-        }
-        let mut url = self.server_url().clone();
-        url.path_segments_mut()
-            .map_err(|_| ApiError::InvalidResponse)?
-            .extend(["api", "v1", "channels", channel_id, "messages"]);
-        Ok(url)
+    pub fn history_page(
+        &self,
+        channel_id: String,
+        before: Option<String>,
+    ) -> ApiFuture<Result<Page, ApiError>> {
+        let client = self.clone();
+        Box::pin(async move {
+            let mut request = client.request(
+                Method::GET,
+                &["api", "v1", "channels", &channel_id, "messages"],
+            )?;
+            if let Some(cursor) = &before {
+                // Server-issued cursors remain opaque, including reserved URL characters.
+                request = request.query(&[("before", cursor)]);
+            }
+            let wire: History =
+                expect_json(client.send(request).await?, StatusCode::OK, &[]).await?;
+            let items = wire
+                .items
+                .into_iter()
+                .map(|item| decode_message(item, &channel_id))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Page {
+                items,
+                next_cursor: wire.next_cursor,
+            })
+        })
     }
 
     pub fn send_message(
@@ -74,13 +61,15 @@ impl AuthenticatedClient {
         Box::pin(async move {
             // One POST only; timeout/malformed success never triggers replay.
             let request = client
-                .request(Method::POST, client.message_url(&channel_id)?)
+                .request(
+                    Method::POST,
+                    &["api", "v1", "channels", &channel_id, "messages"],
+                )?
                 .json(&CreateMessage { text });
-            decode_created_message(
-                client.0.server.0.transport.send(request).await?,
-                &channel_id,
-            )
-            .await
+            let response = client.send(request).await?;
+            let wire =
+                expect_json(response, StatusCode::CREATED, &[BAD_REQUEST, NOT_FOUND]).await?;
+            decode_message(wire, &channel_id)
         })
     }
 
@@ -92,66 +81,26 @@ impl AuthenticatedClient {
     ) -> ApiFuture<Result<(), ApiError>> {
         let client = self.clone();
         Box::pin(async move {
-            if message_id.is_empty()
-                || message_id.contains(['/', '\\'])
-                || message_id == "."
-                || message_id == ".."
-            {
-                return Err(ApiError::InvalidResponse);
-            }
-            let mut url = client.message_url(&channel_id)?;
-            url.path_segments_mut()
-                .map_err(|_| ApiError::InvalidResponse)?
-                .push(&message_id);
             // No body, optimistic mutation, or automatic retry.
-            let request = client.request(Method::DELETE, url);
-            let response = client.0.server.0.transport.send(request).await?;
-            match response.status() {
-                StatusCode::NO_CONTENT => Ok(()),
-                StatusCode::UNAUTHORIZED => Err(ApiError::AlreadyInvalid),
-                StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => {
-                    let status = response.status();
-                    let body: ErrorResponse = response
-                        .json()
-                        .await
-                        .map_err(|_| ApiError::InvalidResponse)?;
-                    match (status, body.error.code.as_str()) {
-                        (StatusCode::BAD_REQUEST, "bad_request") => Err(ApiError::InvalidInput),
-                        (StatusCode::FORBIDDEN, "forbidden") => Err(ApiError::Forbidden),
-                        (StatusCode::NOT_FOUND, "not_found") => Err(ApiError::NotFound),
-                        _ => Err(ApiError::InvalidResponse),
-                    }
-                }
-                StatusCode::INTERNAL_SERVER_ERROR => Err(ApiError::ServerFailure),
-                _ => Err(ApiError::Unavailable),
-            }
-        })
-    }
-
-    pub fn history_page(
-        &self,
-        channel_id: String,
-        before: Option<String>,
-    ) -> ApiFuture<Result<Page, ApiError>> {
-        let client = self.clone();
-        Box::pin(async move {
-            let mut url = client.message_url(&channel_id)?;
-            if let Some(cursor) = before.as_ref() {
-                // Server-issued cursors remain opaque, including reserved URL characters.
-                url.query_pairs_mut().append_pair("before", cursor);
-            }
-            let request = client.request(Method::GET, url);
-            let wire: History =
-                protected_response(client.0.server.0.transport.send(request).await?).await?;
-            let items = wire
-                .items
-                .into_iter()
-                .map(|item| decode_message(item, &channel_id))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(Page {
-                items,
-                next_cursor: wire.next_cursor,
-            })
+            let request = client.request(
+                Method::DELETE,
+                &[
+                    "api",
+                    "v1",
+                    "channels",
+                    &channel_id,
+                    "messages",
+                    &message_id,
+                ],
+            )?;
+            let response = client.send(request).await?;
+            expect(
+                response,
+                StatusCode::NO_CONTENT,
+                &[BAD_REQUEST, FORBIDDEN, NOT_FOUND],
+            )
+            .await?;
+            Ok(())
         })
     }
 }

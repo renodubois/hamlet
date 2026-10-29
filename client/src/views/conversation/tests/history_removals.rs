@@ -188,11 +188,21 @@ fn scroll_up(window: &mut Window, cx: &mut App) -> (usize, Pixels) {
 }
 
 #[gpui_kit::test]
-fn bottom_reader_follows_latest_removal_and_mixed_edits(cx: &mut TestAppContext) {
+fn resized_bottom_reader_follows_latest_removal_and_mixed_edits(cx: &mut TestAppContext) {
     let (activity, cx) = mount_history(cx, Arc::new(LoadedHistory));
     cx.update(|window, cx| {
         window.render_frame(cx);
         assert!(window.try_find("jump-latest").is_none());
+    });
+    let mut size = cx.update(|window, _| window.viewport_size());
+    size.width -= px(120.);
+    cx.simulate_resize(size);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("message-000080").bounds().bottom(),
+            window.find("history").bounds().bottom()
+        );
     });
     activity.replace_history_for_test("1", rows(1..=79));
     drain(cx, &activity);
@@ -218,6 +228,484 @@ fn bottom_reader_follows_latest_removal_and_mixed_edits(cx: &mut TestAppContext)
             window.find("message-000079").bounds().bottom(),
             window.find("history").bounds().bottom()
         );
+    });
+}
+
+#[gpui_kit::test]
+fn resized_scrolled_up_reader_keeps_anchor_on_removal_without_another_wheel(
+    cx: &mut TestAppContext,
+) {
+    let (activity, cx) = mount_history(cx, Arc::new(LoadedHistory));
+    let anchor = cx.update(scroll_up);
+    let mut size = cx.update(|window, _| window.viewport_size());
+    size.width -= px(120.);
+    cx.simulate_resize(size);
+    let resized_anchor = cx.update(|window, cx| {
+        window.render_frame(cx);
+        window
+            .find(format!("message-{:06}", anchor.0))
+            .bounds()
+            .top()
+    });
+    // Width changes invalidate GPUI's offscreen height estimates. Remove the
+    // latest row before another wheel can re-seed them in the production view.
+    activity.replace_history_for_test("1", rows(1..=79));
+    drain(cx, &activity);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window
+                .find(format!("message-{:06}", anchor.0))
+                .bounds()
+                .top(),
+            resized_anchor
+        );
+        assert!(window.try_find("message-000080").is_none());
+        assert!(window.try_find("jump-latest").is_some());
+    });
+}
+
+#[gpui_kit::test]
+fn height_only_shrink_at_bottom_follows_before_and_after_delete(cx: &mut TestAppContext) {
+    let (activity, cx) = mount_history(cx, Arc::new(LoadedHistory));
+    cx.update(|window, cx| window.render_frame(cx));
+    let mut size = cx.update(|window, _| window.viewport_size());
+    size.height -= px(160.);
+    cx.simulate_resize(size);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("message-000080").bounds().bottom(),
+            window.find("history").bounds().bottom(),
+            "resize itself must follow"
+        );
+    });
+    activity.replace_history_for_test("1", rows(1..=79));
+    drain(cx, &activity);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("message-000079").bounds().bottom(),
+            window.find("history").bounds().bottom()
+        );
+        assert!(window.try_find("jump-latest").is_none());
+    });
+}
+
+#[gpui_kit::test]
+fn height_only_resize_scrolled_reader_keeps_anchor_after_delete(cx: &mut TestAppContext) {
+    let (activity, cx) = mount_history(cx, Arc::new(LoadedHistory));
+    let anchor = cx.update(scroll_up);
+    let mut size = cx.update(|window, _| window.viewport_size());
+    size.height += px(160.);
+    cx.simulate_resize(size);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window
+                .find(format!("message-{:06}", anchor.0))
+                .bounds()
+                .top(),
+            anchor.1
+        );
+    });
+    activity.replace_history_for_test("1", rows(1..=79));
+    drain(cx, &activity);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window
+                .find(format!("message-{:06}", anchor.0))
+                .bounds()
+                .top(),
+            anchor.1
+        );
+        assert!(window.try_find("jump-latest").is_some());
+    });
+}
+
+#[gpui_kit::test]
+fn known_fitting_tail_downward_wheel_resumes_follow_for_append(cx: &mut TestAppContext) {
+    let (activity, cx, _) = mount_shrunken_tail_reader(cx, false);
+    activity.replace_history_for_test("1", rows(71..=73));
+    drain(cx, &activity);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.scroll("history", ScrollDelta::Pixels(point(px(0.), px(1000.))), cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("message-000071").bounds().top(),
+            window.find("history").bounds().top()
+        );
+        assert!(window.try_find("jump-latest").is_some());
+        window.scroll("history", ScrollDelta::Pixels(point(px(0.), px(-80.))), cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("jump-latest").is_none(),
+            "known fitting viewport must retire protection"
+        );
+    });
+    let mut next = rows(71..=73);
+    let mut appended = message(81);
+    appended.text = "new tall message\n".repeat(44);
+    next.insert(0, appended);
+    activity.replace_history_for_test("1", next);
+    drain(cx, &activity);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("message-000081").bounds().bottom(),
+            window.find("history").bounds().bottom()
+        );
+        assert!(window.try_find("jump-latest").is_none());
+    });
+}
+
+#[gpui_kit::test]
+fn unchanged_hover_frames_do_not_repeat_tail_padding_layout_after_append(cx: &mut TestAppContext) {
+    use super::history_test_support::mount_history_with_view;
+    let (activity, view, cx) = mount_history_with_view(
+        cx,
+        crate::test_support::live::transport(Arc::new(LoadedHistory)),
+    );
+    let anchor = cx.update(scroll_up);
+    activity.replace_history_for_test("1", rows(anchor.0..=anchor.0 + 1));
+    drain(cx, &activity);
+    cx.update(|window, cx| window.render_frame(cx));
+    assert_padding_layouts_reused(cx, &view);
+    let mut next = rows(anchor.0..=anchor.0 + 1);
+    next.insert(0, message(81));
+    activity.replace_history_for_test("1", next.clone());
+    drain(cx, &activity);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.find("message-000081").bounds().bottom()
+                < window.find("history").bounds().bottom()
+        );
+    });
+    assert_padding_layouts_reused(cx, &view);
+
+    let layouts = cx.update(|_, cx| view.read(cx).tail_padding_layouts);
+    let mut size = cx.update(|window, _| window.viewport_size());
+    size.width -= px(120.);
+    cx.simulate_resize(size);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(
+            view.read(cx).tail_padding_layouts > layouts,
+            "width invalidates padding"
+        );
+    });
+    assert_padding_layouts_reused(cx, &view);
+    let layouts = cx.update(|_, cx| view.read(cx).tail_padding_layouts);
+    size.height += px(80.);
+    cx.simulate_resize(size);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(
+            view.read(cx).tail_padding_layouts > layouts,
+            "height invalidates padding"
+        );
+    });
+    assert_padding_layouts_reused(cx, &view);
+
+    // Same IDs but changed row content must invalidate the cached geometry too.
+    let (layouts, old_bottom) = cx.update(|window, cx| {
+        (
+            view.read(cx).tail_padding_layouts,
+            window.find("message-000081").bounds().bottom(),
+        )
+    });
+    next[0].text = "changed appended message\n".repeat(3);
+    activity.replace_history_for_test("1", next.clone());
+    drain(cx, &activity);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(
+            view.read(cx).tail_padding_layouts > layouts,
+            "content revision invalidates padding"
+        );
+        assert!(window.find("message-000081").bounds().bottom() > old_bottom);
+    });
+    assert_padding_layouts_reused(cx, &view);
+
+    next[0].text = "appended tall message\n".repeat(44);
+    activity.replace_history_for_test("1", next);
+    drain(cx, &activity);
+    cx.update(|window, cx| window.render_frame(cx));
+    assert_padding_layouts_reused(cx, &view);
+}
+
+fn assert_padding_layouts_reused(
+    cx: &mut gpui_kit::VisualTestContext,
+    view: &gpui_kit::Entity<super::MessageHistoryView>,
+) {
+    let layouts = cx.update(|_, cx| view.read(cx).tail_padding_layouts);
+    assert!(layouts > 0, "fixture exercises padding measurement");
+    cx.update(|window, cx| {
+        for _ in 0..4 {
+            window.hover("history", cx);
+            window.render_frame(cx);
+        }
+        assert_eq!(
+            view.read(cx).tail_padding_layouts,
+            layouts,
+            "unchanged hover frames reuse padding, including zero gap"
+        );
+    });
+}
+
+#[test]
+fn unknown_measurements_are_not_a_known_fitting_viewport() {
+    // Exercise the pure predicate on independent, unmeasured presentation state,
+    // rather than reaching into a mounted view to bypass its scroll controls.
+    let list = gpui_kit::ListState::new(80, gpui_kit::ListAlignment::Top, px(0.));
+    assert_eq!(list.is_scrolled_to_end(), None);
+    assert!(
+        !super::known_fitting_viewport(&list),
+        "unknown rows must not resume following"
+    );
+}
+
+fn tall_tail_rows(include_tail: bool) -> Vec<Message> {
+    (1..=if include_tail { 75 } else { 74 })
+        .rev()
+        .map(|id| {
+            let mut row = message(id);
+            row.text = if id == 75 {
+                "latest tall line\n".repeat(44)
+            } else {
+                format!("message {id}\nsecond line\nthird line")
+            };
+            row
+        })
+        .collect()
+}
+
+fn mount_shrunken_tail_reader(
+    cx: &mut TestAppContext,
+    sliver: bool,
+) -> (
+    crate::chat::ChatHandle,
+    &mut gpui_kit::VisualTestContext,
+    Pixels,
+) {
+    let (activity, cx) = mount_history(cx, Arc::new(LoadedHistory));
+    activity.replace_history_for_test("1", tall_tail_rows(true));
+    drain(cx, &activity);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("message-000075").bounds().size.height > px(1000.));
+        for _ in 0..40 {
+            if window.try_find("message-000071").is_some() {
+                break;
+            }
+            window.scroll("history", ScrollDelta::Pixels(point(px(0.), px(80.))), cx);
+            window.render_frame(cx);
+        }
+        let top = window.find("history").bounds().top();
+        let offset = if sliver {
+            window.find("message-000071").bounds().size.height - px(1.)
+        } else {
+            px(25.)
+        };
+        for _ in 0..5 {
+            let row_top = window.find("message-000071").bounds().top();
+            if row_top == top - offset {
+                break;
+            }
+            window.scroll(
+                "history",
+                ScrollDelta::Pixels(point(px(0.), top - offset - row_top)),
+                cx,
+            );
+            window.render_frame(cx);
+        }
+        assert_eq!(window.find("message-000071").bounds().top(), top - offset);
+        assert!(
+            window.find("message-000075").bounds().top() < window.find("history").bounds().bottom()
+        );
+        assert!(window.try_find("jump-latest").is_some());
+    });
+    let mut size = cx.update(|window, _| window.viewport_size());
+    size.width -= px(120.);
+    cx.simulate_resize(size);
+    let anchor_y = cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.find("message-000071").bounds().top()
+    });
+    activity.replace_history_for_test("1", tall_tail_rows(false));
+    drain(cx, &activity);
+    (activity, cx, anchor_y)
+}
+
+#[gpui_kit::test]
+fn large_tail_shrink_after_resize_keeps_partial_top_anchor_and_jump_latest(
+    cx: &mut TestAppContext,
+) {
+    let (_, cx, anchor_y) = mount_shrunken_tail_reader(cx, false);
+    cx.update(|window, cx| {
+        for _ in 0..3 {
+            window.render_frame(cx);
+            assert_eq!(window.find("message-000071").bounds().top(), anchor_y);
+            assert!(window.try_find("message-000075").is_none());
+            assert!(window.try_find("jump-latest").is_some());
+            assert!(
+                window.find("message-000074").bounds().bottom()
+                    < window.find("history").bounds().bottom()
+            );
+        }
+    });
+}
+
+#[gpui_kit::test]
+fn appends_consume_tail_space_without_moving_reader_and_jump_retires_it(cx: &mut TestAppContext) {
+    let (activity, cx, anchor_y) = mount_shrunken_tail_reader(cx, false);
+    let old_bottom = cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.find("message-000074").bounds().bottom()
+    });
+    let mut next = tall_tail_rows(false);
+    let mut appended = message(76);
+    appended.text = "new message\nsecond line\nthird line".into();
+    next.insert(0, appended);
+    activity.replace_history_for_test("1", next.clone());
+    drain(cx, &activity);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        let appended = window.find("message-000076").bounds();
+        assert_eq!(appended.top(), old_bottom);
+        assert_eq!(window.find("message-000071").bounds().top(), anchor_y);
+        assert!(appended.bottom() < window.find("history").bounds().bottom());
+        assert!(window.try_find("jump-latest").is_some());
+    });
+    let mut appended = message(77);
+    appended.text = "new tall message\n".repeat(44);
+    next.insert(0, appended);
+    activity.replace_history_for_test("1", next);
+    drain(cx, &activity);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("message-000071").bounds().top(), anchor_y);
+        assert!(
+            window.find("message-000077").bounds().bottom()
+                > window.find("history").bounds().bottom()
+        );
+        assert!(window.try_find("jump-latest").is_some());
+        window.click("jump-latest", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("message-000077").bounds().bottom(),
+            window.find("history").bounds().bottom()
+        );
+        assert!(window.try_find("jump-latest").is_none());
+    });
+}
+
+#[gpui_kit::test]
+fn upward_wheel_keeps_tail_reader_and_downward_wheel_can_retire_space(cx: &mut TestAppContext) {
+    let (_, cx, anchor_y) = mount_shrunken_tail_reader(cx, false);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.scroll("history", ScrollDelta::Pixels(point(px(0.), px(10.))), cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("message-000071").bounds().top(),
+            anchor_y + px(10.)
+        );
+        assert!(window.try_find("jump-latest").is_some());
+        window.scroll("history", ScrollDelta::Pixels(point(px(0.), px(-80.))), cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("message-000074").bounds().bottom(),
+            window.find("history").bounds().bottom()
+        );
+        assert!(window.try_find("jump-latest").is_none());
+    });
+}
+
+#[gpui_kit::test]
+fn repeated_tail_shrink_leaves_only_bounded_space_and_a_visible_survivor(cx: &mut TestAppContext) {
+    let (activity, cx, anchor_y) = mount_shrunken_tail_reader(cx, true);
+    activity.replace_history_for_test(
+        "1",
+        tall_tail_rows(false)
+            .into_iter()
+            .filter(|row| row.id == "000071")
+            .collect(),
+    );
+    drain(cx, &activity);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        let row = window.find("message-000071").bounds();
+        let pane = window.find("history").bounds();
+        assert_eq!(row.top(), anchor_y);
+        assert_eq!(row.bottom(), pane.top() + px(1.));
+        assert!(window.try_find("jump-latest").is_some());
+        window.click("jump-latest", cx);
+        window.render_frame(cx);
+        assert_eq!(window.find("message-000071").bounds().top(), pane.top());
+        assert!(window.try_find("jump-latest").is_none());
+    });
+}
+
+#[gpui_kit::test]
+fn focused_sliver_tray_still_reveals_after_large_tail_shrink(cx: &mut TestAppContext) {
+    let (_, cx, _) = mount_shrunken_tail_reader(cx, true);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("history-pane", cx);
+        for _ in 0..10 {
+            window.press("tab", cx);
+            window.render_frame(cx);
+            if window.find("trash-message-000071").focused() == Some(true) {
+                break;
+            }
+        }
+        assert_eq!(window.find("trash-message-000071").focused(), Some(true));
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        let trash = window.find("trash-message-000071");
+        let pane = window.find("history").bounds();
+        assert_eq!(trash.focused(), Some(true));
+        assert!(trash.visible());
+        assert!(trash.bounds().top() >= pane.top());
+        assert!(trash.bounds().bottom() <= pane.bottom());
+    });
+}
+
+#[gpui_kit::test]
+fn large_tail_shrink_and_append_at_bottom_keep_following_without_space(cx: &mut TestAppContext) {
+    let (activity, cx) = mount_history(cx, Arc::new(LoadedHistory));
+    activity.replace_history_for_test("1", tall_tail_rows(true));
+    drain(cx, &activity);
+    cx.update(|window, cx| window.render_frame(cx));
+    let mut size = cx.update(|window, _| window.viewport_size());
+    size.width -= px(120.);
+    cx.simulate_resize(size);
+    cx.update(|window, cx| window.render_frame(cx));
+    activity.replace_history_for_test("1", tall_tail_rows(false));
+    drain(cx, &activity);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("message-000074").bounds().bottom(),
+            window.find("history").bounds().bottom()
+        );
+        assert!(window.try_find("jump-latest").is_none());
+    });
+    activity.replace_history_for_test("1", tall_tail_rows(true));
+    drain(cx, &activity);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("message-000075").bounds().bottom(),
+            window.find("history").bounds().bottom()
+        );
+        assert!(window.try_find("jump-latest").is_none());
     });
 }
 

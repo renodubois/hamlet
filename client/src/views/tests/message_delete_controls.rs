@@ -391,6 +391,422 @@ fn authored_trash_tray_hover_is_reachable_pane_local_and_does_not_shift_layout(
     assert!(calls.lock().unwrap().is_empty());
 }
 
+struct TallMessageAuth(Arc<Mutex<Vec<(Request, Reply)>>>);
+impl RequestAdapter for TallMessageAuth {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
+        if request.method() == reqwest::Method::GET && request.url().path().ends_with("/messages") {
+            return Box::pin(async {
+                Ok(Response::controlled(
+                    StatusCode::OK,
+                    serde_json::json!({"items":[
+                        {"id":"000000000000008","channel_id":"000000000000001",
+                         "author":{"id":"42","display_name":"Ada"},
+                         "text":"tall authored message\n".repeat(100),"created_at":"2026-01-01T00:00:00Z"},
+                        {"id":"000000000000009","channel_id":"000000000000001",
+                         "author":{"id":"other","display_name":"Other"},
+                         "text":"latest message","created_at":"2026-01-01T00:00:00Z"}
+                    ],"next_cursor":null}).to_string(),
+                ))
+            });
+        }
+        MessageAuth(self.0.clone()).execute(request)
+    }
+}
+
+#[gpui_kit::test]
+fn partially_clipped_authored_tray_remains_reachable_without_moving_history(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_reduce_motion(true);
+    });
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        Root::new(
+            open_controlled(window, cx, Arc::new(TallMessageAuth(calls.clone()))),
+            window,
+            cx,
+        )
+    });
+    login(cx);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.scroll(
+            "history",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(83.))),
+            cx,
+        );
+        window.render_frame(cx);
+        let row = window.find("message-000000000000008").bounds();
+        let pane = window.find("history").bounds();
+        let composer = window.find("composer-panel").bounds();
+        assert!(
+            row.top() < pane.top() && row.bottom() > pane.bottom(),
+            "fixture straddles the pane"
+        );
+        // Hover the visible remainder, not the offscreen row center.
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: pane.center(),
+                pressed_button: None,
+                modifiers: gpui_kit::Modifiers::default(),
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+        let trash = window.find("trash-message-000000000000008");
+        assert!(
+            trash.visible(),
+            "hovering the visible remainder must expose the actual tray"
+        );
+        assert!(pane.contains(&trash.bounds().origin));
+        assert!(pane.contains(&trash.bounds().bottom_right()));
+        assert_eq!(trash.bounds().top(), pane.top());
+        assert_eq!(trash.bounds().right(), row.right() - px(8.));
+        let destination = trash.bounds().center();
+        for step in 1..=8 {
+            let position = pane.center() + (destination - pane.center()) * (step as f32 / 8.);
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                    position,
+                    pressed_button: None,
+                    modifiers: gpui_kit::Modifiers::default(),
+                }),
+                cx,
+            );
+            window.render_frame(cx);
+            assert!(
+                window.find("trash-message-000000000000008").visible(),
+                "tray stays exposed throughout pointer traversal"
+            );
+        }
+        window.hover("trash-message-000000000000008", cx);
+        assert!(window.find("trash-message-000000000000008").visible());
+        assert_eq!(window.find("message-000000000000008").bounds(), row);
+        assert_eq!(window.find("history").bounds(), pane);
+        assert_eq!(window.find("composer-panel").bounds(), composer);
+        window.click("trash-message-000000000000008", cx);
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("delete-message-preview").is_some());
+        window.click("cancel-message-action", cx);
+    });
+    cx.run_until_parked();
+    assert!(calls.lock().unwrap().is_empty());
+    for key in ["enter", "space"] {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            // Reposition with a real wheel event: the clamp must use this frame's
+            // pane/row geometry, not the previously hovered position.
+            window.scroll(
+                "history",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-21.))),
+                cx,
+            );
+            window.click("history-pane", cx);
+            window.hover("composer", cx);
+            let row = window.find("message-000000000000008").bounds();
+            let pane = window.find("history").bounds();
+            let composer = window.find("composer-panel").bounds();
+            assert!(row.top() < pane.top());
+            assert!(!window.find("trash-message-000000000000008").visible());
+            for _ in 0..12 {
+                window.press("tab", cx);
+                window.render_frame(cx);
+                if window.find("trash-message-000000000000008").focused() == Some(true) {
+                    break;
+                }
+            }
+            let trash = window.find("trash-message-000000000000008");
+            assert_eq!(
+                trash.focused(),
+                Some(true),
+                "partially clipped row keeps a reachable tab stop"
+            );
+            assert!(
+                trash.visible(),
+                "focus reveals the clamped tray without hover"
+            );
+            assert_eq!(trash.bounds().top(), pane.top());
+            assert!(pane.contains(&trash.bounds().bottom_right()));
+            assert_eq!(window.find("message-000000000000008").bounds(), row);
+            assert_eq!(window.find("history").bounds(), pane);
+            assert_eq!(window.find("composer-panel").bounds(), composer);
+            window.press(key, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find("delete-message-preview")
+                    .label()
+                    .unwrap()
+                    .starts_with("tall authored message\n")
+            );
+            assert_eq!(window.find("cancel-message-action").focused(), Some(true));
+            window.press("escape", cx);
+        });
+        cx.run_until_parked();
+        assert!(calls.lock().unwrap().is_empty());
+    }
+}
+
+struct SliverMessageAuth(Arc<Mutex<Vec<(Request, Reply)>>>);
+impl RequestAdapter for SliverMessageAuth {
+    fn execute(&self, request: Request) -> ApiFuture<Result<Response, ApiError>> {
+        if request.method() == reqwest::Method::GET && request.url().path().ends_with("/messages") {
+            let items = (1..=40).rev().map(|id| serde_json::json!({
+                "id":format!("{id:015}"), "channel_id":"000000000000001",
+                "author":{"id":if id == 20 { "42" } else { "other" },"display_name":"Ada"},
+                "text":if id == 20 { "sliver target\n".repeat(4) } else { format!("neighbor {id}") },
+                "created_at":"2026-01-01T00:00:00Z"
+            })).collect::<Vec<_>>();
+            return Box::pin(async move {
+                Ok(Response::controlled(
+                    StatusCode::OK,
+                    serde_json::json!({"items":items,"next_cursor":null}).to_string(),
+                ))
+            });
+        }
+        MessageAuth(self.0.clone()).execute(request)
+    }
+}
+
+fn move_pointer(
+    window: &mut gpui_kit::Window,
+    cx: &mut gpui_kit::App,
+    position: gpui_kit::Point<gpui_kit::Pixels>,
+) {
+    window.dispatch_event(
+        gpui_kit::PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+            position,
+            pressed_button: None,
+            modifiers: gpui_kit::Modifiers::default(),
+        }),
+        cx,
+    );
+    window.render_frame(cx);
+}
+fn click_pointer(
+    window: &mut gpui_kit::Window,
+    cx: &mut gpui_kit::App,
+    position: gpui_kit::Point<gpui_kit::Pixels>,
+) {
+    move_pointer(window, cx, position);
+    window.dispatch_event(
+        gpui_kit::PlatformInput::MouseDown(gpui_kit::MouseDownEvent {
+            button: gpui_kit::MouseButton::Left,
+            position,
+            modifiers: gpui_kit::Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        }),
+        cx,
+    );
+    window.dispatch_event(
+        gpui_kit::PlatformInput::MouseUp(gpui_kit::MouseUpEvent {
+            button: gpui_kit::MouseButton::Left,
+            position,
+            modifiers: gpui_kit::Modifiers::default(),
+            click_count: 1,
+        }),
+        cx,
+    );
+    window.render_frame(cx);
+}
+
+#[gpui_kit::test]
+fn top_sliver_tray_cannot_hit_neighbor_and_focus_reveals_target(cx: &mut TestAppContext) {
+    sliver_tray(cx, true, "enter");
+}
+#[gpui_kit::test]
+fn bottom_sliver_tray_cannot_hit_neighbor_and_focus_reveals_target(cx: &mut TestAppContext) {
+    sliver_tray(cx, false, "space");
+}
+fn sliver_tray(cx: &mut TestAppContext, top: bool, key: &str) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_reduce_motion(true);
+    });
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        Root::new(
+            open_controlled(window, cx, Arc::new(SliverMessageAuth(calls.clone()))),
+            window,
+            cx,
+        )
+    });
+    login(cx);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        for _ in 0..40 {
+            if window.try_find("message-000000000000020").is_some() {
+                break;
+            }
+            window.scroll(
+                "history",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(100.))),
+                cx,
+            );
+            window.render_frame(cx);
+        }
+        let pane = window.find("history").bounds();
+        for _ in 0..40 {
+            let row = window.find("message-000000000000020").bounds();
+            let delta = if top {
+                pane.top() + px(8.) - row.bottom()
+            } else {
+                pane.bottom() - px(8.) - row.top()
+            };
+            if delta == px(0.) {
+                break;
+            }
+            window.scroll(
+                "history",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                    px(0.),
+                    delta.min(px(100.)).max(px(-100.)),
+                )),
+                cx,
+            );
+            window.render_frame(cx);
+        }
+        let row = window.find("message-000000000000020").bounds();
+        let composer = window.find("composer-panel").bounds();
+        let edge = if top { pane.top() } else { pane.bottom() };
+        assert_eq!(
+            if top {
+                row.bottom() - edge
+            } else {
+                edge - row.top()
+            },
+            px(8.),
+            "fixture has only 8px visible"
+        );
+        let x = row.right() - px(24.);
+        let owner_point = gpui_kit::point(x, if top { edge + px(4.) } else { edge - px(4.) });
+        let start = gpui_kit::point(pane.center().x, owner_point.y);
+        for step in 0..=8 {
+            move_pointer(
+                window,
+                cx,
+                start + (owner_point - start) * (step as f32 / 8.),
+            );
+            assert!(
+                window.find("trash-message-000000000000020").visible(),
+                "tray remains exposed while traversing its owner's sliver"
+            );
+        }
+        // Stay below Jump to latest's bottom margin for the bottom-edge case.
+        let neighbor_point = gpui_kit::point(x, if top { edge + px(10.) } else { edge - px(10.) });
+        let neighbor = window
+            .find(if top {
+                "message-000000000000021"
+            } else {
+                "message-000000000000019"
+            })
+            .bounds();
+        assert!(neighbor.contains(&neighbor_point));
+        // The old pane-only clamp exposes an opacity-zero target in this other row.
+        move_pointer(window, cx, neighbor_point);
+        assert!(!window.find("trash-message-000000000000020").visible());
+        click_pointer(window, cx, neighbor_point);
+        assert!(
+            window.try_find("delete-message-preview").is_none(),
+            "neighbor click must not delete the clipped owner's message"
+        );
+        let trash = window.find("trash-message-000000000000020").bounds();
+        assert!(
+            trash.top() >= row.top() && trash.bottom() <= row.bottom(),
+            "control must remain inside its owning row"
+        );
+        assert_eq!(window.find("message-000000000000020").bounds(), row);
+        assert_eq!(window.find("history").bounds(), pane);
+        assert_eq!(window.find("composer-panel").bounds(), composer);
+        // The safely clipped 8px fragment is still clickable for its own target.
+        click_pointer(window, cx, owner_point);
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .find("delete-message-preview")
+                .label()
+                .unwrap()
+                .starts_with("sliver target\n")
+        );
+        window.press("escape", cx);
+    });
+    cx.run_until_parked();
+    let before_focus = cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("history-pane", cx);
+        window.hover("composer", cx);
+        let row = window.find("message-000000000000020").bounds();
+        let pane = window.find("history").bounds();
+        let composer = window.find("composer-panel").bounds();
+        assert_eq!(
+            if top {
+                row.bottom() - pane.top()
+            } else {
+                pane.bottom() - row.top()
+            },
+            px(8.),
+            "pointer activation and cancellation preserve the clipped viewport"
+        );
+        assert!(!window.find("trash-message-000000000000020").visible());
+        for _ in 0..12 {
+            window.press("tab", cx);
+            window.render_frame(cx);
+            if window.find("trash-message-000000000000020").focused() == Some(true) {
+                break;
+            }
+        }
+        (row, pane, composer)
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        let pane = window.find("history").bounds();
+        let row = window.find("message-000000000000020").bounds();
+        let trash = window.find("trash-message-000000000000020");
+        assert_eq!(trash.focused(), Some(true));
+        assert!(trash.visible());
+        assert!(
+            pane.contains(&trash.bounds().origin) && pane.contains(&trash.bounds().bottom_right()),
+            "keyboard focus reveals a complete usable tray"
+        );
+        assert!(
+            row.contains(&trash.bounds().origin) && row.contains(&trash.bounds().bottom_right())
+        );
+        assert_ne!(
+            row, before_focus.0,
+            "focus deliberately reveals the clipped row"
+        );
+        assert_eq!(pane, before_focus.1);
+        assert_eq!(window.find("composer-panel").bounds(), before_focus.2);
+        window.press(key, cx);
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .find("delete-message-preview")
+                .label()
+                .unwrap()
+                .starts_with("sliver target\n")
+        );
+        assert_eq!(window.find("cancel-message-action").focused(), Some(true));
+    });
+    assert!(calls.lock().unwrap().is_empty());
+}
+
 #[gpui_kit::test]
 fn authored_trash_keyboard_focus_tooltip_and_activation_share_captured_confirmation(
     cx: &mut TestAppContext,

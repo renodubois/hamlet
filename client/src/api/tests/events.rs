@@ -655,10 +655,10 @@ fn handshake_rejects_status_and_content_type_before_reading_body(cx: &mut TestAp
         .restore_candidate("synthetic".into())
         .unwrap();
     for (status, content_type, expected) in [
-        (401, "text/event-stream", ApiError::AlreadyInvalid),
+        (401, "text/event-stream", ApiError::SessionRejected),
         (500, "text/event-stream", ApiError::ServerFailure),
-        (307, "text/event-stream", ApiError::Unavailable),
-        (204, "text/event-stream", ApiError::Unavailable),
+        (307, "text/event-stream", ApiError::UnexpectedStatus),
+        (204, "text/event-stream", ApiError::UnexpectedStatus),
         (200, "application/json", ApiError::InvalidResponse),
         (200, "text/event-streaming", ApiError::InvalidResponse),
         (200, "", ApiError::InvalidResponse),

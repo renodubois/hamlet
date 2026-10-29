@@ -94,7 +94,7 @@ fn real_server_delivers_creations_and_message_deletion_to_two_authenticated_cons
         // A revoked credential is authoritative at a new handshake, not inferred from EOF.
         bob.client.logout().await.unwrap();
         let mut rejected = bob.client.events(&execution);
-        assert_eq!(delivery(cx, &mut rejected).await, Err(StreamError::Api(ApiError::AlreadyInvalid)));
+        assert_eq!(delivery(cx, &mut rejected).await, Err(StreamError::Api(ApiError::SessionRejected)));
         drop((a, b, rejected));
         cx.executor().run_until_parked();
         handle.stop(false).await;
@@ -111,7 +111,7 @@ fn real_stream_redirect_never_forwards_the_bound_bearer(cx: &mut TestAppContext)
         ));
         let client = HttpTransport::new().server(&origin).unwrap().restore_candidate("synthetic-bound".into()).unwrap();
         let mut stream = client.events(&Execution::controlled(cx.background_executor.clone(), 1_800_000_000));
-        assert_eq!(delivery(cx, &mut stream).await, Err(StreamError::Api(ApiError::Unavailable)));
+        assert_eq!(delivery(cx, &mut stream).await, Err(StreamError::Api(ApiError::UnexpectedStatus)));
         let request = captured.join().unwrap();
         assert!(request.starts_with("GET /api/v1/events "));
         assert!(request.to_ascii_lowercase().contains("authorization: bearer synthetic-bound"));

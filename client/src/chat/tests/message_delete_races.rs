@@ -166,7 +166,7 @@ fn authenticated_rejection_after_live_success_still_invalidates_originating_sess
     let call = calls.try_recv().unwrap();
     deleted(&stream, "000000000000001", "000000000000008");
     drain(cx, &chat);
-    call.reply.try_send(Err(ApiError::AlreadyInvalid)).unwrap();
+    call.reply.try_send(Err(ApiError::SessionRejected)).unwrap();
     cx.executor().run_until_parked();
     assert_eq!(
         chat.apply(chat.updates().try_recv().unwrap()),

@@ -32,7 +32,7 @@ pub fn ready(
 }
 pub fn ids(chat: &ChatHandle) -> Vec<String> {
     let state = chat.read();
-    let Some(Load::Ready(rows)) = state.history_for_display("000000000000001") else {
+    let Some(Load::Ready(rows)) = state.history("000000000000001") else {
         panic!("ready history");
     };
     rows.iter().map(|m| m.id.clone()).collect()

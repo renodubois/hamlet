@@ -65,6 +65,18 @@ pub(super) fn mount_history_with_transport(
     cx: &mut TestAppContext,
     transport: crate::api::HttpTransport,
 ) -> (ChatHandle, &mut VisualTestContext) {
+    let (activity, _, cx) = mount_history_with_view(cx, transport);
+    (activity, cx)
+}
+
+pub(super) fn mount_history_with_view(
+    cx: &mut TestAppContext,
+    transport: crate::api::HttpTransport,
+) -> (
+    ChatHandle,
+    Entity<MessageHistoryView>,
+    &mut VisualTestContext,
+) {
     cx.update(gpui_kit::init);
     let client = transport
         .server("https://history.example")
@@ -79,6 +91,7 @@ pub(super) fn mount_history_with_transport(
         Execution::controlled(cx.background_executor.clone(), 1_800_000_000),
     );
     activity.start();
+    let mut history_view = None;
     let (_, cx) = cx.add_window_view(|window, cx| {
         let history = cx.new(|cx| {
             MessageHistoryView::new(
@@ -88,6 +101,7 @@ pub(super) fn mount_history_with_transport(
                 cx,
             )
         });
+        history_view = Some(history.clone());
         let host = cx.new(|_| HistoryHost {
             activity: activity.clone(),
             history,
@@ -96,7 +110,7 @@ pub(super) fn mount_history_with_transport(
         gpui_kit::component::Root::new(host, window, cx)
     });
     drain(cx, &activity);
-    (activity, cx)
+    (activity, history_view.unwrap(), cx)
 }
 
 pub(super) struct ReaderHistory {

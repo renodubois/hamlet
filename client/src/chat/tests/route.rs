@@ -1,11 +1,11 @@
 //! Real-route chat verification, including two-client orders and server restart.
-#[path = "delete_route.rs"]
-mod delete_route;
-#[path = "message_deletion_route.rs"]
-mod message_deletion_route;
-#[path = "rename_route.rs"]
-mod rename_route;
-use super::{ChatHandle, Load, Older};
+#[path = "channel_delete_route.rs"]
+mod channel_delete_route;
+#[path = "channel_rename_route.rs"]
+mod channel_rename_route;
+#[path = "message_delete_route.rs"]
+mod message_delete_route;
+use super::{ChatHandle, Load, OlderPages};
 use crate::{
     api::{
         ApiError, ApiFuture, HttpTransport,
@@ -131,7 +131,7 @@ async fn settle(cx: &mut TestAppContext, clients: &[&ChatHandle], ready: impl Fn
 }
 fn ids(client: &ChatHandle, channel: &str) -> Vec<String> {
     let state = client.read();
-    let Some(Load::Ready(messages)) = state.history.get(channel) else {
+    let Some(Load::Ready(messages)) = state.history(channel) else {
         return Vec::new();
     };
     messages.iter().map(|message| message.id.clone()).collect()
@@ -381,7 +381,7 @@ fn second_user_creations_arrive_on_session_stream_without_followup_reads(cx: &mu
         activity.start();
         await_chat(cx, &activity, |activity| {
             activity.status().is_empty() && matches!(
-                activity.read().history.get(&channel),
+                activity.read().history(&channel),
                 Some(Load::Ready(messages)) if messages.is_empty()
             )
         })
@@ -399,7 +399,7 @@ fn second_user_creations_arrive_on_session_stream_without_followup_reads(cx: &mu
         let new_channel = bob.client.create_channel("Bob room".into()).await.unwrap();
         await_chat(cx, &activity, |activity| {
             matches!(
-                activity.read().history.get(&channel),
+                activity.read().history(&channel),
                 Some(Load::Ready(messages)) if messages.iter().any(|m| m.id == posted.id && m.author_name == "Bob")
             )
         })
@@ -455,7 +455,7 @@ fn real_route_independent_reads_pending_and_uncertain_writes_survive_reconnect(
         a.start();
         settle(cx, &[&a], || channels_gate.reached.load(Ordering::SeqCst) && stream_gate.reached.load(Ordering::SeqCst)).await;
         channels_gate.open();
-        settle(cx, &[&a], || a.read().selected.as_ref().is_some_and(|id| matches!(a.read().history.get(id), Some(Load::Ready(_))))).await;
+        settle(cx, &[&a], || a.read().selected.as_ref().is_some_and(|id| matches!(a.read().history(id), Some(Load::Ready(_))))).await;
         let original = a.read().selected.clone().unwrap();
         assert_ne!(original, other.id);
         assert_eq!(a.status(), "Connecting…", "initial HTTP loads finish before stream readiness");
@@ -465,7 +465,7 @@ fn real_route_independent_reads_pending_and_uncertain_writes_survive_reconnect(
 
         fail_history.store(true, Ordering::SeqCst);
         a.select_channel(&other.id);
-        settle(cx, &[&a], || matches!(a.read().history.get(&other.id), Some(Load::Failed(_)))).await;
+        settle(cx, &[&a], || matches!(a.read().history(&other.id), Some(Load::Failed(_)))).await;
         assert_eq!(a.status(), "");
         assert_eq!(attempts.load(Ordering::SeqCst), 1, "a local read failure does not restart live delivery");
         a.select_channel(&original);
@@ -493,24 +493,24 @@ fn real_route_independent_reads_pending_and_uncertain_writes_survive_reconnect(
         assert_eq!(writes.load(Ordering::SeqCst), 1, "pending write is not resent");
         assert_eq!(a.read().selected.as_deref(), Some(other.id.as_str()));
         assert_eq!(a.read().draft(&other.id), "pending across reconnect");
-        assert!(a.read().send_pending.contains_key(&other.id));
-        assert!(matches!(a.read().history.get(&other.id), Some(Load::Loading)));
+        assert!(a.read().is_sending(&other.id));
+        assert!(matches!(a.read().history(&other.id), Some(Load::Loading)));
         history_gate.open();
-        settle(cx, &[&a], || matches!(a.read().history.get(&other.id), Some(Load::Ready(_)))).await;
+        settle(cx, &[&a], || matches!(a.read().history(&other.id), Some(Load::Ready(_)))).await;
         assert!(ids(&a, &other.id).is_empty(), "overlap event was not staged into the old HTTP snapshot");
-        assert!(a.read().send_pending.contains_key(&other.id));
+        assert!(a.read().is_sending(&other.id));
         post_gate.open();
         settle(cx, &[&a], || a.read().draft(&other.id).is_empty()).await;
         let confirmed = alice.client.history_page(other.id.clone(), None).await.unwrap().items.into_iter().find(|m| m.text == "pending across reconnect").unwrap();
         assert_eq!(ids(&a, &other.id), std::slice::from_ref(&confirmed.id));
-        assert!(matches!(a.read().history.get(&other.id), Some(Load::Ready(messages)) if messages == std::slice::from_ref(&confirmed)));
+        assert!(matches!(a.read().history(&other.id), Some(Load::Ready(messages)) if messages == std::slice::from_ref(&confirmed)));
         assert!(!ids(&a, &other.id).contains(&overlap.id));
 
         lose_post.store(true, Ordering::SeqCst);
         a.edit_draft("identical uncertain text".into());
         a.send();
-        settle(cx, &[&a], || a.read().uncertain.contains(&other.id) && ids(&a, &other.id).len() == 2).await;
-        let feedback = a.read().send_feedback[&other.id].clone();
+        settle(cx, &[&a], || a.read().conversation(&other.id).is_some_and(|c| c.uncertain) && ids(&a, &other.id).len() == 2).await;
+        let feedback = a.read().send_feedback(&other.id).unwrap().to_owned();
         let before_reads = reads.load(Ordering::SeqCst);
         relay.disconnect();
         settle(cx, &[&a], || a.status() == "Live updates disconnected — reconnecting.").await;
@@ -521,8 +521,8 @@ fn real_route_independent_reads_pending_and_uncertain_writes_survive_reconnect(
         let matching = alice.client.send_message(other.id.clone(), "identical uncertain text".into()).await.unwrap();
         settle(cx, &[&a], || ids(&a, &other.id).contains(&matching.id)).await;
         assert_eq!(a.read().draft(&other.id), "identical uncertain text");
-        assert!(a.read().uncertain.contains(&other.id));
-        assert_eq!(a.read().send_feedback[&other.id], feedback);
+        assert!(a.read().conversation(&other.id).is_some_and(|c| c.uncertain));
+        assert_eq!(a.read().send_feedback(&other.id), Some(feedback.as_str()));
         assert_eq!(reads.load(Ordering::SeqCst), before_reads);
         assert_eq!(writes.load(Ordering::SeqCst), 3, "two deliberate coordinator writes and one explicit API write, no automatic resend");
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
@@ -596,13 +596,13 @@ fn server_history_traverses_multiple_pages_with_timestamp_ties(cx: &mut TestAppC
         activity.start();
         await_chat(cx, &activity, |activity| {
             activity.status().is_empty() && matches!(
-                activity.read().history.get(&channel),
+                activity.read().history(&channel),
                 Some(Load::Ready(messages)) if messages.len() == 50
             )
         })
         .await;
         assert_history(&activity, &channel, 50, 0);
-        assert_eq!(activity.read().older.get(&channel), Some(&Older::Available));
+        assert_eq!(activity.read().older(&channel), Some(&OlderPages::Available));
 
         // A burst larger than two newest pages arrives as creations, without traversal.
         // The original older cursor must still reach the three oldest messages.
@@ -619,15 +619,15 @@ fn server_history_traverses_multiple_pages_with_timestamp_ties(cx: &mut TestAppC
             );
         }
         await_chat(cx, &activity, |activity| {
-            matches!(activity.read().history.get(&channel), Some(Load::Ready(items)) if items.len() == 155)
+            matches!(activity.read().history(&channel), Some(Load::Ready(items)) if items.len() == 155)
         })
         .await;
         // 105 new plus the 50 initially loaded; the oldest three remain paged.
         assert_history(&activity, &channel, 50, 105);
-        assert_eq!(activity.read().older.get(&channel), Some(&Older::Available));
+        assert_eq!(activity.read().older(&channel), Some(&OlderPages::Available));
         activity.request_older();
         await_chat(cx, &activity, |activity| {
-            activity.read().older.get(&channel) == Some(&Older::Exhausted)
+            activity.read().older(&channel) == Some(&OlderPages::Exhausted)
         })
         .await;
         assert_history(&activity, &channel, 53, 105);
@@ -639,7 +639,7 @@ fn server_history_traverses_multiple_pages_with_timestamp_ties(cx: &mut TestAppC
 
 fn assert_history(activity: &ChatHandle, channel: &str, old: usize, new: usize) {
     let state = activity.read();
-    let Some(Load::Ready(messages)) = state.history.get(channel) else {
+    let Some(Load::Ready(messages)) = state.history(channel) else {
         panic!("history missing");
     };
     assert_eq!(messages.len(), old + new);
@@ -715,7 +715,7 @@ fn real_route_http_event_orders_reconcile_once_without_healthy_reads(cx: &mut Te
         let b = ChatHandle::new(2, bob.user.id.clone(), bob.expires_at, bob.client.clone(), Execution::controlled(cx.background_executor.clone(), bob.expires_at - 3600));
         let clients = [&a, &b];
         a.start(); b.start();
-        settle(cx, &clients, || clients.iter().all(|c| c.status().is_empty() && c.read().selected.as_ref().is_some_and(|id| matches!(c.read().history.get(id), Some(Load::Ready(_)))))).await;
+        settle(cx, &clients, || clients.iter().all(|c| c.status().is_empty() && c.read().selected.as_ref().is_some_and(|id| matches!(c.read().history(id), Some(Load::Ready(_)))))).await;
         let channel = a.read().selected.clone().unwrap();
         let reads = [a_reads.load(Ordering::SeqCst), b_reads.load(Ordering::SeqCst)];
         let Some(Load::Ready(initial_channels)) = a.read().channels.clone() else { panic!("initial channels") };
@@ -746,7 +746,7 @@ fn real_route_http_event_orders_reconcile_once_without_healthy_reads(cx: &mut Te
         assert_eq!([a_reads.load(Ordering::SeqCst), b_reads.load(Ordering::SeqCst)], reads);
         for client in clients {
             assert_eq!(client.read().selected.as_deref(), Some(channel.as_str()));
-            assert!(!client.read().history.contains_key(&remote.id));
+            assert!(client.read().history(&remote.id).is_none());
         }
         // Channel confirmations have the same two arrival orders. Local creation
         // deliberately selects its new uncached channel (one navigation read);
@@ -764,7 +764,7 @@ fn real_route_http_event_orders_reconcile_once_without_healthy_reads(cx: &mut Te
                 assert_eq!(a.created(), previous_confirmation);
                 post_gate.open();
             }
-            settle(cx, &clients, || a.created() != previous_confirmation && a.read().selected.as_ref().is_some_and(|id| matches!(a.read().history.get(id), Some(Load::Ready(_)))) && has_channel(&b)).await;
+            settle(cx, &clients, || a.created() != previous_confirmation && a.read().selected.as_ref().is_some_and(|id| matches!(a.read().history(id), Some(Load::Ready(_)))) && has_channel(&b)).await;
             if !event_first {
                 settle(cx, &clients, || stream_gate.reached.load(Ordering::SeqCst)).await;
                 stream_gate.open();
@@ -780,12 +780,12 @@ fn real_route_http_event_orders_reconcile_once_without_healthy_reads(cx: &mut Te
                 assert_eq!(channels.iter().filter(|c| c.name == name).count(), 1);
             }
             assert_eq!(b.read().selected.as_deref(), Some(channel.as_str()));
-            assert!(!b.read().history.contains_key(&selected));
+            assert!(b.read().history(&selected).is_none());
             assert_eq!([a_reads.load(Ordering::SeqCst), b_reads.load(Ordering::SeqCst)], [reads[0] + index + 1, reads[1]], "only local selection loads history; no confirmation/event catch-up reads");
             for client in clients {
                 assert!(matches!(&client.read().channels, Some(Load::Ready(channels)) if channels.len() == initial_channel_count + index + 2), "failed writes emit no phantom channels");
                 assert_eq!(ids(client, &channel).len(), index + 3, "only confirmed sends and explicit barriers appear");
-                assert!(matches!(client.read().history.get(&channel), Some(Load::Ready(messages)) if messages.contains(&barrier)), "complete HTTP and event entities agree");
+                assert!(matches!(client.read().history(&channel), Some(Load::Ready(messages)) if messages.contains(&barrier)), "complete HTTP and event entities agree");
             }
         }
         for client in clients { client.close(); }
@@ -833,7 +833,7 @@ fn two_authenticated_coordinators_reconnect_without_catchup_after_actual_server_
         for client in clients { client.request_older(); }
         settle(cx, &clients, || clients.iter().all(|c| ids(c, &channel).len() == 100)).await;
         for client in clients { client.select_channel(&inactive.id); }
-        settle(cx, &clients, || clients.iter().all(|c| matches!(c.read().history.get(&inactive.id), Some(Load::Ready(_))))).await;
+        settle(cx, &clients, || clients.iter().all(|c| matches!(c.read().history(&inactive.id), Some(Load::Ready(_))))).await;
         for client in clients {
             client.edit_draft("inactive draft".into());
             client.select_channel(&channel);
@@ -853,7 +853,7 @@ fn two_authenticated_coordinators_reconnect_without_catchup_after_actual_server_
         settle(cx, &clients, || clients.iter().all(|c| ids(c, &channel).contains(&barrier.id))).await;
         for (index, client) in clients.iter().enumerate() {
             assert_eq!(client.read().selected.as_deref(), Some(channel.as_str()));
-            assert!(!client.read().history.contains_key(&ignored.channel_id));
+            assert!(client.read().history(&ignored.channel_id).is_none());
             client.edit_draft(format!("unsent draft {index}"));
         }
         assert_eq!([a_reads.load(Ordering::SeqCst), b_reads.load(Ordering::SeqCst)], reads, "healthy message/channel creations cause zero follow-up reads");
@@ -870,9 +870,9 @@ fn two_authenticated_coordinators_reconnect_without_catchup_after_actual_server_
         settle(cx, &clients, || clients.iter().all(|c| c.status() == disconnected)).await;
         for client in clients {
             assert_eq!(ids(client, &channel), retained);
-            assert_eq!(client.read().history.len(), 2);
-            assert!(matches!(client.read().history.get(&inactive.id), Some(Load::Ready(items)) if items.is_empty()));
-            assert_eq!(client.read().older.get(&channel), Some(&Older::Available));
+            assert_eq!(client.read().conversations().values().filter(|c| c.history.is_some()).count(), 2);
+            assert!(matches!(client.read().history(&inactive.id), Some(Load::Ready(items)) if items.is_empty()));
+            assert_eq!(client.read().older(&channel), Some(&OlderPages::Available));
         }
         // A fresh AppState/pool/hub and listener, same persisted database/credentials/origin.
         let server = serve(TcpListener::bind(address).unwrap(), hamlet::connect_to_database(&database).await.unwrap());
@@ -893,11 +893,11 @@ fn two_authenticated_coordinators_reconnect_without_catchup_after_actual_server_
         assert_eq!([a_attempts.load(Ordering::SeqCst), b_attempts.load(Ordering::SeqCst)], [2, 2]);
         for (index, client) in clients.iter().enumerate() {
             let state = client.read();
-            let Some(Load::Ready(messages)) = state.history.get(&channel) else { panic!("retained history") };
+            let Some(Load::Ready(messages)) = state.history(&channel) else { panic!("retained history") };
             assert_eq!(ids(client, &channel), retained, "offline creations are accepted losses, not replayed");
             assert!(messages.iter().all(|m| !m.text.starts_with("during disconnect")));
-            assert_eq!(state.history.len(), 2, "inactive histories retained");
-            assert_eq!(state.older.get(&channel), Some(&Older::Available));
+            assert_eq!(state.conversations().values().filter(|c| c.history.is_some()).count(), 2, "inactive histories retained");
+            assert_eq!(state.older(&channel), Some(&OlderPages::Available));
             assert_eq!(state.draft(&channel), format!("unsent draft {index}"));
             assert_eq!(state.draft(&inactive.id), "inactive draft");
             assert_eq!(state.selected.as_deref(), Some(channel.as_str()));
@@ -915,10 +915,10 @@ fn two_authenticated_coordinators_reconnect_without_catchup_after_actual_server_
         // Explicit pagination uses the retained pre-restart cursor, reaching only
         // the oldest three messages, not the newer offline gap.
         for client in clients { client.request_older(); }
-        settle(cx, &clients, || clients.iter().all(|c| c.read().older.get(&channel) == Some(&Older::Exhausted))).await;
+        settle(cx, &clients, || clients.iter().all(|c| c.read().older(&channel) == Some(&OlderPages::Exhausted))).await;
         for client in clients {
             assert_eq!(ids(client, &channel).len(), 107);
-            assert!(matches!(client.read().history.get(&channel), Some(Load::Ready(messages)) if messages.iter().all(|m| !m.text.starts_with("during disconnect"))));
+            assert!(matches!(client.read().history(&channel), Some(Load::Ready(messages)) if messages.iter().all(|m| !m.text.starts_with("during disconnect"))));
             assert_eq!(client.read().selected.as_deref(), Some(channel.as_str()));
         }
         assert_eq!(ids(&a, &channel), ids(&b, &channel));
@@ -933,7 +933,7 @@ fn two_authenticated_coordinators_reconnect_without_catchup_after_actual_server_
         settle(cx, &[&reopened], || matches!(&reopened.read().channels, Some(Load::Ready(channels)) if channels.contains(&offline))).await;
         reopened.select_channel(&channel);
         settle(cx, &[&reopened], || ids(&reopened, &channel).contains(&missed.last().unwrap().id)).await;
-        assert!(matches!(reopened.read().history.get(&channel), Some(Load::Ready(messages)) if messages.contains(missed.last().unwrap())));
+        assert!(matches!(reopened.read().history(&channel), Some(Load::Ready(messages)) if messages.contains(missed.last().unwrap())));
         assert_eq!(b_reads.load(Ordering::SeqCst), reads[1] + 1, "the other closed client performs no reads");
         assert_eq!(a_reads.load(Ordering::SeqCst), reads[0] + 3, "one ordinary channel list and one newest history read after reopening");
         reopened.close();

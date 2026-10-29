@@ -244,7 +244,7 @@ fn authenticated_message_delete_journey(cx: &mut TestAppContext, tray: bool) {
     };
     converge(cx, &observer, |window, _| {
         window.try_find(initially_visible.clone()).is_some()
-            && matches!(observer.read().history.get(&channel), Some(Load::Ready(rows)) if rows.iter().any(|m| m.id == message.id))
+            && matches!(observer.read().history(&channel), Some(Load::Ready(rows)) if rows.iter().any(|m| m.id == message.id))
     });
     let reader = tray.then(|| {
         cx.update(|window, cx| {
@@ -325,7 +325,7 @@ fn authenticated_message_delete_journey(cx: &mut TestAppContext, tray: bool) {
     converge(cx, &observer, |window, _| {
         window.try_find(target.clone()).is_none()
             && window.try_find("delete-message-preview").is_none()
-            && matches!(observer.read().history.get(&channel), Some(Load::Ready(rows)) if rows.iter().all(|m| m.id != message.id))
+            && matches!(observer.read().history(&channel), Some(Load::Ready(rows)) if rows.iter().all(|m| m.id != message.id))
     });
     assert_eq!(
         *calls.lock().unwrap(),

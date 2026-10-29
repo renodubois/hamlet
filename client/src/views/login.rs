@@ -1,5 +1,5 @@
 //! Editable login state belongs to this view, never to the shell or session model.
-use crate::session::SessionCoordinator;
+use crate::session::{AuthMode, SessionCoordinator};
 use gpui_kit::base::Disableable;
 use gpui_kit::base::input::{InputBaseState, InputEvent, InputMode, InputState};
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -91,6 +91,13 @@ impl LoginView {
             .update(cx, |input, cx| input.set_value("", window, cx));
     }
 
+    fn mode(&self) -> AuthMode {
+        if self.signup {
+            AuthMode::Signup
+        } else {
+            AuthMode::Login
+        }
+    }
     fn set_signup(&mut self, signup: bool, cx: &mut Context<Self>) {
         if !self.session.read(cx).pending() && self.signup != signup {
             self.session.update(cx, |session, cx| {
@@ -119,7 +126,7 @@ impl LoginView {
         let username = self.username.read(cx).text().to_string();
         let password = self.password.read(cx).text().to_string();
         self.session.update(cx, |session, cx| {
-            session.submit(username, password, self.signup);
+            session.submit(username, password, self.mode());
             cx.notify();
         });
     }
